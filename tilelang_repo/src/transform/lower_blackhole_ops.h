@@ -629,10 +629,6 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
       const tvm::tir::CallNode* op,
       size_t index,
       const BlackholeTileComputeCoveringDecision& covering) const;
-  std::string GetBlackholeTileComputeStringArg(
-      const tvm::tir::CallNode* op,
-      size_t index,
-      const BlackholeTileComputeCoveringDecision& covering) const;
   tvm::tir::Stmt EmitFillFragmentTileComputeSource(
       const tvm::tir::CallNode* op,
       const BlackholeTileComputeCoveringDecision& covering);
@@ -654,7 +650,13 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   tvm::tir::Stmt EmitMulTilesBcastColsComputeSource(
       const tvm::tir::CallNode* op,
       const BlackholeTileComputeCoveringDecision& covering);
+  tvm::tir::Stmt EmitAddTilesBcastColsComputeSource(
+      const tvm::tir::CallNode* op,
+      const BlackholeTileComputeCoveringDecision& covering);
   tvm::tir::Stmt EmitExp2TileComputeSource(
+      const tvm::tir::CallNode* op,
+      const BlackholeTileComputeCoveringDecision& covering);
+  tvm::tir::Stmt EmitRecipTileComputeSource(
       const tvm::tir::CallNode* op,
       const BlackholeTileComputeCoveringDecision& covering);
   tvm::tir::Stmt EmitReduceTileComputeSource(
@@ -674,19 +676,19 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
                                             const std::string& operation_name,
                                             const tvm::Op& init_op,
                                             const tvm::Op& tile_op);
-  tvm::tir::Stmt GenerateMulTilesBcastColsSequence(const std::string& kind,
-                                                   const tvm::tir::Buffer& dst,
-                                                   const tvm::tir::Buffer& rhs,
-                                                   const tvm::PrimExpr& num_elements,
-                                                   const tvm::PrimExpr& row_width);
-  tvm::tir::Stmt GenerateExp2TileLeafDAGSequence(const std::string& mode,
-                                                 const tvm::tir::Buffer& dst,
-                                                 const tvm::tir::Buffer& lhs,
-                                                 const tvm::tir::Buffer& rhs,
-                                                 const tvm::PrimExpr& lhs_scale,
-                                                 const tvm::PrimExpr& rhs_scale,
-                                                 const tvm::PrimExpr& row_width,
-                                                 const tvm::PrimExpr& num_elements);
+  tvm::tir::Stmt GenerateBroadcastColsBinaryTileSequence(
+      const tvm::tir::Buffer& dst,
+      const tvm::tir::Buffer& rhs,
+      const std::string& operation_name,
+      const tvm::Op& init_op,
+      const tvm::Op& tile_op,
+      const tvm::PrimExpr& num_elements,
+      const tvm::PrimExpr& row_width);
+  tvm::tir::Stmt GenerateUnaryTileSequence(const tvm::tir::Buffer& input,
+                                           const tvm::tir::Buffer& output,
+                                           const std::string& operation_name,
+                                           const tvm::Op& init_op,
+                                           const tvm::Op& tile_op);
   bool MatchDirectFragmentCast(const tvm::tir::ForNode* op, FragmentCastMatch* match) const;
   tvm::tir::Stmt GenerateFragmentCastSequence(const FragmentCastMatch& match,
                                               bool publish_cb = false,

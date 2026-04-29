@@ -86,7 +86,7 @@
     或跨阶段 side-channel
   - `2026-04-29`
     boundary review
-    后补充：
+    后补充并已完成已知 active residue 修复：
     该 normalizer
     必须把可表达的复合 TIR expression
     显式分解成 leaf tile-compute TIR sequence；
@@ -202,7 +202,7 @@ DAG covering
     的 typed surface，
     由 validator 和 executable projection 消费；
     explicit source lowering
-    当前虽已消费 pass-local
+    已消费 pass-local
     `TileComputeDAG`
     lower plan，
     并把 DAG node /
@@ -211,24 +211,21 @@ DAG covering
     fanout 决策写进
     `TTComputeOpPlan`
     和 executable projection，
-    但这只能算 mechanics，
-    不能算 production completion；
-    但
+    且
     `2026-04-29`
     boundary review
-    发现当前 repo HEAD
-    仍有 composite payload
-    残留：
+    发现的 composite payload
+    残留已完成修复：
     `exp2_tile`
     source decision
     和
     row-broadcast division
-    不能继续由
+    不再由
     `TileComputeDAG`
     /
     source hook
     展开，
-    必须迁回
+    已迁回
     `Normalized Tile TIR`
     显式 leaf sequence；
     只有影响 typed resource demand /
@@ -278,21 +275,22 @@ DAG covering
     但当前 active task
     仍以 `tasks/progress.md`
     为准；
-    composite pseudo-leaf
-    清理完成前，
-    不进入 core / buffer planning
+    当前已进入
+    core / buffer planning
 
 当前执行顺序不在 README 中重复维护；
 唯一状态看板是 `tasks/progress.md`。
 截至当前 repo HEAD，
-已完成的 foundation 包括
+已完成的 foundation / repair 包括
 `AccessRegion`、
 graph-backed `SpatialPlan` dependence、
 `LiveValueSSA`、
 第一版 TT live-form solver，
 以及 admitted live-form /
 materialization surface
-上的 selected Phase E decision-use cutover。
+上的 selected Phase E decision-use cutover，
+以及 tile-compute explicit leaf normalization
+boundary repair。
 资源规划复查后，
 `TileComputeDAG`
 不能作为全局 resource /
@@ -300,22 +298,19 @@ scheduling 面继续扩展；
 后续顺序改为：
 `TileComputeDAG`
 production 边界已收缩，
-但仍需在 composite pseudo-leaf
-清理后重新证明 production 价值；
+但仍需在 known composite pseudo-leaf
+已清理的基础上持续证明 production 价值；
 `TileComputeDAG`-backed
 typed resource pressure
 已建立第一版 typed surface；
 `TileComputeDAG`
 source-lowering / typed compute lower-plan
-接入存在 composite pseudo-leaf
-边界错误，
-不能作为 production completion；
+接入的 known composite pseudo-leaf
+边界错误已经删除；
 CB / L1 admission
 已完成第一版 production-use gate；
-下一步先修复 explicit leaf normalization
-和 one DAG source node
-to one semantic leaf plan，
-再推进 core / buffer planning，
+下一步推进
+core / buffer planning，
 然后回到
 multi-block flash-attn direct-runtime admission、
 multi-page exact-CB event admission、

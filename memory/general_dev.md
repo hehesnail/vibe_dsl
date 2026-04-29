@@ -1829,3 +1829,28 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   if stricter binding is needed,
   add a real statement/source identity to the DAG instead of using a linear
   cursor as owner truth.
+- 2026-04-29 explicit tile-compute leaf normalization repair:
+  composite tile compute must be normalized before DAG construction.
+  The active Blackhole boundary now treats
+  `exp2(lhs * s0 - rhs * s1)`
+  as a sequence of explicit
+  `copy_tile` /
+  `fill_tile` /
+  `mul_tiles` /
+  `add_tiles` or
+  `add_tiles_bcast_cols` /
+  `exp2_tile`
+  leaf statements,
+  and row-broadcast division as
+  `recip_tile`
+  plus
+  `mul_tiles_bcast_cols`.
+  Do not reintroduce string-mode source payloads such as
+  `exp2_tile("binary", ...)`,
+  `exp2_tile("bcast_cols", ...)`,
+  or
+  `mul_tiles_bcast_cols("div", ...)`.
+  Source hooks in
+  `PlanTTKernelABI`
+  are one-leaf projections for selected typed plans;
+  they are not a fallback place to expand composite expressions.

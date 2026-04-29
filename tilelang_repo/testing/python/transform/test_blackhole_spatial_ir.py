@@ -773,7 +773,9 @@ def test_tile_compute_pattern_table_covers_current_leaf_operation_names():
         "add_tiles",
         "mul_tiles",
         "mul_tiles_bcast_cols",
+        "add_tiles_bcast_cols",
         "exp2_tile",
+        "recip_tile",
         "reduce_tile",
     }
 
@@ -1506,6 +1508,56 @@ def test_blackhole_frontend_tile_compute_normalization_uses_leaf_operations():
 
     assert operations
     assert operations <= BLACKHOLE_TILE_COMPUTE_LEAF_OPS
+
+
+def test_blackhole_frontend_tile_compute_normalization_rejects_composite_payloads():
+    mod = _lower_blackhole_frontend(
+        mha_example.flashattn.jit_impl.get_tir(
+            1,
+            32,
+            128,
+            128,
+            False,
+            block_M=128,
+            block_N=128,
+            num_stages=1,
+            threads=128,
+        )
+    )
+    calls = []
+
+    def visit(expr):
+        if isinstance(expr, tvm.tir.Call):
+            op = expr.op
+            if hasattr(op, "name") and op.name == "tl.tileop.blackhole_compute":
+                if expr.args and isinstance(expr.args[0], tvm.tir.StringImm):
+                    calls.append(expr)
+
+    tvm.tir.stmt_functor.post_order_visit(mod["main"].body, visit)
+    assert calls
+    for call in calls:
+        operation = str(call.args[0].value)
+        if operation in {"exp2_tile", "mul_tiles_bcast_cols"}:
+            assert not isinstance(call.args[1], tvm.tir.StringImm)
+
+
+def test_blackhole_frontend_decomposes_row_division_to_recip_leaf():
+    mod = _lower_blackhole_frontend(
+        mha_example.flashattn.jit_impl.get_tir(
+            1,
+            32,
+            128,
+            128,
+            False,
+            block_M=128,
+            block_N=128,
+            num_stages=1,
+            threads=128,
+        )
+    )
+    operations = _collect_blackhole_tile_compute_operations(mod["main"])
+
+    assert "recip_tile" in operations
 
 
 def test_lower_tile_op_has_single_blackhole_tile_compute_normalizer_surface():

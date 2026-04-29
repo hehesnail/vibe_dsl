@@ -8,7 +8,7 @@
 
 - Date: `2026-04-29`
 - Active lane:
-  `Tile-compute explicit leaf normalization boundary repair`
+  `Hardware-model-backed core and buffer placement`
 - Current state:
   Repo-level design discipline now has a hardware-codegen usefulness gate:
   new algorithmic structures,
@@ -56,8 +56,32 @@
   no public production API exposes a durable DAG covering object,
   and explicit tile-compute source emission stays on selected leaf pattern
   covering.
-  It did not complete production source lowering,
-  because selected hooks can still carry composite pseudo-leaf payloads.
+  It did not complete production source lowering by itself,
+  because selected hooks still needed a leaf-normalization repair.
+  That repair is now complete for the known residues:
+  `lower_tile_op.cc`
+  decomposes
+  `exp2(lhs * s0 - rhs * s1)`
+  into explicit
+  `copy_tile` /
+  `fill_tile` /
+  `mul_tiles` /
+  `add_tiles` or
+  `add_tiles_bcast_cols` /
+  `exp2_tile`
+  leaf statements,
+  and row-broadcast division into
+  `recip_tile` plus
+  `mul_tiles_bcast_cols`.
+  `PlanTTKernelABI`
+  no longer accepts string-mode source payloads for
+  `exp2_tile`
+  or
+  `mul_tiles_bcast_cols`;
+  `add_tiles_bcast_cols`
+  and
+  `recip_tile`
+  are admitted as one-to-one leaf source projections.
   A first typed surface exists through
   `TTResourceDemand`
   /
@@ -68,27 +92,17 @@
   carried as typed TTProgram fields,
   validated by `ValidateTTProgram`,
   and projected into `ExecutableSpec`.
-  This does not by itself prove the production DAG is justified:
-  after composite pseudo-leaf cleanup,
-  the DAG must still show real leaf-graph decisions that change typed plans,
-  validators,
-  resource admission,
-  or old branch deletion.
-  The
-  `2026-04-29`
-  boundary review found that the source-lowering use went too far:
-  `PlanTTKernelABI`
-  currently lets selected source hooks legitimize composite pseudo-leaf
-  payloads such as
-  `exp2_tile(mode, lhs, rhs, scale, ...)`
-  and
-  `mul_tiles_bcast_cols("div", ...)`.
-  That is not an accepted design boundary.
-  The repair target is explicit
-  `Normalized Tile TIR`
-  leaf-sequence normalization before DAG construction;
-  `TileComputeDAG`
-  then covers only one semantic TT-Metal leaf per source node.
+  The repaired DAG path now covers explicit leaf graph nodes only:
+  one DAG source node maps to one semantic
+  `TTComputeOpPlan.operation_name`,
+  and source hooks are leaf projections rather than composite expanders.
+  The DAG remains justified only as long as these selected leaf decisions
+  affect typed lower plans,
+  fanout /
+  materialization /
+  resource demand,
+  validator decisions,
+  or delete old per-op branch mechanics.
   CB / L1 resource admission now uses hardware-model-backed CB count,
   worker L1 budget,
   and L1 alignment facts in both `PlanTTCBAlloc`
@@ -99,15 +113,6 @@
   Core placement and buffer distribution remain basic and need hardware-model
   backed planning before wider runtime admission resumes.
 - Current blocker:
-  tile-compute source lowering has composite pseudo-leaf residue.
-  The known violations are the
-  `exp2_tile`
-  affine payload path
-  and
-  `mul_tiles_bcast_cols("div", ...)`.
-  These must be deleted and replaced by explicit leaf TIR normalization before
-  wider core / buffer placement work resumes.
-  After that,
   core / buffer placement is still coarse:
   `PlanTTCoreGroups`
   still routes through a hard-coded grid path,
@@ -159,8 +164,11 @@
   materialization /
   unsupported-reason decisions now feed typed resource demand and validator /
   executable projection,
-  but source hooks must still be repaired so each source node maps to one
-  semantic leaf plan and no composite payload is accepted.
+  and source hooks now map one selected source node to one semantic leaf
+  projection.
+  Composite expression decomposition belongs to
+  `Normalized Tile TIR`,
+  not DAG covering or source emission.
 - TileComputeDAG production-boundary cleanup:
   production code does not persist a durable function-level DAG covering cache;
   `PlanTTKernelABI`
@@ -194,20 +202,18 @@
   and max simultaneous L1 pressure;
   `ValidateTTProgram`
   rejects CB and L1 over-pressure.
-- Tile-compute lower-plan residue:
-  current repo HEAD has the pass-local lower-plan mechanics,
-  but the production boundary is not clean while source hooks can expand
-  composite pseudo-leaf payloads.
-  Completion now requires explicit leaf TIR normalization and one DAG source
-  node to one semantic `TTComputeOpPlan.operation_name` validation.
-  If the repaired DAG only wraps already-selected leaves without changing
-  fanout,
-  materialization,
-  resource-demand,
-  typed rejects,
-  or deleting old branches,
-  it must be downgraded to debug /
-  validation support instead of production machinery.
+- Tile-compute explicit leaf normalization boundary repair:
+  composite pseudo-leaf source payloads have been deleted for the known
+  active residues.
+  `exp2_tile(mode, lhs, rhs, scale, ...)`
+  is replaced by an explicit leaf statement sequence before DAG construction;
+  `mul_tiles_bcast_cols("div", ...)`
+  is replaced by
+  `recip_tile`
+  plus
+  `mul_tiles_bcast_cols`.
+  The string-argument helper and old composite source generators are removed,
+  and tests guard the frontend normalization and one-leaf source schema.
 
 ## Support Boundary
 
@@ -228,16 +234,24 @@
 
 ## Open Debt
 
-- Composite pseudo-leaf cleanup:
-  remove
-  `exp2_tile(mode, lhs, rhs, scale, ...)`
-  and
-  `mul_tiles_bcast_cols("div", ...)`
-  source payloads;
-  express those TIR computations as explicit TT-Metal leaf op sequences in
-  `Normalized Tile TIR`;
-  tighten pattern schema and validators so DAG-driven source hooks are
-  one-to-one with semantic leaf plans.
+- Hardware-model-backed core placement:
+  route
+  `PlanTTCoreGroups`
+  through
+  `TTHardwareModel`
+  worker-grid /
+  harvesting /
+  worker-count facts,
+  and fail closed when requested work exceeds available workers.
+- Explicit buffer distribution:
+  grow
+  `TTBufferDistributionPlan`
+  beyond mostly
+  `unit_mesh`
+  /
+  `replicated`
+  into the concrete placement choices needed by admitted workloads,
+  while keeping TT-Metal responsible for physical address allocation.
 - CB / L1 admission still has future precision work:
   reserved / precolored CB class modeling can be made more explicit,
   L1 buffer sizing is still a conservative plan-level estimate,
@@ -263,17 +277,13 @@
 
 ## Next Task Order
 
-1. Repair tile-compute explicit leaf normalization:
-   delete composite pseudo-leaf source payloads,
-   implement explicit leaf TIR decomposition for admitted TIR expressions,
-   and enforce one DAG source node to one semantic leaf plan.
-2. Upgrade core and buffer placement:
+1. Upgrade core and buffer placement:
    use `TTHardwareModel`
    for worker grid / L1 / DRAM facts,
    produce safe logical-coordinate core groups,
    and expand `TTBufferDistributionPlan`
    beyond `unit_mesh` / `replicated`.
-3. Resume wider runtime admission:
+2. Resume wider runtime admission:
    re-admit multi-block flash-attn direct runtime,
    then wider exact-CB events,
    mesh / distributed runtime,
@@ -282,27 +292,26 @@
 ## Latest Verification
 
 - Current implementation:
-  doc-only synchronization after the hardware-codegen usefulness review.
-  The docs now classify
-  `AccessRegion` /
-  `LiveValueSSA`
-  as dataflow /
-  liveness /
-  materialization substrate,
-  not compute expression lowering.
-  `TileComputeDAG`
-  is now documented as useful only if post-cleanup explicit leaf graph
-  decisions affect fanout,
-  materialization,
-  physical form,
-  resource demand,
-  typed rejects,
-  or old branch deletion.
-  Existing
-  `PlanTTKernelABI`
-  lower-plan mechanics still exist in code,
-  but they are not production-complete while composite pseudo-leaf source
-  payloads remain.
+  completed tile-compute explicit leaf normalization boundary repair.
+  Composite pseudo-leaf payloads for
+  `exp2_tile(mode, lhs, rhs, scale, ...)`
+  and
+  `mul_tiles_bcast_cols("div", ...)`
+  are removed from active source lowering.
+  Frontend normalization now emits explicit leaf TIR sequences,
+  and DAG-driven source hooks project only one selected semantic TT-Metal
+  leaf op.
 - Verification:
-  docs-only change;
-  no build or pytest was run.
+  `cmake --build build -j32`
+  passed.
+  `pytest -q testing/python/transform/test_blackhole_spatial_ir.py`
+  passed
+  (`79 passed`).
+  `pytest -q testing/python/target/blackhole/test_blackhole_flash_attention_pipeline.py -k 'leaf_compute_ops or optimized_path_lowers_acc_o_broadcast_updates or optimized_path_lowers_exp2_to_leaf_tile_ops or projects_non_gemm_exact_compute_ops'`
+  passed
+  (`3 passed, 64 deselected`).
+  Cleanup scan found no active
+  `GetBlackholeTileComputeStringArg`,
+  old composite generator,
+  or string-mode composite payload residue under
+  `tilelang_repo/src/transform`.

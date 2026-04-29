@@ -78,7 +78,9 @@ enum class BlackholeTileComputeSourceEmitterKind {
   kAddTiles,
   kMulTiles,
   kMulTilesBcastCols,
+  kAddTilesBcastCols,
   kExp2Tile,
+  kRecipTile,
   kReduceTile,
 };
 

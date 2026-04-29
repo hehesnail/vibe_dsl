@@ -1231,9 +1231,12 @@ not a single workload-specific implementation.
 Its completed scope is limited to admitted live-form /
 materialization decisions and selected validator /
 projection gates.
-It does not complete tile-compute leaf normalization,
+It does not own tile-compute leaf normalization,
 global lifecycle analysis,
 or hardware-aware resource planning.
+The known tile-compute explicit leaf normalization repair is tracked and
+completed under the tile-compute legalizer /
+normalizer documents.
 
 Current implementation notes:
 
@@ -1275,8 +1278,8 @@ Current implementation notes:
 
 Downstream work after the current selected Phase E cutover:
 
-- repair tile-compute explicit leaf normalization before treating
-  DAG/source-lowering as production-complete,
+- keep the repaired tile-compute explicit leaf normalization boundary:
+  DAG/source-lowering only sees explicit semantic leaf nodes,
 - keep `TileComputeDAG`
   limited to explicit leaf graph legality /
   fanout /

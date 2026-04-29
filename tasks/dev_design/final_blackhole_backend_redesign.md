@@ -1361,12 +1361,20 @@ support-surface admission lane；
      resource-demand input
      才有主线价值；
      它不能成为 composite expression lowering owner
-   - 当前 active repair
-     是删除 composite pseudo-leaf source payload，
-     在
-     `Normalized Tile TIR`
-     中显式 leaf 化后，
-     才能重新评估 DAG production 价值
+  - `2026-04-29`
+    boundary repair
+    已删除 known composite pseudo-leaf source payload，
+    并在
+    `Normalized Tile TIR`
+    中显式 leaf 化
+    `exp2`
+    affine
+    和 row-broadcast division
+    路径；
+    后续 DAG production 价值仍按 typed plan /
+    resource-demand /
+    validator /
+    old-branch deletion 是否被真实驱动来判断
 10. `blackhole_first_principles_protocol_audit.md`
    - 固定 legacy /
      fake protocol

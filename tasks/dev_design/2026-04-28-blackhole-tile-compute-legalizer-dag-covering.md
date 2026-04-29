@@ -134,18 +134,24 @@ source lowering 只能消费这份 pass-local DAG lower plan；
   `Normalized Tile TIR`
   中显式拆成多个 leaf nodes。
 
-Boundary correction (`2026-04-29`):
-repo HEAD still contains implementation residue that violates this contract.
-The known residues are composite
+Boundary correction status (`2026-04-29`):
+the known implementation residues have been repaired.
+Composite
 `exp2(lhs * s0 - rhs * s1)`
-packed behind an `exp2_tile`-named source call,
-and row-broadcast division packed behind
-`mul_tiles_bcast_cols("div", ...)`.
-They are not accepted design.
-The repair target is deletion of those pseudo-leaf payloads,
-replacement with explicit leaf TIR normalization,
-and validator enforcement that DAG-driven source hooks are one-to-one with
-semantic leaf plans.
+is no longer packed behind an
+`exp2_tile`
+source payload;
+the frontend normalizer emits explicit leaf tile-compute statements before
+DAG construction.
+Row-broadcast division is no longer packed behind
+`mul_tiles_bcast_cols("div", ...)`;
+it is represented as
+`recip_tile`
+plus
+`mul_tiles_bcast_cols`.
+`PlanTTKernelABI`
+does not own a string-mode composite source dispatcher for these paths.
+DAG-driven source hooks are constrained to one selected semantic leaf plan.
 
 ## References
 
@@ -319,19 +325,18 @@ semantic leaf plans.
 - 增加新 compute 类型时，
   容易复制一整套 branch，
   而不是添加一条 declarative-ish pattern。
-- repo HEAD
-  还存在一个更严重的边界错误：
-  某些复合 TIR 表达式
-  被压进 leaf-looking
+- `2026-04-29`
+  边界修复后，
+  已知复合 TIR 表达式不再被压进 leaf-looking
   `tl.tileop.blackhole_compute`
-  payload，
-  然后由 source hook
-  在 `PlanTTKernelABI`
-  阶段展开成多条 semantic leaf op。
-  这不是合法 covering；
-  它必须改为
+  payload。
+  如果后续发现新的 multi-step compute expression，
+  必须同样在
   `Normalized Tile TIR`
-  中的显式 leaf sequence。
+  中显式 leaf-sequence 化，
+  不能把展开推迟到
+  `PlanTTKernelABI`
+  source hook。
 
 后续复杂模式需要更通用的选择机制：
 
@@ -844,7 +849,7 @@ materialization decisions.
 That first typed surface exists in repo HEAD,
 but it is not enough by itself to prove the DAG should remain on the production
 path.
-After composite pseudo-leaf cleanup,
+With the known composite pseudo-leaf cleanup complete,
 the DAG must still prove that its leaf-graph fanout /
 materialization /
 resource-demand decisions affect typed plans,
@@ -869,9 +874,9 @@ Implementation status:
   production object
 - explicit source emission continues through selected leaf pattern
   source hooks
-  but the current implementation must still be repaired so each hook is
-  one-to-one with its semantic leaf op and cannot expand composite payloads
-  into multiple compute plans
+  and the known composite source payload violations have been removed:
+  each admitted hook now projects one selected semantic leaf op instead of
+  expanding a composite payload into multiple compute plans
 - static tests guard these boundaries before wider resource-planning expands
 - DAG-wide fanout /
   materialization /
@@ -886,16 +891,17 @@ Implementation status:
   `resource_pressure_reports`.
   The DAG itself remains pass-local and is still not a durable planning layer.
 
-The source-lowering repair has priority over wider production migration:
-before this lane can be considered architecturally clean,
-`exp2_tile` composite payloads,
-`mul_tiles_bcast_cols("div", ...)`,
-and any source hook that records multiple semantic
-`TTComputeOpPlan`
-entries for one DAG source node
-must be deleted or moved into explicit
+The source-lowering repair is complete for the known active residues:
+`exp2_tile`
+composite payloads and
+`mul_tiles_bcast_cols("div", ...)`
+are deleted from active lowering and moved into explicit
 `Normalized Tile TIR`
 leaf normalization.
+Any future source hook that records multiple semantic
+`TTComputeOpPlan`
+entries for one DAG source node is still a violation and must be deleted or
+moved into explicit leaf normalization before admission.
 
 ## Global Task Order
 
@@ -903,16 +909,14 @@ This lane is sequenced after the selected algorithmic generalization
 decision-use facts,
 but before wider core / buffer / runtime expansion:
 
-1. Repair explicit leaf normalization in
-   `Normalized Tile TIR`.
-2. Delete composite pseudo-leaf source payloads and source-hook expansion.
-3. Enforce one DAG source node to one semantic TT-Metal leaf plan.
-4. Keep or delete production DAG mechanics based on whether they drive
+1. Keep or delete production DAG mechanics based on whether they drive
    leaf-graph fanout /
    materialization /
    physical-form /
    resource-demand /
    typed reject decisions.
+2. Use the repaired explicit leaf graph while upgrading core /
+   buffer placement and wider resource admission.
 5. Resume core /
    buffer /
    runtime admission only after selected patterns,
@@ -997,8 +1001,10 @@ source dispatch,
 and
 `ValidateTTProgram`
 through covering selection.
-Those mechanics are not production-complete while source hooks can still carry
-composite pseudo-leaf payloads.
+Those mechanics became production-clean for the known admitted source surface
+after the
+`2026-04-29`
+leaf-normalization repair removed composite pseudo-leaf payloads.
 The remaining low-level source hooks are hook targets selected
 from pattern metadata; they must be leaf projections only,
 not composite lowering owners.
@@ -1071,8 +1077,10 @@ Completion gate:
 
 ### Phase C: Local DAG Covering For Current Ops
 
-Status: partially complete in repo HEAD for the admitted compute surface,
-with a required boundary repair.
+Status: complete for the current admitted explicit tile-compute source
+surface after the
+`2026-04-29`
+boundary repair.
 Covering selection gates typed compute-plan recording,
 GEMM
 `matmul_tiles`
@@ -1094,15 +1102,16 @@ and DAG covering emits selected pattern IDs,
 leaf source hooks,
 local-DP state keys,
 and costs in dependence order.
-Phase E cleanup is only mechanically partial:
+Phase E cleanup is now complete for the admitted explicit source surface:
 explicit source emission now dispatches through the selected
 `source_emitter`
 hook registry,
 generic reduce source lowering enters the same covering path,
 and unsupported standalone explicit-source patterns fail closed after
 selection instead of falling through to an old branch-only emitter path.
-That does not by itself satisfy Phase E while composite payloads can still be
-expanded by selected hooks.
+The known composite payload expansions have been removed from selected hooks,
+so the covered path now satisfies the one source node to one semantic leaf
+invariant for admitted source calls.
 The implementation now represents operation,
 result kind,
 operand role,
@@ -1120,18 +1129,32 @@ enum/string conversion is driven by small lookup tables instead of one switch
 per enum family,
 and pattern call-operand vectors use direct aggregate initialization rather
 than helper wrappers.
-However,
-the current
+The boundary repair tightened the schema so pattern operand layouts describe
+true leaf operands for the known active residues:
 `exp2_tile`
-and row-broadcast division source paths demonstrate that the schema did not
-enforce the leaf contract strongly enough:
-pattern operands and selected source hooks can still hide composite payloads.
-The repair target for Phase C is to make pattern operand layouts describe
-true leaf operands only,
-and to reject any selected pattern whose source-call schema contains
-operation-changing `mode` /
+uses unary
+`input`
+/
+`output`
+operands,
+`mul_tiles_bcast_cols`
+and
+`add_tiles_bcast_cols`
+use binary
+`lhs`
+/
+`rhs`
+/
+`output`
+operands,
+and
+`recip_tile`
+is admitted as a unary leaf source projection.
+Operation-changing
+`mode`
+/
 `kind`
-payload.
+payloads remain forbidden.
 
 Files:
 
@@ -1270,20 +1293,21 @@ TT live-form solver evidence,
 and DAG covering now reports materialization/fanout policy without
 selecting stale fallback sources.
 This statement is limited to live-form / fanout evidence;
-it does not admit the Phase E pseudo-leaf composite source paths and does not
-by itself prove production DAG usefulness.
+it does not by itself prove production DAG usefulness beyond the typed plans,
+resource demand,
+and branch deletion it actually drives.
 Direct-runtime correctness for multi-block flash-attn remains a later
 runtime admission task.
 
 ### Phase E: Delete Old Per-Op Selection Branches
 
-Status: not architecturally complete after the
+Status: architecturally complete for the current admitted explicit source
+surface after the
 `2026-04-29`
 boundary review.
-Repo HEAD removed some old operation-name dispatch mechanics,
-but it still preserves composite lowering through leaf-looking source hooks.
-Phase E completion requires deleting those pseudo-leaf paths,
-not merely routing them through a hook registry.
+Repo HEAD removed old operation-name dispatch mechanics and then removed the
+known pseudo-leaf composite source paths instead of merely routing them through
+a hook registry.
 Pattern metadata is now the single source of truth for explicit tile-compute
 source hook selection.
 `EmitCoveredBlackholeTileCompute`
@@ -1362,16 +1386,30 @@ Implementation notes:
   `EmitTypecastTileComputeSource`,
   `EmitAddTilesComputeSource`,
   `EmitMulTilesComputeSource`,
+  `EmitAddTilesBcastColsComputeSource`,
   `EmitExp2TileComputeSource`,
+  `EmitRecipTileComputeSource`,
   and
   `EmitReduceTileComputeSource`.
-- This move was not sufficient:
+- Follow-up boundary repair deleted the old
+  `GetBlackholeTileComputeStringArg`
+  helper,
+  deleted the composite
+  `GenerateExp2TileLeafDAGSequence`
+  and string-mode
+  `GenerateMulTilesBcastColsSequence`
+  paths,
+  made
   `EmitExp2TileComputeSource`
-  and the `div`
-  branch in
+  a unary leaf projection,
+  made
   `EmitMulTilesBcastColsComputeSource`
-  are now classified as deletion targets,
-  because they expand one source decision into multiple semantic leaf plans.
+  a true broadcast binary leaf projection,
+  and added one-to-one
+  `add_tiles_bcast_cols`
+  /
+  `recip_tile`
+  leaf hooks.
 - Replaced the direct
   `MatchExplicitTileReduce`
   /
@@ -1410,7 +1448,11 @@ Completion gate:
   tests,
   and a leaf source hook when a standalone explicit source path is admitted
 
-Repo HEAD does not currently satisfy this gate.
+Repo HEAD satisfies this gate for the known admitted explicit source surface.
+Future compute admission must keep the same gate:
+if a source node needs several semantic leaf ops,
+the frontend normalizer must emit several explicit leaf statements before DAG
+construction.
 
 ## Cost Model
 

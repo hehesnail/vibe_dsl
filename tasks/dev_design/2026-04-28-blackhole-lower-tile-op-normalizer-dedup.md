@@ -2,10 +2,10 @@
 
 ## Goal
 
-Status: completed as a deduplication cleanup,
-but reopened for boundary correction after the
+Status: completed as a deduplication cleanup.
+The follow-up boundary correction from the
 `2026-04-29`
-tile-compute review.
+tile-compute review is also complete for the known active residues.
 
 Before this cleanup,
 `lower_tile_op.cc` had two implementations of the same
@@ -37,7 +37,8 @@ or `TileComputeDAG`.
   one call per TT-Metal semantic leaf op.
 - Operation names stay at TT-Metal leaf API granularity:
   `fill_tile`, `copy_tile`, `typecast_tile`, `binary_max_tile`,
-  `mul_tiles`, `add_tiles`, `mul_tiles_bcast_cols`, and `exp2_tile`.
+  `mul_tiles`, `add_tiles`, `mul_tiles_bcast_cols`,
+  `add_tiles_bcast_cols`, `recip_tile`, and `exp2_tile`.
 - Leaf source-call schemas must expose the real leaf operands.
   Binary leaf calls use explicit
   `lhs`,
@@ -116,13 +117,19 @@ the source emitter may choose an in-place physical realization later,
 but the TIR leaf statement must not collapse input and output identities
 unless the source semantics actually do so.
 
-The repair task for this document is therefore:
+Completed repair:
 
-- remove composite `exp2_tile` payload normalization
-- remove `mul_tiles_bcast_cols("div", ...)`
-- make admitted composite TIR expressions lower to explicit leaf TIR
-  sequences with logical temps
-- make any unsupported diagnostic use the correct category:
+- composite `exp2_tile` payload normalization is removed
+- `mul_tiles_bcast_cols("div", ...)` is removed
+- admitted
+  `exp2(lhs * s0 - rhs * s1)`
+  lowers to explicit leaf TIR statements with logical temps before DAG
+  construction
+- row-broadcast division lowers to
+  `recip_tile`
+  plus
+  `mul_tiles_bcast_cols`
+- unsupported diagnostics must still use the correct category:
   `lowering_missing`,
   `backend_op_missing`,
   `admission_blocked`,
@@ -137,3 +144,9 @@ The repair task for this document is therefore:
 - `cmake --build build -j32`.
 - Blackhole transform/target regression tests.
 - Cleanup scan for deleted composite matcher/generate names.
+
+Latest verification:
+
+- `cmake --build build -j32`
+- `pytest -q testing/python/transform/test_blackhole_spatial_ir.py`
+- `pytest -q testing/python/target/blackhole/test_blackhole_flash_attention_pipeline.py -k 'leaf_compute_ops or optimized_path_lowers_acc_o_broadcast_updates or optimized_path_lowers_exp2_to_leaf_tile_ops or projects_non_gemm_exact_compute_ops'`

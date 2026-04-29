@@ -164,6 +164,31 @@ bool MatchExp2Call(const PrimExpr &expr, PrimExpr *arg) {
   return true;
 }
 
+PrimExpr BufferElementCount(const Buffer &buffer, const PrimExpr &fallback) {
+  if (!buffer.defined() || buffer->shape.empty()) {
+    return fallback;
+  }
+  arith::Analyzer analyzer;
+  PrimExpr product = IntImm32(1);
+  for (const PrimExpr &extent : buffer->shape) {
+    product = analyzer.Simplify(product * extent);
+  }
+  return product;
+}
+
+Buffer MakeBlackholeTempBufferLike(const Buffer &buffer, const char *suffix,
+                                   int *temp_index) {
+  ICHECK(buffer.defined());
+  ICHECK(temp_index != nullptr);
+  const std::string base = BufferIdentityName(buffer).empty()
+                               ? std::string("blackhole_tile_tmp")
+                               : BufferIdentityName(buffer);
+  const std::string name =
+      base + suffix + "_" + std::to_string((*temp_index)++);
+  return tir::decl_buffer(buffer->shape, buffer->dtype, name,
+                          std::string(buffer.scope()));
+}
+
 Stmt MakeBlackholeTileComputeCall(const char *operation,
                                   Array<PrimExpr> payload) {
   Array<PrimExpr> args;
@@ -175,9 +200,69 @@ Stmt MakeBlackholeTileComputeCall(const char *operation,
                        Op::Get(blackhole_tile_compute_schema::kOpName), args));
 }
 
+Stmt WrapBlackholeTempBuffers(Stmt body, const std::vector<Buffer> &buffers) {
+  for (auto it = buffers.rbegin(); it != buffers.rend(); ++it) {
+    body = DeclBuffer(*it, body);
+    body = Allocate((*it)->data, (*it)->dtype, (*it)->shape, Bool(1), body);
+  }
+  return body;
+}
+
+Stmt MakeCopyTileCall(const Buffer &src, const Buffer &dst,
+                      const PrimExpr &num_elements) {
+  return MakeBlackholeTileComputeCall(
+      blackhole_tile_compute_schema::kCopyTile,
+      {MakeFullRegionExpr(src, 1), MakeFullRegionExpr(dst, 2), num_elements});
+}
+
+Stmt MakeFillTileCall(const Buffer &dst, const PrimExpr &value,
+                      const PrimExpr &num_elements) {
+  return MakeBlackholeTileComputeCall(
+      blackhole_tile_compute_schema::kFillTile,
+      {MakeFullRegionExpr(dst, 2), value, num_elements});
+}
+
+Stmt MakeMulTilesCall(const Buffer &dst, const Buffer &rhs,
+                      const PrimExpr &num_elements) {
+  return MakeBlackholeTileComputeCall(
+      blackhole_tile_compute_schema::kMulTiles,
+      {MakeFullRegionExpr(dst, 3), MakeFullRegionExpr(rhs, 1), num_elements});
+}
+
+Stmt MakeAddTilesCall(const Buffer &dst, const Buffer &rhs,
+                      const PrimExpr &num_elements) {
+  return MakeBlackholeTileComputeCall(
+      blackhole_tile_compute_schema::kAddTiles,
+      {MakeFullRegionExpr(dst, 3), MakeFullRegionExpr(rhs, 1), num_elements});
+}
+
+Stmt MakeBroadcastColsBinaryCall(const char *operation, const Buffer &dst,
+                                 const Buffer &rhs,
+                                 const PrimExpr &num_elements,
+                                 const PrimExpr &row_width) {
+  return MakeBlackholeTileComputeCall(
+      operation, {MakeFullRegionExpr(dst, 3), MakeFullRegionExpr(rhs, 1),
+                  num_elements, row_width});
+}
+
+Stmt MakeExp2TileCall(const Buffer &src, const Buffer &dst,
+                      const PrimExpr &num_elements) {
+  return MakeBlackholeTileComputeCall(
+      blackhole_tile_compute_schema::kExp2Tile,
+      {MakeFullRegionExpr(src, 1), MakeFullRegionExpr(dst, 2), num_elements});
+}
+
+Stmt MakeRecipTileCall(const Buffer &src, const Buffer &dst,
+                       const PrimExpr &num_elements) {
+  return MakeBlackholeTileComputeCall(
+      blackhole_tile_compute_schema::kRecipTile,
+      {MakeFullRegionExpr(src, 1), MakeFullRegionExpr(dst, 2), num_elements});
+}
+
 Stmt TryNormalizeBlackholeTileComputeStore(const BufferStoreNode *store,
                                            const PrimExpr &linear_index,
-                                           const PrimExpr &num_elements) {
+                                           const PrimExpr &num_elements,
+                                           int *temp_index) {
   if (!store || !IsBlackholeComputeBuffer(store->buffer) ||
       store->indices.size() != 1U ||
       !ProvenEqual(store->indices[0], linear_index)) {
@@ -199,10 +284,7 @@ Stmt TryNormalizeBlackholeTileComputeStore(const BufferStoreNode *store,
   if (MatchLoad(store->value, &src, &src_index) &&
       !SameBufferStorage(src, store->buffer) &&
       ProvenEqual(src_index, linear_index)) {
-    return MakeBlackholeTileComputeCall(
-        blackhole_tile_compute_schema::kCopyTile,
-        {MakeFullRegionExpr(src, 1), MakeFullRegionExpr(store->buffer, 2),
-         num_elements});
+    return MakeCopyTileCall(src, store->buffer, num_elements);
   }
 
   auto try_match_max = [&](const PrimExpr &lhs,
@@ -278,65 +360,107 @@ Stmt TryNormalizeBlackholeTileComputeStore(const BufferStoreNode *store,
       if (MatchScaledLoad(sub->a, &lhs, &lhs_scale) &&
           MatchScaledLoad(sub->b, &rhs, &rhs_scale)) {
         arith::Analyzer analyzer;
-        const char *mode =
-            SameBufferStorage(lhs, store->buffer) ? "bcast_cols" : "binary";
+        const bool use_bcast_cols = SameBufferStorage(lhs, store->buffer);
         PrimExpr row_width =
             IsOneDimensionalBuffer(store->buffer) ? num_elements : IntImm32(1);
-        return MakeBlackholeTileComputeCall(
-            blackhole_tile_compute_schema::kExp2Tile,
-            {StringImm(mode), MakeFullRegionExpr(store->buffer, 3),
-             MakeFullRegionExpr(lhs, 1), MakeFullRegionExpr(rhs, 1),
-             lhs_scale, analyzer.Simplify(-rhs_scale), row_width,
-             num_elements});
+        std::vector<Buffer> temps;
+        std::vector<Stmt> stmts;
+        Buffer lhs_scale_buffer =
+            MakeBlackholeTempBufferLike(store->buffer, "_lhs_scale", temp_index);
+        temps.push_back(lhs_scale_buffer);
+        if (!SameBufferStorage(lhs, store->buffer)) {
+          stmts.push_back(MakeCopyTileCall(lhs, store->buffer, num_elements));
+        }
+        stmts.push_back(MakeFillTileCall(lhs_scale_buffer, lhs_scale,
+                                         BufferElementCount(lhs_scale_buffer,
+                                                            num_elements)));
+        stmts.push_back(MakeMulTilesCall(store->buffer, lhs_scale_buffer,
+                                         num_elements));
+
+        Buffer scaled_rhs =
+            MakeBlackholeTempBufferLike(rhs, "_scaled_rhs", temp_index);
+        Buffer rhs_scale_buffer =
+            MakeBlackholeTempBufferLike(rhs, "_rhs_scale", temp_index);
+        temps.push_back(scaled_rhs);
+        temps.push_back(rhs_scale_buffer);
+        const PrimExpr rhs_elements = BufferElementCount(rhs, num_elements);
+        stmts.push_back(MakeCopyTileCall(rhs, scaled_rhs, rhs_elements));
+        stmts.push_back(MakeFillTileCall(rhs_scale_buffer,
+                                         analyzer.Simplify(-rhs_scale),
+                                         BufferElementCount(rhs_scale_buffer,
+                                                            rhs_elements)));
+        stmts.push_back(MakeMulTilesCall(scaled_rhs, rhs_scale_buffer,
+                                         rhs_elements));
+        if (use_bcast_cols) {
+          stmts.push_back(MakeBroadcastColsBinaryCall(
+              blackhole_tile_compute_schema::kAddTilesBcastCols,
+              store->buffer, scaled_rhs, num_elements, row_width));
+        } else {
+          stmts.push_back(MakeAddTilesCall(store->buffer, scaled_rhs,
+                                           num_elements));
+        }
+        stmts.push_back(
+            MakeExp2TileCall(store->buffer, store->buffer, num_elements));
+        return WrapBlackholeTempBuffers(SeqStmt::Flatten(stmts), temps);
       }
     }
   }
 
   auto try_match_row_broadcast = [&](const PrimExpr &self_expr,
                                      const PrimExpr &scalar_expr,
-                                     const char *kind) -> Stmt {
+                                     const char *operation) -> Stmt {
     Buffer scalar;
     if (!MatchLoadFromBuffer(self_expr, store->buffer, linear_index) ||
         !MatchLoad(scalar_expr, &scalar, nullptr) ||
         SameBufferStorage(scalar, store->buffer)) {
       return Stmt();
     }
-    return MakeBlackholeTileComputeCall(
-        blackhole_tile_compute_schema::kMulTilesBcastCols,
-        {StringImm(kind), MakeFullRegionExpr(store->buffer, 3),
-         MakeFullRegionExpr(scalar, 1), num_elements, num_elements});
+    return MakeBroadcastColsBinaryCall(operation, store->buffer, scalar,
+                                       num_elements, num_elements);
   };
   if (const auto *mul = store->value.as<MulNode>()) {
-    if (Stmt matched = try_match_row_broadcast(mul->a, mul->b, "mul");
+    if (Stmt matched = try_match_row_broadcast(
+            mul->a, mul->b, blackhole_tile_compute_schema::kMulTilesBcastCols);
         matched.defined()) {
       return matched;
     }
-    if (Stmt matched = try_match_row_broadcast(mul->b, mul->a, "mul");
+    if (Stmt matched = try_match_row_broadcast(
+            mul->b, mul->a, blackhole_tile_compute_schema::kMulTilesBcastCols);
         matched.defined()) {
       return matched;
     }
   }
   if (const auto *div = store->value.as<DivNode>()) {
-    if (Stmt matched = try_match_row_broadcast(div->a, div->b, "div");
-        matched.defined()) {
-      return matched;
+    Buffer scalar;
+    if (MatchLoadFromBuffer(div->a, store->buffer, linear_index) &&
+        MatchLoad(div->b, &scalar, nullptr) &&
+        !SameBufferStorage(scalar, store->buffer)) {
+      std::vector<Buffer> temps;
+      Buffer reciprocal =
+          MakeBlackholeTempBufferLike(scalar, "_recip", temp_index);
+      temps.push_back(reciprocal);
+      const PrimExpr scalar_elements = BufferElementCount(scalar, IntImm32(1));
+      std::vector<Stmt> stmts{
+          MakeRecipTileCall(scalar, reciprocal, scalar_elements),
+          MakeBroadcastColsBinaryCall(
+              blackhole_tile_compute_schema::kMulTilesBcastCols,
+              store->buffer, reciprocal, num_elements, num_elements)};
+      return WrapBlackholeTempBuffers(SeqStmt::Flatten(stmts), temps);
     }
   }
 
   if (IsLiteralScalarValue(store->value)) {
-    return MakeBlackholeTileComputeCall(
-        blackhole_tile_compute_schema::kFillTile,
-        {MakeFullRegionExpr(store->buffer, 2), store->value, num_elements});
+    return MakeFillTileCall(store->buffer, store->value, num_elements);
   }
 
   return Stmt();
 }
 
-Stmt TryNormalizeBlackholeTileComputeLoop(const ForNode *op) {
+Stmt TryNormalizeBlackholeTileComputeLoop(const ForNode *op, int *temp_index) {
   if (const auto *store = op->body.as<BufferStoreNode>()) {
     if (store->indices.size() == 1U) {
       return TryNormalizeBlackholeTileComputeStore(store, store->indices[0],
-                                                  op->extent);
+                                                  op->extent, temp_index);
     }
   }
   const auto *inner_loop = op->body.as<ForNode>();
@@ -346,7 +470,7 @@ Stmt TryNormalizeBlackholeTileComputeLoop(const ForNode *op) {
     arith::Analyzer analyzer;
     return TryNormalizeBlackholeTileComputeStore(
         inner_store, inner_store->indices[0],
-        analyzer.Simplify(op->extent * inner_loop->extent));
+        analyzer.Simplify(op->extent * inner_loop->extent), temp_index);
   }
   return Stmt();
 }
@@ -1379,7 +1503,8 @@ private:
    */
   Stmt VisitStmt_(const ForNode *op) final {
     if (TargetIsBlackhole(target_)) {
-      if (Stmt normalized = TryNormalizeBlackholeTileComputeLoop(op);
+      if (Stmt normalized = TryNormalizeBlackholeTileComputeLoop(
+              op, &blackhole_tile_compute_temp_index_);
           normalized.defined()) {
         return normalized;
       }
@@ -1619,6 +1744,7 @@ private:
   // parameters rather than in memory indices.
   bool in_tma_context_{false};
   int pipelined_depth_{0};
+  int blackhole_tile_compute_temp_index_{0};
 };
 
 class BlackholeTileComputeNormalizer : public StmtExprMutator {
@@ -1634,8 +1760,10 @@ public:
   }
 
 private:
+  int temp_index_{0};
+
   Stmt VisitStmt_(const ForNode *op) final {
-    if (Stmt normalized = TryNormalizeBlackholeTileComputeLoop(op);
+    if (Stmt normalized = TryNormalizeBlackholeTileComputeLoop(op, &temp_index_);
         normalized.defined()) {
       return normalized;
     }

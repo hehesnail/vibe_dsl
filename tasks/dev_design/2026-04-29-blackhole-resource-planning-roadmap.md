@@ -61,8 +61,8 @@ mature hardware-aware resource planner.
   and those reports are validated and projected into the executable spec.
   This is a first typed surface,
   not final proof that the DAG should stay in production.
-  After composite pseudo-leaf cleanup,
-  the DAG must still prove hardware-codegen usefulness by changing real
+  With the known composite pseudo-leaf cleanup complete,
+  the DAG must continue to prove hardware-codegen usefulness by changing real
   leaf-graph legality /
   materialization /
   resource /
@@ -160,13 +160,12 @@ Immediate requirement:
 Status:
 
 - boundary constrained,
-  but not production-complete while composite pseudo-leaf source payloads
-  remain.
+  and the known composite pseudo-leaf source payloads have been removed.
   `PlanTTKernelABI`
   does not persist DAG covering decisions,
   the covering header does not expose a production DAG covering object,
   and explicit source emission remains a selected leaf-pattern projection.
-  The remaining gate is explicit leaf normalization plus proof that the DAG
+  The remaining gate is continued proof that the DAG
   changes leaf-graph fanout /
   materialization /
   resource-demand /
@@ -381,14 +380,13 @@ same over-complexity problem under a different name.
 
 The revised order is:
 
-1. Repair tile-compute explicit leaf normalization and delete composite
-   pseudo-leaf source payloads.
-2. Keep or downgrade `TileComputeDAG`
+1. Keep `TileComputeDAG`
    based on whether post-cleanup leaf-graph decisions affect typed plans,
    validators,
    resource admission,
    or old branch deletion.
-3. Use typed resource pressure reporting from existing typed
+   Downgrade any diagnostic-only part that does not satisfy that gate.
+2. Use typed resource pressure reporting from existing typed
    `TTProgram`
    and
    `ExecutableSpec`
@@ -398,12 +396,12 @@ The revised order is:
    fanout /
    materialization decisions only when they satisfy the usefulness gate,
    and make validators / typed unsupported reasons consume the result.
-4. Upgrade CB allocation and L1 admission using arch-aware limits and
+3. Upgrade CB allocation and L1 admission using arch-aware limits and
    live-interval allocation.
    This is complete for the first production gate.
-5. Replace hard-coded core grid and unit buffer placement with
+4. Replace hard-coded core grid and unit buffer placement with
    hardware-model-backed core groups and explicit buffer distribution choices.
-6. Re-enter wider runtime admission:
+5. Re-enter wider runtime admission:
    multi-block flash-attn,
    multi-page exact-CB events,
    mesh / distributed runtime,

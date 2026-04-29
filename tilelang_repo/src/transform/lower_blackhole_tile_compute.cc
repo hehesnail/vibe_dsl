@@ -448,8 +448,12 @@ PlanTTKernelABI::GetTileComputeSourceEmitterHooks() {
        &PlanTTKernelABI::EmitMulTilesComputeSource},
       {BlackholeTileComputeSourceEmitterKind::kMulTilesBcastCols,
        &PlanTTKernelABI::EmitMulTilesBcastColsComputeSource},
+      {BlackholeTileComputeSourceEmitterKind::kAddTilesBcastCols,
+       &PlanTTKernelABI::EmitAddTilesBcastColsComputeSource},
       {BlackholeTileComputeSourceEmitterKind::kExp2Tile,
        &PlanTTKernelABI::EmitExp2TileComputeSource},
+      {BlackholeTileComputeSourceEmitterKind::kRecipTile,
+       &PlanTTKernelABI::EmitRecipTileComputeSource},
       {BlackholeTileComputeSourceEmitterKind::kReduceTile,
        &PlanTTKernelABI::EmitReduceTileComputeSource},
   };
@@ -511,17 +515,6 @@ PrimExpr PlanTTKernelABI::GetBlackholeTileComputePrimArg(
       << " with emitter "
       << (covering.source_emitter ? ToString(*covering.source_emitter) : "");
   return op->args[index];
-}
-
-std::string PlanTTKernelABI::GetBlackholeTileComputeStringArg(
-    const CallNode* op, size_t index,
-    const BlackholeTileComputeCoveringDecision& covering) const {
-  const auto* imm = GetBlackholeTileComputePrimArg(op, index, covering).as<StringImmNode>();
-  ICHECK(imm) << "tl.tileop.blackhole_compute expects string argument " << index
-              << " for selected pattern " << covering.pattern_name
-              << " with emitter "
-              << (covering.source_emitter ? ToString(*covering.source_emitter) : "");
-  return imm->value;
 }
 
 Stmt PlanTTKernelABI::LowerExplicitTileComputeCall(const CallNode* op) {
@@ -641,40 +634,40 @@ Stmt PlanTTKernelABI::EmitMulTilesComputeSource(
 
 Stmt PlanTTKernelABI::EmitMulTilesBcastColsComputeSource(
     const CallNode* op, const BlackholeTileComputeCoveringDecision& covering) {
-  return GenerateMulTilesBcastColsSequence(
-      GetBlackholeTileComputeStringArg(op, 1, covering),
+  return GenerateBroadcastColsBinaryTileSequence(
       GetBlackholeTileComputeBufferArg(op, BlackholeTileComputeOperandRole::kLhs, covering),
       GetBlackholeTileComputeBufferArg(op, BlackholeTileComputeOperandRole::kRhs, covering),
-      GetBlackholeTileComputePrimArg(op, 4, covering),
-      GetBlackholeTileComputePrimArg(op, 5, covering));
+      covering.operation_name, blackhole_mul_bcast_cols_init_short(),
+      blackhole_mul_tiles_bcast_cols(),
+      GetBlackholeTileComputePrimArg(op, 3, covering),
+      GetBlackholeTileComputePrimArg(op, 4, covering));
+}
+
+Stmt PlanTTKernelABI::EmitAddTilesBcastColsComputeSource(
+    const CallNode* op, const BlackholeTileComputeCoveringDecision& covering) {
+  return GenerateBroadcastColsBinaryTileSequence(
+      GetBlackholeTileComputeBufferArg(op, BlackholeTileComputeOperandRole::kLhs, covering),
+      GetBlackholeTileComputeBufferArg(op, BlackholeTileComputeOperandRole::kRhs, covering),
+      covering.operation_name, blackhole_add_bcast_cols_init_short(),
+      blackhole_add_tiles_bcast_cols(),
+      GetBlackholeTileComputePrimArg(op, 3, covering),
+      GetBlackholeTileComputePrimArg(op, 4, covering));
 }
 
 Stmt PlanTTKernelABI::EmitExp2TileComputeSource(
     const CallNode* op, const BlackholeTileComputeCoveringDecision& covering) {
-  const std::string mode = GetBlackholeTileComputeStringArg(op, 1, covering);
-  if (mode == "bcast_cols") {
-    return GenerateExp2TileLeafDAGSequence(
-        mode,
-        GetBlackholeTileComputeBufferArg(op, BlackholeTileComputeOperandRole::kOutput, covering),
-        GetBlackholeTileComputeBufferArg(op, BlackholeTileComputeOperandRole::kLhs, covering),
-        GetBlackholeTileComputeBufferArg(op, BlackholeTileComputeOperandRole::kRhs, covering),
-        GetBlackholeTileComputePrimArg(op, 5, covering),
-        GetBlackholeTileComputePrimArg(op, 6, covering),
-        GetBlackholeTileComputePrimArg(op, 7, covering),
-        GetBlackholeTileComputePrimArg(op, 8, covering));
-  }
-  if (mode == "binary") {
-    return GenerateExp2TileLeafDAGSequence(
-        mode,
-        GetBlackholeTileComputeBufferArg(op, BlackholeTileComputeOperandRole::kOutput, covering),
-        GetBlackholeTileComputeBufferArg(op, BlackholeTileComputeOperandRole::kLhs, covering),
-        GetBlackholeTileComputeBufferArg(op, BlackholeTileComputeOperandRole::kRhs, covering),
-        GetBlackholeTileComputePrimArg(op, 5, covering),
-        GetBlackholeTileComputePrimArg(op, 6, covering),
-        PrimExpr(), PrimExpr());
-  }
-  ICHECK(false) << "Unsupported Blackhole exp2_tile mode: " << mode;
-  return Stmt();
+  return GenerateUnaryTileSequence(
+      GetBlackholeTileComputeBufferArg(op, BlackholeTileComputeOperandRole::kInput, covering),
+      GetBlackholeTileComputeBufferArg(op, BlackholeTileComputeOperandRole::kOutput, covering),
+      covering.operation_name, blackhole_exp2_tile_init(), blackhole_exp2_tile());
+}
+
+Stmt PlanTTKernelABI::EmitRecipTileComputeSource(
+    const CallNode* op, const BlackholeTileComputeCoveringDecision& covering) {
+  return GenerateUnaryTileSequence(
+      GetBlackholeTileComputeBufferArg(op, BlackholeTileComputeOperandRole::kInput, covering),
+      GetBlackholeTileComputeBufferArg(op, BlackholeTileComputeOperandRole::kOutput, covering),
+      covering.operation_name, blackhole_recip_tile_init(), blackhole_recip_tile());
 }
 
 Stmt PlanTTKernelABI::EmitReduceTileComputeSource(
@@ -1023,17 +1016,16 @@ Stmt PlanTTKernelABI::GenerateBinaryTileSequence(const Buffer& dst,
   return MaybeWrapComputeSegment(body);
 }
 
-Stmt PlanTTKernelABI::GenerateMulTilesBcastColsSequence(
-    const std::string& kind, const Buffer& dst, const Buffer& rhs,
-    const PrimExpr& num_elements, const PrimExpr& row_width) {
+Stmt PlanTTKernelABI::GenerateBroadcastColsBinaryTileSequence(
+    const Buffer& dst, const Buffer& rhs, const std::string& operation_name,
+    const Op& init_op, const Op& tile_op, const PrimExpr& num_elements,
+    const PrimExpr& row_width) {
   (void)num_elements;
   (void)row_width;
-  ICHECK(kind == "mul" || kind == "div")
-      << "mul_tiles_bcast_cols lowering supports mul/div forms only, got " << kind;
 
-  ExactTiledCBValue lhs_in = CreateExactInputCBValue(dst, "mul_bcast_cols_lhs");
-  ExactTiledCBValue rhs_in = CreateExactInputCBValue(rhs, "mul_bcast_cols_rhs");
-  ExactTiledCBValue out = CreateEmptyExactTiledCBValue(dst, "mul_bcast_cols_out");
+  ExactTiledCBValue lhs_in = CreateExactInputCBValue(dst, operation_name + "_lhs");
+  ExactTiledCBValue rhs_in = CreateExactInputCBValue(rhs, operation_name + "_rhs");
+  ExactTiledCBValue out = CreateEmptyExactTiledCBValue(dst, operation_name + "_out");
   const auto [logical_rows, logical_cols] = GetLogicalMatrixShape(dst);
   const int tiles_per_row =
       logical_rows > 0 && logical_cols > 0
@@ -1048,139 +1040,31 @@ Stmt PlanTTKernelABI::GenerateMulTilesBcastColsSequence(
     stmts.push_back(publish_rhs);
   }
 
-  ExactTiledCBValue* rhs_operand = &rhs_in;
-  ExactTiledCBValue rhs_full;
-  ExactTiledCBValue rhs_full_ones;
-  ExactTiledCBValue reciprocal;
-  if (kind == "div") {
-    rhs_full = CreateEmptyExactTiledCBValue(dst, "mul_bcast_cols_rhs_full");
-    rhs_full_ones = CreateConstantExactTiledCBValue(dst->dtype, "mul_bcast_cols_one");
-    reciprocal = CreateEmptyExactTiledCBValue(dst, "recip_tile_out");
-    MarkExactCBValuesOverlap({rhs_in.cb_id, rhs_full_ones.cb_id, rhs_full.cb_id,
-                              reciprocal.cb_id});
-    RecordExactComputeOpPlan("binary", "mul_tiles_bcast_cols",
-                             {{"lhs", rhs_full_ones.buffer, "identity"},
-                              {"rhs", rhs, "broadcast"},
-                              {"output", rhs_full.buffer, "identity"}});
-    RecordExactComputeOpPlan("unary", "recip_tile",
-                             {{"input", rhs_full.buffer, "identity"},
-                              {"output", reciprocal.buffer, "identity"}});
-
-    stmts.push_back(PublishConstantToExactTiledCB(
-        rhs_full_ones.buffer, make_const(dst->dtype, 1.0), rhs_full_ones));
-    stmts.push_back(MakeBlackholeCall(blackhole_cb_reserve_back(),
-                                      {IntImm32(rhs_full.cb_id),
-                                       IntImm32(rhs_full.num_tiles)}));
-    stmts.push_back(MakeBlackholeCall(blackhole_cb_wait_front(),
-                                      {IntImm32(rhs_full_ones.cb_id),
-                                       IntImm32(rhs_full_ones.num_tiles)}));
-    stmts.push_back(MakeBlackholeCall(blackhole_cb_wait_front(),
-                                      {IntImm32(rhs_in.cb_id), IntImm32(rhs_in.num_tiles)}));
-    stmts.push_back(MakeBlackholeCall(blackhole_reconfig_data_format(),
-                                      {IntImm32(rhs_full_ones.cb_id),
-                                       IntImm32(rhs_in.cb_id)}));
-    stmts.push_back(MakeBlackholeCall(blackhole_mul_bcast_cols_init_short(),
-                                      {IntImm32(rhs_full_ones.cb_id),
-                                       IntImm32(rhs_in.cb_id)}));
-    for (int tile = 0; tile < rhs_full.num_tiles; ++tile) {
-      const int rhs_tile = tile / tiles_per_row;
-      stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_acquire(), {}));
-      stmts.push_back(MakeBlackholeCall(
-          blackhole_mul_tiles_bcast_cols(),
-          {IntImm32(rhs_full_ones.cb_id), IntImm32(rhs_in.cb_id), IntImm32(0),
-           IntImm32(rhs_tile), IntImm32(0)}));
-      stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_commit(), {}));
-      stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_wait(), {}));
-      stmts.push_back(MakeBlackholeCall(blackhole_pack_reconfig_data_format(),
-                                        {IntImm32(rhs_full.cb_id)}));
-      stmts.push_back(MakeBlackholeCall(blackhole_pack_tile(),
-                                        {IntImm32(0), IntImm32(rhs_full.cb_id),
-                                         IntImm32(tile)}));
-      stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_release(), {}));
-    }
-    stmts.push_back(MakeBlackholeCall(blackhole_cb_pop_front(),
-                                      {IntImm32(rhs_full_ones.cb_id),
-                                       IntImm32(rhs_full_ones.num_tiles)}));
-    if (!rhs_in.borrowed_live) {
-      stmts.push_back(MakeBlackholeCall(blackhole_cb_pop_front(),
-                                        {IntImm32(rhs_in.cb_id),
-                                         IntImm32(rhs_in.num_tiles)}));
-    }
-    stmts.push_back(MakeBlackholeCall(blackhole_cb_push_back(),
-                                      {IntImm32(rhs_full.cb_id),
-                                       IntImm32(rhs_full.num_tiles)}));
-    stmts.push_back(MakeBlackholeCall(blackhole_cb_reserve_back(),
-                                      {IntImm32(reciprocal.cb_id),
-                                       IntImm32(reciprocal.num_tiles)}));
-    stmts.push_back(MakeBlackholeCall(blackhole_cb_wait_front(),
-                                      {IntImm32(rhs_full.cb_id),
-                                       IntImm32(rhs_full.num_tiles)}));
-    for (int tile = 0; tile < reciprocal.num_tiles; ++tile) {
-      stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_acquire(), {}));
-      stmts.push_back(MakeBlackholeCall(blackhole_copy_tile_to_dst_init_short(),
-                                        {IntImm32(rhs_full.cb_id)}));
-      stmts.push_back(MakeBlackholeCall(blackhole_copy_tile(),
-                                        {IntImm32(rhs_full.cb_id), IntImm32(tile),
-                                         IntImm32(0)}));
-      stmts.push_back(MakeBlackholeCall(blackhole_recip_tile_init(), {}));
-      stmts.push_back(MakeBlackholeCall(blackhole_recip_tile(), {IntImm32(0)}));
-      stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_commit(), {}));
-      stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_wait(), {}));
-      stmts.push_back(MakeBlackholeCall(blackhole_pack_reconfig_data_format(),
-                                        {IntImm32(reciprocal.cb_id)}));
-      stmts.push_back(MakeBlackholeCall(blackhole_pack_tile(),
-                                        {IntImm32(0), IntImm32(reciprocal.cb_id),
-                                         IntImm32(tile)}));
-      stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_release(), {}));
-    }
-    stmts.push_back(MakeBlackholeCall(blackhole_cb_pop_front(),
-                                      {IntImm32(rhs_full.cb_id),
-                                       IntImm32(rhs_full.num_tiles)}));
-    stmts.push_back(MakeBlackholeCall(blackhole_cb_push_back(),
-                                      {IntImm32(reciprocal.cb_id),
-                                       IntImm32(reciprocal.num_tiles)}));
-    rhs_operand = &reciprocal;
-  }
-
-  RecordExactComputeOpPlan("binary", kind == "div" ? "mul_tiles" : "mul_tiles_bcast_cols",
+  RecordExactComputeOpPlan("binary", operation_name,
                            {{"lhs", dst, "identity"},
-                            {"rhs", rhs_operand->buffer,
-                             kind == "div" ? "identity" : "broadcast"},
+                            {"rhs", rhs, "broadcast"},
                             {"output", dst, "identity"}});
-  MarkExactCBValuesOverlap({lhs_in.cb_id, rhs_operand->cb_id, out.cb_id});
+  MarkExactCBValuesOverlap({lhs_in.cb_id, rhs_in.cb_id, out.cb_id});
   stmts.push_back(MakeBlackholeCall(blackhole_cb_reserve_back(),
                                     {IntImm32(out.cb_id), IntImm32(out.num_tiles)}));
   stmts.push_back(MakeBlackholeCall(blackhole_cb_wait_front(),
                                     {IntImm32(lhs_in.cb_id), IntImm32(lhs_in.num_tiles)}));
   stmts.push_back(MakeBlackholeCall(blackhole_cb_wait_front(),
-                                    {IntImm32(rhs_operand->cb_id),
-                                     IntImm32(rhs_operand->num_tiles)}));
+                                    {IntImm32(rhs_in.cb_id),
+                                     IntImm32(rhs_in.num_tiles)}));
   stmts.push_back(MakeBlackholeCall(blackhole_reconfig_data_format(),
                                     {IntImm32(lhs_in.cb_id),
-                                     IntImm32(rhs_operand->cb_id)}));
-  if (kind == "div") {
-    stmts.push_back(MakeBlackholeCall(blackhole_mul_tiles_init(),
-                                      {IntImm32(lhs_in.cb_id),
-                                       IntImm32(rhs_operand->cb_id)}));
-  } else {
-    stmts.push_back(MakeBlackholeCall(blackhole_mul_bcast_cols_init_short(),
-                                      {IntImm32(lhs_in.cb_id),
-                                       IntImm32(rhs_operand->cb_id)}));
-  }
+                                     IntImm32(rhs_in.cb_id)}));
+  stmts.push_back(MakeBlackholeCall(init_op,
+                                    {IntImm32(lhs_in.cb_id),
+                                     IntImm32(rhs_in.cb_id)}));
   for (int tile = 0; tile < out.num_tiles; ++tile) {
     const int rhs_tile = tile / tiles_per_row;
     stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_acquire(), {}));
-    if (kind == "div") {
-      stmts.push_back(MakeBlackholeCall(blackhole_mul_tiles(),
-                                        {IntImm32(lhs_in.cb_id),
-                                         IntImm32(rhs_operand->cb_id),
-                                         IntImm32(tile), IntImm32(tile), IntImm32(0)}));
-    } else {
-      stmts.push_back(MakeBlackholeCall(blackhole_mul_tiles_bcast_cols(),
-                                        {IntImm32(lhs_in.cb_id),
-                                         IntImm32(rhs_operand->cb_id),
-                                         IntImm32(tile), IntImm32(rhs_tile), IntImm32(0)}));
-    }
+    stmts.push_back(MakeBlackholeCall(tile_op,
+                                      {IntImm32(lhs_in.cb_id),
+                                       IntImm32(rhs_in.cb_id),
+                                       IntImm32(tile), IntImm32(rhs_tile), IntImm32(0)}));
     stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_commit(), {}));
     stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_wait(), {}));
     stmts.push_back(MakeBlackholeCall(blackhole_pack_reconfig_data_format(),
@@ -1193,16 +1077,10 @@ Stmt PlanTTKernelABI::GenerateMulTilesBcastColsSequence(
     stmts.push_back(MakeBlackholeCall(blackhole_cb_pop_front(),
                                       {IntImm32(lhs_in.cb_id), IntImm32(lhs_in.num_tiles)}));
   }
-  if (kind == "mul") {
-    if (!rhs_in.borrowed_live) {
-      stmts.push_back(MakeBlackholeCall(blackhole_cb_pop_front(),
-                                        {IntImm32(rhs_in.cb_id),
-                                         IntImm32(rhs_in.num_tiles)}));
-    }
-  } else {
+  if (!rhs_in.borrowed_live) {
     stmts.push_back(MakeBlackholeCall(blackhole_cb_pop_front(),
-                                      {IntImm32(reciprocal.cb_id),
-                                       IntImm32(reciprocal.num_tiles)}));
+                                      {IntImm32(rhs_in.cb_id),
+                                       IntImm32(rhs_in.num_tiles)}));
   }
   stmts.push_back(MakeBlackholeCall(blackhole_cb_push_back(),
                                     {IntImm32(out.cb_id), IntImm32(out.num_tiles)}));
@@ -1211,186 +1089,35 @@ Stmt PlanTTKernelABI::GenerateMulTilesBcastColsSequence(
   return MaybeWrapComputeSegment(body);
 }
 
-Stmt PlanTTKernelABI::GenerateExp2TileLeafDAGSequence(
-    const std::string& mode, const Buffer& dst, const Buffer& lhs, const Buffer& rhs,
-    const PrimExpr& lhs_scale_value, const PrimExpr& rhs_scale_value,
-    const PrimExpr& row_width, const PrimExpr& num_elements) {
-  (void)row_width;
-  (void)num_elements;
-  const bool use_bcast_cols = mode == "bcast_cols";
-  ICHECK(use_bcast_cols || mode == "binary")
-      << "Unsupported exp2_tile leaf DAG mode: " << mode;
-
-  ExactTiledCBValue lhs_in = CreateExactInputCBValue(lhs, "exp2_lhs");
-  ExactTiledCBValue rhs_in = CreateExactInputCBValue(rhs, "exp2_rhs");
-  ExactTiledCBValue lhs_scale =
-      CreateConstantExactTiledCBValue(lhs->dtype, "exp2_lhs_scale");
-  ExactTiledCBValue rhs_scale =
-      CreateConstantExactTiledCBValue(rhs->dtype, "exp2_rhs_scale");
-  ExactTiledCBValue scaled_lhs = CreateEmptyExactTiledCBValue(dst, "exp2_scaled_lhs");
-  ExactTiledCBValue scaled_rhs =
-      CreateEmptyExactTiledCBValue(use_bcast_cols ? rhs : dst, "exp2_scaled_rhs");
-  ExactTiledCBValue out = CreateEmptyExactTiledCBValue(dst, "exp2_out");
-
-  RecordExactComputeOpPlan("binary", "mul_tiles",
-                           {{"lhs", lhs, "identity"},
-                            {"rhs", lhs_scale.buffer, "identity"},
-                            {"output", scaled_lhs.buffer, "identity"}});
-  RecordExactComputeOpPlan("binary", "mul_tiles",
-                           {{"lhs", rhs, "identity"},
-                            {"rhs", rhs_scale.buffer, "identity"},
-                            {"output", scaled_rhs.buffer, "identity"}});
-  RecordExactComputeOpPlan("binary",
-                           use_bcast_cols ? "add_tiles_bcast_cols" : "add_tiles",
-                           {{"lhs", scaled_lhs.buffer, "identity"},
-                            {"rhs", scaled_rhs.buffer,
-                             use_bcast_cols ? "broadcast" : "identity"},
-                            {"output", out.buffer, "identity"}});
-  RecordExactComputeOpPlan("unary", "exp2_tile",
-                           {{"input", out.buffer, "identity"},
-                            {"output", dst, "identity"}});
-
-  const auto [logical_rows, logical_cols] = GetLogicalMatrixShape(dst);
-  const int tiles_per_row =
-      logical_rows > 0 && logical_cols > 0
-          ? std::max(1, CeilDivToInt(logical_cols, kBlackholeTileCols))
-          : std::max(1, lhs_in.num_tiles / std::max(1, rhs_in.num_tiles));
-
+Stmt PlanTTKernelABI::GenerateUnaryTileSequence(
+    const Buffer& input, const Buffer& output, const std::string& operation_name,
+    const Op& init_op, const Op& tile_op) {
+  ExactTiledCBValue input_cb = CreateExactInputCBValue(input, operation_name + "_input");
+  ExactTiledCBValue out = CreateEmptyExactTiledCBValue(output, operation_name + "_out");
+  RecordExactComputeOpPlan("unary", operation_name,
+                           {{"input", input, "identity"},
+                            {"output", output, "identity"}});
   std::vector<Stmt> stmts;
-  if (Stmt publish_lhs = PublishExactInputToTiledCB(lhs, &lhs_in); publish_lhs.defined()) {
-    stmts.push_back(publish_lhs);
-  }
-  if (Stmt publish_rhs = PublishExactInputToTiledCB(rhs, &rhs_in); publish_rhs.defined()) {
-    stmts.push_back(publish_rhs);
-  }
-  stmts.push_back(PublishConstantToExactTiledCB(lhs_scale.buffer, lhs_scale_value, lhs_scale));
-  stmts.push_back(PublishConstantToExactTiledCB(rhs_scale.buffer, rhs_scale_value, rhs_scale));
-  MarkExactCBValuesOverlap({lhs_in.cb_id, rhs_in.cb_id, lhs_scale.cb_id, rhs_scale.cb_id,
-                            scaled_lhs.cb_id, scaled_rhs.cb_id, out.cb_id});
-
-  stmts.push_back(MakeBlackholeCall(blackhole_cb_reserve_back(),
-                                    {IntImm32(scaled_lhs.cb_id),
-                                     IntImm32(scaled_lhs.num_tiles)}));
-  stmts.push_back(MakeBlackholeCall(blackhole_cb_wait_front(),
-                                    {IntImm32(lhs_in.cb_id), IntImm32(lhs_in.num_tiles)}));
-  stmts.push_back(MakeBlackholeCall(blackhole_cb_wait_front(),
-                                    {IntImm32(lhs_scale.cb_id),
-                                     IntImm32(lhs_scale.num_tiles)}));
-  stmts.push_back(MakeBlackholeCall(blackhole_reconfig_data_format(),
-                                    {IntImm32(lhs_in.cb_id),
-                                     IntImm32(lhs_scale.cb_id)}));
-  stmts.push_back(MakeBlackholeCall(blackhole_mul_tiles_init(),
-                                    {IntImm32(lhs_in.cb_id),
-                                     IntImm32(lhs_scale.cb_id)}));
-  for (int tile = 0; tile < scaled_lhs.num_tiles; ++tile) {
-    const int lhs_tile = lhs_in.num_tiles == 1 ? 0 : tile % lhs_in.num_tiles;
-    stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_acquire(), {}));
-    stmts.push_back(MakeBlackholeCall(blackhole_mul_tiles(),
-                                      {IntImm32(lhs_in.cb_id),
-                                       IntImm32(lhs_scale.cb_id),
-                                       IntImm32(lhs_tile), IntImm32(0), IntImm32(0)}));
-    stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_commit(), {}));
-    stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_wait(), {}));
-    stmts.push_back(MakeBlackholeCall(blackhole_pack_reconfig_data_format(),
-                                      {IntImm32(scaled_lhs.cb_id)}));
-    stmts.push_back(MakeBlackholeCall(blackhole_pack_tile(),
-                                      {IntImm32(0), IntImm32(scaled_lhs.cb_id),
-                                       IntImm32(tile)}));
-    stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_release(), {}));
-  }
-  if (!lhs_in.borrowed_live) {
-    stmts.push_back(MakeBlackholeCall(blackhole_cb_pop_front(),
-                                      {IntImm32(lhs_in.cb_id), IntImm32(lhs_in.num_tiles)}));
-  }
-  stmts.push_back(MakeBlackholeCall(blackhole_cb_pop_front(),
-                                    {IntImm32(lhs_scale.cb_id),
-                                     IntImm32(lhs_scale.num_tiles)}));
-  stmts.push_back(MakeBlackholeCall(blackhole_cb_push_back(),
-                                    {IntImm32(scaled_lhs.cb_id),
-                                     IntImm32(scaled_lhs.num_tiles)}));
-
-  stmts.push_back(MakeBlackholeCall(blackhole_cb_reserve_back(),
-                                    {IntImm32(scaled_rhs.cb_id),
-                                     IntImm32(scaled_rhs.num_tiles)}));
-  stmts.push_back(MakeBlackholeCall(blackhole_cb_wait_front(),
-                                    {IntImm32(rhs_in.cb_id), IntImm32(rhs_in.num_tiles)}));
-  stmts.push_back(MakeBlackholeCall(blackhole_cb_wait_front(),
-                                    {IntImm32(rhs_scale.cb_id),
-                                     IntImm32(rhs_scale.num_tiles)}));
-  stmts.push_back(MakeBlackholeCall(blackhole_reconfig_data_format(),
-                                    {IntImm32(rhs_in.cb_id),
-                                     IntImm32(rhs_scale.cb_id)}));
-  stmts.push_back(MakeBlackholeCall(blackhole_mul_tiles_init(),
-                                    {IntImm32(rhs_in.cb_id),
-                                     IntImm32(rhs_scale.cb_id)}));
-  for (int tile = 0; tile < scaled_rhs.num_tiles; ++tile) {
-    const int rhs_tile = rhs_in.num_tiles == 1 ? 0 : tile % rhs_in.num_tiles;
-    stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_acquire(), {}));
-    stmts.push_back(MakeBlackholeCall(blackhole_mul_tiles(),
-                                      {IntImm32(rhs_in.cb_id),
-                                       IntImm32(rhs_scale.cb_id),
-                                       IntImm32(rhs_tile), IntImm32(0), IntImm32(0)}));
-    stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_commit(), {}));
-    stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_wait(), {}));
-    stmts.push_back(MakeBlackholeCall(blackhole_pack_reconfig_data_format(),
-                                      {IntImm32(scaled_rhs.cb_id)}));
-    stmts.push_back(MakeBlackholeCall(blackhole_pack_tile(),
-                                      {IntImm32(0), IntImm32(scaled_rhs.cb_id),
-                                       IntImm32(tile)}));
-    stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_release(), {}));
-  }
-  if (!rhs_in.borrowed_live) {
-    stmts.push_back(MakeBlackholeCall(blackhole_cb_pop_front(),
-                                      {IntImm32(rhs_in.cb_id), IntImm32(rhs_in.num_tiles)}));
-  }
-  stmts.push_back(MakeBlackholeCall(blackhole_cb_pop_front(),
-                                    {IntImm32(rhs_scale.cb_id),
-                                     IntImm32(rhs_scale.num_tiles)}));
-  stmts.push_back(MakeBlackholeCall(blackhole_cb_push_back(),
-                                    {IntImm32(scaled_rhs.cb_id),
-                                     IntImm32(scaled_rhs.num_tiles)}));
-
   stmts.push_back(MakeBlackholeCall(blackhole_cb_reserve_back(),
                                     {IntImm32(out.cb_id), IntImm32(out.num_tiles)}));
-  stmts.push_back(MakeBlackholeCall(blackhole_cb_wait_front(),
-                                    {IntImm32(scaled_lhs.cb_id),
-                                     IntImm32(scaled_lhs.num_tiles)}));
-  stmts.push_back(MakeBlackholeCall(blackhole_cb_wait_front(),
-                                    {IntImm32(scaled_rhs.cb_id),
-                                     IntImm32(scaled_rhs.num_tiles)}));
-  stmts.push_back(MakeBlackholeCall(blackhole_reconfig_data_format(),
-                                    {IntImm32(scaled_lhs.cb_id),
-                                     IntImm32(scaled_rhs.cb_id)}));
-  if (use_bcast_cols) {
-    stmts.push_back(MakeBlackholeCall(blackhole_add_bcast_cols_init_short(),
-                                      {IntImm32(scaled_lhs.cb_id),
-                                       IntImm32(scaled_rhs.cb_id)}));
-  } else {
-    stmts.push_back(MakeBlackholeCall(blackhole_add_tiles_init(),
-                                      {IntImm32(scaled_lhs.cb_id),
-                                       IntImm32(scaled_rhs.cb_id)}));
+  if (Stmt publish_input = PublishExactInputToTiledCB(input, &input_cb);
+      publish_input.defined()) {
+    stmts.insert(stmts.begin(), publish_input);
   }
+  stmts.push_back(MakeBlackholeCall(blackhole_cb_wait_front(),
+                                    {IntImm32(input_cb.cb_id),
+                                     IntImm32(input_cb.num_tiles)}));
+  MarkExactCBValuesOverlap({input_cb.cb_id, out.cb_id});
   for (int tile = 0; tile < out.num_tiles; ++tile) {
-    const int lhs_tile = scaled_lhs.num_tiles == 1 ? 0 : tile % scaled_lhs.num_tiles;
-    const int rhs_tile =
-        use_bcast_cols ? tile / tiles_per_row
-                       : (scaled_rhs.num_tiles == 1 ? 0 : tile % scaled_rhs.num_tiles);
+    const int input_tile = input_cb.num_tiles == 1 ? 0 : tile % input_cb.num_tiles;
     stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_acquire(), {}));
-    if (use_bcast_cols) {
-      stmts.push_back(MakeBlackholeCall(blackhole_add_tiles_bcast_cols(),
-                                        {IntImm32(scaled_lhs.cb_id),
-                                         IntImm32(scaled_rhs.cb_id),
-                                         IntImm32(lhs_tile), IntImm32(rhs_tile),
-                                         IntImm32(0)}));
-    } else {
-      stmts.push_back(MakeBlackholeCall(blackhole_add_tiles(),
-                                        {IntImm32(scaled_lhs.cb_id),
-                                         IntImm32(scaled_rhs.cb_id),
-                                         IntImm32(lhs_tile), IntImm32(rhs_tile),
-                                         IntImm32(0)}));
-    }
-    stmts.push_back(MakeBlackholeCall(blackhole_exp2_tile_init(), {}));
-    stmts.push_back(MakeBlackholeCall(blackhole_exp2_tile(), {IntImm32(0)}));
+    stmts.push_back(MakeBlackholeCall(blackhole_copy_tile_to_dst_init_short(),
+                                      {IntImm32(input_cb.cb_id)}));
+    stmts.push_back(MakeBlackholeCall(blackhole_copy_tile(),
+                                      {IntImm32(input_cb.cb_id), IntImm32(input_tile),
+                                       IntImm32(0)}));
+    stmts.push_back(MakeBlackholeCall(init_op, {}));
+    stmts.push_back(MakeBlackholeCall(tile_op, {IntImm32(0)}));
     stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_commit(), {}));
     stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_wait(), {}));
     stmts.push_back(MakeBlackholeCall(blackhole_pack_reconfig_data_format(),
@@ -1399,24 +1126,16 @@ Stmt PlanTTKernelABI::GenerateExp2TileLeafDAGSequence(
                                       {IntImm32(0), IntImm32(out.cb_id), IntImm32(tile)}));
     stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_release(), {}));
   }
-  stmts.push_back(MakeBlackholeCall(blackhole_cb_pop_front(),
-                                    {IntImm32(scaled_lhs.cb_id),
-                                     IntImm32(scaled_lhs.num_tiles)}));
-  stmts.push_back(MakeBlackholeCall(blackhole_cb_pop_front(),
-                                    {IntImm32(scaled_rhs.cb_id),
-                                     IntImm32(scaled_rhs.num_tiles)}));
+  if (!input_cb.borrowed_live) {
+    stmts.push_back(MakeBlackholeCall(blackhole_cb_pop_front(),
+                                      {IntImm32(input_cb.cb_id),
+                                       IntImm32(input_cb.num_tiles)}));
+  }
   stmts.push_back(MakeBlackholeCall(blackhole_cb_push_back(),
                                     {IntImm32(out.cb_id), IntImm32(out.num_tiles)}));
-  RecordExactOutputLiveForm(dst, out);
+  RecordExactOutputLiveForm(output, out);
 
-  Stmt body = SeqStmt::Flatten(stmts);
-  body = tir::DeclBuffer(lhs_scale.buffer, body);
-  body = tir::DeclBuffer(rhs_scale.buffer, body);
-  body = tir::Allocate(rhs_scale.buffer->data, rhs_scale.buffer->dtype,
-                       rhs_scale.buffer->shape, Bool(1), body);
-  body = tir::Allocate(lhs_scale.buffer->data, lhs_scale.buffer->dtype,
-                       lhs_scale.buffer->shape, Bool(1), body);
-  body = AttachExactOutputLiveFormMarker(dst, out, body);
+  Stmt body = AttachExactOutputLiveFormMarker(output, out, SeqStmt::Flatten(stmts));
   return MaybeWrapComputeSegment(body);
 }
 

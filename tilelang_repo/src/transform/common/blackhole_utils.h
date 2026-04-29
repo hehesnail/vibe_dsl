@@ -60,7 +60,9 @@ constexpr const char* kBinaryMaxTile = "binary_max_tile";
 constexpr const char* kAddTiles = "add_tiles";
 constexpr const char* kMulTiles = "mul_tiles";
 constexpr const char* kMulTilesBcastCols = "mul_tiles_bcast_cols";
+constexpr const char* kAddTilesBcastCols = "add_tiles_bcast_cols";
 constexpr const char* kExp2Tile = "exp2_tile";
+constexpr const char* kRecipTile = "recip_tile";
 constexpr const char* kTypecastTile = "typecast_tile";
 
 }  // namespace blackhole_tile_compute_schema
