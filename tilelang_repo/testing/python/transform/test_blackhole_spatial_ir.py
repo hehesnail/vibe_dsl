@@ -171,12 +171,15 @@ def _source_emitter_hook_names():
         REPO_ROOT
         / "tilelang_repo/src/transform/lower_blackhole_tile_compute.cc"
     ).read_text()
-    hook_table = source.split("GetTileComputeSourceEmitterHooks()", 1)[1]
+    if "BlackholeTileComputeSourceProjection::Hooks()" in source:
+        hook_table = source.split("BlackholeTileComputeSourceProjection::Hooks()", 1)[1]
+    else:
+        hook_table = source.split("GetTileComputeSourceEmitterHooks()", 1)[1]
     hook_table = hook_table.split("return hooks;", 1)[0]
     enum_hooks = set(
         re.findall(
             r"\{\s*BlackholeTileComputeSourceEmitterKind::k([A-Za-z0-9_]+)\s*,"
-            r"\s*&PlanTTKernelABI::Emit",
+            r"\s*&(?:PlanTTKernelABI|BlackholeTileComputeSourceProjection)::Emit",
             hook_table,
         )
     )
@@ -1065,7 +1068,7 @@ def test_tile_compute_explicit_source_path_uses_leaf_covering_without_dag_cache(
         REPO_ROOT / "tilelang_repo/src/transform/lower_blackhole_tile_compute.cc"
     ).read_text()
     assert "ConsumeTileComputeDAGLoweringDecision(operation)" in tile_compute_source
-    assert "EmitCoveredBlackholeTileCompute(op, covering)" in tile_compute_source
+    assert "BlackholeTileComputeSourceProjection::Emit(this, op, covering)" in tile_compute_source
     assert "SelectBlackholeTileComputeCovering(operation)" not in tile_compute_source
     assert "active_tile_compute_dag_covering_decision_" not in tile_compute_source
 
@@ -1561,19 +1564,48 @@ def test_blackhole_frontend_decomposes_row_division_to_recip_leaf():
 
 
 def test_lower_tile_op_has_single_blackhole_tile_compute_normalizer_surface():
-    source = (REPO_ROOT / "tilelang_repo/src/transform/lower_tile_op.cc").read_text()
+    lower_tile_source = (
+        REPO_ROOT / "tilelang_repo/src/transform/lower_tile_op.cc"
+    ).read_text()
+    normalizer_source = (
+        REPO_ROOT
+        / "tilelang_repo/src/transform/common/blackhole_tile_compute_normalizer.cc"
+    ).read_text()
 
-    helper_defs = re.findall(r"\bStmt\s+MakeBlackholeTileComputeCall\s*\(", source)
+    assert "MakeBlackholeTileComputeCall(" not in lower_tile_source
+    assert "TryNormalizeBlackholeTileComputeStore(" not in lower_tile_source
+    assert "TryNormalizeBlackholeTileComputeLoop(" not in lower_tile_source
+
+    helper_defs = re.findall(
+        r"\bStmt\s+MakeBlackholeTileComputeCall\s*\(", normalizer_source
+    )
     store_defs = re.findall(
-        r"\bStmt\s+TryNormalize(?:BlackholeTileCompute)?Store\s*\(", source
+        r"\bStmt\s+TryNormalize(?:BlackholeTileCompute)?Store\s*\(",
+        normalizer_source,
     )
     loop_defs = re.findall(
-        r"\bStmt\s+TryNormalize(?:BlackholeTileCompute)?Loop\s*\(", source
+        r"\bStmt\s+TryNormalize(?:BlackholeTileCompute)?Loop\s*\(",
+        normalizer_source,
     )
 
     assert helper_defs == ["Stmt MakeBlackholeTileComputeCall("]
     assert len(store_defs) == 1
     assert len(loop_defs) == 1
+
+
+def test_tile_compute_source_projection_is_not_declared_on_plan_tt_kernel_abi():
+    planner_header = (
+        REPO_ROOT / "tilelang_repo/src/transform/lower_blackhole_ops.h"
+    ).read_text()
+    tile_compute_source = (
+        REPO_ROOT
+        / "tilelang_repo/src/transform/lower_blackhole_tile_compute.cc"
+    ).read_text()
+
+    assert "TileComputeSourceEmitterHook" not in planner_header
+    assert "EmitFillFragmentTileComputeSource" not in planner_header
+    assert "EmitRecipTileComputeSource" not in planner_header
+    assert "BlackholeTileComputeSourceProjection::Emit" in tile_compute_source
 
 
 def test_spatial_plan_records_preserved_reduce_as_compute_producer():

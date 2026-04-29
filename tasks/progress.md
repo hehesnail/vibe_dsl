@@ -29,6 +29,13 @@
   leaf name/default fallbacks。
 - Tile compute truth 保持 TT-Metal leaf API 粒度。
   已删除 late scalar-loop matcher / generate family。
+  Blackhole scalar-loop normalization 已从通用
+  `lower_tile_op.cc`
+  抽到独立 common normalizer；
+  source projection 已从
+  `PlanTTKernelABI`
+  大接口面收窄到
+  `BlackholeTileComputeSourceProjection`。
 - Algorithmic generalization foundation 已存在并在 admitted live-form /
   materialization 决策中使用：
   `AccessRegion`,
@@ -119,13 +126,17 @@ Core placement 和 buffer distribution 仍然过粗：
 ## Latest Verification
 
 Latest code implementation commit:
-`5dc3af5 Repair tile compute leaf normalization boundary`.
+current HEAD after
+`Refactor Blackhole tile compute lowering boundaries`.
 
 Verification from that commit:
 
+- `cmake -S . -B build`
 - `cmake --build build -j32`
+- `pytest -q testing/python/transform/test_blackhole_spatial_ir.py -k 'tile_compute or tt_metal_api_granularity or builtin_selector or single_blackhole_tile_compute_normalizer_surface or source_projection_is_not_declared'`
+  (`30 passed, 50 deselected`)
 - `pytest -q testing/python/transform/test_blackhole_spatial_ir.py`
-  (`79 passed`)
+  (`80 passed`)
 - `pytest -q testing/python/target/blackhole/test_blackhole_flash_attention_pipeline.py -k 'leaf_compute_ops or optimized_path_lowers_acc_o_broadcast_updates or optimized_path_lowers_exp2_to_leaf_tile_ops or projects_non_gemm_exact_compute_ops'`
   (`3 passed, 64 deselected`)
 - Cleanup scan found no active
@@ -133,6 +144,12 @@ Verification from that commit:
   old composite generator,
   or string-mode composite payload residue under
   `tilelang_repo/src/transform`.
+- Boundary scan asserts
+  `lower_tile_op.cc`
+  no longer defines Blackhole leaf-call builders /
+  normalizer helpers,
+  and `lower_blackhole_ops.h`
+  no longer declares tile-compute source emitter hook methods.
 
 Latest doc cleanup verification:
 

@@ -1866,3 +1866,16 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   contract, validation, and completion criteria.
   Do not dump implementation patch notes, phase logs, repeated verification,
   or historical justification into these entry docs.
+- 2026-04-29 Blackhole lowering boundary cleanup:
+  target-specific scalar-loop normalization should not live inside generic
+  `lower_tile_op.cc`.
+  Keep the generic pass to a narrow normalizer call and put Blackhole
+  leaf-call builders, temp construction, and composite decomposition in a
+  dedicated normalizer module.
+  Also keep explicit tile-compute source projection out of
+  `PlanTTKernelABI`'s header surface; a small projection helper can friend the
+  ABI class and dispatch selected leaf emitters without exposing a long method
+  family as protocol.
+  When adding new common `.cc` files, rerun `cmake -S . -B build` before
+  rebuilding because the current CMake source glob is resolved at configure
+  time.

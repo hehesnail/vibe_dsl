@@ -18,6 +18,16 @@ The helper normalizes current TIR into explicit
 leaf statements.
 It does not create a new IR layer or cross-stage protocol.
 
+Implementation boundary:
+the Blackhole-specific normalizer lives outside
+`lower_tile_op.cc`.
+`LowerTileOpPass`
+may call a narrow normalization function,
+but `lower_tile_op.cc`
+must not own Blackhole leaf-call builders,
+logical-temp construction,
+or composite-expression decomposition.
+
 ## Contract
 
 - Output is explicit tile-compute TIR.
@@ -100,6 +110,8 @@ materialization planning.
 Required checks:
 
 - there is a single shared Blackhole tile-compute normalizer surface
+- `lower_tile_op.cc`
+  calls the normalizer but does not define it
 - frontend normalization emits only admitted leaf operation names
 - composite payload strings are absent from leaf-looking calls
 - row-division normalization produces `recip_tile`
