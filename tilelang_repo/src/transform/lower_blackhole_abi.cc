@@ -204,7 +204,9 @@ static TTComputeOpPlan BuildTTComputeOpPlanFromFact(
       BuildIntegerArray({fact.m, fact.n, fact.k}), BuildIntegerArray({mt, nt, kt}),
       BuildIntegerArray({mt, nt, kt}), BuildIntegerArray({mt, nt}),
       String(DataTypeToDataFormatForBlackhole(fact.c_dtype)),
-      String(fact.mbarrier_buffer), String(fact.mbarrier_scope), mbarrier_index_exprs);
+      String(fact.mbarrier_buffer), String(fact.mbarrier_scope), mbarrier_index_exprs,
+      /*tile_compute_dag_node_id=*/-1, String(), String(),
+      /*tile_compute_fanout_use_count=*/0, String());
   RequireLegalBlackholeTileComputePlan(plan);
   return plan;
 }
@@ -1496,7 +1498,12 @@ void PlanTTKernelABI::RecordExactComputeOpPlan(
       String(covering.result_kind), String(covering.operation_name), Bool(true),
       operand_bindings, problem_shape_axes, problem_shape,
       tile_shape, Array<Integer>{}, Array<Integer>{}, String(accumulator_dtype),
-      String(""), String(""), Array<String>{}));
+      String(""), String(""), Array<String>{},
+      CurrentTileComputeDAGNodeId(),
+      CurrentTileComputeDAGSourceEmitter(),
+      CurrentTileComputeDAGMaterializationPolicy(),
+      CurrentTileComputeDAGFanoutUseCount(),
+      CurrentTileComputeDAGFanoutPolicy()));
 }
 
 void PlanTTKernelABI::RegisterAccessor(const std::string& segment_kind,

@@ -46,6 +46,17 @@
   carried as typed TTProgram fields,
   validated by `ValidateTTProgram`,
   and projected into `ExecutableSpec`.
+  It also now drives the explicit tile-compute source lowering path:
+  `PlanTTKernelABI`
+  builds a pass-local DAG lower plan,
+  consumes selected source emitters from that plan instead of reselecting
+  on the source path,
+  and records DAG node /
+  source emitter /
+  materialization /
+  fanout decisions on DAG-driven
+  `TTComputeOpPlan`
+  entries and executable projection.
   CB / L1 resource admission now uses hardware-model-backed CB count,
   worker L1 budget,
   and L1 alignment facts in both `PlanTTCBAlloc`
@@ -103,10 +114,12 @@
   materialization /
   unsupported-reason decisions now feed typed resource demand and validator /
   executable projection,
-  while source emitters and runtime readers still consume only typed TT plans.
+  and source emitters consume a pass-local DAG lower plan before recording
+  typed TT plans.
 - TileComputeDAG production-boundary cleanup:
-  production code does not persist DAG covering decisions in
-  `PlanTTKernelABI`,
+  production code does not persist a durable function-level DAG covering cache;
+  `PlanTTKernelABI`
+  only owns per-run pass-local DAG lowering decisions,
   the covering header exposes only leaf covering decisions and diagnostic FFI,
   and static tests guard against reintroducing a production DAG cache.
 - DAG-backed typed resource pressure:
@@ -133,6 +146,19 @@
   and max simultaneous L1 pressure;
   `ValidateTTProgram`
   rejects CB and L1 over-pressure.
+- DAG-driven tile-compute lower plan:
+  explicit tile-compute source emission consumes pass-local
+  `TileComputeDAG`
+  lowering decisions,
+  not a second source-path operation selector;
+  DAG-driven exact compute lower plans carry
+  node id,
+  source emitter,
+  materialization policy,
+  fanout count,
+  and fanout policy through
+  `TTComputeOpPlan`
+  and `ExecutableSpec`.
 
 ## Support Boundary
 
@@ -193,29 +219,25 @@
 ## Latest Verification
 
 - Current implementation:
-  upgraded CB / L1 resource admission to consume hardware-model facts.
-  `TTHardwareModel`
-  now records `max_cb_count`
-  and `l1_allocation_alignment_bytes`;
-  `PlanTTCBAlloc`
-  validates against target-derived CB / worker-L1 limits;
-  `TTResourcePressureReport`
-  records CB limit,
-  worker L1 budget,
-  L1 alignment,
-  aligned CB bytes,
-  alignment waste,
-  L1 buffer pressure,
-  and max simultaneous L1 bytes;
+  routed `TileComputeDAG`
+  covering decisions into the real source-lowering and typed lower-plan path.
+  `PlanTTKernelABI`
+  now loads a pass-local DAG lower plan,
+  `LowerExplicitTileComputeCall`
+  consumes that selected covering,
+  exact compute plans record DAG node /
+  source emitter /
+  materialization /
+  fanout metadata,
   `ValidateTTProgram`
-  rejects CB-id and L1 over-pressure;
-  and executable projection carries the new admission facts.
+  validates both the emitted leaf op and the source DAG covering,
+  and executable projection carries the fields.
 - Verification:
   `cd tilelang_repo && cmake --build build -j32`
   passed.
-  `cd tilelang_repo && python -m pytest testing/python/transform/test_blackhole_spatial_ir.py -k 'executable_projection_carries_resource_pressure_report or resource_pressure_report_carries_hardware_cb_l1_admission_facts or validate_tt_program_rejects_cb_id_pressure_over_hardware_limit or validate_tt_program_rejects_l1_pressure_over_worker_budget' -q`
-  passed with `4 passed, 71 deselected`.
+  `cd tilelang_repo && python -m pytest testing/python/transform/test_blackhole_spatial_ir.py -k 'tile_compute_explicit_source_path_uses_leaf_covering_without_dag_cache or tile_compute_dag_decisions_drive_typed_compute_lower_plan or executable_projection_carries_dag_driven_compute_lower_plan' -q`
+  passed with `3 passed, 74 deselected`.
   `cd tilelang_repo && python -m pytest testing/python/transform/test_blackhole_spatial_ir.py -q`
-  passed with `75 passed`.
+  passed with `77 passed`.
   `cd tilelang_repo && python -m pytest testing/python/target/blackhole/test_blackhole_gemm.py::test_blackhole_executable_projection_has_no_plan_local_payload_records testing/python/target/blackhole/test_blackhole_flash_attention_pipeline.py::test_flash_attention_forward_tt_target_emits_typed_tt_program_without_payload -q`
   passed with `2 passed`.

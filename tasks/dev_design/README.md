@@ -175,6 +175,16 @@ DAG covering
     `ResourcePressureReport`
     的 production input，
     由 validator 和 executable projection 消费；
+    explicit source lowering
+    也已消费 pass-local
+    `TileComputeDAG`
+    lower plan，
+    并把 DAG node /
+    source emitter /
+    materialization /
+    fanout 决策写进
+    `TTComputeOpPlan`
+    和 executable projection；
     只有影响 typed resource demand /
     typed plans /
     unsupported diagnostics
@@ -240,9 +250,12 @@ production 边界已清理 / 收缩；
 `TileComputeDAG`-backed
 typed resource pressure
 已建立第一版 production-use gate；
-下一步升级
-CB / L1 admission，
-再推进
+`TileComputeDAG`
+source-lowering / typed compute lower-plan
+接入已完成；
+CB / L1 admission
+已完成第一版 production-use gate；
+下一步推进
 core / buffer planning，
 然后回到
 multi-block flash-attn direct-runtime admission、

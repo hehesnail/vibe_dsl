@@ -39,6 +39,7 @@
 
 #include <map>
 #include <initializer_list>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -87,6 +88,14 @@ struct GemmComputeOpFact {
   tvm::DataType a_dtype;
   tvm::DataType b_dtype;
   tvm::DataType c_dtype;
+};
+
+struct TileComputeDAGLoweringDecision {
+  int64_t node_id{-1};
+  std::string operation_name;
+  BlackholeTileComputeCoveringDecision covering;
+  int64_t fanout_use_count{0};
+  std::string fanout_policy;
 };
 
 /*!
@@ -597,6 +606,14 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   bool MatchExplicitTileTypecast(const tvm::tir::CallNode* op,
                                  FragmentCastMatch* match) const;
   tvm::tir::Stmt LowerExplicitTileComputeCall(const tvm::tir::CallNode* op);
+  void LoadTileComputeDAGLoweringPlan(const tvm::tir::PrimFunc& func);
+  BlackholeTileComputeCoveringDecision ConsumeTileComputeDAGLoweringDecision(
+      const std::string& operation_name);
+  int64_t CurrentTileComputeDAGNodeId() const;
+  tvm::ffi::String CurrentTileComputeDAGSourceEmitter() const;
+  tvm::ffi::String CurrentTileComputeDAGMaterializationPolicy() const;
+  int64_t CurrentTileComputeDAGFanoutUseCount() const;
+  tvm::ffi::String CurrentTileComputeDAGFanoutPolicy() const;
   tvm::tir::Stmt EmitCoveredBlackholeTileCompute(
       const tvm::tir::CallNode* op,
       const BlackholeTileComputeCoveringDecision& covering);
@@ -832,6 +849,9 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   tvm::ffi::Array<TTLiveFormPlan> tt_live_form_plans_;
   tvm::ffi::Array<TTMaterializationPlan> tt_materialization_plans_;
   tvm::ffi::Array<TTConsumerBindingPlan> tt_consumer_binding_plans_;
+  std::vector<TileComputeDAGLoweringDecision> tile_compute_dag_lowering_decisions_;
+  std::vector<bool> tile_compute_dag_lowering_decision_consumed_;
+  std::optional<TileComputeDAGLoweringDecision> active_tile_compute_dag_lowering_decision_;
 
   // Requirement index counter (sequential, 0-based)
   int next_requirement_index_ = 0;

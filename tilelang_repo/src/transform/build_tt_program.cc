@@ -731,7 +731,10 @@ Array<TTComputeOpPlan> AttachComputeOpKernelPlanIndices(
         plan->name, plan->kernel_name, kernel_plan_index, plan->kind, plan->operation_name,
         plan->enabled, plan->operand_bindings, plan->problem_shape_axes, plan->problem_shape,
         plan->tile_shape, plan->block_shape, plan->subblock_shape, plan->accumulator_dtype,
-        plan->mbarrier_buffer, plan->mbarrier_scope, plan->mbarrier_index_exprs));
+        plan->mbarrier_buffer, plan->mbarrier_scope, plan->mbarrier_index_exprs,
+        plan->tile_compute_dag_node_id, plan->tile_compute_source_emitter,
+        plan->tile_compute_materialization_policy, plan->tile_compute_fanout_use_count,
+        plan->tile_compute_fanout_policy));
   }
   return updated;
 }

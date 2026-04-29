@@ -765,6 +765,9 @@ PrimFunc PlanTTKernelABI::SelectComputeBuiltins(const PrimFunc& func) {
   spatial_materialization_boundary_position_by_index_.clear();
   buffer_materialization_facts_by_target_buffer_.clear();
   tt_compute_op_plans_.clear();
+  tile_compute_dag_lowering_decisions_.clear();
+  tile_compute_dag_lowering_decision_consumed_.clear();
+  active_tile_compute_dag_lowering_decision_.reset();
   select_compute_builtins_only_ = true;
 
   auto maybe_spatial_plan = func->GetAttr<SpatialPlan>(attr::kTLSpatialPlan);
@@ -779,6 +782,7 @@ PrimFunc PlanTTKernelABI::SelectComputeBuiltins(const PrimFunc& func) {
   buffer_materialization_facts_by_target_buffer_ =
       BuildBufferMaterializationFactMap(
           lowering_support_facts.buffer_materialization_facts);
+  LoadTileComputeDAGLoweringPlan(func);
 
   PrimFunc selected = func;
   selected.CopyOnWrite()->body = VisitStmt(func->body);
@@ -1087,6 +1091,9 @@ PrimFunc PlanTTKernelABI::Transform(const PrimFunc& func) {
   gemm_compute_op_fact_index_by_signature_.clear();
   gemm_compute_op_facts_.clear();
   tt_compute_op_plans_.clear();
+  tile_compute_dag_lowering_decisions_.clear();
+  tile_compute_dag_lowering_decision_consumed_.clear();
+  active_tile_compute_dag_lowering_decision_.reset();
   logical_tile_layout_specs_by_buffer_.clear();
   spatial_materialization_boundaries_.clear();
   spatial_materialization_boundary_position_by_index_.clear();
@@ -1120,6 +1127,7 @@ PrimFunc PlanTTKernelABI::Transform(const PrimFunc& func) {
   buffer_materialization_facts_by_target_buffer_ =
       BuildBufferMaterializationFactMap(
           lowering_support_facts.buffer_materialization_facts);
+  LoadTileComputeDAGLoweringPlan(func);
   LoadBufferFlowFacts(lowering_support_facts);
   stmt_order_index_by_node_ = BuildExecutionOrderIndexByStmtNode(func->body);
   const std::vector<std::string> expected_unsupported_ops =

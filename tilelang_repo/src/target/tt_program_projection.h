@@ -272,6 +272,19 @@ inline Map<String, Any> EncodeComputeOpPlan(const TTComputeOpPlan& plan) {
   SetIntegerShapeField(&item, "subblock_m_tiles", plan->subblock_shape, 0);
   SetIntegerShapeField(&item, "subblock_n_tiles", plan->subblock_shape, 1);
   item.Set("has_mbarrier", Bool(!plan->mbarrier_buffer.empty()));
+  item.Set("tile_compute_dag_node_id", Integer(plan->tile_compute_dag_node_id));
+  if (!plan->tile_compute_source_emitter.empty()) {
+    item.Set("tile_compute_source_emitter", plan->tile_compute_source_emitter);
+  }
+  if (!plan->tile_compute_materialization_policy.empty()) {
+    item.Set("tile_compute_materialization_policy",
+             plan->tile_compute_materialization_policy);
+  }
+  item.Set("tile_compute_fanout_use_count",
+           Integer(plan->tile_compute_fanout_use_count));
+  if (!plan->tile_compute_fanout_policy.empty()) {
+    item.Set("tile_compute_fanout_policy", plan->tile_compute_fanout_policy);
+  }
   return item;
 }
 

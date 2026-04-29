@@ -25,6 +25,7 @@
 #include "lower_blackhole_ops.h"
 
 #include "../op/utils.h"
+#include "common/blackhole_tile_compute_dag.h"
 #include "common/blackhole_utils.h"
 
 #include <tvm/tir/op.h>
@@ -32,6 +33,7 @@
 #include <algorithm>
 #include <limits>
 #include <numeric>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -78,6 +80,7 @@ using tir::builtin::blackhole_tile_regs_commit;
 using tir::builtin::blackhole_tile_regs_release;
 using tir::builtin::blackhole_tile_regs_wait;
 using tvm::Integer;
+using tvm::ffi::String;
 
 namespace {
 
@@ -316,6 +319,118 @@ bool PlanTTKernelABI::MatchExplicitTileTypecast(const CallNode* op,
   return true;
 }
 
+namespace {
+
+bool IsTileComputeDAGOutputRoleForLowering(const std::string& role) {
+  return role == "output" || role == "c";
+}
+
+}  // namespace
+
+void PlanTTKernelABI::LoadTileComputeDAGLoweringPlan(const PrimFunc& func) {
+  tile_compute_dag_lowering_decisions_.clear();
+  tile_compute_dag_lowering_decision_consumed_.clear();
+  active_tile_compute_dag_lowering_decision_.reset();
+
+  const BlackholeTileComputeDAG dag = BuildBlackholeTileComputeDAG(func);
+  std::unordered_map<int64_t, std::vector<const BlackholeTileComputeDAGEdge*>>
+      uses_by_producer;
+  for (const BlackholeTileComputeDAGEdge& edge : dag.edges) {
+    if (edge.producer_node < 0 || IsTileComputeDAGOutputRoleForLowering(edge.value_role)) {
+      continue;
+    }
+    uses_by_producer[edge.producer_node].push_back(&edge);
+  }
+
+  for (const BlackholeTileComputeDAGNode& node : dag.nodes) {
+    BlackholeTileComputeCoveringDecision covering =
+        SelectBlackholeTileComputeCovering(node.op_name);
+    ICHECK(covering.selected)
+        << "TileCompute DAG lower plan rejected operation " << node.op_name
+        << ": " << covering.reject_reason;
+    TileComputeDAGLoweringDecision decision;
+    decision.node_id = node.id;
+    decision.operation_name = covering.operation_name;
+    decision.covering = std::move(covering);
+    auto uses_it = uses_by_producer.find(node.id);
+    const int64_t use_count =
+        uses_it == uses_by_producer.end()
+            ? 0
+            : static_cast<int64_t>(uses_it->second.size());
+    decision.fanout_use_count = use_count;
+    if (use_count < 2) {
+      decision.fanout_policy = "single_use";
+    } else if (node.side_effect_class == "tile_regs" ||
+               node.side_effect_class == "dst" ||
+               node.side_effect_class == "pack") {
+      decision.fanout_policy = "materialize_before_cross_event_use";
+    } else {
+      decision.fanout_policy = "share_live_value";
+    }
+    tile_compute_dag_lowering_decisions_.push_back(std::move(decision));
+  }
+  tile_compute_dag_lowering_decision_consumed_.assign(
+      tile_compute_dag_lowering_decisions_.size(), false);
+}
+
+BlackholeTileComputeCoveringDecision
+PlanTTKernelABI::ConsumeTileComputeDAGLoweringDecision(
+    const std::string& operation_name) {
+  ICHECK_EQ(tile_compute_dag_lowering_decision_consumed_.size(),
+            tile_compute_dag_lowering_decisions_.size())
+      << "TileCompute DAG lower plan consumption state is out of sync";
+  for (size_t i = 0; i < tile_compute_dag_lowering_decisions_.size(); ++i) {
+    if (tile_compute_dag_lowering_decision_consumed_[i]) {
+      continue;
+    }
+    const TileComputeDAGLoweringDecision& decision =
+        tile_compute_dag_lowering_decisions_[i];
+    if (decision.operation_name != operation_name) {
+      continue;
+    }
+    tile_compute_dag_lowering_decision_consumed_[i] = true;
+    active_tile_compute_dag_lowering_decision_ = decision;
+    return decision.covering;
+  }
+  ICHECK(false) << "TileCompute DAG lower plan has no selected decision for operation "
+                << operation_name;
+  return BlackholeTileComputeCoveringDecision();
+}
+
+int64_t PlanTTKernelABI::CurrentTileComputeDAGNodeId() const {
+  return active_tile_compute_dag_lowering_decision_
+             ? active_tile_compute_dag_lowering_decision_->node_id
+             : -1;
+}
+
+String PlanTTKernelABI::CurrentTileComputeDAGSourceEmitter() const {
+  if (!active_tile_compute_dag_lowering_decision_ ||
+      !active_tile_compute_dag_lowering_decision_->covering.source_emitter) {
+    return String();
+  }
+  return String(ToString(
+      *active_tile_compute_dag_lowering_decision_->covering.source_emitter));
+}
+
+String PlanTTKernelABI::CurrentTileComputeDAGMaterializationPolicy() const {
+  return active_tile_compute_dag_lowering_decision_
+             ? String(active_tile_compute_dag_lowering_decision_->covering
+                          .materialization_policy)
+             : String();
+}
+
+int64_t PlanTTKernelABI::CurrentTileComputeDAGFanoutUseCount() const {
+  return active_tile_compute_dag_lowering_decision_
+             ? active_tile_compute_dag_lowering_decision_->fanout_use_count
+             : 0;
+}
+
+String PlanTTKernelABI::CurrentTileComputeDAGFanoutPolicy() const {
+  return active_tile_compute_dag_lowering_decision_
+             ? String(active_tile_compute_dag_lowering_decision_->fanout_policy)
+             : String();
+}
+
 const std::vector<PlanTTKernelABI::TileComputeSourceEmitterHook>&
 PlanTTKernelABI::GetTileComputeSourceEmitterHooks() {
   static const std::vector<TileComputeSourceEmitterHook> hooks = {
@@ -430,11 +545,13 @@ Stmt PlanTTKernelABI::LowerExplicitTileComputeCall(const CallNode* op) {
     operation = "reduce_tile";
   }
   const BlackholeTileComputeCoveringDecision covering =
-      SelectBlackholeTileComputeCovering(operation);
+      ConsumeTileComputeDAGLoweringDecision(operation);
   ICHECK(covering.selected)
       << "TileCompute covering rejected operation " << operation
       << ": " << covering.reject_reason;
-  return EmitCoveredBlackholeTileCompute(op, covering);
+  Stmt lowered = EmitCoveredBlackholeTileCompute(op, covering);
+  active_tile_compute_dag_lowering_decision_.reset();
+  return lowered;
 }
 
 Stmt PlanTTKernelABI::EmitCoveredBlackholeTileCompute(

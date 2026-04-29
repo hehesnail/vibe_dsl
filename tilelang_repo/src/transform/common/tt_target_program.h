@@ -128,6 +128,11 @@ class TTComputeOpPlanNode : public Object {
   ffi::String mbarrier_buffer;
   ffi::String mbarrier_scope;
   ffi::Array<ffi::String> mbarrier_index_exprs;
+  int64_t tile_compute_dag_node_id = -1;
+  ffi::String tile_compute_source_emitter;
+  ffi::String tile_compute_materialization_policy;
+  int64_t tile_compute_fanout_use_count = 0;
+  ffi::String tile_compute_fanout_policy;
 
   static void RegisterReflection();
   TVM_FFI_DECLARE_OBJECT_INFO_FINAL("tl.TTComputeOpPlan", TTComputeOpPlanNode, Object);
@@ -146,7 +151,12 @@ class TTComputeOpPlan : public ObjectRef {
                           ffi::Array<Integer> subblock_shape,
                           ffi::String accumulator_dtype,
                           ffi::String mbarrier_buffer, ffi::String mbarrier_scope,
-                          ffi::Array<ffi::String> mbarrier_index_exprs);
+                          ffi::Array<ffi::String> mbarrier_index_exprs,
+                          int64_t tile_compute_dag_node_id,
+                          ffi::String tile_compute_source_emitter,
+                          ffi::String tile_compute_materialization_policy,
+                          int64_t tile_compute_fanout_use_count,
+                          ffi::String tile_compute_fanout_policy);
   TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(TTComputeOpPlan, ObjectRef,
                                              TTComputeOpPlanNode);
 };

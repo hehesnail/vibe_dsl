@@ -1758,3 +1758,23 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   and the report validator should read the same CB-count / worker-L1 /
   L1-alignment facts; stale local constants are only defaults when no target
   model exists.
+- 2026-04-29 TileComputeDAG lower-plan payoff:
+  a DAG analysis only pays rent when its selected decisions change the
+  production lowering path or typed plans.
+  For Blackhole tile compute,
+  source lowering should consume a pass-local DAG lower plan,
+  and exact compute plans should carry the source DAG node /
+  source emitter /
+  materialization /
+  fanout decision into `TTComputeOpPlan`
+  and executable projection.
+  Do not validate `tile_compute_source_emitter`
+  by comparing it to every emitted leaf op:
+  one source DAG decision such as `exp2_tile`
+  can legitimately expand into several leaf compute ops.
+  Also do not assume `CollectExecutionOrderedStmts`
+  order is identical to `StmtMutator`
+  visitation in select-only phases;
+  if stricter binding is needed,
+  add a real statement/source identity to the DAG instead of using a linear
+  cursor as owner truth.

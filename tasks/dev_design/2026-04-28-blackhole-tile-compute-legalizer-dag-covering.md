@@ -37,6 +37,67 @@ tile compute semantics
 `TTMaterializationPlan`
 中。
 
+`2026-04-29` 收缩后再固定一条：
+`TileComputeDAG`
+不能只把 fanout /
+materialization
+结果送进 resource admission。
+凡是 DAG covering 决定了 leaf pattern、
+source emitter、
+materialization policy
+或 fanout policy，
+这些决定必须写入 typed lower plan，
+至少进入
+`TTComputeOpPlan`
+的 DAG node /
+source emitter /
+materialization /
+fanout 字段，
+并由 executable projection 继续携带。
+source lowering 只能消费这份 pass-local DAG lower plan；
+不能在 explicit tile-compute source path
+重新按 operation name 做第二次 production selection。
+
+当前实现状态：
+
+- `BuildBlackholeTileComputeDAG`
+  仍是 pass-local analysis，
+  不作为跨阶段 IR 层保存。
+- `PlanTTKernelABI`
+  在 source lowering 前构造
+  DAG lower plan，
+  `LowerExplicitTileComputeCall`
+  消费该 plan 中的 selected covering
+  决定 source emitter。
+- DAG-driven exact compute
+  会把 source DAG node id、
+  source emitter、
+  materialization policy、
+  fanout use count
+  和 fanout policy
+  记录到
+  `TTComputeOpPlan`；
+  `ExecutableSpec`
+  投影继续携带这些字段。
+- `ValidateTTProgram`
+  分别校验实际 emitted leaf op
+  的 legality
+  和 source DAG covering
+  的 materialization policy。
+  这点很重要：
+  一个 source DAG 节点
+  如 `exp2_tile`
+  可能展开成多个 leaf op
+  如 `mul_tiles`
+  /
+  `add_tiles`
+  /
+  `exp2_tile`，
+  因此 `TTComputeOpPlan.operation_name`
+  表示实际 leaf op，
+  `tile_compute_source_emitter`
+  表示驱动该展开的 source DAG decision。
+
 ## References
 
 本设计借鉴 LLVM codegen 的两个经典点：

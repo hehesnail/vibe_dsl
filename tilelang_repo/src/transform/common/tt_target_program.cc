@@ -149,7 +149,17 @@ void TTComputeOpPlanNode::RegisterReflection() {
       .def_ro("accumulator_dtype", &TTComputeOpPlanNode::accumulator_dtype)
       .def_ro("mbarrier_buffer", &TTComputeOpPlanNode::mbarrier_buffer)
       .def_ro("mbarrier_scope", &TTComputeOpPlanNode::mbarrier_scope)
-      .def_ro("mbarrier_index_exprs", &TTComputeOpPlanNode::mbarrier_index_exprs);
+      .def_ro("mbarrier_index_exprs", &TTComputeOpPlanNode::mbarrier_index_exprs)
+      .def_ro("tile_compute_dag_node_id",
+              &TTComputeOpPlanNode::tile_compute_dag_node_id)
+      .def_ro("tile_compute_source_emitter",
+              &TTComputeOpPlanNode::tile_compute_source_emitter)
+      .def_ro("tile_compute_materialization_policy",
+              &TTComputeOpPlanNode::tile_compute_materialization_policy)
+      .def_ro("tile_compute_fanout_use_count",
+              &TTComputeOpPlanNode::tile_compute_fanout_use_count)
+      .def_ro("tile_compute_fanout_policy",
+              &TTComputeOpPlanNode::tile_compute_fanout_policy);
 }
 
 TTComputeOpPlan::TTComputeOpPlan(
@@ -160,7 +170,12 @@ TTComputeOpPlan::TTComputeOpPlan(
     ffi::Array<Integer> tile_shape, ffi::Array<Integer> block_shape,
     ffi::Array<Integer> subblock_shape, ffi::String accumulator_dtype,
     ffi::String mbarrier_buffer, ffi::String mbarrier_scope,
-    ffi::Array<ffi::String> mbarrier_index_exprs) {
+    ffi::Array<ffi::String> mbarrier_index_exprs,
+    int64_t tile_compute_dag_node_id,
+    ffi::String tile_compute_source_emitter,
+    ffi::String tile_compute_materialization_policy,
+    int64_t tile_compute_fanout_use_count,
+    ffi::String tile_compute_fanout_policy) {
   auto n = ffi::make_object<TTComputeOpPlanNode>();
   n->name = std::move(name);
   n->kernel_name = std::move(kernel_name);
@@ -178,6 +193,12 @@ TTComputeOpPlan::TTComputeOpPlan(
   n->mbarrier_buffer = std::move(mbarrier_buffer);
   n->mbarrier_scope = std::move(mbarrier_scope);
   n->mbarrier_index_exprs = std::move(mbarrier_index_exprs);
+  n->tile_compute_dag_node_id = tile_compute_dag_node_id;
+  n->tile_compute_source_emitter = std::move(tile_compute_source_emitter);
+  n->tile_compute_materialization_policy =
+      std::move(tile_compute_materialization_policy);
+  n->tile_compute_fanout_use_count = tile_compute_fanout_use_count;
+  n->tile_compute_fanout_policy = std::move(tile_compute_fanout_policy);
   data_ = std::move(n);
 }
 
@@ -1189,14 +1210,22 @@ TVM_FFI_STATIC_INIT_BLOCK() {
          ffi::Array<Integer> tile_shape, ffi::Array<Integer> block_shape,
          ffi::Array<Integer> subblock_shape, ffi::String accumulator_dtype,
          ffi::String mbarrier_buffer, ffi::String mbarrier_scope,
-         ffi::Array<ffi::String> mbarrier_index_exprs) {
+         ffi::Array<ffi::String> mbarrier_index_exprs,
+         int64_t tile_compute_dag_node_id,
+         ffi::String tile_compute_source_emitter,
+         ffi::String tile_compute_materialization_policy,
+         int64_t tile_compute_fanout_use_count,
+         ffi::String tile_compute_fanout_policy) {
         return TTComputeOpPlan(
             std::move(name), std::move(kernel_name), kernel_plan_index, std::move(kind),
             std::move(operation_name), enabled, std::move(operand_bindings),
             std::move(problem_shape_axes), std::move(problem_shape),
             std::move(tile_shape), std::move(block_shape), std::move(subblock_shape),
             std::move(accumulator_dtype), std::move(mbarrier_buffer), std::move(mbarrier_scope),
-            std::move(mbarrier_index_exprs));
+            std::move(mbarrier_index_exprs), tile_compute_dag_node_id,
+            std::move(tile_compute_source_emitter),
+            std::move(tile_compute_materialization_policy),
+            tile_compute_fanout_use_count, std::move(tile_compute_fanout_policy));
       });
   refl::GlobalDef().def(
       "tl.TTTileComputeFanoutDemand",

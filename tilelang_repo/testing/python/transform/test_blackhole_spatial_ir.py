@@ -555,6 +555,11 @@ def _rebuild_tt_compute_op_plan(
         str(plan.mbarrier_buffer),
         str(plan.mbarrier_scope),
         list(plan.mbarrier_index_exprs),
+        int(plan.tile_compute_dag_node_id),
+        str(plan.tile_compute_source_emitter),
+        str(plan.tile_compute_materialization_policy),
+        int(plan.tile_compute_fanout_use_count),
+        str(plan.tile_compute_fanout_policy),
     )
 
 
@@ -1057,8 +1062,9 @@ def test_tile_compute_explicit_source_path_uses_leaf_covering_without_dag_cache(
     tile_compute_source = (
         REPO_ROOT / "tilelang_repo/src/transform/lower_blackhole_tile_compute.cc"
     ).read_text()
-    assert "SelectBlackholeTileComputeCovering(operation)" in tile_compute_source
+    assert "ConsumeTileComputeDAGLoweringDecision(operation)" in tile_compute_source
     assert "EmitCoveredBlackholeTileCompute(op, covering)" in tile_compute_source
+    assert "SelectBlackholeTileComputeCovering(operation)" not in tile_compute_source
     assert "active_tile_compute_dag_covering_decision_" not in tile_compute_source
 
 
@@ -1115,6 +1121,83 @@ def test_tile_compute_dag_feeds_typed_resource_pressure_report():
         int(plan.num_pages) * int(plan.page_size_bytes)
         for plan in tt_program.cb_plans
     )
+
+
+def test_tile_compute_dag_decisions_drive_typed_compute_lower_plan():
+    mod = _prepare_blackhole_tt_program_module(
+        mha_example.flashattn.jit_impl.get_tir(
+            1,
+            32,
+            128,
+            128,
+            False,
+            block_M=128,
+            block_N=128,
+            num_stages=1,
+            threads=128,
+        )
+    )
+    tt_program = mod["main"].attrs["tl.tt_program"]
+    assert tt_program.compute_op_plans
+
+    dag_compute_plans = [
+        plan
+        for plan in tt_program.compute_op_plans
+        if int(plan.tile_compute_dag_node_id) >= 0
+    ]
+    assert dag_compute_plans
+    assert all(str(plan.tile_compute_source_emitter) for plan in dag_compute_plans)
+    assert {
+        "none",
+        "materialization_boundary_required_when_cross_phase",
+        "live_form_solver_required_for_cross_event_use",
+    } >= {str(plan.tile_compute_materialization_policy) for plan in dag_compute_plans}
+
+    materialization_demand_by_node = {
+        int(demand.node_id): str(demand.policy)
+        for resource_demand in tt_program.resource_demands
+        for demand in resource_demand.tile_compute_materialization_demands
+    }
+    materialized_compute_nodes = {
+        int(plan.tile_compute_dag_node_id)
+        for plan in dag_compute_plans
+        if str(plan.tile_compute_materialization_policy) != "none"
+    }
+    assert materialized_compute_nodes
+    assert materialized_compute_nodes <= set(materialization_demand_by_node)
+    for plan in dag_compute_plans:
+        node_id = int(plan.tile_compute_dag_node_id)
+        if node_id in materialization_demand_by_node:
+            assert (
+                str(plan.tile_compute_materialization_policy)
+                == materialization_demand_by_node[node_id]
+            )
+
+
+def test_executable_projection_carries_dag_driven_compute_lower_plan():
+    mod = _prepare_blackhole_tt_program_module(
+        mha_example.flashattn.jit_impl.get_tir(
+            1,
+            32,
+            128,
+            128,
+            False,
+            block_M=128,
+            block_N=128,
+            num_stages=1,
+            threads=128,
+        )
+    )
+    mod = tilelang.transform.MaterializeBlackholeExecutable()(mod)
+    executable = mod["main"].attrs["tl.blackhole_executable"]
+
+    compute_plans = list(executable["compute_op_plans"])
+    dag_compute_plans = [
+        plan for plan in compute_plans if int(plan["tile_compute_dag_node_id"]) >= 0
+    ]
+    assert dag_compute_plans
+    assert all(str(plan["tile_compute_source_emitter"]) for plan in dag_compute_plans)
+    assert all("tile_compute_materialization_policy" in plan for plan in dag_compute_plans)
 
 
 def test_validate_tt_program_consumes_typed_resource_pressure_report():

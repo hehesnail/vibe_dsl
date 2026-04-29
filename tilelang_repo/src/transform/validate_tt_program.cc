@@ -190,7 +190,7 @@ void ValidateComputeOperandBindingPlan(const TTComputeOperandBindingPlan& bindin
   }
 }
 
-void RequireSelectedBlackholeTileComputeCoveringForPlan(
+BlackholeTileComputeCoveringDecision RequireSelectedBlackholeTileComputeCoveringForPlan(
     const TTComputeOpPlan& plan, const std::vector<std::string>& operand_roles) {
   const std::string operation_name = plan->operation_name;
   const BlackholeTileComputeCoveringDecision covering =
@@ -205,6 +205,27 @@ void RequireSelectedBlackholeTileComputeCoveringForPlan(
   RequireLegalBlackholeTileComputeSelection(covering.result_kind,
                                             covering.operation_name,
                                             operand_roles);
+  return covering;
+}
+
+std::optional<BlackholeTileComputeCoveringDecision>
+FindSelectedBlackholeTileComputeCoveringForSourceEmitter(
+    const std::string& source_emitter) {
+  for (const BlackholeTileComputePattern& pattern :
+       GetBlackholeTileComputePatterns()) {
+    if (!pattern.source_emitter ||
+        source_emitter != ToString(*pattern.source_emitter)) {
+      continue;
+    }
+    BlackholeTileComputeCoveringDecision covering =
+        SelectBlackholeTileComputeCovering(ToString(pattern.operation));
+    ICHECK(covering.selected)
+        << "TileCompute covering rejected source emitter " << source_emitter
+        << " operation " << ToString(pattern.operation)
+        << ": " << covering.reject_reason;
+    return covering;
+  }
+  return std::nullopt;
 }
 
 void ValidateComputeOpPlan(const TTComputeOpPlan& plan, int64_t kernel_plan_count,
@@ -257,6 +278,29 @@ void ValidateComputeOpPlan(const TTComputeOpPlan& plan, int64_t kernel_plan_coun
         << "TTComputeOpPlan GEMM requires accumulator_dtype";
   }
   RequireSelectedBlackholeTileComputeCoveringForPlan(plan, operand_roles);
+  if (plan->tile_compute_dag_node_id >= 0) {
+    ICHECK(!plan->tile_compute_source_emitter.empty())
+        << "DAG-driven TTComputeOpPlan requires tile_compute_source_emitter";
+    const std::string source_emitter = plan->tile_compute_source_emitter;
+    const std::optional<BlackholeTileComputeCoveringDecision> source_covering =
+        FindSelectedBlackholeTileComputeCoveringForSourceEmitter(source_emitter);
+    ICHECK(source_covering)
+        << "DAG-driven TTComputeOpPlan references unknown tile_compute_source_emitter "
+        << source_emitter;
+    ICHECK_EQ(plan->tile_compute_materialization_policy,
+              source_covering->materialization_policy)
+        << "DAG-driven TTComputeOpPlan materialization policy must match DAG source "
+           "covering";
+    ICHECK_GE(plan->tile_compute_fanout_use_count, 0)
+        << "DAG-driven TTComputeOpPlan requires non-negative fanout use count";
+    if (plan->tile_compute_fanout_use_count > 1) {
+      const std::string fanout_policy = plan->tile_compute_fanout_policy;
+      ICHECK(fanout_policy == "share_live_value" ||
+             fanout_policy == "materialize_before_cross_event_use")
+          << "DAG-driven TTComputeOpPlan unsupported fanout policy "
+          << plan->tile_compute_fanout_policy;
+    }
+  }
 }
 
 void ValidateTileComputeFanoutDemand(
