@@ -587,31 +587,131 @@ String DRAMViewRequirement(const TTProgramSlices& slices) {
   return String("dram_buffer_views:" + std::to_string(dram_buffers));
 }
 
+constexpr int64_t kDefaultCBIdLimit = 32;
+constexpr int64_t kDefaultWorkerL1BudgetBytes = 1572864;
+constexpr int64_t kDefaultL1AlignmentBytes = 32;
+
+int64_t PositiveOrDefault(int64_t value, int64_t default_value) {
+  return value > 0 ? value : default_value;
+}
+
+int64_t AlignUp(int64_t value, int64_t alignment) {
+  if (value <= 0) {
+    return 0;
+  }
+  if (alignment <= 1) {
+    return value;
+  }
+  return ((value + alignment - 1) / alignment) * alignment;
+}
+
+int64_t HardwareCBIdLimit(const std::optional<TTHardwareModel>& maybe_hardware_model) {
+  if (!maybe_hardware_model) {
+    return kDefaultCBIdLimit;
+  }
+  return PositiveOrDefault(maybe_hardware_model.value()->max_cb_count, kDefaultCBIdLimit);
+}
+
+int64_t HardwareWorkerL1BudgetBytes(
+    const std::optional<TTHardwareModel>& maybe_hardware_model) {
+  if (!maybe_hardware_model) {
+    return kDefaultWorkerL1BudgetBytes;
+  }
+  return PositiveOrDefault(maybe_hardware_model.value()->worker_l1_size,
+                           kDefaultWorkerL1BudgetBytes);
+}
+
+int64_t HardwareL1AlignmentBytes(const std::optional<TTHardwareModel>& maybe_hardware_model) {
+  if (!maybe_hardware_model) {
+    return kDefaultL1AlignmentBytes;
+  }
+  return PositiveOrDefault(maybe_hardware_model.value()->l1_allocation_alignment_bytes,
+                           kDefaultL1AlignmentBytes);
+}
+
+int64_t TotalAlignedCBL1Bytes(const Array<TTCBPlan>& cb_plans, int64_t alignment) {
+  int64_t bytes = 0;
+  for (const TTCBPlan& cb_plan : cb_plans) {
+    bytes += AlignUp(cb_plan->num_pages * cb_plan->page_size_bytes, alignment);
+  }
+  return bytes;
+}
+
+bool IsL1MemorySpace(const String& memory_space) {
+  return memory_space == "L1" || memory_space == "interleaved_l1";
+}
+
+int64_t TotalAlignedL1BufferBytes(
+    const Array<TTBufferDistributionPlan>& buffer_distribution_plans,
+    int64_t alignment) {
+  int64_t bytes = 0;
+  for (const TTBufferDistributionPlan& plan : buffer_distribution_plans) {
+    if (!IsL1MemorySpace(plan->memory_space) || plan->page_size_bytes <= 0) {
+      continue;
+    }
+    bytes += AlignUp(plan->page_size_bytes, alignment);
+  }
+  return bytes;
+}
+
 Array<TTResourcePressureReport> BuildResourcePressureReports(
-    const TTProgramSlices& slices) {
+    const TTProgramSlices& slices,
+    const std::optional<TTHardwareModel>& maybe_hardware_model) {
+  const int64_t cb_id_limit = HardwareCBIdLimit(maybe_hardware_model);
+  const int64_t worker_l1_budget_bytes =
+      HardwareWorkerL1BudgetBytes(maybe_hardware_model);
+  const int64_t l1_alignment_bytes = HardwareL1AlignmentBytes(maybe_hardware_model);
+  const int64_t per_core_cb_id_pressure = static_cast<int64_t>(slices.cb_plans.size());
+  const int64_t per_core_cb_l1_bytes = TotalCBL1Bytes(slices.cb_plans);
+  const int64_t per_core_cb_l1_aligned_bytes =
+      TotalAlignedCBL1Bytes(slices.cb_plans, l1_alignment_bytes);
+  const int64_t l1_alignment_waste_bytes =
+      per_core_cb_l1_aligned_bytes - per_core_cb_l1_bytes;
+  const int64_t per_core_l1_buffer_bytes =
+      TotalAlignedL1BufferBytes(slices.buffer_distribution_plans, l1_alignment_bytes);
+  const int64_t max_simultaneous_l1_bytes =
+      per_core_cb_l1_aligned_bytes + per_core_l1_buffer_bytes;
+
   Array<TTResourcePressureReport> reports;
   for (const TTResourceDemand& demand : slices.resource_demands) {
     Array<String> unsupported_reasons = demand->tile_compute_unsupported_reasons;
+    if (per_core_cb_id_pressure > cb_id_limit) {
+      unsupported_reasons.push_back(
+          String("CB id pressure exceeds hardware limit: required " +
+                 std::to_string(per_core_cb_id_pressure) + ", limit " +
+                 std::to_string(cb_id_limit)));
+    }
+    if (max_simultaneous_l1_bytes > worker_l1_budget_bytes) {
+      unsupported_reasons.push_back(
+          String("L1 pressure exceeds worker budget: required " +
+                 std::to_string(max_simultaneous_l1_bytes) + ", budget " +
+                 std::to_string(worker_l1_budget_bytes)));
+    }
     reports.push_back(TTResourcePressureReport(
         String("resource_pressure_" + static_cast<std::string>(demand->kernel_name)),
         demand->kernel_name, demand->core_group, demand->core_group_index,
         demand->tile_compute_unsupported_reasons,
         demand->tile_compute_materialization_demands,
-        static_cast<int64_t>(slices.cb_plans.size()), TotalCBL1Bytes(slices.cb_plans),
-        /*per_core_l1_buffer_bytes=*/0, TotalCBL1Bytes(slices.cb_plans),
+        per_core_cb_id_pressure, per_core_cb_l1_bytes,
+        per_core_l1_buffer_bytes, max_simultaneous_l1_bytes,
+        cb_id_limit, worker_l1_budget_bytes, l1_alignment_bytes,
+        per_core_cb_l1_aligned_bytes, l1_alignment_waste_bytes,
         CoreGridRequirement(slices), DRAMViewRequirement(slices),
         unsupported_reasons));
   }
   return reports;
 }
 
-void RefreshResourcePlanningSlices(TTProgramSlices* slices) {
+void RefreshResourcePlanningSlices(
+    TTProgramSlices* slices,
+    std::optional<TTHardwareModel> maybe_hardware_model = std::nullopt) {
   if (slices->resource_demands.empty()) {
     return;
   }
   slices->resource_demands =
       RefreshResourceDemandCounters(slices->resource_demands, *slices);
-  slices->resource_pressure_reports = BuildResourcePressureReports(*slices);
+  slices->resource_pressure_reports =
+      BuildResourcePressureReports(*slices, maybe_hardware_model);
 }
 
 Array<TTComputeOpPlan> AttachComputeOpKernelPlanIndices(
@@ -1050,7 +1150,7 @@ tvm::transform::Pass PlanTTExecution() {
       ICHECK(!kernels.empty())
           << "PlanTTExecution requires TTKernel owner truth; Run PlanTTCompute before PlanTTExecution";
       slices.execution_plans = BuildExecutionPlans(spatial_plan, kernels);
-      RefreshResourcePlanningSlices(&slices);
+      RefreshResourcePlanningSlices(&slices, maybe_hardware_model);
       tir::PrimFunc planned = WithTTProgramAttr(func.value(), PackTTProgram(std::move(slices)));
       updated->Add(gvar, planned, true);
     }

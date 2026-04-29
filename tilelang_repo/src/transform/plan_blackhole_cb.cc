@@ -23,16 +23,18 @@
  *
  * MVP Implementation (Phase 1):
  * - Read staged CB requirements from TTProgram cb_plans
- * - Validate constraints (CB count <= 64, total L1 <= 1.5MB)
+ * - Validate constraints from TTHardwareModel (default CB count <= 32, total L1 <= 1.5MB)
  * - Assign CB IDs following TT-Metal convention: 0-15 input, 16-31 output
  * - Rewrite placeholder requirement indices in the IR to final CB IDs
  */
 
 #include "plan_blackhole_cb.h"
 #include "common/companion_base.h"
+#include "common/tt_hardware_model.h"
 #include "common/tt_target_program.h"
 #include "../tir/builtin_blackhole.h"
 
+#include <tvm/target/target.h>
 #include <tvm/tir/builtin.h>
 #include <tvm/tir/op.h>
 #include <tvm/tir/stmt_functor.h>
@@ -61,8 +63,8 @@ using tvm::ffi::Any;
 
 // Blackhole / TT-Metal compute API CB identifiers are architectural CB indices.
 // Kernel APIs such as pack_tile and cb_wait_front operate on IDs in [0, 31].
-constexpr int kMaxCBs = 32;
-constexpr int kMaxL1Size = 1572864;  // 1.5MB = 1,572,864 bytes
+constexpr int kDefaultMaxCBs = 32;
+constexpr int kDefaultMaxL1Size = 1572864;  // 1.5MB = 1,572,864 bytes
 
 // CB ID allocation ranges
 constexpr int kInputCBStart = 0;
@@ -618,6 +620,19 @@ tir::Stmt InsertAutoPopsAfterLastUse(const tir::Stmt& body,
 
 // Main entry point
 PrimFunc PlanTTCBAlloc::Transform(const PrimFunc& func) {
+  max_cb_count_ = kDefaultMaxCBs;
+  max_l1_size_ = kDefaultMaxL1Size;
+  if (auto maybe_target = func->GetAttr<Target>(tvm::attr::kTarget)) {
+    const TTHardwareModel hardware_model =
+        BuildBlackholeTTHardwareModel(maybe_target.value());
+    if (hardware_model->max_cb_count > 0) {
+      max_cb_count_ = static_cast<int>(hardware_model->max_cb_count);
+    }
+    if (hardware_model->worker_l1_size > 0) {
+      max_l1_size_ = static_cast<int>(hardware_model->worker_l1_size);
+    }
+  }
+
   // Get CB requirements from function attributes
   std::vector<CBRequirement> requirements = GetCBRequirements(func);
 
@@ -850,9 +865,9 @@ std::vector<CBConfig> PlanTTCBAlloc::AssignCBIds(
 // Validate CB allocation constraints
 bool PlanTTCBAlloc::Validate(const std::vector<CBConfig>& configs) const {
   // Check CB count
-  if (configs.size() > kMaxCBs) {
+  if (configs.size() > static_cast<size_t>(max_cb_count_)) {
     LOG(ERROR) << "PlanTTCBAlloc: Too many CBs requested: " << configs.size()
-               << " (max " << kMaxCBs << ")";
+               << " (max " << max_cb_count_ << ")";
     return false;
   }
 
@@ -860,23 +875,23 @@ bool PlanTTCBAlloc::Validate(const std::vector<CBConfig>& configs) const {
   int total_l1 = 0;
   for (const auto& config : configs) {
     total_l1 += config.total_size;
-    if (config.cb_id < 0 || config.cb_id >= kMaxCBs) {
+    if (config.cb_id < 0 || config.cb_id >= max_cb_count_) {
       LOG(ERROR) << "PlanTTCBAlloc: Assigned CB id " << config.cb_id
-                 << " outside TT-Metal architectural range [0, " << (kMaxCBs - 1)
+                 << " outside TT-Metal architectural range [0, " << (max_cb_count_ - 1)
                  << "] for " << config.name;
       return false;
     }
   }
 
-  if (total_l1 > kMaxL1Size) {
+  if (total_l1 > max_l1_size_) {
     LOG(ERROR) << "PlanTTCBAlloc: Total L1 usage exceeds limit: " << total_l1
-               << " bytes (max " << kMaxL1Size << " bytes = 1.5MB)";
+               << " bytes (max " << max_l1_size_ << " bytes)";
     return false;
   }
 
   LOG(INFO) << "PlanTTCBAlloc: Allocated " << configs.size() << " CBs, "
             << "total L1 usage: " << total_l1 << " bytes ("
-            << (total_l1 * 100 / kMaxL1Size) << "% of 1.5MB)";
+            << (total_l1 * 100 / max_l1_size_) << "% of worker L1 budget)";
 
   return true;
 }

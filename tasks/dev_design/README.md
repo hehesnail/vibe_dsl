@@ -111,8 +111,10 @@
     `TileComputeDAG`-backed
     typed resource pressure
     也已完成第一版 production-use gate；
-    当前活动 lane 已推进到
     `CB / L1 resource admission upgrade`
+    已完成第一版 production-use gate；
+    当前活动 lane 已推进到
+    `Core / buffer placement hardware-model upgrade`
   - 强制执行
     anti-overdesign pay-rent rule
     和 problem-family generality rule：
@@ -213,9 +215,10 @@ DAG covering
     `TileComputeDAG`-backed
     typed resource pressure
     已完成第一版 production-use gate；
-    当前 active task 是升级
-    CB / L1 resource admission，
-    再推进 core / buffer planning，
+    CB / L1 resource admission
+    已完成第一版 production-use gate；
+    当前 active task 是推进
+    core / buffer planning，
     最后回到 wider runtime admission
 
 当前执行顺序不在 README 中重复维护；

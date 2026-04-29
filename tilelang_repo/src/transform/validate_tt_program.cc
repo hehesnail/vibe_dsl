@@ -5,7 +5,9 @@
 
 #include <tvm/ffi/reflection/registry.h>
 #include <tvm/ir/transform.h>
+#include <tvm/target/target.h>
 
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -15,6 +17,7 @@
 #include "common/blackhole_utils.h"
 #include "common/companion_base.h"
 #include "common/spatial_plan.h"
+#include "common/tt_hardware_model.h"
 #include "common/tt_target_program.h"
 
 namespace tvm {
@@ -39,6 +42,30 @@ int64_t GetIntOrDefault(const Map<String, Any>& map, const char* key, int64_t de
     return Downcast<Integer>(value.value())->value;
   }
   return default_value;
+}
+
+std::optional<Target> FindBlackholeTarget(const IRModule& mod) {
+  for (const auto& [gvar, base_func] : mod->functions) {
+    auto func = base_func.as<tir::PrimFunc>();
+    if (!func || !IsBlackholePrimFunc(func.value())) {
+      continue;
+    }
+    auto maybe_target = func.value()->GetAttr<Target>(tvm::attr::kTarget);
+    if (maybe_target) {
+      return maybe_target.value();
+    }
+  }
+  return std::nullopt;
+}
+
+std::optional<TTHardwareModel> GetValidationHardwareModel(const IRModule& mod) {
+  if (auto maybe_hardware_model = GetModuleTTHardwareModel(mod)) {
+    return maybe_hardware_model.value();
+  }
+  if (auto maybe_target = FindBlackholeTarget(mod)) {
+    return BuildBlackholeTTHardwareModel(maybe_target.value());
+  }
+  return std::nullopt;
 }
 
 void ValidatePositiveIntegerArray(const Array<Integer>& values, const std::string& context) {
@@ -326,7 +353,8 @@ void ValidateResourceDemand(
 void ValidateResourcePressureReport(
     const TTResourcePressureReport& report,
     const std::unordered_set<std::string>& kernel_names,
-    int64_t core_group_count) {
+    int64_t core_group_count,
+    const std::optional<TTHardwareModel>& maybe_hardware_model) {
   ICHECK(!report->name.empty()) << "TTResourcePressureReport requires name";
   ICHECK(!report->kernel_name.empty())
       << "TTResourcePressureReport requires kernel_name";
@@ -343,12 +371,6 @@ void ValidateResourcePressureReport(
        report->required_materializations) {
     ValidateTileComputeMaterializationDemand(materialization, kernel_names);
   }
-  ICHECK(report->tile_compute_unsupported_reasons.empty())
-      << "ResourcePressureReport unsupported tile compute: "
-      << report->tile_compute_unsupported_reasons[0];
-  ICHECK(report->unsupported_reasons.empty())
-      << "ResourcePressureReport unsupported: "
-      << report->unsupported_reasons[0];
   ICHECK_GE(report->per_core_cb_id_pressure, 0)
       << "TTResourcePressureReport requires non-negative per_core_cb_id_pressure";
   ICHECK_GE(report->per_core_cb_l1_bytes, 0)
@@ -357,6 +379,44 @@ void ValidateResourcePressureReport(
       << "TTResourcePressureReport requires non-negative per_core_l1_buffer_bytes";
   ICHECK_GE(report->max_simultaneous_l1_bytes, 0)
       << "TTResourcePressureReport requires non-negative max_simultaneous_l1_bytes";
+  ICHECK_GT(report->cb_id_limit, 0)
+      << "TTResourcePressureReport requires positive cb_id_limit";
+  ICHECK_GT(report->worker_l1_budget_bytes, 0)
+      << "TTResourcePressureReport requires positive worker_l1_budget_bytes";
+  ICHECK_GT(report->l1_alignment_bytes, 0)
+      << "TTResourcePressureReport requires positive l1_alignment_bytes";
+  ICHECK_GE(report->per_core_cb_l1_aligned_bytes, report->per_core_cb_l1_bytes)
+      << "TTResourcePressureReport aligned CB L1 bytes must cover raw CB L1 bytes";
+  ICHECK_EQ(report->l1_alignment_waste_bytes,
+            report->per_core_cb_l1_aligned_bytes - report->per_core_cb_l1_bytes)
+      << "TTResourcePressureReport l1_alignment_waste_bytes must equal aligned - raw CB bytes";
+  ICHECK_LE(report->per_core_cb_id_pressure, report->cb_id_limit)
+      << "ResourcePressureReport CB id pressure exceeds hardware limit: required "
+      << report->per_core_cb_id_pressure << ", limit " << report->cb_id_limit;
+  ICHECK_LE(report->max_simultaneous_l1_bytes, report->worker_l1_budget_bytes)
+      << "ResourcePressureReport L1 pressure exceeds worker budget: required "
+      << report->max_simultaneous_l1_bytes << ", budget "
+      << report->worker_l1_budget_bytes;
+  ICHECK_EQ(report->max_simultaneous_l1_bytes,
+            report->per_core_cb_l1_aligned_bytes + report->per_core_l1_buffer_bytes)
+      << "TTResourcePressureReport max_simultaneous_l1_bytes must equal aligned CB bytes "
+         "plus L1 buffer bytes";
+  if (maybe_hardware_model) {
+    const TTHardwareModel& hardware_model = maybe_hardware_model.value();
+    ICHECK_EQ(report->cb_id_limit, hardware_model->max_cb_count)
+        << "TTResourcePressureReport cb_id_limit must match TTHardwareModel";
+    ICHECK_EQ(report->worker_l1_budget_bytes, hardware_model->worker_l1_size)
+        << "TTResourcePressureReport worker_l1_budget_bytes must match TTHardwareModel";
+    ICHECK_EQ(report->l1_alignment_bytes,
+              hardware_model->l1_allocation_alignment_bytes)
+        << "TTResourcePressureReport l1_alignment_bytes must match TTHardwareModel";
+  }
+  ICHECK(report->tile_compute_unsupported_reasons.empty())
+      << "ResourcePressureReport unsupported tile compute: "
+      << report->tile_compute_unsupported_reasons[0];
+  ICHECK(report->unsupported_reasons.empty())
+      << "ResourcePressureReport unsupported: "
+      << report->unsupported_reasons[0];
   ICHECK(!report->core_grid_requirement.empty())
       << "TTResourcePressureReport requires core_grid_requirement";
   ICHECK(!report->dram_view_requirement.empty())
@@ -592,7 +652,8 @@ void ValidateSpatialLiveReferences(const TTProgram& program, const SpatialPlan& 
   }
 }
 
-void CheckTTProgram(const TTProgram& program, const SpatialPlan& spatial_plan) {
+void CheckTTProgram(const TTProgram& program, const SpatialPlan& spatial_plan,
+                    const std::optional<TTHardwareModel>& maybe_hardware_model) {
   ICHECK(!program->entry_name.empty()) << "TTProgram requires entry_name";
   ICHECK(!program->mesh_plans.empty()) << "TTProgram requires at least one TTMeshPlan";
   ICHECK(!program->buffer_distribution_plans.empty())
@@ -671,7 +732,8 @@ void CheckTTProgram(const TTProgram& program, const SpatialPlan& spatial_plan) {
   for (const TTResourcePressureReport& report :
        program->resource_pressure_reports) {
     ValidateResourcePressureReport(
-        report, kernel_names, static_cast<int64_t>(program->core_groups.size()));
+        report, kernel_names, static_cast<int64_t>(program->core_groups.size()),
+        maybe_hardware_model);
     const std::string kernel_name = report->kernel_name;
     ICHECK(resource_report_by_kernel.emplace(kernel_name, report.get()).second)
         << "duplicate TTResourcePressureReport for kernel " << report->kernel_name;
@@ -770,6 +832,8 @@ void CheckTTProgram(const TTProgram& program, const SpatialPlan& spatial_plan) {
 
 tvm::transform::Pass ValidateTTProgram() {
   auto pass_func = [](IRModule mod, tvm::transform::PassContext) {
+    const std::optional<TTHardwareModel> maybe_hardware_model =
+        GetValidationHardwareModel(mod);
     for (const auto& [gvar, base_func] : mod->functions) {
       auto func = base_func.as<tir::PrimFunc>();
       if (!func || !IsBlackholePrimFunc(func.value())) {
@@ -782,7 +846,8 @@ tvm::transform::Pass ValidateTTProgram() {
       auto maybe_spatial_plan = func.value()->GetAttr<SpatialPlan>(attr::kTLSpatialPlan);
       ICHECK(maybe_spatial_plan)
           << "ValidateTTProgram requires tl.spatial_plan for live-form validation";
-      CheckTTProgram(maybe_program.value(), maybe_spatial_plan.value());
+      CheckTTProgram(maybe_program.value(), maybe_spatial_plan.value(),
+                     maybe_hardware_model);
     }
     return mod;
   };

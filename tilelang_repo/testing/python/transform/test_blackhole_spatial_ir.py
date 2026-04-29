@@ -617,6 +617,15 @@ def _rebuild_tt_resource_pressure_report(
     tile_compute_unsupported_reasons=None,
     unsupported_reasons=None,
     required_materializations=None,
+    per_core_cb_id_pressure=None,
+    per_core_cb_l1_bytes=None,
+    per_core_l1_buffer_bytes=None,
+    max_simultaneous_l1_bytes=None,
+    cb_id_limit=None,
+    worker_l1_budget_bytes=None,
+    l1_alignment_bytes=None,
+    per_core_cb_l1_aligned_bytes=None,
+    l1_alignment_waste_bytes=None,
 ):
     make_report = tvm.get_global_func("tl.TTResourcePressureReport")
     return make_report(
@@ -630,10 +639,31 @@ def _rebuild_tt_resource_pressure_report(
         list(report.required_materializations)
         if required_materializations is None
         else required_materializations,
-        int(report.per_core_cb_id_pressure),
-        int(report.per_core_cb_l1_bytes),
-        int(report.per_core_l1_buffer_bytes),
-        int(report.max_simultaneous_l1_bytes),
+        int(report.per_core_cb_id_pressure)
+        if per_core_cb_id_pressure is None
+        else per_core_cb_id_pressure,
+        int(report.per_core_cb_l1_bytes)
+        if per_core_cb_l1_bytes is None
+        else per_core_cb_l1_bytes,
+        int(report.per_core_l1_buffer_bytes)
+        if per_core_l1_buffer_bytes is None
+        else per_core_l1_buffer_bytes,
+        int(report.max_simultaneous_l1_bytes)
+        if max_simultaneous_l1_bytes is None
+        else max_simultaneous_l1_bytes,
+        int(report.cb_id_limit) if cb_id_limit is None else cb_id_limit,
+        int(report.worker_l1_budget_bytes)
+        if worker_l1_budget_bytes is None
+        else worker_l1_budget_bytes,
+        int(report.l1_alignment_bytes)
+        if l1_alignment_bytes is None
+        else l1_alignment_bytes,
+        int(report.per_core_cb_l1_aligned_bytes)
+        if per_core_cb_l1_aligned_bytes is None
+        else per_core_cb_l1_aligned_bytes,
+        int(report.l1_alignment_waste_bytes)
+        if l1_alignment_waste_bytes is None
+        else l1_alignment_waste_bytes,
         str(report.core_grid_requirement),
         str(report.dram_view_requirement),
         list(report.unsupported_reasons)
@@ -1169,6 +1199,121 @@ def test_executable_projection_carries_resource_pressure_report():
     assert reports
     assert reports[0]["required_materializations"]
     assert not list(reports[0]["tile_compute_unsupported_reasons"])
+    assert int(reports[0]["cb_id_limit"]) > 0
+    assert int(reports[0]["worker_l1_budget_bytes"]) > 0
+    assert int(reports[0]["l1_alignment_bytes"]) > 0
+    assert int(reports[0]["max_simultaneous_l1_bytes"]) == (
+        int(reports[0]["per_core_cb_l1_aligned_bytes"])
+        + int(reports[0]["per_core_l1_buffer_bytes"])
+    )
+
+
+def test_resource_pressure_report_carries_hardware_cb_l1_admission_facts():
+    mod = _prepare_blackhole_tt_program_module(
+        mha_example.flashattn.jit_impl.get_tir(
+            1,
+            32,
+            128,
+            128,
+            False,
+            block_M=128,
+            block_N=128,
+            num_stages=1,
+            threads=128,
+        )
+    )
+    tt_program = mod["main"].attrs["tl.tt_program"]
+    report = tt_program.resource_pressure_reports[0]
+    hardware_model = mod.global_infos["tl.tt_hardware_model"][0]
+
+    raw_cb_l1 = sum(
+        int(plan.num_pages) * int(plan.page_size_bytes)
+        for plan in tt_program.cb_plans
+    )
+    assert int(report.cb_id_limit) == int(hardware_model.max_cb_count)
+    assert int(report.worker_l1_budget_bytes) == int(hardware_model.worker_l1_size)
+    assert int(report.l1_alignment_bytes) == int(
+        hardware_model.l1_allocation_alignment_bytes
+    )
+    assert int(report.per_core_cb_l1_bytes) == raw_cb_l1
+    assert int(report.per_core_cb_l1_aligned_bytes) >= raw_cb_l1
+    assert int(report.l1_alignment_waste_bytes) == (
+        int(report.per_core_cb_l1_aligned_bytes) - raw_cb_l1
+    )
+    assert int(report.max_simultaneous_l1_bytes) == (
+        int(report.per_core_cb_l1_aligned_bytes)
+        + int(report.per_core_l1_buffer_bytes)
+    )
+    assert int(report.per_core_cb_id_pressure) <= int(report.cb_id_limit)
+    assert int(report.max_simultaneous_l1_bytes) <= int(
+        report.worker_l1_budget_bytes
+    )
+
+
+def test_validate_tt_program_rejects_cb_id_pressure_over_hardware_limit():
+    mod = _prepare_blackhole_tt_program_module(
+        mha_example.flashattn.jit_impl.get_tir(
+            1,
+            32,
+            128,
+            128,
+            False,
+            block_M=128,
+            block_N=128,
+            num_stages=1,
+            threads=128,
+        )
+    )
+    main = mod["main"]
+    tt_program = main.attrs["tl.tt_program"]
+    report = tt_program.resource_pressure_reports[0]
+    rejected_report = _rebuild_tt_resource_pressure_report(
+        report,
+        per_core_cb_id_pressure=int(report.cb_id_limit) + 1,
+    )
+    rejected_program = _rebuild_tt_program(
+        tt_program,
+        resource_pressure_reports=[rejected_report],
+    )
+    rejected = tvm.IRModule(
+        {"main": main.with_attr("tl.tt_program", rejected_program)},
+        global_infos=mod.global_infos,
+    )
+    with pytest.raises(Exception, match="CB id pressure exceeds hardware limit"):
+        tilelang.transform.ValidateTTProgram()(rejected)
+
+
+def test_validate_tt_program_rejects_l1_pressure_over_worker_budget():
+    mod = _prepare_blackhole_tt_program_module(
+        mha_example.flashattn.jit_impl.get_tir(
+            1,
+            32,
+            128,
+            128,
+            False,
+            block_M=128,
+            block_N=128,
+            num_stages=1,
+            threads=128,
+        )
+    )
+    main = mod["main"]
+    tt_program = main.attrs["tl.tt_program"]
+    report = tt_program.resource_pressure_reports[0]
+    rejected_report = _rebuild_tt_resource_pressure_report(
+        report,
+        max_simultaneous_l1_bytes=int(report.worker_l1_budget_bytes) + 1,
+    )
+    rejected_program = _rebuild_tt_program(
+        tt_program,
+        resource_pressure_reports=[rejected_report],
+    )
+    rejected = tvm.IRModule(
+        {"main": main.with_attr("tl.tt_program", rejected_program)},
+        global_infos=mod.global_infos,
+    )
+    with pytest.raises(Exception, match="L1 pressure exceeds worker budget"):
+        tilelang.transform.ValidateTTProgram()(rejected)
 
 
 def test_tile_compute_covered_source_path_has_no_operation_name_dispatch_chain():

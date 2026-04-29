@@ -326,6 +326,14 @@ inline Array<Any> EncodeResourcePressureReports(
              Integer(report->per_core_l1_buffer_bytes));
     item.Set("max_simultaneous_l1_bytes",
              Integer(report->max_simultaneous_l1_bytes));
+    item.Set("cb_id_limit", Integer(report->cb_id_limit));
+    item.Set("worker_l1_budget_bytes",
+             Integer(report->worker_l1_budget_bytes));
+    item.Set("l1_alignment_bytes", Integer(report->l1_alignment_bytes));
+    item.Set("per_core_cb_l1_aligned_bytes",
+             Integer(report->per_core_cb_l1_aligned_bytes));
+    item.Set("l1_alignment_waste_bytes",
+             Integer(report->l1_alignment_waste_bytes));
     item.Set("core_grid_requirement", report->core_grid_requirement);
     item.Set("dram_view_requirement", report->dram_view_requirement);
     item.Set("unsupported_reasons", report->unsupported_reasons);

@@ -257,6 +257,27 @@ Required L1 checks:
 - TT-Metal lock-step / alignment waste estimate when the layout is known
 - memory-report hooks for runtime validation when TT-Sim / TT-Metal exposes them
 
+Status:
+
+- complete for the first production admission gate.
+  `TTHardwareModel`
+  now carries `max_cb_count`
+  and `l1_allocation_alignment_bytes`;
+  `PlanTTCBAlloc`
+  validates CB count and CB L1 usage against target-derived hardware facts;
+  `TTResourcePressureReport`
+  records CB limit,
+  worker L1 budget,
+  L1 alignment,
+  raw and aligned CB bytes,
+  L1 alignment waste,
+  allocator-managed L1 buffer pressure,
+  and max simultaneous L1 pressure;
+  `ValidateTTProgram`
+  rejects CB-id and L1 over-pressure before source / runtime emission.
+  The remaining precision work is runtime memory-report cross-checking and
+  richer reserved / precolored CB class modeling when a workload requires it.
+
 ### Direction 4: Make Core And Buffer Placement Hardware-Aware
 
 Core placement must stop treating the Blackhole grid as a fixed source-level
@@ -338,6 +359,7 @@ The revised order is:
    and make validators / typed unsupported reasons consume the result.
 2. Upgrade CB allocation and L1 admission using arch-aware limits and
    live-interval allocation.
+   This is complete for the first production gate.
 3. Replace hard-coded core grid and unit buffer placement with
    hardware-model-backed core groups and explicit buffer distribution choices.
 4. Re-enter wider runtime admission:

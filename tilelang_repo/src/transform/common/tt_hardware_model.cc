@@ -125,7 +125,9 @@ TTHardwareModel::TTHardwareModel(ffi::String arch_name, ffi::String descriptor_p
                                  int64_t logical_worker_grid_x, int64_t logical_worker_grid_y,
                                  int64_t functional_worker_count, int64_t router_only_count,
                                  int64_t dram_view_count, int64_t worker_l1_size,
-                                 int64_t dram_view_size, bool noc_translation_id_enabled,
+                                 int64_t dram_view_size, int64_t max_cb_count,
+                                 int64_t l1_allocation_alignment_bytes,
+                                 bool noc_translation_id_enabled,
                                  int64_t unpacker_version, int64_t packer_version,
                                  int64_t overlay_version) {
   auto n = ffi::make_object<TTHardwareModelNode>();
@@ -138,6 +140,8 @@ TTHardwareModel::TTHardwareModel(ffi::String arch_name, ffi::String descriptor_p
   n->dram_view_count = dram_view_count;
   n->worker_l1_size = worker_l1_size;
   n->dram_view_size = dram_view_size;
+  n->max_cb_count = max_cb_count;
+  n->l1_allocation_alignment_bytes = l1_allocation_alignment_bytes;
   n->noc_translation_id_enabled = noc_translation_id_enabled;
   n->unpacker_version = unpacker_version;
   n->packer_version = packer_version;
@@ -153,9 +157,14 @@ TTHardwareModel BuildBlackholeTTHardwareModel(const Target& target) {
   const std::string arch_name =
       MatchString(descriptor_text, R"(arch_name:\s*([A-Za-z0-9_]+))").value_or("BLACKHOLE");
   const int64_t worker_l1_size =
-      MatchInt(descriptor_text, R"(worker_l1_size:\s*([0-9]+))").value_or(1572864);
+      GetTargetIntAttr(
+          target, "worker_l1_size",
+          MatchInt(descriptor_text, R"(worker_l1_size:\s*([0-9]+))").value_or(1572864));
   const int64_t dram_view_size =
       MatchInt(descriptor_text, R"(dram_view_size:\s*([0-9]+))").value_or(4278190080LL);
+  const int64_t max_cb_count = GetTargetIntAttr(target, "max_cb_count", 32);
+  const int64_t l1_allocation_alignment_bytes =
+      GetTargetIntAttr(target, "l1_allocation_alignment_bytes", 32);
   const int64_t functional_worker_count =
       descriptor_text.empty() ? logical_worker_grid_x * logical_worker_grid_y
                               : CountMatches(ExtractSection(descriptor_text, "functional_workers"),
@@ -182,6 +191,7 @@ TTHardwareModel BuildBlackholeTTHardwareModel(const Target& target) {
   return TTHardwareModel(String(arch_name), String(descriptor_path), logical_worker_grid_x,
                          logical_worker_grid_y, functional_worker_count, router_only_count,
                          dram_view_count, worker_l1_size, dram_view_size,
+                         max_cb_count, l1_allocation_alignment_bytes,
                          noc_translation_id_enabled, unpacker_version, packer_version,
                          overlay_version);
 }
@@ -203,15 +213,19 @@ TVM_FFI_STATIC_INIT_BLOCK() {
                            int64_t logical_worker_grid_x, int64_t logical_worker_grid_y,
                            int64_t functional_worker_count, int64_t router_only_count,
                            int64_t dram_view_count, int64_t worker_l1_size,
-                           int64_t dram_view_size, bool noc_translation_id_enabled,
+                           int64_t dram_view_size, int64_t max_cb_count,
+                           int64_t l1_allocation_alignment_bytes,
+                           bool noc_translation_id_enabled,
                            int64_t unpacker_version, int64_t packer_version,
                            int64_t overlay_version) {
                           return TTHardwareModel(
                               std::move(arch_name), std::move(descriptor_path),
                               logical_worker_grid_x, logical_worker_grid_y,
                               functional_worker_count, router_only_count, dram_view_count,
-                              worker_l1_size, dram_view_size, noc_translation_id_enabled,
-                              unpacker_version, packer_version, overlay_version);
+                              worker_l1_size, dram_view_size, max_cb_count,
+                              l1_allocation_alignment_bytes,
+                              noc_translation_id_enabled, unpacker_version, packer_version,
+                              overlay_version);
                         });
 }
 

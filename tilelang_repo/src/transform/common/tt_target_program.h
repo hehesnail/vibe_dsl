@@ -258,6 +258,11 @@ class TTResourcePressureReportNode : public Object {
   int64_t per_core_cb_l1_bytes = 0;
   int64_t per_core_l1_buffer_bytes = 0;
   int64_t max_simultaneous_l1_bytes = 0;
+  int64_t cb_id_limit = 0;
+  int64_t worker_l1_budget_bytes = 0;
+  int64_t l1_alignment_bytes = 0;
+  int64_t per_core_cb_l1_aligned_bytes = 0;
+  int64_t l1_alignment_waste_bytes = 0;
   ffi::String core_grid_requirement;
   ffi::String dram_view_requirement;
   ffi::Array<ffi::String> unsupported_reasons;
@@ -276,6 +281,9 @@ class TTResourcePressureReport : public ObjectRef {
       ffi::Array<TTTileComputeMaterializationDemand> required_materializations,
       int64_t per_core_cb_id_pressure, int64_t per_core_cb_l1_bytes,
       int64_t per_core_l1_buffer_bytes, int64_t max_simultaneous_l1_bytes,
+      int64_t cb_id_limit, int64_t worker_l1_budget_bytes,
+      int64_t l1_alignment_bytes, int64_t per_core_cb_l1_aligned_bytes,
+      int64_t l1_alignment_waste_bytes,
       ffi::String core_grid_requirement, ffi::String dram_view_requirement,
       ffi::Array<ffi::String> unsupported_reasons);
   TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(TTResourcePressureReport,

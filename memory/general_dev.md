@@ -1748,3 +1748,13 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   and distribution counters.
   Do not rebuild production resource demand from the reduced post-selection
   DAG.
+- 2026-04-29 CB / L1 resource admission:
+  do not let `TTResourcePressureReport`
+  become another diagnostic dump.
+  Hardware facts that affect admission belong in `TTHardwareModel`
+  and must be copied into the typed report so `ValidateTTProgram`
+  can fail closed before codegen.
+  `PlanTTCBAlloc`
+  and the report validator should read the same CB-count / worker-L1 /
+  L1-alignment facts; stale local constants are only defaults when no target
+  model exists.

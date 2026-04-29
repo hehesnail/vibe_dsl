@@ -311,6 +311,15 @@ void TTResourcePressureReportNode::RegisterReflection() {
               &TTResourcePressureReportNode::per_core_l1_buffer_bytes)
       .def_ro("max_simultaneous_l1_bytes",
               &TTResourcePressureReportNode::max_simultaneous_l1_bytes)
+      .def_ro("cb_id_limit", &TTResourcePressureReportNode::cb_id_limit)
+      .def_ro("worker_l1_budget_bytes",
+              &TTResourcePressureReportNode::worker_l1_budget_bytes)
+      .def_ro("l1_alignment_bytes",
+              &TTResourcePressureReportNode::l1_alignment_bytes)
+      .def_ro("per_core_cb_l1_aligned_bytes",
+              &TTResourcePressureReportNode::per_core_cb_l1_aligned_bytes)
+      .def_ro("l1_alignment_waste_bytes",
+              &TTResourcePressureReportNode::l1_alignment_waste_bytes)
       .def_ro("core_grid_requirement",
               &TTResourcePressureReportNode::core_grid_requirement)
       .def_ro("dram_view_requirement",
@@ -326,6 +335,9 @@ TTResourcePressureReport::TTResourcePressureReport(
     ffi::Array<TTTileComputeMaterializationDemand> required_materializations,
     int64_t per_core_cb_id_pressure, int64_t per_core_cb_l1_bytes,
     int64_t per_core_l1_buffer_bytes, int64_t max_simultaneous_l1_bytes,
+    int64_t cb_id_limit, int64_t worker_l1_budget_bytes,
+    int64_t l1_alignment_bytes, int64_t per_core_cb_l1_aligned_bytes,
+    int64_t l1_alignment_waste_bytes,
     ffi::String core_grid_requirement, ffi::String dram_view_requirement,
     ffi::Array<ffi::String> unsupported_reasons) {
   auto n = ffi::make_object<TTResourcePressureReportNode>();
@@ -340,6 +352,11 @@ TTResourcePressureReport::TTResourcePressureReport(
   n->per_core_cb_l1_bytes = per_core_cb_l1_bytes;
   n->per_core_l1_buffer_bytes = per_core_l1_buffer_bytes;
   n->max_simultaneous_l1_bytes = max_simultaneous_l1_bytes;
+  n->cb_id_limit = cb_id_limit;
+  n->worker_l1_budget_bytes = worker_l1_budget_bytes;
+  n->l1_alignment_bytes = l1_alignment_bytes;
+  n->per_core_cb_l1_aligned_bytes = per_core_cb_l1_aligned_bytes;
+  n->l1_alignment_waste_bytes = l1_alignment_waste_bytes;
   n->core_grid_requirement = std::move(core_grid_requirement);
   n->dram_view_requirement = std::move(dram_view_requirement);
   n->unsupported_reasons = std::move(unsupported_reasons);
@@ -1228,6 +1245,9 @@ TVM_FFI_STATIC_INIT_BLOCK() {
              required_materializations,
          int64_t per_core_cb_id_pressure, int64_t per_core_cb_l1_bytes,
          int64_t per_core_l1_buffer_bytes, int64_t max_simultaneous_l1_bytes,
+         int64_t cb_id_limit, int64_t worker_l1_budget_bytes,
+         int64_t l1_alignment_bytes, int64_t per_core_cb_l1_aligned_bytes,
+         int64_t l1_alignment_waste_bytes,
          ffi::String core_grid_requirement, ffi::String dram_view_requirement,
          ffi::Array<ffi::String> unsupported_reasons) {
         return TTResourcePressureReport(
@@ -1235,7 +1255,9 @@ TVM_FFI_STATIC_INIT_BLOCK() {
             core_group_index, std::move(tile_compute_unsupported_reasons),
             std::move(required_materializations), per_core_cb_id_pressure,
             per_core_cb_l1_bytes, per_core_l1_buffer_bytes,
-            max_simultaneous_l1_bytes, std::move(core_grid_requirement),
+            max_simultaneous_l1_bytes, cb_id_limit, worker_l1_budget_bytes,
+            l1_alignment_bytes, per_core_cb_l1_aligned_bytes,
+            l1_alignment_waste_bytes, std::move(core_grid_requirement),
             std::move(dram_view_requirement), std::move(unsupported_reasons));
       });
   refl::GlobalDef().def(

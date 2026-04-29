@@ -8,7 +8,7 @@
 
 - Date: `2026-04-29`
 - Active lane:
-  `CB / L1 resource admission upgrade`
+  `Core / buffer placement hardware-model upgrade`
 - Current state:
   `AccessRegion`,
   graph-backed `SpatialPlan` dependence,
@@ -46,18 +46,24 @@
   carried as typed TTProgram fields,
   validated by `ValidateTTProgram`,
   and projected into `ExecutableSpec`.
-  CB planning is useful but partial;
-  core placement and buffer distribution remain basic and need hardware-model
+  CB / L1 resource admission now uses hardware-model-backed CB count,
+  worker L1 budget,
+  and L1 alignment facts in both `PlanTTCBAlloc`
+  and `TTResourcePressureReport`.
+  `ValidateTTProgram`
+  rejects over-CB and over-L1 reports before source / runtime emission,
+  and executable projection carries the admission facts.
+  Core placement and buffer distribution remain basic and need hardware-model
   backed planning before wider runtime admission resumes.
 - Current blocker:
-  CB / L1 admission is still coarse:
-  CB ID pressure and CB L1 bytes are reported,
-  but CB limits are not yet arch-aware,
-  CB reuse is not a live-interval allocator,
-  allocator-managed L1 buffer pressure is not included,
-  and worker L1 budget is not enforced through the resource pressure report;
-  wider runtime admission remains blocked until resource pressure can fail
-  closed before source / runtime emission.
+  core / buffer placement is still coarse:
+  `PlanTTCoreGroups`
+  still routes through a hard-coded grid path,
+  and `TTBufferDistributionPlan`
+  remains mostly `unit_mesh` / `replicated`.
+  Wider runtime admission remains blocked until core groups and buffer
+  placement consume `TTHardwareModel`
+  facts and can fail closed before source / runtime emission.
 - Main chain:
   `Normalized Tile TIR -> SpatialPlan -> TTProgram -> ExecutableSpec`
 
@@ -114,6 +120,19 @@
   validators consume the reports,
   and executable projection carries
   `resource_pressure_reports`.
+- Hardware-backed CB / L1 resource admission:
+  `TTHardwareModel`
+  carries CB count and L1 alignment facts;
+  `PlanTTCBAlloc`
+  uses target-derived CB and worker-L1 limits;
+  `TTResourcePressureReport`
+  records hardware limits,
+  aligned CB bytes,
+  alignment waste,
+  allocator-managed L1 buffer pressure,
+  and max simultaneous L1 pressure;
+  `ValidateTTProgram`
+  rejects CB and L1 over-pressure.
 
 ## Support Boundary
 
@@ -134,15 +153,11 @@
 
 ## Open Debt
 
-- CB allocation needs arch-aware limits and live-interval allocation.
-  Blackhole / Wormhole CB limits must come from target / hardware-model facts,
-  not stale fixed constants.
-- L1 admission currently checks only coarse pressure.
-  It needs explicit CB bytes,
-  allocator-managed L1 buffer pressure,
-  worker L1 budget,
-  lock-step / alignment estimates,
-  and memory-report validation hooks.
+- CB / L1 admission still has future precision work:
+  reserved / precolored CB class modeling can be made more explicit,
+  L1 buffer sizing is still a conservative plan-level estimate,
+  and runtime memory-report hooks should be wired when TT-Sim / TT-Metal
+  exposes a stable report interface.
 - Core placement still relies on a hard-coded grid path.
   It must consume `TTHardwareModel`
   and produce safe logical-coordinate core groups /
@@ -163,19 +178,13 @@
 
 ## Next Task Order
 
-1. Upgrade CB / L1 admission:
-   arch-aware CB limits,
-   live-interval CB ID allocation,
-   per-core L1 pressure,
-   lock-step / alignment estimates,
-   and memory-report validation where available.
-2. Upgrade core and buffer placement:
+1. Upgrade core and buffer placement:
    use `TTHardwareModel`
    for worker grid / L1 / DRAM facts,
    produce safe logical-coordinate core groups,
    and expand `TTBufferDistributionPlan`
    beyond `unit_mesh` / `replicated`.
-3. Resume wider runtime admission:
+2. Resume wider runtime admission:
    re-admit multi-block flash-attn direct runtime,
    then wider exact-CB events,
    mesh / distributed runtime,
@@ -184,26 +193,29 @@
 ## Latest Verification
 
 - Current implementation:
-  added typed
-  `TTTileComputeFanoutDemand`,
-  `TTTileComputeMaterializationDemand`,
-  `TTResourceDemand`,
-  and `TTResourcePressureReport`;
-  captured the full pre-selection
-  `TileComputeDAG`
-  demand at `TTProgram` level;
-  refreshed resource counters through later TTProgram planning phases;
-  made `ValidateTTProgram`
-  require matching pressure reports and reject typed unsupported reasons;
-  and projected
-  `resource_pressure_reports`
-  into the executable spec.
+  upgraded CB / L1 resource admission to consume hardware-model facts.
+  `TTHardwareModel`
+  now records `max_cb_count`
+  and `l1_allocation_alignment_bytes`;
+  `PlanTTCBAlloc`
+  validates against target-derived CB / worker-L1 limits;
+  `TTResourcePressureReport`
+  records CB limit,
+  worker L1 budget,
+  L1 alignment,
+  aligned CB bytes,
+  alignment waste,
+  L1 buffer pressure,
+  and max simultaneous L1 bytes;
+  `ValidateTTProgram`
+  rejects CB-id and L1 over-pressure;
+  and executable projection carries the new admission facts.
 - Verification:
   `cd tilelang_repo && cmake --build build -j32`
   passed.
-  `cd tilelang_repo && python -m pytest testing/python/transform/test_blackhole_spatial_ir.py -k 'validate_tt_program_consumes_typed_resource_pressure_report' -q`
-  passed with `1 passed, 71 deselected`.
+  `cd tilelang_repo && python -m pytest testing/python/transform/test_blackhole_spatial_ir.py -k 'executable_projection_carries_resource_pressure_report or resource_pressure_report_carries_hardware_cb_l1_admission_facts or validate_tt_program_rejects_cb_id_pressure_over_hardware_limit or validate_tt_program_rejects_l1_pressure_over_worker_budget' -q`
+  passed with `4 passed, 71 deselected`.
   `cd tilelang_repo && python -m pytest testing/python/transform/test_blackhole_spatial_ir.py -q`
-  passed with `72 passed`.
+  passed with `75 passed`.
   `cd tilelang_repo && python -m pytest testing/python/target/blackhole/test_blackhole_gemm.py::test_blackhole_executable_projection_has_no_plan_local_payload_records testing/python/target/blackhole/test_blackhole_flash_attention_pipeline.py::test_flash_attention_forward_tt_target_emits_typed_tt_program_without_payload -q`
   passed with `2 passed`.
