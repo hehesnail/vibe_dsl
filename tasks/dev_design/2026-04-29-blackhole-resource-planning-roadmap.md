@@ -40,6 +40,11 @@ mature hardware-aware resource planner.
   is valid only as a pass-local compute-selection model.
   Its durable output must be typed plans and typed unsupported reasons,
   not a persisted DAG payload or a replacement scheduler.
+  It also must not become a composite expression lowerer:
+  input nodes must already be explicit TT-Metal leaf compute semantics in
+  `Normalized Tile TIR`.
+  Source hooks selected by DAG covering are leaf projections,
+  not permission to expand one source node into several semantic compute ops.
   At current repo HEAD,
   DAG-wide fanout /
   materialization /
@@ -105,7 +110,7 @@ They form a dependency-shaped roadmap.
 Scope:
 
 - pass-local compute legalization and covering only
-- input from preserved tile compute semantics,
+- input from explicit preserved leaf tile compute semantics,
   `AccessRegion`,
   `LiveValueSSA`,
   and validated planning context
@@ -123,6 +128,11 @@ Non-scope:
 - no core placement
 - no NoC scheduling
 - no persisted DAG payload
+- no composite-to-leaf lowering
+- no leaf-looking composite payloads such as
+  `exp2_tile(mode, ...)`
+  or
+  `mul_tiles_bcast_cols("div", ...)`
 - no source-emitter branch maze that simply wraps the old per-op logic
 
 Immediate requirement:

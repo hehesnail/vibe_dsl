@@ -1376,6 +1376,13 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   `ExecutableSpec.compute_ops`, or source/codegen protocol. Exact compute
   truth should be recorded at TT-Metal API granularity such as `mul_tiles`,
   `add_tiles`, `*_bcast_cols`, `exp2_tile`, and `pack_tile`.
+  Do not stop at deleting the old names:
+  leaf-looking payloads such as
+  `exp2_tile(mode, lhs, rhs, scale, ...)`
+  or
+  `mul_tiles_bcast_cols("div", ...)`
+  are the same violation if they encode composite semantics.
+  The fix is explicit leaf TIR sequence normalization before DAG covering.
 - For exact CB live-form republish, distinguish total CB capacity from
   per-event lifetime and from runtime correctness admission. Seq64 flash-attn
   uses multi-page CBs and has compile/source/spec support for one-page
@@ -1708,6 +1715,9 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   and make source emitters that are not admitted as standalone explicit calls
   fail closed before emission instead of falling back to branch-only
   lowering.
+  The hook registry is only a leaf projection table;
+  it must not become the place where one source node expands into multiple
+  semantic compute plans.
 - 2026-04-28 Tile compute covering implementation cleanup:
   after the selector is active,
   the next useful code cleanup is not an OOP strategy hierarchy;
@@ -1764,14 +1774,27 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   For Blackhole tile compute,
   source lowering should consume a pass-local DAG lower plan,
   and exact compute plans should carry the source DAG node /
-  source emitter /
+  leaf source hook /
   materialization /
   fanout decision into `TTComputeOpPlan`
   and executable projection.
-  Do not validate `tile_compute_source_emitter`
-  by comparing it to every emitted leaf op:
-  one source DAG decision such as `exp2_tile`
-  can legitimately expand into several leaf compute ops.
+  Boundary correction:
+  that source hook must be one-to-one with the semantic leaf op selected for
+  the DAG node.
+  It is invalid for one source DAG decision such as a leaf-looking
+  `exp2_tile`
+  call to expand into several semantic leaf compute ops.
+  Composite TIR expressions such as
+  `exp2(lhs * s0 - rhs * s1)`
+  or row-broadcast division must first be decomposed into explicit
+  `Normalized Tile TIR`
+  leaf statements.
+  If a computation is not admitted,
+  classify it as
+  `lowering_missing`,
+  `backend_op_missing`,
+  `admission_blocked`,
+  or true semantic unsupported only after TT-Metal primitive coverage audit.
   Also do not assume `CollectExecutionOrderedStmts`
   order is identical to `StmtMutator`
   visitation in select-only phases;

@@ -84,6 +84,17 @@
   - 不引入新的 IR 层、
     downstream matcher
     或跨阶段 side-channel
+  - `2026-04-29`
+    boundary review
+    后补充：
+    该 normalizer
+    必须把可表达的复合 TIR expression
+    显式分解成 leaf tile-compute TIR sequence；
+    不能产生
+    `exp2_tile(mode, lhs, rhs, scale, ...)`
+    或
+    `mul_tiles_bcast_cols("div", ...)`
+    这类 leaf-looking composite payload。
 
 当前 Blackhole algorithmic generalization
 的任务级设计记录为：
@@ -163,9 +174,11 @@ DAG covering
     public header
     不暴露 durable DAG covering object，
     source emission
-    仍只通过 selected leaf pattern
-    `source_emitter`
-    物化；
+    只能通过 selected leaf pattern
+    hook
+    物化同一个 semantic leaf op；
+    不能通过 hook
+    做 composite expression lowering；
     DAG-wide fanout /
     materialization /
     unsupported covering reasons
@@ -180,11 +193,29 @@ DAG covering
     `TileComputeDAG`
     lower plan，
     并把 DAG node /
-    source emitter /
+    source hook /
     materialization /
     fanout 决策写进
     `TTComputeOpPlan`
     和 executable projection；
+    但
+    `2026-04-29`
+    boundary review
+    发现当前 repo HEAD
+    仍有 composite payload
+    残留：
+    `exp2_tile`
+    source decision
+    和
+    row-broadcast division
+    不能继续由
+    `TileComputeDAG`
+    /
+    source hook
+    展开，
+    必须迁回
+    `Normalized Tile TIR`
+    显式 leaf sequence；
     只有影响 typed resource demand /
     typed plans /
     unsupported diagnostics

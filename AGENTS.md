@@ -367,14 +367,21 @@ cd <当前 checkout 或 worktree>/tilelang_repo
 - 当前总体 blocker
   统一以 `tasks/progress.md`
   里的主线任务状态为准；
-  当前问题不是单一 runtime gate；
-  当前下一步是完成
-  `Algorithmic generalization Phase E`
-  剩余 decision-use cutover：
-  wider subject-map deletion、
-  graph-wide worklist/lattice solver、
-  TTProgram / ExecutableSpec
-  projection admission audit
+  当前首先要修复
+  tile-compute source lowering
+  中的 composite pseudo-leaf residue：
+  `exp2_tile(mode, lhs, rhs, scale, ...)`
+  和
+  `mul_tiles_bcast_cols("div", ...)`
+  不能继续作为 leaf-looking payload
+  或 source hook expansion
+  存在；
+  相关 TIR 计算必须在
+  `Normalized Tile TIR`
+  中显式分解成 TT-Metal leaf op sequence，
+  再交给
+  `TileComputeDAG`
+  做 leaf covering
 - Algorithmic generalization
   必须同时遵守：
   - anti-overdesign pay-rent rule：
@@ -383,6 +390,9 @@ cd <当前 checkout 或 worktree>/tilelang_repo
     typed plan /
     unsupported diagnostic
     或删除旧 matcher/helper/payload/fallback
+    但不能为了 pay rent
+    把 analysis / DAG
+    变成 composite lowering owner
   - problem-family generality rule：
     当前 workload case
     只能作为 active-chain witness，

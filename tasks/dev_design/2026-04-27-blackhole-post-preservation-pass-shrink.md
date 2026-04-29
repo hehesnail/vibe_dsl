@@ -41,6 +41,14 @@ Normalized Tile TIR -> SpatialPlan -> TTProgram -> ExecutableSpec
   `row_broadcast_affine`,
   `GenerateScalar*`
   这类 composite protocol surface。
+  也不能把 composite semantics
+  藏进 leaf-looking payload
+  或 hook：
+  `exp2_tile(mode, lhs, rhs, scale, ...)`
+  /
+  `mul_tiles_bcast_cols("div", ...)`
+  与旧 composite helper 名
+  属于同一类设计违规。
 - 文件拆分不能改变 validator 纪律：
   跨阶段 truth 必须继续通过 typed
   `SpatialPlan` /

@@ -13,17 +13,18 @@ legalizer + DAG covering
 里的 TT-Metal leaf API 粒度 compute preservation：
 
 ```text
-tile compute semantics
-  -> TileComputeDAG
+TIR scalar expression / generic tile op semantics
+  -> explicit leaf tile-compute TIR normalization
+  -> TileComputeDAG over explicit leaf nodes
   -> legalization
-  -> canonical DAG
   -> target leaf pattern covering
-  -> TTComputeOpPlan / source sequence
+  -> TTComputeOpPlan / leaf source sequence
 ```
 
 它不是新的长期 IR 层。
 `TileComputeDAG`
-是 `Normalized Tile TIR`
+是显式 leaf
+`Normalized Tile TIR`
 到 `TTProgram.compute_op_plans`
 之间的 pass-local selection model；
 如果某个选择结果需要跨阶段保留，
@@ -37,26 +38,50 @@ tile compute semantics
 `TTMaterializationPlan`
 中。
 
+`TileComputeDAG`
+不负责把 composite TIR expression
+展开为多个 target leaf op。
+这类展开必须发生在
+`Normalized Tile TIR`
+normalization 边界，
+输出为多个显式
+`tl.tileop.blackhole_compute`
+leaf statements
+或等价的 generic tile-op leaf statements。
+DAG covering
+只能覆盖这些已经显式存在的 leaf nodes，
+不能把一个 source node
+解释成一个会在 source emission
+阶段继续产生多条 semantic compute op
+的 composite decision。
+
 `2026-04-29` 收缩后再固定一条：
 `TileComputeDAG`
 不能只把 fanout /
 materialization
 结果送进 resource admission。
 凡是 DAG covering 决定了 leaf pattern、
-source emitter、
+leaf source hook、
 materialization policy
 或 fanout policy，
 这些决定必须写入 typed lower plan，
 至少进入
 `TTComputeOpPlan`
 的 DAG node /
-source emitter /
+leaf source hook /
 materialization /
 fanout 字段，
 并由 executable projection 继续携带。
 source lowering 只能消费这份 pass-local DAG lower plan；
 不能在 explicit tile-compute source path
 重新按 operation name 做第二次 production selection。
+但该 lower plan
+只能选择当前 leaf node
+对应的 leaf source hook，
+不能授权 source hook
+展开成多个 semantic
+`TTComputeOpPlan`
+或多个不同 operation family。
 
 当前实现状态：
 
@@ -68,10 +93,10 @@ source lowering 只能消费这份 pass-local DAG lower plan；
   DAG lower plan，
   `LowerExplicitTileComputeCall`
   消费该 plan 中的 selected covering
-  决定 source emitter。
+  决定 leaf source hook。
 - DAG-driven exact compute
   会把 source DAG node id、
-  source emitter、
+  source hook、
   materialization policy、
   fanout use count
   和 fanout policy
@@ -80,23 +105,32 @@ source lowering 只能消费这份 pass-local DAG lower plan；
   `ExecutableSpec`
   投影继续携带这些字段。
 - `ValidateTTProgram`
-  分别校验实际 emitted leaf op
-  的 legality
-  和 source DAG covering
-  的 materialization policy。
-  这点很重要：
-  一个 source DAG 节点
-  如 `exp2_tile`
-  可能展开成多个 leaf op
-  如 `mul_tiles`
-  /
-  `add_tiles`
-  /
-  `exp2_tile`，
-  因此 `TTComputeOpPlan.operation_name`
-  表示实际 leaf op，
-  `tile_compute_source_emitter`
-  表示驱动该展开的 source DAG decision。
+  必须校验 DAG source node、
+  selected covering、
+  `TTComputeOpPlan.operation_name`
+  和 source hook
+  都指向同一个 semantic leaf op。
+  一个 DAG source node
+  不能合法展开成多个不同
+  `TTComputeOpPlan.operation_name`
+  entry；
+  如果需要多步 lowering，
+  这些步骤必须已经在
+  `Normalized Tile TIR`
+  中显式拆成多个 leaf nodes。
+
+Boundary correction (`2026-04-29`):
+repo HEAD still contains implementation residue that violates this contract.
+The known residues are composite
+`exp2(lhs * s0 - rhs * s1)`
+packed behind an `exp2_tile`-named source call,
+and row-broadcast division packed behind
+`mul_tiles_bcast_cols("div", ...)`.
+They are not accepted design.
+The repair target is deletion of those pseudo-leaf payloads,
+replacement with explicit leaf TIR normalization,
+and validator enforcement that DAG-driven source hooks are one-to-one with
+semantic leaf plans.
 
 ## References
 
@@ -153,8 +187,12 @@ source lowering 只能消费这份 pass-local DAG lower plan；
   不改写 TIR、
   不发 source；
   只有 selected pattern
-  的 emitter 可以物化 typed plans
-  和 source sequence。
+  的 leaf source hook
+  可以把已经选择好的一个 semantic leaf op
+  投影成 source micro-sequence
+  和对应 typed plan metadata。
+  它不能承担 expression decomposition
+  或 composite-to-leaf lowering。
 - LLVM VPlan
   把多个 transformation candidates
   放进显式 plan，
@@ -172,6 +210,12 @@ source lowering 只能消费这份 pass-local DAG lower plan；
   fanout /
   event-lifetime-sensitive
   选择可审计。
+  复杂 epilogue
+  如果包含多条 semantic compute op，
+  必须先在
+  `Normalized Tile TIR`
+  中变成多条显式 leaf statements，
+  再进入 DAG covering。
 - LLVM LoopAccessAnalysis
   的经验是：
   access legality query
@@ -191,7 +235,7 @@ source lowering 只能消费这份 pass-local DAG lower plan；
   的前提。
   对应本设计，
   `TileComputeDAG`
-  的输入必须是 preserved tile compute semantics
+  的输入必须是 explicit preserved leaf tile compute semantics
   加 `AccessRegion` /
   `LiveValueSSA`
   证据，
@@ -206,6 +250,23 @@ source lowering 只能消费这份 pass-local DAG lower plan；
   `exp2_affine`,
   `row_broadcast_exp2_affine`
   等不能进入生产 compute protocol。
+- 不把 composite semantics
+  伪装成 leaf operation payload：
+  `exp2_tile(mode, lhs, rhs, scale, ...)`
+  和
+  `mul_tiles_bcast_cols("div", ...)`
+  这类 leaf-looking composite source call
+  与 composite operation name
+  同样禁止。
+- 不把
+  `TileComputeDAG`
+  或 source emitter
+  当成 expression normalizer。
+  TIR expression
+  到多条 TT-Metal leaf op
+  的分解必须发生在
+  `Normalized Tile TIR`
+  normalization 边界。
 - 不把 DAG covering 结果作为新的 cross-pass payload。
 - 不绕开
   `SpatialPlan`
@@ -243,6 +304,19 @@ source lowering 只能消费这份 pass-local DAG lower plan；
 - 增加新 compute 类型时，
   容易复制一整套 branch，
   而不是添加一条 declarative-ish pattern。
+- repo HEAD
+  还存在一个更严重的边界错误：
+  某些复合 TIR 表达式
+  被压进 leaf-looking
+  `tl.tileop.blackhole_compute`
+  payload，
+  然后由 source hook
+  在 `PlanTTKernelABI`
+  阶段展开成多条 semantic leaf op。
+  这不是合法 covering；
+  它必须改为
+  `Normalized Tile TIR`
+  中的显式 leaf sequence。
 
 后续复杂模式需要更通用的选择机制：
 
@@ -252,6 +326,14 @@ source lowering 只能消费这份 pass-local DAG lower plan；
 - exact-CB event lifetime-sensitive choice
 - dtype / accumulator / fragment form choice
 - pack / tilize / untilize placement
+
+其中 multi-step epilogue
+表示 DAG 可以在多个显式 leaf nodes
+之间做 legality /
+fanout /
+materialization reasoning，
+不表示一个 source leaf node
+可以隐藏多步 semantic lowering。
 
 ## End State
 
@@ -616,6 +698,11 @@ Primary checks:
    Pattern covering chooses among legal leaf patterns.
    Source emission is a mechanical projection of the selected typed
    plans and pattern IDs.
+   If legalization says a TIR expression needs lowering into multiple
+   semantic leaf ops,
+   that lowering target is explicit
+   `Normalized Tile TIR`,
+   not a source emitter side effect.
 
 4. Leaf granularity is preserved.
    `TTComputeOpPlan.operation_name`
@@ -633,17 +720,31 @@ Primary checks:
    `exp2_affine`,
    and row-broadcast affine variants
    stay out of the production protocol.
+   Leaf-looking source calls with composite payloads are also forbidden:
+   operation name,
+   operand role schema,
+   and source hook
+   must describe the same single TT-Metal semantic leaf.
 
 5. Lowering is an explicit information trade.
-   DAG covering may freeze a target leaf sequence,
+   TIR normalization may freeze a target leaf sequence,
+   explicit logical temps,
+   and semantic copy/materialization requirements.
+   DAG covering may then freeze target leaf pattern choices,
    operand forms,
    and materialization points,
    but it must preserve enough typed evidence for validators,
    source projection,
    and runtime admission to audit the decision.
    If event lifetime or live-form source cannot be proven,
-   the candidate is unsupported,
+   the candidate is admission-blocked,
    not merely expensive.
+   This is distinct from semantic unsupported:
+   before using an unsupported diagnostic for compute semantics,
+   the backend must audit whether TT-Metal already has the primitive,
+   whether the Blackhole wrapper/codegen has failed to expose it,
+   or whether existing leaf ops can express the value through an explicit
+   TIR sequence.
 
 6. Compiler practice alignment:
    the design borrows SelectionDAG-style
@@ -725,9 +826,11 @@ Implementation status:
   `BlackholeTileComputeDAGCovering`
   production object
 - explicit source emission continues through selected leaf pattern
-  `source_emitter`
+  source hooks
   hooks,
-  without a separate operation-name dispatch chain or active DAG decision guard
+  but the current implementation must still be repaired so each hook is
+  one-to-one with its semantic leaf op and cannot expand composite payloads
+  into multiple compute plans
 - static tests guard these boundaries before wider resource-planning expands
 - DAG-wide fanout /
   materialization /
@@ -741,6 +844,17 @@ Implementation status:
   and executable projection carries
   `resource_pressure_reports`.
   The DAG itself remains pass-local and is still not a durable planning layer.
+
+The source-lowering repair has priority over wider production migration:
+before this lane can be considered architecturally clean,
+`exp2_tile` composite payloads,
+`mul_tiles_bcast_cols("div", ...)`,
+and any source hook that records multiple semantic
+`TTComputeOpPlan`
+entries for one DAG source node
+must be deleted or moved into explicit
+`Normalized Tile TIR`
+leaf normalization.
 
 ## Global Task Order
 
@@ -841,9 +955,12 @@ source dispatch,
 and
 `ValidateTTProgram`
 through covering selection.
-The remaining low-level source emitter functions are hook targets selected
-from pattern metadata; they are no longer selected by an independent inline
-per-op dispatch table.
+The remaining low-level source hooks are hook targets selected
+from pattern metadata; they must be leaf projections only,
+not composite lowering owners.
+Any hook that records multiple semantic
+`TTComputeOpPlan`
+entries for one source DAG node is a violation of this phase's contract.
 
 Files:
 
@@ -910,7 +1027,8 @@ Completion gate:
 
 ### Phase C: Local DAG Covering For Current Ops
 
-Status: complete in repo HEAD for the admitted compute surface.
+Status: partially complete in repo HEAD for the admitted compute surface,
+with a required boundary repair.
 Covering selection gates typed compute-plan recording,
 GEMM
 `matmul_tiles`
@@ -921,22 +1039,26 @@ and
 before an operation is accepted.
 Pattern metadata carries the selected
 `source_emitter`
-hook and explicit source dispatch uses that hook.
+implementation hook and explicit source dispatch uses that hook.
+This field is only a leaf projection hook name;
+it is not a semantic owner.
 The old operation-name dispatch chain and add/mul operation-name
 builtin-selection branch have been deleted from the covered source path.
 `TileComputeDAG`
 now has a typed pass-local C++ builder,
 and DAG covering emits selected pattern IDs,
-source-emitter hooks,
+leaf source hooks,
 local-DP state keys,
 and costs in dependence order.
-Phase E cleanup is complete:
+Phase E cleanup is only mechanically partial:
 explicit source emission now dispatches through the selected
 `source_emitter`
 hook registry,
 generic reduce source lowering enters the same covering path,
 and unsupported standalone explicit-source patterns fail closed after
 selection instead of falling through to an old branch-only emitter path.
+That does not by itself satisfy Phase E while composite payloads can still be
+expanded by selected hooks.
 The implementation now represents operation,
 result kind,
 operand role,
@@ -954,6 +1076,18 @@ enum/string conversion is driven by small lookup tables instead of one switch
 per enum family,
 and pattern call-operand vectors use direct aggregate initialization rather
 than helper wrappers.
+However,
+the current
+`exp2_tile`
+and row-broadcast division source paths demonstrate that the schema did not
+enforce the leaf contract strongly enough:
+pattern operands and selected source hooks can still hide composite payloads.
+The repair target for Phase C is to make pattern operand layouts describe
+true leaf operands only,
+and to reject any selected pattern whose source-call schema contains
+operation-changing `mode` /
+`kind`
+payload.
 
 Files:
 
@@ -973,7 +1107,7 @@ Work:
 3. Reuse existing `ExactTileComputeEmitter`
    as low-level source emitter.
 4. Migrate fill/copy/typecast first.
-5. Migrate binary/broadcast/exp2.
+5. Migrate binary/broadcast/unary leaf ops.
 6. Migrate reduce.
 
 Implementation notes:
@@ -1012,6 +1146,15 @@ Implementation notes:
   It reuses existing low-level source emitter functions only as named hook
   targets after selected-pattern dispatch;
   the separate inline source-emitter table is deleted by Phase E.
+- The selector must not make a composite source decision.
+  If a TIR expression requires
+  `mul_tiles`
+  /
+  `add_tiles`
+  /
+  `exp2_tile`
+  as a sequence,
+  those must be separate leaf nodes before DAG construction.
 - `materialization_policy`
   is selected per pattern and reported by DAG covering.
   Fanout policy is now computed from producer-use edges.
@@ -1081,12 +1224,20 @@ source-live-form choice already comes from
 TT live-form solver evidence,
 and DAG covering now reports materialization/fanout policy without
 selecting stale fallback sources.
+This statement is limited to live-form / fanout evidence;
+it does not admit the Phase E pseudo-leaf composite source paths.
 Direct-runtime correctness for multi-block flash-attn remains a later
 runtime admission task.
 
 ### Phase E: Delete Old Per-Op Selection Branches
 
-Status: complete in repo HEAD for the admitted compute surface.
+Status: not architecturally complete after the
+`2026-04-29`
+boundary review.
+Repo HEAD removed some old operation-name dispatch mechanics,
+but it still preserves composite lowering through leaf-looking source hooks.
+Phase E completion requires deleting those pseudo-leaf paths,
+not merely routing them through a hook registry.
 Pattern metadata is now the single source of truth for explicit tile-compute
 source hook selection.
 `EmitCoveredBlackholeTileCompute`
@@ -1106,8 +1257,10 @@ covering pattern,
 and then emits through the selected reduce hook.
 Pattern entries that are not admitted as standalone explicit
 `tl.tileop.blackhole_compute`
-source calls register fail-closed hooks,
-so adding a pattern cannot silently bypass the selected-emitter gate.
+source calls must have no production source hook.
+Adding a pattern cannot silently bypass the selected-emitter gate,
+and a source hook cannot be used to smuggle a composite expression
+into production lowering.
 
 Files:
 
@@ -1124,7 +1277,11 @@ Work:
    legalizer invocation,
    pattern covering,
    selected pattern emission.
-3. Add static tests preventing
+3. Delete pseudo-leaf composite source hooks:
+   `exp2_tile(mode, lhs, rhs, scale, ...)`,
+   `mul_tiles_bcast_cols("div", ...)`,
+   and any equivalent operation-changing payload.
+4. Add static tests preventing
    duplicate manual selection branches.
 
 Implementation notes:
@@ -1162,6 +1319,13 @@ Implementation notes:
   `EmitExp2TileComputeSource`,
   and
   `EmitReduceTileComputeSource`.
+- This move was not sufficient:
+  `EmitExp2TileComputeSource`
+  and the `div`
+  branch in
+  `EmitMulTilesBcastColsComputeSource`
+  are now classified as deletion targets,
+  because they expand one source decision into multiple semantic leaf plans.
 - Replaced the direct
   `MatchExplicitTileReduce`
   /
@@ -1187,13 +1351,20 @@ Implementation notes:
 Completion gate:
 
 - no old branch-only path remains for admitted ops
+- no leaf-looking source call carries composite semantics
+- one DAG source node records at most one semantic
+  `TTComputeOpPlan.operation_name`,
+  and that operation matches the selected leaf pattern
+- expression decomposition happens before DAG construction as explicit
+  `Normalized Tile TIR`
+  leaf sequence
 - adding a new leaf op requires adding:
   pattern schema,
   legality predicate,
   tests,
-  and source emitter hook
+  and a leaf source hook when a standalone explicit source path is admitted
 
-Repo HEAD satisfies this gate for the admitted compute surface.
+Repo HEAD does not currently satisfy this gate.
 
 ## Cost Model
 
@@ -1210,9 +1381,16 @@ base_instruction_cost
 
 Rules:
 
-- unsupported is never selected
-- missing source-live-form proof is unsupported,
+- semantic unsupported is never selected
+- missing source-live-form proof is
+  `admission_blocked`,
   not high cost
+- missing expression normalization is
+  `lowering_missing`,
+  not semantic unsupported
+- missing TT-Metal wrapper/codegen coverage is
+  `backend_op_missing`,
+  not semantic unsupported
 - exact-CB reuse is cheaper than republish only if
   lifetime proof exists
 - fewer materialization boundaries wins
@@ -1231,6 +1409,9 @@ Rules:
   or TT-local proof that it does not cross stage
 - every source sequence must be traceable to selected
   pattern IDs
+- every DAG-driven source hook must project exactly one semantic leaf op;
+  if a source node needs several leaf ops,
+  those leaf ops must already be explicit TIR nodes before DAG construction
 - source/codegen/runtime must not infer operation
   family from source text
 
@@ -1241,6 +1422,9 @@ Rules:
 - pattern table covers all allowed leaf op names
 - no composite helper names appear in
   `TTComputeOpPlan.operation_name`
+- no composite helper semantics appear behind leaf-looking
+  `tl.tileop.blackhole_compute`
+  payloads
 - admitted ops do not bypass legalizer
 - removed per-op branches do not reappear
 

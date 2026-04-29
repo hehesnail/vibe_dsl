@@ -1231,6 +1231,28 @@ P2.3 closeout contract:
   `exp2_tile`、
   `pack_tile`
   等
+- 这些 leaf 名字不能承载 composite payload。
+  live-form /
+  materialization
+  只决定 logical value
+  何时需要进入 fragment /
+  exact CB /
+  packed form，
+  或何时需要 copy /
+  republish。
+  它不负责把
+  `exp2(lhs * s0 - rhs * s1)`
+  或 row-broadcast division
+  留到 source emission
+  再展开。
+  这类表达式如果可由 TT-Metal leaf ops 表达，
+  必须已经在
+  `Normalized Tile TIR`
+  中分解为显式 leaf sequence；
+  live-form solver
+  只为该 sequence
+  提供 lifetime /
+  materialization evidence。
 - P2.3 closeout gate
   是 seq64 /
   multi-K-step

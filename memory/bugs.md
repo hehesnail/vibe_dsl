@@ -1625,19 +1625,36 @@
     不是这条 direct-runtime
     correctness gate
 - **修法**:
-  - 用 ones tile
+  - 在
+    `Normalized Tile TIR`
+    中显式生成 leaf sequence：
+    ones tile
     经 `mul_tiles_bcast_cols`
-    先构造 full-tile denominator
-  - 对 full tile
-    执行 `recip_tile`
-  - 再用 `mul_tiles`
+    构造 full-tile denominator，
+    full tile
+    执行 `recip_tile`，
+    再用 `mul_tiles`
     完成 division
+  - 不允许把这个 sequence
+    隐藏在
+    `mul_tiles_bcast_cols("div", ...)`
+    或其他 leaf-looking composite payload
+    后面
 - **教训**:
   - 即便高层语义是 row scalar，
     admitted TT-Metal API 粒度仍应落在
     已验证的 tile op 序列上；
     不要为了追求“更小”粒度
     走 simulator 未覆盖的 scalar SFPU path
+  - admission diagnostic
+    不能把 normalizer /
+    builtin coverage
+    缺口直接说成 semantic unsupported；
+    必须先区分
+    `lowering_missing`、
+    `backend_op_missing`
+    和
+    `admission_blocked`
 
 #### exact-output live-form alias 必须随 tiled live-form 更新失效
 

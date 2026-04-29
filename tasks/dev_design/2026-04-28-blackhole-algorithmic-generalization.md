@@ -183,12 +183,51 @@ Normalized Tile TIR -> SpatialPlan -> TTProgram -> ExecutableSpec
   `row_broadcast_exp2_affine`
   这类 composite helper
   重新写进生产协议。
+- 不把 composite helper
+  换皮成 leaf-looking payload
+  重新写进生产协议。
+  Algorithmic structures
+  只能消费显式 IR 事实；
+  不能把一个
+  `TileComputeDAG`
+  node
+  或 source emitter
+  当成隐藏的 composite lowering owner。
 - 不把 runtime/backend admission
   倒灌成上层 planner truth。
 - 不以名字匹配恢复 buffer role、
   reduction role、
   event lifetime
   或 source-live-form。
+
+Boundary correction
+（`2026-04-29`）：
+Algorithmic Generalization
+的 decision-use
+不能靠把 analysis 结果塞进 source hook
+来“起作用”。
+`AccessRegion` /
+dependence graph /
+`LiveValueSSA`
+可以决定 legality、
+logical temp lifetime、
+copy/materialization 是否必须存在，
+以及 admission diagnostic。
+它们不能把复合表达式本身留到后段
+source emitter
+再展开。
+如果 TIR 表达式可由 TT-Metal leaf set
+组合表达，
+必须先在
+`Normalized Tile TIR`
+中显式分解；
+如果不能分解，
+diagnostic
+必须区分
+`lowering_missing`、
+`backend_op_missing`、
+`admission_blocked`
+和真正 semantic unsupported。
 
 ## Current Problem
 

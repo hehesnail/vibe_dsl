@@ -160,6 +160,27 @@
   不再是 active IR surface；
   selector / validator
   会按 exact op 名 fail-closed 拒绝 residue
+- `2026-04-29`
+  boundary review
+  补充：
+  名称删除不是充分条件。
+  如果 leaf-looking
+  `tl.tileop.blackhole_compute`
+  payload
+  仍携带 composite semantics
+  （例如
+  `exp2_tile(mode, lhs, rhs, scale, ...)`
+  或
+  `mul_tiles_bcast_cols("div", ...)`），
+  它仍然属于 active protocol residue。
+  正确收口是先在
+  `Normalized Tile TIR`
+  显式分解成 leaf op sequence，
+  再进入
+  `TileComputeDAG`
+  covering /
+  `TTComputeOpPlan`
+  projection
 - rowwise flash-attn 相关的 local pseudo builtin surface
   已从 active lowered IR 退场；
   但 `builtin_blackhole.{h,cc}`

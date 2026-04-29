@@ -8,7 +8,7 @@
 
 - Date: `2026-04-29`
 - Active lane:
-  `Core / buffer placement hardware-model upgrade`
+  `Tile-compute explicit leaf normalization boundary repair`
 - Current state:
   `AccessRegion`,
   graph-backed `SpatialPlan` dependence,
@@ -36,7 +36,7 @@
   and explicit tile-compute source emission stays on selected leaf pattern
   covering.
   `TileComputeDAG`
-  now pays rent on the production path through typed
+  pays rent on the production path through typed
   `TTResourceDemand`
   /
   `TTResourcePressureReport`:
@@ -46,17 +46,21 @@
   carried as typed TTProgram fields,
   validated by `ValidateTTProgram`,
   and projected into `ExecutableSpec`.
-  It also now drives the explicit tile-compute source lowering path:
+  The
+  `2026-04-29`
+  boundary review found that the source-lowering use went too far:
   `PlanTTKernelABI`
-  builds a pass-local DAG lower plan,
-  consumes selected source emitters from that plan instead of reselecting
-  on the source path,
-  and records DAG node /
-  source emitter /
-  materialization /
-  fanout decisions on DAG-driven
-  `TTComputeOpPlan`
-  entries and executable projection.
+  currently lets selected source hooks legitimize composite pseudo-leaf
+  payloads such as
+  `exp2_tile(mode, lhs, rhs, scale, ...)`
+  and
+  `mul_tiles_bcast_cols("div", ...)`.
+  That is not an accepted design boundary.
+  The repair target is explicit
+  `Normalized Tile TIR`
+  leaf-sequence normalization before DAG construction;
+  `TileComputeDAG`
+  then covers only one semantic TT-Metal leaf per source node.
   CB / L1 resource admission now uses hardware-model-backed CB count,
   worker L1 budget,
   and L1 alignment facts in both `PlanTTCBAlloc`
@@ -67,6 +71,15 @@
   Core placement and buffer distribution remain basic and need hardware-model
   backed planning before wider runtime admission resumes.
 - Current blocker:
+  tile-compute source lowering has composite pseudo-leaf residue.
+  The known violations are the
+  `exp2_tile`
+  affine payload path
+  and
+  `mul_tiles_bcast_cols("div", ...)`.
+  These must be deleted and replaced by explicit leaf TIR normalization before
+  wider core / buffer placement work resumes.
+  After that,
   core / buffer placement is still coarse:
   `PlanTTCoreGroups`
   still routes through a hard-coded grid path,
@@ -114,8 +127,8 @@
   materialization /
   unsupported-reason decisions now feed typed resource demand and validator /
   executable projection,
-  and source emitters consume a pass-local DAG lower plan before recording
-  typed TT plans.
+  but source hooks must still be repaired so each source node maps to one
+  semantic leaf plan and no composite payload is accepted.
 - TileComputeDAG production-boundary cleanup:
   production code does not persist a durable function-level DAG covering cache;
   `PlanTTKernelABI`
@@ -147,18 +160,11 @@
   `ValidateTTProgram`
   rejects CB and L1 over-pressure.
 - DAG-driven tile-compute lower plan:
-  explicit tile-compute source emission consumes pass-local
-  `TileComputeDAG`
-  lowering decisions,
-  not a second source-path operation selector;
-  DAG-driven exact compute lower plans carry
-  node id,
-  source emitter,
-  materialization policy,
-  fanout count,
-  and fanout policy through
-  `TTComputeOpPlan`
-  and `ExecutableSpec`.
+  current repo HEAD has the pass-local lower-plan mechanics,
+  but the production boundary is not clean while source hooks can expand
+  composite pseudo-leaf payloads.
+  Completion now requires explicit leaf TIR normalization and one DAG source
+  node to one semantic `TTComputeOpPlan.operation_name` validation.
 
 ## Support Boundary
 
@@ -179,6 +185,16 @@
 
 ## Open Debt
 
+- Composite pseudo-leaf cleanup:
+  remove
+  `exp2_tile(mode, lhs, rhs, scale, ...)`
+  and
+  `mul_tiles_bcast_cols("div", ...)`
+  source payloads;
+  express those TIR computations as explicit TT-Metal leaf op sequences in
+  `Normalized Tile TIR`;
+  tighten pattern schema and validators so DAG-driven source hooks are
+  one-to-one with semantic leaf plans.
 - CB / L1 admission still has future precision work:
   reserved / precolored CB class modeling can be made more explicit,
   L1 buffer sizing is still a conservative plan-level estimate,
@@ -204,13 +220,17 @@
 
 ## Next Task Order
 
-1. Upgrade core and buffer placement:
+1. Repair tile-compute explicit leaf normalization:
+   delete composite pseudo-leaf source payloads,
+   implement explicit leaf TIR decomposition for admitted TIR expressions,
+   and enforce one DAG source node to one semantic leaf plan.
+2. Upgrade core and buffer placement:
    use `TTHardwareModel`
    for worker grid / L1 / DRAM facts,
    produce safe logical-coordinate core groups,
    and expand `TTBufferDistributionPlan`
    beyond `unit_mesh` / `replicated`.
-2. Resume wider runtime admission:
+3. Resume wider runtime admission:
    re-admit multi-block flash-attn direct runtime,
    then wider exact-CB events,
    mesh / distributed runtime,
@@ -219,25 +239,16 @@
 ## Latest Verification
 
 - Current implementation:
-  routed `TileComputeDAG`
-  covering decisions into the real source-lowering and typed lower-plan path.
+  doc-only boundary correction for
+  `TileComputeDAG`
+  /
+  tile-compute source lowering.
+  The previous source-lowering route is now documented as incomplete because
+  it permits composite pseudo-leaf payloads.
   `PlanTTKernelABI`
-  now loads a pass-local DAG lower plan,
-  `LowerExplicitTileComputeCall`
-  consumes that selected covering,
-  exact compute plans record DAG node /
-  source emitter /
-  materialization /
-  fanout metadata,
-  `ValidateTTProgram`
-  validates both the emitted leaf op and the source DAG covering,
-  and executable projection carries the fields.
+  lower-plan mechanics still exist in code,
+  but the accepted design requires explicit leaf TIR normalization before DAG
+  covering and one source node to one semantic leaf plan validation.
 - Verification:
-  `cd tilelang_repo && cmake --build build -j32`
-  passed.
-  `cd tilelang_repo && python -m pytest testing/python/transform/test_blackhole_spatial_ir.py -k 'tile_compute_explicit_source_path_uses_leaf_covering_without_dag_cache or tile_compute_dag_decisions_drive_typed_compute_lower_plan or executable_projection_carries_dag_driven_compute_lower_plan' -q`
-  passed with `3 passed, 74 deselected`.
-  `cd tilelang_repo && python -m pytest testing/python/transform/test_blackhole_spatial_ir.py -q`
-  passed with `77 passed`.
-  `cd tilelang_repo && python -m pytest testing/python/target/blackhole/test_blackhole_gemm.py::test_blackhole_executable_projection_has_no_plan_local_payload_records testing/python/target/blackhole/test_blackhole_flash_attention_pipeline.py::test_flash_attention_forward_tt_target_emits_typed_tt_program_without_payload -q`
-  passed with `2 passed`.
+  docs-only change;
+  no build or pytest was run.

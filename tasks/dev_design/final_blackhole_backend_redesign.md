@@ -103,6 +103,58 @@ late TIR idiom matcher
 或
 `KernelSpec.compute_ops`。
 
+`2026-04-29`
+tile-compute boundary review
+再收紧一条：
+删除 composite helper 名字不等于删除 composite 语义。
+不允许把
+`exp2_affine`
+/
+row-broadcast division
+等复合表达式换皮塞进
+`exp2_tile(mode, lhs, rhs, scale, ...)`
+或
+`mul_tiles_bcast_cols("div", ...)`
+这类 leaf-looking payload。
+如果 TIR 中已经包含完整计算语义，
+正确做法是在
+`Normalized Tile TIR`
+边界内把表达式规范化为显式 leaf tile compute
+statement 序列，
+必要时引入显式 logical temp
+和由 liveness /
+materialization proof
+驱动的 copy/materialization。
+`TileComputeDAG`
+只覆盖这些已经显式存在的 leaf compute nodes；
+它不能成为 composite expression lowering owner，
+也不能用 source emitter
+在 source lowering 阶段生成新的 semantic leaf plan。
+每个 DAG source node
+必须对应一个 TT-Metal semantic leaf op；
+如果某个 source hook
+或 projection field
+不能满足这个一对一合同，
+就必须删除或降为非语义 debug trace。
+
+unsupported / fail-closed 也必须分类：
+TIR 语义可表达但 normalizer 未覆盖是
+`lowering_missing`；
+TT-Metal 有能力但当前 Blackhole builtin /
+codegen /
+planner 未接是
+`backend_op_missing`；
+op 已接但资源 /
+layout /
+sync /
+multi-core 条件未证明安全是
+`admission_blocked`；
+只有经过 TT-Metal primitive coverage
+和合法组合审计后仍无法表达，
+才是 semantic unsupported。
+`unsupported` 不能作为逃避补 leaf op
+或补 normalizer 的理由。
+
 `2026-04-25`
 compatibility fallback
 收束后，
@@ -163,10 +215,13 @@ TT resource-planning
 
 - `TileComputeDAG`
   只能是
+  显式 leaf
   `Normalized Tile TIR`
   到 typed compute plans
   之间的 pass-local compute legalization /
   covering model，
+  不能从 scalar expression
+  恢复 composite semantics，
   不能扩成全局 resource allocator /
   core placer /
   NoC scheduler /

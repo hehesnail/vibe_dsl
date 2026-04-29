@@ -153,6 +153,35 @@ composite helper 可以作为调试描述出现，
 `KernelSpec.compute_ops`、
 source/codegen leaf protocol
 或 runtime admission surface。
+同样禁止的是 leaf-looking composite payload：
+不能把
+`exp2_affine`
+语义藏进
+`exp2_tile(mode, lhs, rhs, scale, ...)`，
+也不能把 row-broadcast division
+藏进
+`mul_tiles_bcast_cols("div", ...)`。
+leaf operation name、
+operand roles、
+source hook
+和 typed plan
+必须描述同一个 TT-Metal semantic leaf。
+
+如果当前 TIR 表达式可以由多个 TT-Metal leaf ops 表达，
+preservation lane
+的正确输出是多条显式 leaf tile-compute TIR statements，
+不是一个 composite helper 名，
+也不是一个 leaf 名字加 composite 参数。
+logical temp
+属于
+`Normalized Tile TIR`
+normalization 结果；
+物理 CB / tile-reg /
+publication copy
+仍属于 live-form /
+materialization /
+source emission
+边界。
 
 ## 3. 根因
 
@@ -509,8 +538,10 @@ runtime / codegen
   scalar max /
   row broadcast
   的 late recovery
-  改成 upstream decomposition
-  到 leaf tile API DAG
+  改成
+  `Normalized Tile TIR`
+  中的显式 leaf tile API
+  statement sequence
 - 删除 helper/composite builtin 名
   进入 production plan 的路径
 
@@ -532,8 +563,8 @@ runtime / codegen
   和 `typecast_tile`
 - exp2 affine / scalar fma /
   scalar max / row broadcast
-  不再以 composite helper 名
-  进入 production builtin、
+  不再以 composite helper 名进入
+  production builtin、
   `TTComputeOpPlan.operation_name`
   或 `KernelSpec.compute_ops`
 - downstream
@@ -542,6 +573,25 @@ runtime / codegen
   row-broadcast /
   scalar-fragment matcher
   families 已从 source 删除
+
+Boundary correction
+（`2026-04-29`）：
+上述状态只删除了旧 composite helper 名字，
+但 repo HEAD
+仍存在 composite 语义换皮残留：
+`exp2_tile`
+source payload
+承载了 affine expression，
+`mul_tiles_bcast_cols`
+source payload
+承载了 division mode。
+这不满足本 preservation 合同。
+修复必须在
+`Normalized Tile TIR`
+中显式生成 leaf sequence；
+`TileComputeDAG`
+只能覆盖这些 leaf nodes，
+不能替代 expression decomposition。
 
 ### Phase C: copy / pack / materialization boundary cleanup
 
