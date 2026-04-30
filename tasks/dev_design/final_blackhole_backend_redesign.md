@@ -343,6 +343,9 @@ A workload is admitted only when typed plans,
 backend admission,
 and correctness verification match its risk.
 Compile/source/spec success alone is not direct-runtime correctness.
+Family names such as MoE, paged attention, or flash decode are not admission
+units.
+Admission is by explicit subset and capability proof.
 
 ## Current Rewrite Direction
 

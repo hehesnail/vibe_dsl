@@ -57,7 +57,11 @@ Pass 名字、helper、payload、bag、bridge attr
 
 ```text
 Hardware-model-backed buffer placement
-  -> wider workload / runtime admission
+  -> buffer address ABI gate
+  -> admission-level verification gate
+  -> first-subset workload admission
+  -> pull-forward P3 primitives required by those subsets
+  -> production distributed workload/runtime admission
 ```
 
 ## Maintenance Rules

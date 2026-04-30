@@ -86,26 +86,43 @@ Wider runtime admission 还需要 buffer placement
    beyond `unit_mesh` / `replicated`,
    consume L1 / DRAM hardware facts,
    and validate placement before emission.
-2. Resume wider workload / runtime admission:
-   non-flash compute workloads
-   (GEMM variants plus standalone unary / binary /
-   broadcast / reduce / pack / typecast leaf families),
-   `topk`,
-   MoE / `fusedmoe` routed or segmented workloads,
-   paged attention / paged decode / MLA decode paged,
-   grouped / ragged / sparse attention,
-   chunk recurrence / scan,
-   multi-block flash-attn direct runtime,
-   wider exact-CB events,
-   mesh / distributed runtime,
-   later NoC / multicast / scheduling optimization.
+2. Tighten buffer address ABI:
+   make interleaved / sharded / page-indexed buffer address parameters,
+   compile-time args,
+   runtime args,
+   per-work descriptors,
+   and typed rejects explicit.
+3. Keep admission levels separate for every new subset:
+   compile,
+   source/spec,
+   direct runtime,
+   TT-Sim bf16 correctness,
+   and typed unsupported reason.
+4. Admit first-subset workloads in this order:
+   non-flash leaf compute / GEMM variants,
+   standalone `topk`,
+   exact-CB / materialization / partial-combine primitive
+   via multi-block flash-attn,
+   grouped / ragged work packets,
+   pre-grouped MoE / `fusedmoe`,
+   sparse / ragged attention,
+   paged GQA decode,
+   paged MLA decode,
+   then chunk recurrence / scan.
+5. Pull forward only the P3 primitives required by the current first subset.
+6. Defer production distributed variants until mesh / sharding / CCL /
+   NoC / multicast / global scheduling plans are typed and validated.
+   Full MoE and full paged decode are not admitted by their first subsets.
 
 ## Support Boundary
 
 - Direct runtime admitted subset:
   copy equal source/dest range with stride 1;
+  selected interleaved stick / page-shaped copy cases with explicit
+  alignment gates;
   GEMM A/B-separated reader range plus writer output range;
-  interleaved DRAM accessor with `common_runtime_arg_count = 0`;
+  interleaved DRAM buffer address schema with no common runtime args
+  (`common_runtime_arg_count = 0`);
   non-oversubscribed explicit semaphore / remote-endpoint subset;
   admitted bf16 live-form paths.
 - Typed compute surface broader than direct runtime:
@@ -120,6 +137,14 @@ Wider runtime admission 还需要 buffer placement
   and chunk recurrence / scan are not admitted yet;
   they require explicit subset definitions and regressions
   before being counted as supported.
+- Workload dependency split:
+  first single-device subsets are allowed to proceed after typed placement
+  and subset-specific admission proof;
+  full MoE, full paged attention / decode,
+  distributed sparse attention,
+  and production flash decode require later P3 runtime features.
+  The detailed matrix lives in
+  `tasks/dev_design/2026-04-29-blackhole-resource-planning-roadmap.md`.
 - Flash-attn admitted direct-runtime subset:
   small single-work-item and 32x32 MHA / GQA bf16.
 - Flash-attn compile/source/spec stable but runtime-gated subset:
@@ -131,9 +156,12 @@ Wider runtime admission 还需要 buffer placement
 
 ## Latest Verification
 
-Latest docs-only cleanup:
-active design docs were reduced to role-specific contracts;
-role-drift scan and `git diff --check` passed.
+Latest docs-only planning update:
+remaining workload order was re-split around buffer placement,
+buffer address ABI,
+admission-level verification,
+first-subset workload admission,
+and later production distributed runtime.
 No build or pytest was required for docs-only changes.
 
 Latest implementation batch:
