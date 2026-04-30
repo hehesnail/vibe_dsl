@@ -116,7 +116,9 @@ It does not assign physical L1 addresses.
 
 ## Direction 4: Core And Buffer Placement
 
-The next active mainline task is to make placement hardware-model backed.
+Core placement and buffer placement are separate responsibilities.
+Core groups must remain hardware-model backed;
+the current active expansion point is buffer distribution.
 
 Core placement must consume:
 

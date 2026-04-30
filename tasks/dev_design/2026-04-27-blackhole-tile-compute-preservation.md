@@ -1,734 +1,122 @@
-# Blackhole Tile Compute Preservation Design
+# Blackhole Tile Compute Preservation Contract
 
-## 基本信息
+## Role
 
-- **文档 ID**:
-  `2026-04-27-blackhole-tile-compute-preservation`
-- **日期**: `2026-04-27`
-- **状态**: 已完成
-- **父设计**:
-  `tasks/dev_design/final_blackhole_backend_redesign.md`
-- **定位**:
-  定义 Blackhole tile compute 语义在
-  `Normalized Tile TIR`
-  中被保留 / 规范化的边界，
-  并记录删除 P2.2/P2.3 late TIR idiom recovery
-  后的完成边界
+This document defines how Blackhole tile-compute semantics must be preserved
+or normalized in `Normalized Tile TIR`.
+It is a task-level contract, not a completion log.
 
-## 1. 设计结论
+Overall design:
+`final_blackhole_backend_redesign.md`.
+Current status:
+`tasks/progress.md`.
 
-Blackhole 的 compute ops 集合必须按
-TT-Metal compute API 粒度定义。
+## Goal
 
-这不是 reduce 专项问题。
-凡是 TT-Metal 以 tile compute API
-直接表达的语义，
-都不应先被 generic scalar TIR lowering
-展开成局部 loop / scalar expression，
-再在 `lower_blackhole_ops.cc`
-里靠 workload-motivated idiom matcher
-恢复。
+Blackhole compute semantics must remain at TT-Metal tile API granularity
+before `SpatialPlan`, `TTProgram`, and `ExecutableSpec` consume them.
 
-长期边界固定为：
+The backend must not destroy tile compute semantics through generic scalar
+lowering and then recover them later through workload-shaped matchers.
 
-```text
-TileLang source / DSL
-  -> Normalized Tile TIR with preserved tile compute semantics
-  -> SpatialPlan
-  -> TTProgram
-  -> ExecutableSpec
-```
+## Leaf Granularity
 
-其中：
+Production compute op names are TT-Metal semantic leaf ops, for example:
 
-- `Normalized Tile TIR`
-  是 tile compute 语义 owner truth
-- `SpatialPlan`
-  只观察 execution-unit /
-  dataflow /
-  live-value /
-  materialization boundary
-  关系，
-  不拥有 TT-Metal builtin 名
-- `TTProgram`
-  负责把已显式存在的 tile compute 语义
-  选成 TT-Metal leaf API
-  和 typed `TTComputeOpPlan`
-- `ExecutableSpec`
-  只消费 leaf projection；
-  不能恢复 compute 语义
+- `matmul_tiles`
+- `reduce_tile`
+- `fill_tile`
+- `copy_tile`
+- `pack_tile`
+- `typecast_tile`
+- `binary_max_tile`
+- `add_tiles`
+- `mul_tiles`
+- `add_tiles_bcast_cols`
+- `mul_tiles_bcast_cols`
+- `exp2_tile`
+- `recip_tile`
 
-P2.2/P2.3 中曾经存在的
-row-reduction /
-row-broadcast /
-exp2 affine /
-scalar max /
-scalar fma /
-copy /
-fill /
-cast
-late matcher
-已作为本 lane 的核心债务删除。
-这类 matcher / generate 函数不能作为
-fail-closed guard、
-compatibility shell
-或新的公共协议面保留。
+The admitted set may grow with TT-Metal leaf API coverage.
+It must not grow by workload names.
 
-## 2. 适用范围
+## Forbidden Operation Names
 
-本设计覆盖 Blackhole 上所有
-TT-Metal compute API 粒度的 tile semantics，
-集合来源应是 TT-Metal compute API
-的中心化 leaf table
-（当前参考
-`tt_metal_repo/tt_metal/hw/inc/api/compute/`），
-而不是 flash-attn 当前用到的局部白名单。
-
-当前已知 leaf API 家族包括但不限于：
-
-- matmul:
-  `matmul_tiles`
-- reduction:
-  `reduce_tile`
-- binary tile ops:
-  `add_tiles`、
-  `mul_tiles`、
-  `sub_tiles`、
-  `binary_max_tile`
-- broadcast binary tile ops:
-  `add_tiles_bcast_rows`、
-  `add_tiles_bcast_cols`、
-  `add_tiles_bcast_scalar`、
-  `mul_tiles_bcast_rows`、
-  `mul_tiles_bcast_cols`、
-  `mul_tiles_bcast_scalar`、
-  `sub_tiles_bcast_cols`、
-  `sub_tiles_bcast_scalar`
-- unary tile ops:
-  `exp_tile`、
-  `exp2_tile`、
-  `recip_tile`、
-  `sqrt_tile`、
-  `abs_tile`、
-  `typecast_tile`、
-  `fill_tile`
-- tile movement / register publication:
-  `copy_tile`、
-  `pack_tile`
-- layout movement APIs
-  whose primary contract is tilize / untilize:
-  `tilize_block`、
-  `fast_tilize_block`、
-  `untilize_block`、
-  `pack_untilize_block`、
-  `pack_untilize_dest`
-
-这个集合按 TT-Metal API 能力增长而增长，
-不按 flash-attn、
-softmax、
-GEMM epilogue
-等 workload 名字增长。
-
-不属于生产 compute op 粒度的名字：
+Composite or workload-shaped names are not production compute op names:
 
 - `softmax`
 - `exp2_affine`
 - `row_broadcast_exp2_affine`
 - `scalar_exp2_affine`
 - `row_reduction`
-  这类 workload/composite helper 名
-- `*_init` /
-  `*_uninit` /
-  `reconfig_data_format`
-  等 init / format protocol
-- `cb_wait` /
-  `cb_pop` /
-  `cb_reserve` /
-  `cb_push`
-  等 transport / queue protocol
+- GEMM epilogue helper names
 
-composite helper 可以作为调试描述出现，
-不能进入
-`TTComputeOpPlan.operation_name`、
-`KernelSpec.compute_ops`、
-source/codegen leaf protocol
-或 runtime admission surface。
-同样禁止的是 leaf-looking composite payload：
-不能把
-`exp2_affine`
-语义藏进
-`exp2_tile(mode, lhs, rhs, scale, ...)`，
-也不能把 row-broadcast division
-藏进
-`mul_tiles_bcast_cols("div", ...)`。
-leaf operation name、
-operand roles、
-source hook
-和 typed plan
-必须描述同一个 TT-Metal semantic leaf。
+They cannot enter:
 
-如果当前 TIR 表达式可以由多个 TT-Metal leaf ops 表达，
-preservation lane
-的正确输出是多条显式 leaf tile-compute TIR statements，
-不是一个 composite helper 名，
-也不是一个 leaf 名字加 composite 参数。
-logical temp
-属于
-`Normalized Tile TIR`
-normalization 结果；
-物理 CB / tile-reg /
-publication copy
-仍属于 live-form /
-materialization /
-source emission
-边界。
-
-## 3. 根因
-
-当前 generic `LowerTileOp`
-在 Blackhole exact builtin 选择之前运行。
-对 GPU / SIMT target，
-把 reduce、
-broadcast、
-elementwise
-展开成 thread-level scalar loop
-是合理的：
-这些 target 的 reduce / elementwise
-没有对应的单条 tile hardware compute API，
-后续 codegen 面向 SIMT instruction stream。
-
-但 Blackhole 是 tile-based compute target。
-TT-Metal 已经把很多语义表达成
-tile compute API。
-一旦这些语义被提前展开成 scalar loop，
-后段只能重新从
-`BufferStore(BufferLoad(...))`
-形态中猜回：
-
-- 哪个 region 是 tile operand
-- 哪个 axis 是 broadcast /
-  reduction axis
-- 哪个 scalar expression
-  应该拆成哪些 TT-Metal tile API
-- 哪个 local fragment
-  实际需要 CB-live materialization
-
-这就是 P2.2/P2.3
-`lower_blackhole_ops.cc`
-膨胀的直接原因。
-它同时承担了：
-
-- TIR idiom matching
-- compute DAG recovery
-- exact CB materialization planning
-- `TTComputeOpPlan` recording
-- source emission support
-
-这个职责组合违反 IR-first 边界。
-正确修法不是继续增加 matcher，
-而是让 tile compute semantics
-在被 scalar expansion 破坏前，
-就以显式表示留在
-`Normalized Tile TIR`
-中。
-
-## 4. 表示合同
-
-### 4.1 `Normalized Tile TIR`
-
-`Normalized Tile TIR`
-必须保留或规范化以下 compute 语义：
-
-- tile op kind:
-  matmul / reduce / unary / binary / broadcast /
-  copy / pack / fill / cast
-- operand roles:
-  `src`、`lhs`、`rhs`、`dst`、
-  `acc`、`scalar`、
-  或对应 API 需要的 typed role
-- operand buffer region:
-  producer / consumer /
-  live form /
-  tile coordinate /
-  region shape
-- axis semantics:
-  reduction axis、
-  broadcast axis、
-  tile row/col direction
-- dtype semantics:
-  logical dtype、
-  physical CB dtype、
-  accumulator dtype
-- operation expression:
-  leaf TT-Metal API 可直接表示的 op，
-  或可在当前层 deterministic decomposition
-  成 leaf API op 的 local expression tree
-
-这个表示可以落成现有 `TileOperator`
-保留策略，
-也可以落成带 typed attrs 的 TIR call / node。
-选择哪种编码是实现细节；
-必须满足的长期属性是：
-
-- 跨阶段语义存在于当前 IR
-- analysis 可失效、可重算
-- downstream 不需要从 scalar loop 中恢复 compute intent
-- validator 能证明 unsupported case fail closed
-
-### 4.2 Leaf API 选择
-
-TT-Metal leaf API 选择只允许消费
-显式 tile compute 语义。
-
-例如表达式：
-
-```text
-exp2(acc * scale - row_max * scale)
-```
-
-不能作为生产 builtin
-`exp2_affine`
-流到后段。
-它应在 tile compute normalization
-中分解为 leaf op DAG：
-
-```text
-mul_tiles / mul_tiles_bcast_cols
-add_tiles / add_tiles_bcast_cols
-exp2_tile
-```
-
-分解规则以 IR 结构、类型、region、axis
-为依据，
-不能以 workload 名字、
-buffer 名字、
-或某个 flash-attn case 的局部顺序为依据。
-
-### 4.3 Materialization 分离
-
-compute op 只回答
-“执行哪一个 TT-Metal tile compute API 语义”。
-
-它不回答：
-
-- CB 分配
-- tile register 生命周期
-- `cb_wait` /
-  `cb_pop` /
-  `cb_reserve` /
-  `cb_push`
-- page count /
-  exact CB republish event
-- mailbox /
-  semaphore /
-  runtime arg
-
-这些仍属于
-`SpatialPlan`
-live/materialization boundary
-和 `TTProgram -> ExecutableSpec`
-resource / transport / ABI
-realization。
-`copy_tile` /
-`pack_tile`
-可以作为 tile compute leaf op，
-tilize / untilize
-这类 layout movement API
-也必须以 leaf API 粒度表达，
-但它们的 CB / layout protocol
-不能反向写入
-compute semantics。
-
-## 5. Pipeline 变化
-
-当前目标 pipeline：
-
-```text
-TileLang source / DSL
-  -> layout inference / layout reducer
-  -> preserve or normalize Blackhole tile compute semantics
-  -> LowerTileOp for non-Blackhole or scalar-only residue
-  -> BuildSpatialPlan
-  -> ValidateSpatialPlan
-  -> SplitBlackholeKernel
-  -> PlanTTBlocks
-  -> SelectBlackholeTTMetalBuiltins
-  -> PlanTTCompute / PlanTTTransport / PlanTTSync / PlanTTABI / PlanTTExecution
-  -> BuildTTProgram
-  -> ValidateTTProgram
-  -> MaterializeBlackholeExecutable
-```
-
-可接受的实现方式有两类：
-
-1. 让 `LowerTileOp`
-   对 Blackhole target
-   preserve 所有可映射到 TT-Metal API
-   的 tile compute operators，
-   类似当前 `GemmPyNode`
-   preservation。
-2. 在 `LowerTileOp`
-   destructive scalar expansion 前
-   增加 Blackhole tile compute normalization，
-   把可映射语义显式化，
-   并只让无法映射的 residue
-   继续走 scalar lowering。
-
-这两个方式都必须满足同一 postcondition：
-
-> Blackhole builtin selection 之前，
-> TT-Metal API 粒度的 tile compute 语义
-> 仍可从当前 IR 结构和类型稳定读出。
-
-## 6. 层责任
-
-### 6.1 `LowerTileOp` / tile op lowering
-
-Blackhole 分支职责：
-
-- preserve 可映射到 TT-Metal compute API
-  的 tile operator
-- 或把 local tile expression
-  normalize 成 explicit tile compute call
-- 对不支持的 tile compute form
-  fail closed 或保留为明确 unsupported residue
-- 不生成 workload-specific helper builtin
-
-CUDA / HIP / LLVM SIMT target
-仍可按原有策略 scalar expand。
-这是 target programming model 的差异，
-不是语义分叉。
-
-### 6.2 Tile compute normalization
-
-normalization 的粒度是
-单个 tile / region assignment
-或单个 explicit tile operator，
-不是整个 workload。
-
-它可以做：
-
-- expression tree decomposition
-- axis inference
-- dtype / accumulator normalization
-- operand role assignment
-- leaf op legality check
-
-它不能做：
-
-- 根据 kernel 名 /
-  buffer 名 /
-  source variable 名判断语义
-- 生成 `softmax` /
-  `exp2_affine`
-  等 composite builtin
-- 同时规划 CB protocol /
-  semaphore /
-  runtime arg
-- 为了某个 flash-attn shape
-  固化 loop 顺序或 page 数
-
-### 6.3 `SelectBlackholeTTMetalBuiltins`
-
-selector 职责：
-
-- 从 explicit tile compute semantics
-  选择 TT-Metal leaf API name
-- 填写 typed `TTComputeOpPlan`
-- 保证 `operation_name`
-  为 TT-Metal API 粒度
-- 对 unsupported combination
-  提供 fail-closed diagnostic
-
-selector 不再承担：
-
-- post-scalar TIR idiom recovery
-- composite op synthesis
-- workload-specific sequence matching
-
-### 6.4 `TTProgram` / `ExecutableSpec`
-
-`TTProgram`
-只消费 selected tile compute ops
-和 `SpatialPlan`
-提供的 dataflow/materialization truth。
-
-`ExecutableSpec`
-只做 leaf projection。
-runtime / codegen
-只能读取：
-
-- `KernelSpec.compute_ops`
-- typed resource / transport /
-  ABI / live-form /
-  materialization plans
-
-它们不能把 source fragment
-或 scalar expression
-再解析成新的 compute plan。
-
-## 7. 迁移路线
-
-### Phase A: reduce preservation
-
-- 让 Blackhole reduce
-  在 `LowerTileOp`
-  destructive scalar expansion 前
-  保留为 explicit tile compute semantics
-- `SelectBlackholeTTMetalBuiltins`
-  从 explicit reduce semantics
-  生成 `reduce_tile`
-  plan
-- 删除或禁用
-  `lower_blackhole_ops.cc`
-  中对应 row-reduction scalar-loop matcher
-- 保持 P2.1 / P2.2 / P2.3
-  flash-attn runtime tests 绿
-
-当前实现状态
-（`2026-04-27`）：
-
-- Blackhole `LowerTileOp`
-  已 preserve `ReduceOpNode`
-  为 `tl.tileop.reduce`
-  而不是 scalar expand
-- `ReduceOpNode`
-  已提供 operator-level
-  `GetDataflowAccessInfo()`，
-  因此 `SpatialPlan`
-  可直接从 preserved op
-  看到 source consume /
-  destination produce；
-  `clear=false`
-  reduce 额外表达
-  destination consume
-- `SelectBlackholeTTMetalBuiltins`
-  已从 explicit `tl.tileop.reduce`
-  生成 `reduce_tile`
-  typed `TTComputeOpPlan`
-  和 leaf builtin sequence
-- row-reduction scalar-loop matcher
-  已从 lowering implementation 删除；
-  不再保留 downstream matcher
-  或 residue reject wrapper
-- explicit reduce lowering
-  保留 accumulator fill/live truth
-  到 generator 内消费，
-  避免 `clear=false`
-  reduction 退回 forbidden
-  direct CB interface
-  materialization
-
-### Phase B: unary / binary / broadcast preservation
-
-- 添加 generic tile unary /
-  binary /
-  broadcast representation
-- 覆盖 `add_tiles`、
-  `mul_tiles`、
-  `binary_max_tile`、
-  `*_bcast_rows`、
-  `*_bcast_cols`、
-  `exp_tile`、
-  `exp2_tile`、
-  `recip_tile`
-- 把 P2.2/P2.3
-  exp2 affine /
-  scalar fma /
-  scalar max /
-  row broadcast
-  的 late recovery
-  改成
-  `Normalized Tile TIR`
-  中的显式 leaf tile API
-  statement sequence
-- 删除 helper/composite builtin 名
-  进入 production plan 的路径
-
-当前实现状态
-（`2026-04-27`）：
-
-- Blackhole tile compute normalization
-  已把 local tile compute loop
-  显式化为
-  `tl.tileop.blackhole_compute`
-- 已覆盖当前主链需要的
-  `fill_tile`、
-  `copy_tile`、
-  `binary_max_tile`、
-  `mul_tiles`、
-  `add_tiles`、
-  `mul_tiles_bcast_cols`、
-  `exp2_tile`
-  和 `typecast_tile`
-- exp2 affine / scalar fma /
-  scalar max / row broadcast
-  不再以 composite helper 名进入
-  production builtin、
-  `TTComputeOpPlan.operation_name`
-  或 `KernelSpec.compute_ops`
-- downstream
-  `Generate*Affine` /
-  `GenerateScalar*` /
-  row-broadcast /
-  scalar-fragment matcher
-  families 已从 source 删除
-
-Boundary correction
-（`2026-04-29`）：
-上述状态只删除了旧 composite helper 名字，
-但 repo HEAD
-仍存在 composite 语义换皮残留：
-`exp2_tile`
-source payload
-承载了 affine expression，
-`mul_tiles_bcast_cols`
-source payload
-承载了 division mode。
-这不满足本 preservation 合同。
-修复必须在
-`Normalized Tile TIR`
-中显式生成 leaf sequence；
-`TileComputeDAG`
-只能覆盖这些 leaf nodes，
-不能替代 expression decomposition。
-
-### Phase C: copy / pack / materialization boundary cleanup
-
-- 明确 `copy_tile` /
-  `pack_tile`
-  是 tile register / CB publication
-  leaf compute action
-- 将 exact CB live-form /
-  page event /
-  publication protocol
-  继续保留在 materialization plans
-- 删除 compute matcher
-  对 materialization truth
-  的隐式推导
-
-当前实现状态
-（`2026-04-27`）：
-
-- `copy_tile` /
-  `pack_tile`
-  仍按 TT-Metal leaf API
-  出现在 compute/source 序列中
-- exact CB live-form /
-  page event /
-  source-live identity
-  继续由 materialization/live-form
-  typed state 负责
-- stale exact-output live-form alias
-  会在 ordinary tiled live-form alias
-  record / clear 时同步失效，
-  避免后续 compute wait/pop
-  已被消费的旧 CB page
-
-### Phase D: validator and file split
-
-- validator reject
-  unsupported post-scalar fragment compute residue
-- validator reject
-  composite `operation_name`
-- 将 `lower_blackhole_ops.cc`
-  中剩余职责拆回：
-  tile compute selection /
-  materialization planning /
-  ABI planning /
-  source emission support
-  各自明确边界
-
-当前实现状态
-（`2026-04-27`）：
-
-- production/test tree cleanup scan
-  确认旧 downstream matcher /
-  generator /
-  composite helper name
-  不再存在于 `tilelang_repo`
-- seq64 / multi-K-step flash-attn
-  compile/source/spec lowering 保持稳定；
-  direct-runtime correctness
-  通过
-  `multi-block exact CB-republish flash-attention direct runtime correctness`
-  unsupported reason fail closed
-- `lower_blackhole_ops.cc`
-  仍然偏大；
-  file split / responsibility shrink
-  是后续清理任务，
-  但不再包含旧 scalar-loop compute recovery surface
-
-## 8. 验证方式
-
-结构验证：
-
-- explicit reduce survives Blackhole frontend lowering
-- explicit unary / binary / broadcast tile compute
-  survives Blackhole frontend lowering
-- unsupported tile expression
-  fail closed before TTProgram materialization
 - `TTComputeOpPlan.operation_name`
-  只出现 TT-Metal API 粒度名字
+- `KernelSpec.compute_ops`
+- source/codegen leaf protocol
+- runtime admission surface
 
-回归验证：
+## Composite Expression Rule
 
-- flash-attn pipeline tests
-- flash-attn bf16 TT-Sim direct runtime tests
-  for the admitted/gated runtime surface
-- copy runtime tests
-- GEMM guard tests
-- existing TTProgram / ExecutableSpec validator tests
+If a current TIR expression is expressible by multiple TT-Metal leaf ops,
+the output must be multiple explicit leaf statements in
+`Normalized Tile TIR`.
 
-清理扫描：
+Forbidden leaf-looking payloads:
 
-- no production
-  `exp2_affine` /
-  `row_broadcast_exp2_affine` /
-  `scalar_exp2_affine`
-  builtin name
-- no production
-  `softmax`
-  compute op name
-- no new cross-pass
-  bag /
-  payload /
-  helper wrapper
-  carrying compute semantics
+- `exp2_tile(mode, lhs, rhs, scale, ...)`
+- `mul_tiles_bcast_cols("div", ...)`
 
-本次收口验证
-（`2026-04-27`）：
+Required shape:
 
-- `cmake --build build -j32`
-- `pytest -q testing/python/transform/test_blackhole_spatial_ir.py testing/python/target/blackhole/test_blackhole_flash_attention_pipeline.py testing/python/target/blackhole/test_blackhole_copy_pipeline.py testing/python/target/blackhole/test_blackhole_gemm.py`
-  -> `197 passed, 25 skipped, 1 xfailed`
-- TT-Sim:
-  `pytest -q testing/python/target/blackhole/test_blackhole_flash_attention_runtime.py`
-  -> `15 passed, 5 skipped`
-- TT-Sim:
-  `pytest -q testing/python/target/blackhole/test_blackhole_copy_runtime.py`
-  -> `13 passed`
-- cleanup scan over `tilelang_repo`
-  for deleted downstream matcher/generator/composite names
-  -> no matches
+- `exp2(lhs * s0 - rhs * s1)`
+  becomes explicit
+  `copy_tile` /
+  `fill_tile` /
+  `mul_tiles` /
+  `add_tiles` or `add_tiles_bcast_cols` /
+  `exp2_tile`
+- division by a scalar-load operand becomes
+  `recip_tile`
+  plus
+  `mul_tiles_bcast_cols`
 
-## 9. 完成判据
+Logical temps may be introduced in `Normalized Tile TIR`.
+Physical CB / tile-register / publication decisions remain live-form and
+source-emission concerns.
 
-本 lane 完成时必须同时满足：
+## Layer Contract
 
-- Blackhole TT-Metal API 粒度 tile compute semantics
-  在 scalar expansion 前保留或规范化
-- `TTComputeOpPlan`
-  只从 explicit tile compute semantics
-  产生
-- `operation_name`
-  只使用 TT-Metal leaf API 粒度
-- P2.2/P2.3 late scalar-loop idiom matcher
-  被删除
-- runtime / codegen
-  不从 scalar expression
-  恢复 compute semantics
-- 受影响设计文档、
-  progress、
-  memory
-  与代码事实同步
+### Normalized Tile TIR
+
+Owns tile compute preservation and explicit leaf normalization.
+
+### SpatialPlan
+
+Observes execution-unit, dataflow, live-value, and materialization-boundary
+relations.
+It does not own TT leaf names.
+
+### TTProgram
+
+Selects explicit tile semantics into typed TT leaf plans.
+
+### ExecutableSpec
+
+Consumes projected leaf records.
+It does not recover compute semantics.
+
+## Validation
+
+Required checks:
+
+- production compute op names are leaf names
+- composite helper names are absent from typed compute plans
+- leaf-looking calls do not carry operation-changing mode/kind strings
+- validators reject plan/source mismatches
+- source/runtime consumers do not contain scalar-loop recovery paths
+
+Runtime tests are required only when the changed surface reaches admitted
+backend execution.

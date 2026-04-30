@@ -1915,3 +1915,10 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   `SaveToBytes` plus `ffi.Module.load_from_bytes.blackhole`; returning empty
   bytes is worse than failing because it produces a load-time trap detached
   from the original module.
+- 2026-04-30 active-doc cleanup rule:
+  when a design doc starts carrying implementation closeout notes, command
+  matrices, or historical explanations needed only once, rewrite it back to
+  role / goal / non-goal / contract / validation.
+  Keep exact verification commands in final reports, commits, or short
+  progress summaries; do not let active design entry files become
+  chronological notebooks.
