@@ -1889,3 +1889,12 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   sequence.
   Avoid pure `Try* -> Normalize*` forwarding wrappers; keep `Try*` only for
   real may-fail matchers.
+- 2026-04-30 Blackhole normalizer rule-driver cleanup:
+  for target leaf normalization, prefer a small local rule registry and a
+  shared builder over one large store-expression matcher.
+  Rule matchers should produce an ordered explicit leaf-call plan, and the
+  builder should be the only place that renders
+  `tl.tileop.blackhole_compute` statements.
+  Source projection metadata for same-shaped leaves belongs in the leaf
+  pattern schema; do not maintain a parallel hook table that repeats the same
+  operation-to-emitter mapping.

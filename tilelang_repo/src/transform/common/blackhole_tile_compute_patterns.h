@@ -84,6 +84,14 @@ enum class BlackholeTileComputeSourceEmitterKind {
   kReduceTile,
 };
 
+enum class BlackholeTileComputeSourceEmitterCategory {
+  kNone,
+  kCustom,
+  kBinary,
+  kBroadcastColsBinary,
+  kUnary,
+};
+
 struct BlackholeTileComputeCallOperand {
   BlackholeTileComputeOperandRole role;
   size_t arg_index{0};
@@ -99,6 +107,10 @@ struct BlackholeTileComputePattern {
   BlackholeTileComputeValueForm produced_form;
   BlackholeTileComputeSideEffectClass side_effect_class;
   std::optional<BlackholeTileComputeSourceEmitterKind> source_emitter;
+  BlackholeTileComputeSourceEmitterCategory source_emitter_category{
+      BlackholeTileComputeSourceEmitterCategory::kNone};
+  const char* source_init_builtin{nullptr};
+  const char* source_tile_builtin{nullptr};
   std::vector<BlackholeTileComputeCallOperand> blackhole_compute_operands;
   std::vector<BlackholeTileComputeCallOperand> generic_tile_op_operands;
   int64_t base_cost{1};
@@ -110,6 +122,8 @@ const char* ToString(BlackholeTileComputeOperandRole role);
 const char* ToString(BlackholeTileComputeValueForm form);
 const char* ToString(BlackholeTileComputeSideEffectClass side_effect_class);
 const char* ToString(BlackholeTileComputeSourceEmitterKind source_emitter);
+const char* ToString(
+    BlackholeTileComputeSourceEmitterCategory source_emitter_category);
 
 std::optional<BlackholeTileComputeOperation> ParseBlackholeTileComputeOperation(
     const std::string& operation_name);

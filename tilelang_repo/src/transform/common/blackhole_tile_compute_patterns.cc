@@ -20,6 +20,7 @@ using Result = BlackholeTileComputeResultKind;
 using Role = BlackholeTileComputeOperandRole;
 using SideEffect = BlackholeTileComputeSideEffectClass;
 using SourceEmitter = BlackholeTileComputeSourceEmitterKind;
+using SourceCategory = BlackholeTileComputeSourceEmitterCategory;
 
 template <typename Enum>
 struct EnumStringEntry {
@@ -102,6 +103,14 @@ constexpr EnumStringEntry<SourceEmitter> kSourceEmitterNames[] = {
     {SourceEmitter::kReduceTile, "reduce_tile"},
 };
 
+constexpr EnumStringEntry<SourceCategory> kSourceEmitterCategoryNames[] = {
+    {SourceCategory::kNone, "none"},
+    {SourceCategory::kCustom, "custom"},
+    {SourceCategory::kBinary, "binary"},
+    {SourceCategory::kBroadcastColsBinary, "broadcast_cols_binary"},
+    {SourceCategory::kUnary, "unary"},
+};
+
 template <typename Enum>
 std::vector<std::string> EnumNames(const std::vector<Enum>& values) {
   std::vector<std::string> names;
@@ -135,6 +144,12 @@ ffi::Map<ffi::String, ffi::Any> EncodePattern(const BlackholeTileComputePattern&
               ffi::String(ToString(pattern.side_effect_class)));
   encoded.Set(ffi::String("source_emitter"),
               ffi::String(pattern.source_emitter ? ToString(*pattern.source_emitter) : ""));
+  encoded.Set(ffi::String("source_emitter_category"),
+              ffi::String(ToString(pattern.source_emitter_category)));
+  encoded.Set(ffi::String("source_init_builtin"),
+              ffi::String(pattern.source_init_builtin ? pattern.source_init_builtin : ""));
+  encoded.Set(ffi::String("source_tile_builtin"),
+              ffi::String(pattern.source_tile_builtin ? pattern.source_tile_builtin : ""));
   encoded.Set(ffi::String("base_cost"), Integer(pattern.base_cost));
   encoded.Set(ffi::String("selected_output"), ffi::String("tt_compute_op_plan"));
   return encoded;
@@ -166,6 +181,11 @@ const char* ToString(BlackholeTileComputeSourceEmitterKind source_emitter) {
   return FindEnumName(source_emitter, kSourceEmitterNames);
 }
 
+const char* ToString(
+    BlackholeTileComputeSourceEmitterCategory source_emitter_category) {
+  return FindEnumName(source_emitter_category, kSourceEmitterCategoryNames);
+}
+
 std::optional<BlackholeTileComputeOperation> ParseBlackholeTileComputeOperation(
     const std::string& operation_name) {
   for (const EnumStringEntry<Op>& entry : kOperationNames) {
@@ -185,56 +205,77 @@ const std::vector<BlackholeTileComputePattern>& GetBlackholeTileComputePatterns(
   static const std::vector<BlackholeTileComputePattern> patterns = {
       {"fill_fragment_pattern", "fill_tile", Result::kUnary, Op::kFillTile,
        {Role::kOutput}, {}, Form::kFragment, SideEffect::kDst,
-       SourceEmitter::kFillFragment, {{Role::kOutput, 1}}, {}, 1},
+       SourceEmitter::kFillFragment, SourceCategory::kCustom, nullptr, nullptr,
+       {{Role::kOutput, 1}}, {}, 1},
       {"copy_tile_pattern", "copy_tile", Result::kCopy, Op::kCopyTile,
        {Role::kInput, Role::kOutput}, {Form::kFragmentOrExactCB},
        Form::kFragmentOrExactCB, SideEffect::kDst, SourceEmitter::kCopyTile,
+       SourceCategory::kCustom, nullptr, nullptr,
        {{Role::kInput, 1}, {Role::kOutput, 2}}, {}, 1},
       {"typecast_tile_pattern", "typecast_tile", Result::kUnary, Op::kTypecastTile,
        {Role::kInput, Role::kOutput}, {Form::kFragment}, Form::kFragment,
        SideEffect::kDst, SourceEmitter::kTypecastTile,
+       SourceCategory::kCustom, nullptr, nullptr,
        {{Role::kInput, 1}, {Role::kOutput, 2}}, {}, 1},
       {"binary_max_tile_pattern", "binary_max_tile", Result::kBinary, Op::kBinaryMaxTile,
        {Role::kLhs, Role::kRhs, Role::kOutput}, {Form::kExactCB, Form::kExactCB},
        Form::kExactCB, SideEffect::kTileRegs, SourceEmitter::kBinaryMaxTile,
+       SourceCategory::kCustom, nullptr, nullptr,
        {{Role::kLhs, 1}, {Role::kRhs, 2}, {Role::kOutput, 1}}, {}, 2},
       {"add_tiles_pattern", "add_tiles", Result::kBinary, Op::kAddTiles,
        {Role::kLhs, Role::kRhs, Role::kOutput}, {Form::kExactCB, Form::kExactCB},
        Form::kExactCB, SideEffect::kTileRegs, SourceEmitter::kAddTiles,
+       SourceCategory::kBinary, "tl.blackhole.add_tiles_init",
+       "tl.blackhole.add_tiles",
        {{Role::kLhs, 1}, {Role::kRhs, 2}, {Role::kOutput, 1}}, {}, 2},
       {"mul_tiles_pattern", "mul_tiles", Result::kBinary, Op::kMulTiles,
        {Role::kLhs, Role::kRhs, Role::kOutput}, {Form::kExactCB, Form::kExactCB},
        Form::kExactCB, SideEffect::kTileRegs, SourceEmitter::kMulTiles,
+       SourceCategory::kBinary, "tl.blackhole.mul_tiles_init",
+       "tl.blackhole.mul_tiles",
        {{Role::kLhs, 1}, {Role::kRhs, 2}, {Role::kOutput, 1}}, {}, 2},
       {"mul_tiles_bcast_cols_pattern", "mul_tiles_bcast_cols", Result::kBinary,
        Op::kMulTilesBcastCols, {Role::kLhs, Role::kRhs, Role::kOutput},
        {Form::kExactCB, Form::kBroadcastExactCB}, Form::kExactCB,
        SideEffect::kTileRegs, SourceEmitter::kMulTilesBcastCols,
+       SourceCategory::kBroadcastColsBinary,
+       "tl.blackhole.mul_bcast_cols_init_short",
+       "tl.blackhole.mul_tiles_bcast_cols",
        {{Role::kLhs, 1}, {Role::kRhs, 2}, {Role::kOutput, 1}}, {}, 2},
       {"add_tiles_bcast_cols_pattern", "add_tiles_bcast_cols", Result::kBinary,
        Op::kAddTilesBcastCols, {Role::kLhs, Role::kRhs, Role::kOutput},
        {Form::kExactCB, Form::kBroadcastExactCB}, Form::kExactCB,
        SideEffect::kTileRegs, SourceEmitter::kAddTilesBcastCols,
+       SourceCategory::kBroadcastColsBinary,
+       "tl.blackhole.add_bcast_cols_init_short",
+       "tl.blackhole.add_tiles_bcast_cols",
        {{Role::kLhs, 1}, {Role::kRhs, 2}, {Role::kOutput, 1}}, {}, 2},
       {"exp2_tile_pattern", "exp2_tile", Result::kUnary, Op::kExp2Tile,
        {Role::kInput, Role::kOutput}, {Form::kExactCB}, Form::kExactCB,
        SideEffect::kTileRegs, SourceEmitter::kExp2Tile,
+       SourceCategory::kUnary, "tl.blackhole.exp2_tile_init",
+       "tl.blackhole.exp2_tile",
        {{Role::kInput, 1}, {Role::kOutput, 2}}, {}, 2},
       {"recip_tile_pattern", "recip_tile", Result::kUnary, Op::kRecipTile,
        {Role::kInput, Role::kOutput}, {Form::kExactCB}, Form::kExactCB,
        SideEffect::kTileRegs, SourceEmitter::kRecipTile,
+       SourceCategory::kUnary, "tl.blackhole.recip_tile_init",
+       "tl.blackhole.recip_tile",
        {{Role::kInput, 1}, {Role::kOutput, 2}}, {}, 2},
       {"reduce_tile_pattern", "reduce_tile", Result::kReduce, Op::kReduceTile,
        {Role::kInput, Role::kScaler, Role::kOutput}, {Form::kExactCB, Form::kExactCB},
        Form::kExactCB, SideEffect::kTileRegs, SourceEmitter::kReduceTile,
+       SourceCategory::kCustom, nullptr, nullptr,
        {}, {{Role::kInput, 0}, {Role::kOutput, 1}}, 3},
       {"pack_tile_pattern", "pack_tile", Result::kPack, Op::kPackTile,
        {Role::kInput, Role::kOutput}, {Form::kFragment}, Form::kExactCB,
        SideEffect::kPack, std::nullopt,
+       SourceCategory::kNone, nullptr, nullptr,
        {{Role::kInput, 1}, {Role::kOutput, 2}}, {}, 1},
       {"matmul_tiles_pattern", "gemm", Result::kGemm, Op::kMatmulTiles,
        {Role::kA, Role::kB, Role::kC}, {Form::kExactCB, Form::kExactCB},
        Form::kAccumulator, SideEffect::kDst, std::nullopt,
+       SourceCategory::kNone, nullptr, nullptr,
        {}, {{Role::kA, 0}, {Role::kB, 1}, {Role::kC, 2}}, 4},
   };
   return patterns;

@@ -166,29 +166,14 @@ def _source_tree_rg(pattern, *paths):
     return [line for line in result.stdout.splitlines() if line]
 
 
-def _source_emitter_hook_names():
-    source = (
-        REPO_ROOT
-        / "tilelang_repo/src/transform/lower_blackhole_tile_compute.cc"
-    ).read_text()
-    if "BlackholeTileComputeSourceProjection::Hooks()" in source:
-        hook_table = source.split("BlackholeTileComputeSourceProjection::Hooks()", 1)[1]
-    else:
-        hook_table = source.split("GetTileComputeSourceEmitterHooks()", 1)[1]
-    hook_table = hook_table.split("return hooks;", 1)[0]
-    enum_hooks = set(
-        re.findall(
-            r"\{\s*BlackholeTileComputeSourceEmitterKind::k([A-Za-z0-9_]+)\s*,"
-            r"\s*&(?:PlanTTKernelABI|BlackholeTileComputeSourceProjection)::Emit",
-            hook_table,
-        )
-    )
-    if enum_hooks:
-        def _snake(name):
-            return re.sub(r"(?<!^)([A-Z])", r"_\1", name).lower()
-
-        return {_snake(name) for name in enum_hooks}
-    return set(re.findall(r'\{\s*"([^"]+)"\s*,\s*&PlanTTKernelABI::Emit', hook_table))
+def _source_emitter_schema_names():
+    pattern_table = tvm.get_global_func("tl.BlackholeTileComputePatternTable")()
+    return {
+        str(pattern["source_emitter"])
+        for pattern in pattern_table
+        if str(pattern["source_emitter"])
+        and str(pattern["source_emitter_category"]) != "none"
+    }
 
 
 def _drop_legacy_spatial_attrs(mod):
@@ -1420,17 +1405,22 @@ def test_tile_compute_binary_source_emission_has_no_operation_name_builtin_selec
     assert legacy_binary_selection_hits == []
 
 
-def test_tile_compute_source_emitter_hooks_cover_pattern_table():
+def test_tile_compute_source_emission_schema_covers_pattern_table():
     pattern_table = tvm.get_global_func("tl.BlackholeTileComputePatternTable")()
     pattern_emitters = {
         str(pattern["source_emitter"])
         for pattern in pattern_table
         if str(pattern["source_emitter"])
     }
-    hook_emitters = _source_emitter_hook_names()
+    schema_emitters = _source_emitter_schema_names()
 
-    assert pattern_emitters <= hook_emitters
-    assert "none" not in hook_emitters
+    assert pattern_emitters <= schema_emitters
+    assert "none" not in schema_emitters
+    for pattern in pattern_table:
+        category = str(pattern["source_emitter_category"])
+        if category in {"binary", "broadcast_cols_binary", "unary"}:
+            assert str(pattern["source_init_builtin"]).startswith("tl.blackhole.")
+            assert str(pattern["source_tile_builtin"]).startswith("tl.blackhole.")
 
 
 def test_tile_compute_covered_source_dispatch_has_no_inline_emitter_table():
@@ -1575,6 +1565,11 @@ def test_lower_tile_op_has_single_blackhole_tile_compute_normalizer_surface():
     assert "MakeBlackholeTileComputeCall(" not in lower_tile_source
     assert "TryNormalizeBlackholeTileComputeStore(" not in lower_tile_source
     assert "TryNormalizeBlackholeTileComputeLoop(" not in lower_tile_source
+    assert "struct TileComputeRewriteRule" in normalizer_source
+    assert "class TileComputeIRBuilder" in normalizer_source
+    assert "GetBlackholeTileComputeRewriteRules" in normalizer_source
+    assert "for (const TileComputeRewriteRule& rule" in normalizer_source
+    assert "TryNormalizeBlackholeTileComputeStore(" not in normalizer_source
 
     helper_defs = re.findall(
         r"\bStmt\s+MakeBlackholeTileComputeCall\s*\(", normalizer_source
@@ -1589,7 +1584,7 @@ def test_lower_tile_op_has_single_blackhole_tile_compute_normalizer_surface():
     )
 
     assert helper_defs == ["Stmt MakeBlackholeTileComputeCall("]
-    assert len(store_defs) == 1
+    assert store_defs == []
     assert len(loop_defs) == 1
     assert "TryNormalizeBlackholeTileComputeLoop(" not in normalizer_source
 
@@ -1597,6 +1592,10 @@ def test_lower_tile_op_has_single_blackhole_tile_compute_normalizer_surface():
 def test_tile_compute_source_projection_is_not_declared_on_plan_tt_kernel_abi():
     planner_header = (
         REPO_ROOT / "tilelang_repo/src/transform/lower_blackhole_ops.h"
+    ).read_text()
+    pattern_header = (
+        REPO_ROOT
+        / "tilelang_repo/src/transform/common/blackhole_tile_compute_patterns.h"
     ).read_text()
     tile_compute_source = (
         REPO_ROOT
@@ -1606,7 +1605,12 @@ def test_tile_compute_source_projection_is_not_declared_on_plan_tt_kernel_abi():
     assert "TileComputeSourceEmitterHook" not in planner_header
     assert "EmitFillFragmentTileComputeSource" not in planner_header
     assert "EmitRecipTileComputeSource" not in planner_header
+    assert "BlackholeTileComputeSourceEmitterCategory" in pattern_header
+    assert "source_init_builtin" in pattern_header
+    assert "source_tile_builtin" in pattern_header
     assert "BlackholeTileComputeSourceProjection::Emit" in tile_compute_source
+    assert "struct Hook" not in tile_compute_source
+    assert "BlackholeTileComputeSourceProjection::Hooks" not in tile_compute_source
     assert "EmitAddTiles(" not in tile_compute_source
     assert "EmitMulTiles(" not in tile_compute_source
     assert "EmitExp2(" not in tile_compute_source

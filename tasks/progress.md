@@ -133,12 +133,12 @@ Core placement 和 buffer distribution 仍然过粗：
 
 Latest code implementation batch:
 current HEAD after
-Blackhole tile-compute lowering duplicate-logic cleanup.
+Blackhole tile-compute rule-driver cleanup.
 
 Verification for this batch:
 
 - `cmake --build build -j32`
-- `pytest -q testing/python/transform/test_blackhole_spatial_ir.py -k 'single_blackhole_tile_compute_normalizer_surface or source_projection_is_not_declared or tile_compute or builtin_selector'`
+- `pytest -q testing/python/transform/test_blackhole_spatial_ir.py -k 'tile_compute or builtin_selector or single_blackhole_tile_compute_normalizer_surface or source_projection_is_not_declared or source_emission_schema'`
   (`29 passed, 51 deselected`)
 - `pytest -q testing/python/transform/test_blackhole_spatial_ir.py`
   (`80 passed`)
@@ -157,8 +157,11 @@ Verification for this batch:
   normalizer helpers,
   `lower_blackhole_ops.h`
   no longer declares tile-compute source emitter hook methods,
-  source projection no longer carries per-leaf add/mul/exp2/recip emit
-  methods,
+  source projection no longer carries a second hook table or per-leaf
+  add/mul/exp2/recip emit methods,
+  normalizer source has a local rule registry / driver instead of one large
+  `TryNormalizeBlackholeTileComputeStore`
+  function,
   and `lower_blackhole_tile_compute.cc`
   no longer hand-writes CB / tile-register / pack calls outside
   `ExactTileComputeEmitter`.

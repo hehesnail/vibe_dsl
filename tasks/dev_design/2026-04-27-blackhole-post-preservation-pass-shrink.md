@@ -77,7 +77,8 @@ generic validators
     broadcast-cols / exp2 exact tile sequences
   - uses category-level source projection emitters for same-shaped
     binary / broadcast-cols / unary leaf ops,
-    instead of one static emitter per TT-Metal builtin name
+    with source emission metadata stored in the leaf pattern schema
+    instead of a second hook table
   - keeps the public pass entry and class state in
     `PlanTTKernelABI`
     without adding a new cross-pass protocol
@@ -168,10 +169,13 @@ as a compatibility shell.
     分别在 `LowerTileOpPass`
     和 `BlackholeTileComputeNormalizer`
     中的实现收束成单一共享 helper
-  - normalizer 内部继续用 unary / binary call builders
-    收束同形 leaf-call construction，
-    不保留纯转发的 `TryNormalizeBlackholeTileComputeLoop`
-    wrapper
+  - normalizer 内部改成本地 rule registry /
+    driver /
+    `TileComputeIRBuilder`；
+    matcher 产出 ordered leaf-call plan，
+    builder 统一渲染 explicit
+    `tl.tileop.blackhole_compute`
+    statements
   - 继续产出显式
     `tl.tileop.blackhole_compute`
     而不是下游 matcher

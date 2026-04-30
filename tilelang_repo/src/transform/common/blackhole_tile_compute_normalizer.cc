@@ -213,80 +213,352 @@ Stmt WrapBlackholeTempBuffers(Stmt body, const std::vector<Buffer>& buffers) {
   return body;
 }
 
-Stmt MakeUnaryTileCall(const char* operation, const Buffer& src,
-                       const Buffer& dst, const PrimExpr& num_elements) {
-  return MakeBlackholeTileComputeCall(
-      operation,
-      {MakeFullRegionExpr(src, 1), MakeFullRegionExpr(dst, 2), num_elements});
+struct TileComputeRewriteContext {
+  const BufferStoreNode* store{nullptr};
+  PrimExpr linear_index;
+  PrimExpr num_elements;
+};
+
+enum class TileComputeLeafCallKind {
+  kUnary,
+  kFill,
+  kInplaceBinary,
+  kBroadcastColsBinary,
+};
+
+struct TileComputeLeafCall {
+  TileComputeLeafCallKind kind;
+  const char* operation{nullptr};
+  Buffer src;
+  Buffer dst;
+  Buffer rhs;
+  PrimExpr value;
+  PrimExpr num_elements;
+  PrimExpr row_width;
+};
+
+struct TileComputeRewriteMatch {
+  std::vector<TileComputeLeafCall> leaf_calls;
+  std::vector<Buffer> temp_buffers;
+
+  void AddUnary(const char* operation, const Buffer& src, const Buffer& dst,
+                const PrimExpr& num_elements) {
+    leaf_calls.push_back({TileComputeLeafCallKind::kUnary, operation, src, dst,
+                          Buffer(), PrimExpr(), num_elements, PrimExpr()});
+  }
+
+  void AddFill(const Buffer& dst, const PrimExpr& value,
+               const PrimExpr& num_elements) {
+    leaf_calls.push_back({TileComputeLeafCallKind::kFill,
+                          blackhole_tile_compute_schema::kFillTile, Buffer(),
+                          dst, Buffer(), value, num_elements, PrimExpr()});
+  }
+
+  void AddInplaceBinary(const char* operation, const Buffer& dst,
+                        const Buffer& rhs, const PrimExpr& num_elements) {
+    leaf_calls.push_back({TileComputeLeafCallKind::kInplaceBinary, operation,
+                          Buffer(), dst, rhs, PrimExpr(), num_elements,
+                          PrimExpr()});
+  }
+
+  void AddBroadcastColsBinary(const char* operation, const Buffer& dst,
+                              const Buffer& rhs,
+                              const PrimExpr& num_elements,
+                              const PrimExpr& row_width) {
+    leaf_calls.push_back({TileComputeLeafCallKind::kBroadcastColsBinary,
+                          operation, Buffer(), dst, rhs, PrimExpr(),
+                          num_elements, row_width});
+  }
+};
+
+class TileComputeIRBuilder {
+ public:
+  explicit TileComputeIRBuilder(int* temp_index) : temp_index_(temp_index) {}
+
+  Buffer TempLike(const Buffer& buffer, const char* suffix) const {
+    return MakeBlackholeTempBufferLike(buffer, suffix, temp_index_);
+  }
+
+  Stmt Render(const TileComputeRewriteMatch& match) const {
+    std::vector<Stmt> stmts;
+    stmts.reserve(match.leaf_calls.size());
+    for (const TileComputeLeafCall& leaf_call : match.leaf_calls) {
+      stmts.push_back(RenderLeafCall(leaf_call));
+    }
+    return WrapBlackholeTempBuffers(SeqStmt::Flatten(stmts),
+                                    match.temp_buffers);
+  }
+
+ private:
+  Stmt RenderLeafCall(const TileComputeLeafCall& leaf_call) const {
+    switch (leaf_call.kind) {
+      case TileComputeLeafCallKind::kUnary:
+        return MakeBlackholeTileComputeCall(
+            leaf_call.operation,
+            {MakeFullRegionExpr(leaf_call.src, 1),
+             MakeFullRegionExpr(leaf_call.dst, 2), leaf_call.num_elements});
+      case TileComputeLeafCallKind::kFill:
+        return MakeBlackholeTileComputeCall(
+            blackhole_tile_compute_schema::kFillTile,
+            {MakeFullRegionExpr(leaf_call.dst, 2), leaf_call.value,
+             leaf_call.num_elements});
+      case TileComputeLeafCallKind::kInplaceBinary:
+        return MakeBlackholeTileComputeCall(
+            leaf_call.operation,
+            {MakeFullRegionExpr(leaf_call.dst, 3),
+             MakeFullRegionExpr(leaf_call.rhs, 1), leaf_call.num_elements});
+      case TileComputeLeafCallKind::kBroadcastColsBinary:
+        return MakeBlackholeTileComputeCall(
+            leaf_call.operation,
+            {MakeFullRegionExpr(leaf_call.dst, 3),
+             MakeFullRegionExpr(leaf_call.rhs, 1), leaf_call.num_elements,
+             leaf_call.row_width});
+    }
+    ICHECK(false) << "unknown Blackhole tile compute leaf call kind";
+    return Stmt();
+  }
+
+  int* temp_index_;
+};
+
+using TileComputeRewriteMatchFn =
+    bool (*)(const TileComputeRewriteContext& ctx,
+             TileComputeRewriteMatch* match,
+             TileComputeIRBuilder* builder);
+
+struct TileComputeRewriteRule {
+  const char* name;
+  int benefit;
+  TileComputeRewriteMatchFn match;
+};
+
+bool MatchTypecastTileRule(const TileComputeRewriteContext& ctx,
+                           TileComputeRewriteMatch* match,
+                           TileComputeIRBuilder* builder) {
+  (void)builder;
+  Buffer src;
+  PrimExpr src_index;
+  const auto* cast = ctx.store->value.as<CastNode>();
+  if (!cast || !MatchLoad(cast->value, &src, &src_index) ||
+      !ProvenEqual(src_index, ctx.linear_index)) {
+    return false;
+  }
+  match->AddUnary(blackhole_tile_compute_schema::kTypecastTile, src,
+                  ctx.store->buffer, ctx.num_elements);
+  return true;
 }
 
-Stmt MakeInplaceBinaryTileCall(const char* operation, const Buffer& dst,
-                               const Buffer& rhs,
-                               const PrimExpr& num_elements) {
-  return MakeBlackholeTileComputeCall(
-      operation,
-      {MakeFullRegionExpr(dst, 3), MakeFullRegionExpr(rhs, 1), num_elements});
+bool MatchCopyTileRule(const TileComputeRewriteContext& ctx,
+                       TileComputeRewriteMatch* match,
+                       TileComputeIRBuilder* builder) {
+  (void)builder;
+  Buffer src;
+  PrimExpr src_index;
+  if (!MatchLoad(ctx.store->value, &src, &src_index) ||
+      SameBufferStorage(src, ctx.store->buffer) ||
+      !ProvenEqual(src_index, ctx.linear_index)) {
+    return false;
+  }
+  match->AddUnary(blackhole_tile_compute_schema::kCopyTile, src,
+                  ctx.store->buffer, ctx.num_elements);
+  return true;
 }
 
-Stmt MakeCopyTileCall(const Buffer& src, const Buffer& dst,
-                      const PrimExpr& num_elements) {
-  return MakeUnaryTileCall(blackhole_tile_compute_schema::kCopyTile, src, dst,
-                           num_elements);
+bool MatchBinaryMaxTileRule(const TileComputeRewriteContext& ctx,
+                            TileComputeRewriteMatch* match,
+                            TileComputeIRBuilder* builder) {
+  (void)builder;
+  auto match_ordered_max = [&](const PrimExpr& lhs,
+                               const PrimExpr& rhs) -> bool {
+    Buffer rhs_buffer;
+    if (!MatchLoadFromBuffer(lhs, ctx.store->buffer, ctx.linear_index) ||
+        !MatchLoad(rhs, &rhs_buffer, nullptr)) {
+      return false;
+    }
+    match->AddInplaceBinary(blackhole_tile_compute_schema::kBinaryMaxTile,
+                            ctx.store->buffer, rhs_buffer,
+                            ctx.num_elements);
+    return true;
+  };
+  const auto* max = ctx.store->value.as<MaxNode>();
+  return max && (match_ordered_max(max->a, max->b) ||
+                 match_ordered_max(max->b, max->a));
 }
 
-Stmt MakeFillTileCall(const Buffer& dst, const PrimExpr& value,
-                      const PrimExpr& num_elements) {
-  return MakeBlackholeTileComputeCall(
-      blackhole_tile_compute_schema::kFillTile,
-      {MakeFullRegionExpr(dst, 2), value, num_elements});
+bool MatchFmaTileRule(const TileComputeRewriteContext& ctx,
+                      TileComputeRewriteMatch* match,
+                      TileComputeIRBuilder* builder) {
+  (void)builder;
+  auto match_ordered_fma = [&](const PrimExpr& mul_expr,
+                               const PrimExpr& add_expr) -> bool {
+    const auto* mul = mul_expr.as<MulNode>();
+    if (!mul) {
+      return false;
+    }
+    Buffer other_mul;
+    Buffer add_buffer;
+    if (MatchLoadFromBuffer(mul->a, ctx.store->buffer, ctx.linear_index) &&
+        MatchLoad(mul->b, &other_mul, nullptr) &&
+        MatchLoad(add_expr, &add_buffer, nullptr)) {
+      match->AddInplaceBinary(blackhole_tile_compute_schema::kMulTiles,
+                              ctx.store->buffer, other_mul,
+                              ctx.num_elements);
+      match->AddInplaceBinary(blackhole_tile_compute_schema::kAddTiles,
+                              ctx.store->buffer, add_buffer,
+                              ctx.num_elements);
+      return true;
+    }
+    if (MatchLoadFromBuffer(mul->b, ctx.store->buffer, ctx.linear_index) &&
+        MatchLoad(mul->a, &other_mul, nullptr) &&
+        MatchLoad(add_expr, &add_buffer, nullptr)) {
+      match->AddInplaceBinary(blackhole_tile_compute_schema::kMulTiles,
+                              ctx.store->buffer, other_mul,
+                              ctx.num_elements);
+      match->AddInplaceBinary(blackhole_tile_compute_schema::kAddTiles,
+                              ctx.store->buffer, add_buffer,
+                              ctx.num_elements);
+      return true;
+    }
+    return false;
+  };
+  const auto* add = ctx.store->value.as<AddNode>();
+  return add && (match_ordered_fma(add->a, add->b) ||
+                 match_ordered_fma(add->b, add->a));
 }
 
-Stmt MakeMulTilesCall(const Buffer& dst, const Buffer& rhs,
-                      const PrimExpr& num_elements) {
-  return MakeInplaceBinaryTileCall(blackhole_tile_compute_schema::kMulTiles,
-                                   dst, rhs, num_elements);
+bool MatchExp2ScaledDifferenceRule(const TileComputeRewriteContext& ctx,
+                                   TileComputeRewriteMatch* match,
+                                   TileComputeIRBuilder* builder) {
+  PrimExpr exp2_arg;
+  if (!MatchExp2Call(ctx.store->value, &exp2_arg)) {
+    return false;
+  }
+  const auto* sub = exp2_arg.as<SubNode>();
+  if (!sub) {
+    return false;
+  }
+  Buffer lhs;
+  Buffer rhs;
+  PrimExpr lhs_scale;
+  PrimExpr rhs_scale;
+  if (!MatchScaledLoad(sub->a, &lhs, &lhs_scale) ||
+      !MatchScaledLoad(sub->b, &rhs, &rhs_scale)) {
+    return false;
+  }
+
+  arith::Analyzer analyzer;
+  const bool use_bcast_cols = SameBufferStorage(lhs, ctx.store->buffer);
+  PrimExpr row_width =
+      IsOneDimensionalBuffer(ctx.store->buffer) ? ctx.num_elements : IntImm32(1);
+  Buffer lhs_scale_buffer =
+      builder->TempLike(ctx.store->buffer, "_lhs_scale");
+  match->temp_buffers.push_back(lhs_scale_buffer);
+  if (!SameBufferStorage(lhs, ctx.store->buffer)) {
+    match->AddUnary(blackhole_tile_compute_schema::kCopyTile, lhs,
+                    ctx.store->buffer, ctx.num_elements);
+  }
+  match->AddFill(lhs_scale_buffer, lhs_scale,
+                 BufferElementCount(lhs_scale_buffer, ctx.num_elements));
+  match->AddInplaceBinary(blackhole_tile_compute_schema::kMulTiles,
+                          ctx.store->buffer, lhs_scale_buffer,
+                          ctx.num_elements);
+
+  Buffer scaled_rhs = builder->TempLike(rhs, "_scaled_rhs");
+  Buffer rhs_scale_buffer = builder->TempLike(rhs, "_rhs_scale");
+  match->temp_buffers.push_back(scaled_rhs);
+  match->temp_buffers.push_back(rhs_scale_buffer);
+  const PrimExpr rhs_elements = BufferElementCount(rhs, ctx.num_elements);
+  match->AddUnary(blackhole_tile_compute_schema::kCopyTile, rhs, scaled_rhs,
+                  rhs_elements);
+  match->AddFill(rhs_scale_buffer, analyzer.Simplify(-rhs_scale),
+                 BufferElementCount(rhs_scale_buffer, rhs_elements));
+  match->AddInplaceBinary(blackhole_tile_compute_schema::kMulTiles,
+                          scaled_rhs, rhs_scale_buffer, rhs_elements);
+  if (use_bcast_cols) {
+    match->AddBroadcastColsBinary(
+        blackhole_tile_compute_schema::kAddTilesBcastCols,
+        ctx.store->buffer, scaled_rhs, ctx.num_elements, row_width);
+  } else {
+    match->AddInplaceBinary(blackhole_tile_compute_schema::kAddTiles,
+                            ctx.store->buffer, scaled_rhs,
+                            ctx.num_elements);
+  }
+  match->AddUnary(blackhole_tile_compute_schema::kExp2Tile, ctx.store->buffer,
+                  ctx.store->buffer, ctx.num_elements);
+  return true;
 }
 
-Stmt MakeAddTilesCall(const Buffer& dst, const Buffer& rhs,
-                      const PrimExpr& num_elements) {
-  return MakeInplaceBinaryTileCall(blackhole_tile_compute_schema::kAddTiles,
-                                   dst, rhs, num_elements);
+bool MatchRowBroadcastMulRule(const TileComputeRewriteContext& ctx,
+                              TileComputeRewriteMatch* match,
+                              TileComputeIRBuilder* builder) {
+  (void)builder;
+  auto match_ordered_broadcast = [&](const PrimExpr& self_expr,
+                                     const PrimExpr& scalar_expr) -> bool {
+    Buffer scalar;
+    if (!MatchLoadFromBuffer(self_expr, ctx.store->buffer, ctx.linear_index) ||
+        !MatchLoad(scalar_expr, &scalar, nullptr) ||
+        SameBufferStorage(scalar, ctx.store->buffer)) {
+      return false;
+    }
+    match->AddBroadcastColsBinary(
+        blackhole_tile_compute_schema::kMulTilesBcastCols,
+        ctx.store->buffer, scalar, ctx.num_elements, ctx.num_elements);
+    return true;
+  };
+  const auto* mul = ctx.store->value.as<MulNode>();
+  return mul && (match_ordered_broadcast(mul->a, mul->b) ||
+                 match_ordered_broadcast(mul->b, mul->a));
 }
 
-Stmt MakeBroadcastColsBinaryCall(const char* operation, const Buffer& dst,
-                                 const Buffer& rhs,
-                                 const PrimExpr& num_elements,
-                                 const PrimExpr& row_width) {
-  return MakeBlackholeTileComputeCall(
-      operation, {MakeFullRegionExpr(dst, 3), MakeFullRegionExpr(rhs, 1),
-                  num_elements, row_width});
+bool MatchRowBroadcastDivRule(const TileComputeRewriteContext& ctx,
+                              TileComputeRewriteMatch* match,
+                              TileComputeIRBuilder* builder) {
+  const auto* div = ctx.store->value.as<DivNode>();
+  Buffer scalar;
+  if (!div ||
+      !MatchLoadFromBuffer(div->a, ctx.store->buffer, ctx.linear_index) ||
+      !MatchLoad(div->b, &scalar, nullptr) ||
+      SameBufferStorage(scalar, ctx.store->buffer)) {
+    return false;
+  }
+  Buffer reciprocal = builder->TempLike(scalar, "_recip");
+  match->temp_buffers.push_back(reciprocal);
+  const PrimExpr scalar_elements = BufferElementCount(scalar, IntImm32(1));
+  match->AddUnary(blackhole_tile_compute_schema::kRecipTile, scalar,
+                  reciprocal, scalar_elements);
+  match->AddBroadcastColsBinary(
+      blackhole_tile_compute_schema::kMulTilesBcastCols,
+      ctx.store->buffer, reciprocal, ctx.num_elements, ctx.num_elements);
+  return true;
 }
 
-Stmt MakeExp2TileCall(const Buffer& src, const Buffer& dst,
-                      const PrimExpr& num_elements) {
-  return MakeUnaryTileCall(blackhole_tile_compute_schema::kExp2Tile, src, dst,
-                           num_elements);
+bool MatchFillTileRule(const TileComputeRewriteContext& ctx,
+                       TileComputeRewriteMatch* match,
+                       TileComputeIRBuilder* builder) {
+  (void)builder;
+  if (!IsLiteralScalarValue(ctx.store->value)) {
+    return false;
+  }
+  match->AddFill(ctx.store->buffer, ctx.store->value, ctx.num_elements);
+  return true;
 }
 
-Stmt MakeRecipTileCall(const Buffer& src, const Buffer& dst,
-                       const PrimExpr& num_elements) {
-  return MakeUnaryTileCall(blackhole_tile_compute_schema::kRecipTile, src, dst,
-                           num_elements);
+const std::vector<TileComputeRewriteRule>&
+GetBlackholeTileComputeRewriteRules() {
+  static const std::vector<TileComputeRewriteRule> rules = {
+      {"typecast_tile", 100, &MatchTypecastTileRule},
+      {"copy_tile", 90, &MatchCopyTileRule},
+      {"binary_max_tile", 80, &MatchBinaryMaxTileRule},
+      {"fma_leaf_sequence", 70, &MatchFmaTileRule},
+      {"exp2_leaf_sequence", 60, &MatchExp2ScaledDifferenceRule},
+      {"row_broadcast_mul_leaf", 50, &MatchRowBroadcastMulRule},
+      {"row_broadcast_div_leaf_sequence", 40, &MatchRowBroadcastDivRule},
+      {"fill_tile", 10, &MatchFillTileRule},
+  };
+  return rules;
 }
 
-Stmt MakeTypecastTileCall(const Buffer& src, const Buffer& dst,
-                          const PrimExpr& num_elements) {
-  return MakeUnaryTileCall(blackhole_tile_compute_schema::kTypecastTile, src,
-                           dst, num_elements);
-}
-
-Stmt MakeBinaryMaxTileCall(const Buffer& dst, const Buffer& rhs,
-                           const PrimExpr& num_elements) {
-  return MakeInplaceBinaryTileCall(
-      blackhole_tile_compute_schema::kBinaryMaxTile, dst, rhs, num_elements);
-}
-
-Stmt TryNormalizeBlackholeTileComputeStore(const BufferStoreNode* store,
+Stmt ApplyBlackholeTileComputeRewriteRules(const BufferStoreNode* store,
                                            const PrimExpr& linear_index,
                                            const PrimExpr& num_elements,
                                            int* temp_index) {
@@ -295,179 +567,21 @@ Stmt TryNormalizeBlackholeTileComputeStore(const BufferStoreNode* store,
       !ProvenEqual(store->indices[0], linear_index)) {
     return Stmt();
   }
-
-  Buffer src;
-  PrimExpr src_index;
-  if (const auto* cast = store->value.as<CastNode>()) {
-    if (MatchLoad(cast->value, &src, &src_index) &&
-        ProvenEqual(src_index, linear_index)) {
-      return MakeTypecastTileCall(src, store->buffer, num_elements);
+  TileComputeIRBuilder builder(temp_index);
+  const TileComputeRewriteContext ctx{store, linear_index, num_elements};
+  int previous_benefit = 1000000000;
+  for (const TileComputeRewriteRule& rule :
+       GetBlackholeTileComputeRewriteRules()) {
+    ICHECK(rule.name != nullptr);
+    ICHECK_LE(rule.benefit, previous_benefit)
+        << "Blackhole tile compute rewrite rules must be ordered by "
+           "non-increasing local benefit";
+    previous_benefit = rule.benefit;
+    TileComputeRewriteMatch match;
+    if (rule.match(ctx, &match, &builder)) {
+      return builder.Render(match);
     }
   }
-
-  if (MatchLoad(store->value, &src, &src_index) &&
-      !SameBufferStorage(src, store->buffer) &&
-      ProvenEqual(src_index, linear_index)) {
-    return MakeCopyTileCall(src, store->buffer, num_elements);
-  }
-
-  auto try_match_max = [&](const PrimExpr& lhs,
-                           const PrimExpr& rhs) -> Stmt {
-    Buffer rhs_buffer;
-    if (!MatchLoadFromBuffer(lhs, store->buffer, linear_index) ||
-        !MatchLoad(rhs, &rhs_buffer, nullptr)) {
-      return Stmt();
-    }
-    return MakeBinaryMaxTileCall(store->buffer, rhs_buffer, num_elements);
-  };
-  if (const auto* max = store->value.as<MaxNode>()) {
-    if (Stmt matched = try_match_max(max->a, max->b); matched.defined()) {
-      return matched;
-    }
-    if (Stmt matched = try_match_max(max->b, max->a); matched.defined()) {
-      return matched;
-    }
-  }
-
-  auto try_match_fma = [&](const PrimExpr& mul_expr,
-                           const PrimExpr& add_expr) -> Stmt {
-    const auto* mul = mul_expr.as<MulNode>();
-    if (!mul) {
-      return Stmt();
-    }
-    auto emit_fma = [&](const Buffer& other_mul,
-                        const Buffer& add_buffer) -> Stmt {
-      std::vector<Stmt> stmts{
-          MakeMulTilesCall(store->buffer, other_mul, num_elements),
-          MakeAddTilesCall(store->buffer, add_buffer, num_elements)};
-      return SeqStmt::Flatten(stmts);
-    };
-    Buffer other_mul;
-    Buffer add_buffer;
-    if (MatchLoadFromBuffer(mul->a, store->buffer, linear_index) &&
-        MatchLoad(mul->b, &other_mul, nullptr) &&
-        MatchLoad(add_expr, &add_buffer, nullptr)) {
-      return emit_fma(other_mul, add_buffer);
-    }
-    if (MatchLoadFromBuffer(mul->b, store->buffer, linear_index) &&
-        MatchLoad(mul->a, &other_mul, nullptr) &&
-        MatchLoad(add_expr, &add_buffer, nullptr)) {
-      return emit_fma(other_mul, add_buffer);
-    }
-    return Stmt();
-  };
-  if (const auto* add = store->value.as<AddNode>()) {
-    if (Stmt matched = try_match_fma(add->a, add->b); matched.defined()) {
-      return matched;
-    }
-    if (Stmt matched = try_match_fma(add->b, add->a); matched.defined()) {
-      return matched;
-    }
-  }
-
-  PrimExpr exp2_arg;
-  if (MatchExp2Call(store->value, &exp2_arg)) {
-    if (const auto* sub = exp2_arg.as<SubNode>()) {
-      Buffer lhs;
-      Buffer rhs;
-      PrimExpr lhs_scale;
-      PrimExpr rhs_scale;
-      if (MatchScaledLoad(sub->a, &lhs, &lhs_scale) &&
-          MatchScaledLoad(sub->b, &rhs, &rhs_scale)) {
-        arith::Analyzer analyzer;
-        const bool use_bcast_cols = SameBufferStorage(lhs, store->buffer);
-        PrimExpr row_width =
-            IsOneDimensionalBuffer(store->buffer) ? num_elements : IntImm32(1);
-        std::vector<Buffer> temps;
-        std::vector<Stmt> stmts;
-        Buffer lhs_scale_buffer =
-            MakeBlackholeTempBufferLike(store->buffer, "_lhs_scale", temp_index);
-        temps.push_back(lhs_scale_buffer);
-        if (!SameBufferStorage(lhs, store->buffer)) {
-          stmts.push_back(MakeCopyTileCall(lhs, store->buffer, num_elements));
-        }
-        stmts.push_back(MakeFillTileCall(lhs_scale_buffer, lhs_scale,
-                                         BufferElementCount(lhs_scale_buffer,
-                                                            num_elements)));
-        stmts.push_back(MakeMulTilesCall(store->buffer, lhs_scale_buffer,
-                                         num_elements));
-
-        Buffer scaled_rhs =
-            MakeBlackholeTempBufferLike(rhs, "_scaled_rhs", temp_index);
-        Buffer rhs_scale_buffer =
-            MakeBlackholeTempBufferLike(rhs, "_rhs_scale", temp_index);
-        temps.push_back(scaled_rhs);
-        temps.push_back(rhs_scale_buffer);
-        const PrimExpr rhs_elements = BufferElementCount(rhs, num_elements);
-        stmts.push_back(MakeCopyTileCall(rhs, scaled_rhs, rhs_elements));
-        stmts.push_back(MakeFillTileCall(rhs_scale_buffer,
-                                         analyzer.Simplify(-rhs_scale),
-                                         BufferElementCount(rhs_scale_buffer,
-                                                            rhs_elements)));
-        stmts.push_back(MakeMulTilesCall(scaled_rhs, rhs_scale_buffer,
-                                         rhs_elements));
-        if (use_bcast_cols) {
-          stmts.push_back(MakeBroadcastColsBinaryCall(
-              blackhole_tile_compute_schema::kAddTilesBcastCols,
-              store->buffer, scaled_rhs, num_elements, row_width));
-        } else {
-          stmts.push_back(MakeAddTilesCall(store->buffer, scaled_rhs,
-                                           num_elements));
-        }
-        stmts.push_back(
-            MakeExp2TileCall(store->buffer, store->buffer, num_elements));
-        return WrapBlackholeTempBuffers(SeqStmt::Flatten(stmts), temps);
-      }
-    }
-  }
-
-  auto try_match_row_broadcast = [&](const PrimExpr& self_expr,
-                                     const PrimExpr& scalar_expr,
-                                     const char* operation) -> Stmt {
-    Buffer scalar;
-    if (!MatchLoadFromBuffer(self_expr, store->buffer, linear_index) ||
-        !MatchLoad(scalar_expr, &scalar, nullptr) ||
-        SameBufferStorage(scalar, store->buffer)) {
-      return Stmt();
-    }
-    return MakeBroadcastColsBinaryCall(operation, store->buffer, scalar,
-                                       num_elements, num_elements);
-  };
-  if (const auto* mul = store->value.as<MulNode>()) {
-    if (Stmt matched = try_match_row_broadcast(
-            mul->a, mul->b, blackhole_tile_compute_schema::kMulTilesBcastCols);
-        matched.defined()) {
-      return matched;
-    }
-    if (Stmt matched = try_match_row_broadcast(
-            mul->b, mul->a, blackhole_tile_compute_schema::kMulTilesBcastCols);
-        matched.defined()) {
-      return matched;
-    }
-  }
-  if (const auto* div = store->value.as<DivNode>()) {
-    Buffer scalar;
-    if (MatchLoadFromBuffer(div->a, store->buffer, linear_index) &&
-        MatchLoad(div->b, &scalar, nullptr) &&
-        !SameBufferStorage(scalar, store->buffer)) {
-      std::vector<Buffer> temps;
-      Buffer reciprocal =
-          MakeBlackholeTempBufferLike(scalar, "_recip", temp_index);
-      temps.push_back(reciprocal);
-      const PrimExpr scalar_elements = BufferElementCount(scalar, IntImm32(1));
-      std::vector<Stmt> stmts{
-          MakeRecipTileCall(scalar, reciprocal, scalar_elements),
-          MakeBroadcastColsBinaryCall(
-              blackhole_tile_compute_schema::kMulTilesBcastCols,
-              store->buffer, reciprocal, num_elements, num_elements)};
-      return WrapBlackholeTempBuffers(SeqStmt::Flatten(stmts), temps);
-    }
-  }
-
-  if (IsLiteralScalarValue(store->value)) {
-    return MakeFillTileCall(store->buffer, store->value, num_elements);
-  }
-
   return Stmt();
 }
 
@@ -500,8 +614,8 @@ class BlackholeTileComputeNormalizer : public StmtExprMutator {
 Stmt NormalizeBlackholeTileComputeLoop(const ForNode* op, int* temp_index) {
   if (const auto* store = op->body.as<BufferStoreNode>()) {
     if (store->indices.size() == 1U) {
-      return TryNormalizeBlackholeTileComputeStore(store, store->indices[0],
-                                                  op->extent, temp_index);
+      return ApplyBlackholeTileComputeRewriteRules(store, store->indices[0],
+                                                   op->extent, temp_index);
     }
   }
   const auto* inner_loop = op->body.as<ForNode>();
@@ -509,7 +623,7 @@ Stmt NormalizeBlackholeTileComputeLoop(const ForNode* op, int* temp_index) {
       inner_loop ? inner_loop->body.as<BufferStoreNode>() : nullptr;
   if (inner_loop && inner_store && inner_store->indices.size() == 1U) {
     arith::Analyzer analyzer;
-    return TryNormalizeBlackholeTileComputeStore(
+    return ApplyBlackholeTileComputeRewriteRules(
         inner_store, inner_store->indices[0],
         analyzer.Simplify(op->extent * inner_loop->extent), temp_index);
   }

@@ -445,90 +445,38 @@ class BlackholeTileComputeSourceProjection {
                    const BlackholeTileComputeCoveringDecision& covering);
 
  private:
-  struct Hook {
-    BlackholeTileComputeSourceEmitterKind kind;
-    using EmitFn = Stmt (*)(PlanTTKernelABI* abi, const CallNode* op,
-                            const BlackholeTileComputeCoveringDecision& covering,
-                            const Hook& hook);
-    EmitFn emit;
-    Op init_op;
-    Op tile_op;
-  };
-
-  static const std::vector<Hook>& Hooks();
-  static const Hook* Find(BlackholeTileComputeSourceEmitterKind source_emitter);
+  static Op RequiredSourceBuiltin(const BlackholeTileComputePattern& pattern,
+                                  const char* field_name,
+                                  const char* op_name);
+  static Stmt EmitCustom(PlanTTKernelABI* abi, const CallNode* op,
+                         const BlackholeTileComputeCoveringDecision& covering,
+                         const BlackholeTileComputePattern& pattern);
   static Stmt EmitFillFragment(PlanTTKernelABI* abi, const CallNode* op,
                                const BlackholeTileComputeCoveringDecision& covering,
-                               const Hook& hook);
+                               const BlackholeTileComputePattern& pattern);
   static Stmt EmitCopy(PlanTTKernelABI* abi, const CallNode* op,
                        const BlackholeTileComputeCoveringDecision& covering,
-                       const Hook& hook);
+                       const BlackholeTileComputePattern& pattern);
   static Stmt EmitTypecast(PlanTTKernelABI* abi, const CallNode* op,
                            const BlackholeTileComputeCoveringDecision& covering,
-                           const Hook& hook);
+                           const BlackholeTileComputePattern& pattern);
   static Stmt EmitBinaryMax(PlanTTKernelABI* abi, const CallNode* op,
                             const BlackholeTileComputeCoveringDecision& covering,
-                            const Hook& hook);
+                            const BlackholeTileComputePattern& pattern);
   static Stmt EmitBinary(PlanTTKernelABI* abi, const CallNode* op,
                          const BlackholeTileComputeCoveringDecision& covering,
-                         const Hook& hook);
+                         const BlackholeTileComputePattern& pattern);
   static Stmt EmitBroadcastColsBinary(
       PlanTTKernelABI* abi, const CallNode* op,
       const BlackholeTileComputeCoveringDecision& covering,
-      const Hook& hook);
+      const BlackholeTileComputePattern& pattern);
   static Stmt EmitUnary(PlanTTKernelABI* abi, const CallNode* op,
                         const BlackholeTileComputeCoveringDecision& covering,
-                        const Hook& hook);
+                        const BlackholeTileComputePattern& pattern);
   static Stmt EmitReduce(PlanTTKernelABI* abi, const CallNode* op,
                          const BlackholeTileComputeCoveringDecision& covering,
-                         const Hook& hook);
+                         const BlackholeTileComputePattern& pattern);
 };
-
-const std::vector<BlackholeTileComputeSourceProjection::Hook>&
-BlackholeTileComputeSourceProjection::Hooks() {
-  static const std::vector<Hook> hooks = {
-      {BlackholeTileComputeSourceEmitterKind::kFillFragment,
-       &BlackholeTileComputeSourceProjection::EmitFillFragment, Op(), Op()},
-      {BlackholeTileComputeSourceEmitterKind::kCopyTile,
-       &BlackholeTileComputeSourceProjection::EmitCopy, Op(), Op()},
-      {BlackholeTileComputeSourceEmitterKind::kTypecastTile,
-       &BlackholeTileComputeSourceProjection::EmitTypecast, Op(), Op()},
-      {BlackholeTileComputeSourceEmitterKind::kBinaryMaxTile,
-       &BlackholeTileComputeSourceProjection::EmitBinaryMax, Op(), Op()},
-      {BlackholeTileComputeSourceEmitterKind::kAddTiles,
-       &BlackholeTileComputeSourceProjection::EmitBinary,
-       blackhole_add_tiles_init(), blackhole_add_tiles()},
-      {BlackholeTileComputeSourceEmitterKind::kMulTiles,
-       &BlackholeTileComputeSourceProjection::EmitBinary,
-       blackhole_mul_tiles_init(), blackhole_mul_tiles()},
-      {BlackholeTileComputeSourceEmitterKind::kMulTilesBcastCols,
-       &BlackholeTileComputeSourceProjection::EmitBroadcastColsBinary,
-       blackhole_mul_bcast_cols_init_short(), blackhole_mul_tiles_bcast_cols()},
-      {BlackholeTileComputeSourceEmitterKind::kAddTilesBcastCols,
-       &BlackholeTileComputeSourceProjection::EmitBroadcastColsBinary,
-       blackhole_add_bcast_cols_init_short(), blackhole_add_tiles_bcast_cols()},
-      {BlackholeTileComputeSourceEmitterKind::kExp2Tile,
-       &BlackholeTileComputeSourceProjection::EmitUnary,
-       blackhole_exp2_tile_init(), blackhole_exp2_tile()},
-      {BlackholeTileComputeSourceEmitterKind::kRecipTile,
-       &BlackholeTileComputeSourceProjection::EmitUnary,
-       blackhole_recip_tile_init(), blackhole_recip_tile()},
-      {BlackholeTileComputeSourceEmitterKind::kReduceTile,
-       &BlackholeTileComputeSourceProjection::EmitReduce, Op(), Op()},
-  };
-  return hooks;
-}
-
-const BlackholeTileComputeSourceProjection::Hook*
-BlackholeTileComputeSourceProjection::Find(
-    BlackholeTileComputeSourceEmitterKind source_emitter) {
-  for (const Hook& hook : Hooks()) {
-    if (source_emitter == hook.kind) {
-      return &hook;
-    }
-  }
-  return nullptr;
-}
 
 size_t FindBlackholeTileComputeBufferArgIndex(
     BlackholeTileComputeOperandRole role,
@@ -615,18 +563,80 @@ Stmt BlackholeTileComputeSourceProjection::Emit(
       << "Selected Blackhole tile compute pattern " << covering.pattern_name
       << " for operation " << covering.operation_name
       << " is not admitted on the explicit tile-compute source path";
-  const Hook* hook = Find(*covering.source_emitter);
-  ICHECK(hook != nullptr)
-      << "No explicit source emitter registered for selected Blackhole tile compute pattern "
-      << covering.pattern_name << " with emitter " << ToString(*covering.source_emitter);
-  return hook->emit(abi, op, covering, *hook);
+  const BlackholeTileComputePattern* pattern =
+      FindBlackholeTileComputePattern(covering.operation_name);
+  ICHECK(pattern != nullptr)
+      << "No explicit pattern registered for selected Blackhole tile compute operation "
+      << covering.operation_name;
+  ICHECK(pattern->source_emitter && *pattern->source_emitter == *covering.source_emitter)
+      << "Selected Blackhole tile compute pattern " << covering.pattern_name
+      << " has mismatched source emitter "
+      << ToString(*covering.source_emitter);
+  switch (pattern->source_emitter_category) {
+    case BlackholeTileComputeSourceEmitterCategory::kBinary:
+      return EmitBinary(abi, op, covering, *pattern);
+    case BlackholeTileComputeSourceEmitterCategory::kBroadcastColsBinary:
+      return EmitBroadcastColsBinary(abi, op, covering, *pattern);
+    case BlackholeTileComputeSourceEmitterCategory::kUnary:
+      return EmitUnary(abi, op, covering, *pattern);
+    case BlackholeTileComputeSourceEmitterCategory::kCustom:
+      return EmitCustom(abi, op, covering, *pattern);
+    case BlackholeTileComputeSourceEmitterCategory::kNone:
+      break;
+  }
+  ICHECK(false) << "Selected Blackhole tile compute pattern "
+                << covering.pattern_name
+                << " has no source projection category";
+  return Stmt();
+}
+
+Op BlackholeTileComputeSourceProjection::RequiredSourceBuiltin(
+    const BlackholeTileComputePattern& pattern, const char* field_name,
+    const char* op_name) {
+  ICHECK(op_name != nullptr && std::string(op_name).size() > 0U)
+      << "Blackhole tile compute pattern " << pattern.name
+      << " is missing " << field_name
+      << " for source projection category "
+      << ToString(pattern.source_emitter_category);
+  return Op::Get(op_name);
+}
+
+Stmt BlackholeTileComputeSourceProjection::EmitCustom(
+    PlanTTKernelABI* abi, const CallNode* op,
+    const BlackholeTileComputeCoveringDecision& covering,
+    const BlackholeTileComputePattern& pattern) {
+  ICHECK(pattern.source_emitter)
+      << "Custom Blackhole tile compute source projection requires source emitter";
+  switch (*pattern.source_emitter) {
+    case BlackholeTileComputeSourceEmitterKind::kFillFragment:
+      return EmitFillFragment(abi, op, covering, pattern);
+    case BlackholeTileComputeSourceEmitterKind::kCopyTile:
+      return EmitCopy(abi, op, covering, pattern);
+    case BlackholeTileComputeSourceEmitterKind::kTypecastTile:
+      return EmitTypecast(abi, op, covering, pattern);
+    case BlackholeTileComputeSourceEmitterKind::kBinaryMaxTile:
+      return EmitBinaryMax(abi, op, covering, pattern);
+    case BlackholeTileComputeSourceEmitterKind::kReduceTile:
+      return EmitReduce(abi, op, covering, pattern);
+    case BlackholeTileComputeSourceEmitterKind::kAddTiles:
+    case BlackholeTileComputeSourceEmitterKind::kMulTiles:
+    case BlackholeTileComputeSourceEmitterKind::kMulTilesBcastCols:
+    case BlackholeTileComputeSourceEmitterKind::kAddTilesBcastCols:
+    case BlackholeTileComputeSourceEmitterKind::kExp2Tile:
+    case BlackholeTileComputeSourceEmitterKind::kRecipTile:
+      break;
+  }
+  ICHECK(false) << "Blackhole tile compute pattern " << pattern.name
+                << " uses custom source projection for non-custom emitter "
+                << ToString(*pattern.source_emitter);
+  return Stmt();
 }
 
 Stmt BlackholeTileComputeSourceProjection::EmitFillFragment(
     PlanTTKernelABI* abi, const CallNode* op,
     const BlackholeTileComputeCoveringDecision& covering,
-    const Hook& hook) {
-  (void)hook;
+    const BlackholeTileComputePattern& pattern) {
+  (void)pattern;
   return abi->GenerateFillTileSequence(
       abi->GetBlackholeTileComputeBufferArg(op, BlackholeTileComputeOperandRole::kOutput,
                                             covering),
@@ -637,8 +647,8 @@ Stmt BlackholeTileComputeSourceProjection::EmitFillFragment(
 Stmt BlackholeTileComputeSourceProjection::EmitCopy(
     PlanTTKernelABI* abi, const CallNode* op,
     const BlackholeTileComputeCoveringDecision& covering,
-    const Hook& hook) {
-  (void)hook;
+    const BlackholeTileComputePattern& pattern) {
+  (void)pattern;
   return abi->GenerateCopyTileSequence(
       abi->GetBlackholeTileComputeBufferArg(op, BlackholeTileComputeOperandRole::kInput,
                                             covering),
@@ -650,9 +660,9 @@ Stmt BlackholeTileComputeSourceProjection::EmitCopy(
 Stmt BlackholeTileComputeSourceProjection::EmitTypecast(
     PlanTTKernelABI* abi, const CallNode* op,
     const BlackholeTileComputeCoveringDecision& covering,
-    const Hook& hook) {
+    const BlackholeTileComputePattern& pattern) {
   (void)covering;
-  (void)hook;
+  (void)pattern;
   PlanTTKernelABI::FragmentCastMatch match;
   ICHECK(abi->MatchExplicitTileTypecast(op, &match))
       << "tl.tileop.blackhole_compute typecast_tile requires source and destination "
@@ -684,8 +694,8 @@ Stmt BlackholeTileComputeSourceProjection::EmitTypecast(
 Stmt BlackholeTileComputeSourceProjection::EmitBinaryMax(
     PlanTTKernelABI* abi, const CallNode* op,
     const BlackholeTileComputeCoveringDecision& covering,
-    const Hook& hook) {
-  (void)hook;
+    const BlackholeTileComputePattern& pattern) {
+  (void)pattern;
   return abi->GenerateBinaryMaxTileSequence(
       abi->GetBlackholeTileComputeBufferArg(op, BlackholeTileComputeOperandRole::kLhs,
                                             covering),
@@ -696,25 +706,33 @@ Stmt BlackholeTileComputeSourceProjection::EmitBinaryMax(
 Stmt BlackholeTileComputeSourceProjection::EmitBinary(
     PlanTTKernelABI* abi, const CallNode* op,
     const BlackholeTileComputeCoveringDecision& covering,
-    const Hook& hook) {
+    const BlackholeTileComputePattern& pattern) {
   return abi->GenerateBinaryTileSequence(
       abi->GetBlackholeTileComputeBufferArg(op, BlackholeTileComputeOperandRole::kLhs,
                                             covering),
       abi->GetBlackholeTileComputeBufferArg(op, BlackholeTileComputeOperandRole::kRhs,
                                             covering),
-      covering.operation_name, hook.init_op, hook.tile_op);
+      covering.operation_name,
+      RequiredSourceBuiltin(pattern, "source_init_builtin",
+                            pattern.source_init_builtin),
+      RequiredSourceBuiltin(pattern, "source_tile_builtin",
+                            pattern.source_tile_builtin));
 }
 
 Stmt BlackholeTileComputeSourceProjection::EmitBroadcastColsBinary(
     PlanTTKernelABI* abi, const CallNode* op,
     const BlackholeTileComputeCoveringDecision& covering,
-    const Hook& hook) {
+    const BlackholeTileComputePattern& pattern) {
   return abi->GenerateBroadcastColsBinaryTileSequence(
       abi->GetBlackholeTileComputeBufferArg(op, BlackholeTileComputeOperandRole::kLhs,
                                             covering),
       abi->GetBlackholeTileComputeBufferArg(op, BlackholeTileComputeOperandRole::kRhs,
                                             covering),
-      covering.operation_name, hook.init_op, hook.tile_op,
+      covering.operation_name,
+      RequiredSourceBuiltin(pattern, "source_init_builtin",
+                            pattern.source_init_builtin),
+      RequiredSourceBuiltin(pattern, "source_tile_builtin",
+                            pattern.source_tile_builtin),
       abi->GetBlackholeTileComputePrimArg(op, 3, covering),
       abi->GetBlackholeTileComputePrimArg(op, 4, covering));
 }
@@ -722,21 +740,25 @@ Stmt BlackholeTileComputeSourceProjection::EmitBroadcastColsBinary(
 Stmt BlackholeTileComputeSourceProjection::EmitUnary(
     PlanTTKernelABI* abi, const CallNode* op,
     const BlackholeTileComputeCoveringDecision& covering,
-    const Hook& hook) {
+    const BlackholeTileComputePattern& pattern) {
   return abi->GenerateUnaryTileSequence(
       abi->GetBlackholeTileComputeBufferArg(op, BlackholeTileComputeOperandRole::kInput,
                                             covering),
       abi->GetBlackholeTileComputeBufferArg(op, BlackholeTileComputeOperandRole::kOutput,
                                             covering),
-      covering.operation_name, hook.init_op, hook.tile_op);
+      covering.operation_name,
+      RequiredSourceBuiltin(pattern, "source_init_builtin",
+                            pattern.source_init_builtin),
+      RequiredSourceBuiltin(pattern, "source_tile_builtin",
+                            pattern.source_tile_builtin));
 }
 
 Stmt BlackholeTileComputeSourceProjection::EmitReduce(
     PlanTTKernelABI* abi, const CallNode* op,
     const BlackholeTileComputeCoveringDecision& covering,
-    const Hook& hook) {
+    const BlackholeTileComputePattern& pattern) {
   (void)covering;
-  (void)hook;
+  (void)pattern;
   PlanTTKernelABI::RowReductionMatch match;
   ICHECK(abi->MatchExplicitTileReduce(op, &match))
       << "Selected reduce_tile source emitter requires tl.tileop.reduce";

@@ -32,6 +32,19 @@ or composite-expression decomposition.
 
 - Output is explicit tile-compute TIR.
 - One emitted call represents one TT-Metal semantic leaf op.
+- The implementation should be organized as a small rule driver:
+  a rule registry, local-benefit ordering, match routines that produce an
+  explicit leaf-call plan, and a shared builder that renders that plan into
+  TIR.
+  The driver is pass-local mechanics, not a new IR or a persistent semantic
+  graph.
+- A match result may carry operands, scalar parameters, logical temp requests,
+  and the ordered leaf calls to render.
+  It must not carry production operation names such as
+  `exp2_affine`,
+  `row_div`,
+  `softmax`,
+  or any other composite semantic family.
 - Operation names stay at TT-Metal leaf API granularity:
   `fill_tile`,
   `copy_tile`,
@@ -59,6 +72,8 @@ or composite-expression decomposition.
 - Same-shaped leaf calls should be built by shared unary / binary helpers.
   The normalizer must not carry one hand-written call builder per builtin
   when only the operation name differs.
+- Rule ordering may encode local normalization priority.
+  It must not be used as a hidden cross-stage contract.
 - Operation-changing `mode` /
   `kind`
   payloads are forbidden.
@@ -118,6 +133,10 @@ Required checks:
 - the normalizer has one loop-normalization implementation surface,
   without a pure forwarding `TryNormalizeBlackholeTileComputeLoop`
   wrapper
+- the normalizer has a rule registry / driver boundary,
+  and does not implement all store-expression normalization as one large
+  `TryNormalizeBlackholeTileComputeStore`
+  function
 - frontend normalization emits only admitted leaf operation names
 - composite payload strings are absent from leaf-looking calls
 - row-division normalization produces `recip_tile`

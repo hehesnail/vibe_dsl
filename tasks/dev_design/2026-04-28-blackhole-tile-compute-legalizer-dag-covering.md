@@ -148,7 +148,7 @@ Each leaf pattern defines:
 - required input forms
 - produced form
 - side-effect class
-- source emitter kind, if admitted
+- source emission category and TT-Metal builtin ops, if admitted
 - cost metadata
 
 Pattern operands are semantic leaf operands.
@@ -184,6 +184,10 @@ Source hooks are projection metadata for selected leaf patterns.
 They should be implemented behind a narrow source-projection helper,
 not as a long public/protected method family on
 `PlanTTKernelABI`.
+For same-shaped unary / binary / broadcast-cols leaves,
+the pattern schema is the owner of source emission metadata.
+The source-projection helper should not carry a second table that repeats
+operation-to-emitter mappings already present in the pattern schema.
 
 They may:
 
