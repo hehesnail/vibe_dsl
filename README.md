@@ -2,120 +2,76 @@
 
 这是 TileLang Tenstorrent Blackhole 后端的主开发工作区。
 
-## 当前唯一主入口
+## Authoritative Entrypoints
 
-- 总设计: `tasks/dev_design/final_blackhole_backend_redesign.md`
-- 当前进度: `tasks/progress.md`
-- 活动设计索引: `tasks/dev_design/README.md`
-- 协议面删除/迁移审计:
+- Overall design:
+  `tasks/dev_design/final_blackhole_backend_redesign.md`
+- Current status / blocker / next task:
+  `tasks/progress.md`
+- Active design index:
+  `tasks/dev_design/README.md`
+- Protocol audit:
   `tasks/dev_design/blackhole_first_principles_protocol_audit.md`
-- 仓库工作规范: `AGENTS.md`、`CLAUDE.md`
-- 稳定经验与问题记录: `memory/general_dev.md`、`memory/bugs.md`
+- Working norms:
+  `AGENTS.md`
+  / `CLAUDE.md`
+  / `GEMINI.md`
+- Stable experience and bug memory:
+  `memory/general_dev.md`
+  / `memory/bugs.md`
 
-## 当前方向
+Do not use `tasks/dev_design/archive/`
+as current design input.
 
-- 当前权威架构已经切换到分层 IR 主线:
-  - `Normalized Tile TIR`
-  - `SpatialPlan`
-  - `TTProgram`
-  - `ExecutableSpec`
-- semantic manifest 路径已完成：
-  - `AnalyzeSemanticStructure` 已是 manifest-first
-  - 当前 compile path 已不再把 semantic mirror 当长期 owner 层
-- tile-compute preservation
-  /
-  post-preservation pass shrink
-  /
-  lower-tile-op normalizer dedup
-  已完成：
-  downstream scalar-loop matcher /
-  composite generate family
-  不再是 active compute truth
-- 当前主实施阶段是
-  `Algorithmic generalization Phase E: Decision-Use Cutover`
-- 当前重点是让
-  `AccessRegion`、
-  `DependenceComponent`、
-  `LiveValueSSA`
-  和 TT live-form solver
-  真正驱动 legality /
-  query /
-  typed plan /
-  unsupported diagnostic，
-  然后再启动 production
-  `TileComputeDAG` /
-  legalizer /
-  covering
-- `SpatialPlan` 当前定位已经收紧为
-  virtual spatial/dataflow owner layer；
-  它必须承载 task/flow/layout/partition/order 这些执行相关但非 TT-specific 的 truth
-- 算法化重构受两条 guardrail 约束：
-  - anti-overdesign pay-rent rule：
-    新结构必须改变 active-chain 决策或删除旧 side channel
-  - problem-family generality rule：
-    当前 workload case 只能作为 witness，
-    不能成为协议定义
-- 这套分层不是为单个 consumer 设计，而是用于统一承接复杂前端计算 family：
-  - selection / indexing
-  - routed / grouped / ragged dispatch
-  - paged / indexed sparse access
-  - stateful reduction-update
-  - chunked recurrence / scan
-- 旧的单层方案、历史 runtime 架构说明、旧 implementation plan 都已移入 `tasks/dev_design/archive/`，不再作为当前实现入口。
-- 当前验证面落在 `ExecutableSpec -> rt_mod_blackhole -> BlackholeModule` direct host path：
-  - copy / GEMM direct path 已稳定
-  - `flash-attn` compile/source/spec baseline 已稳定
-  - small / 32x32 bf16 flash-attn
-    direct runtime subset 已 admission
-  - seq64 / multi-K-step
-    compile/source/spec lowering 已稳定，
-    direct-runtime correctness
-    仍通过 typed unsupported-reason metadata gate
-    fail closed
-  - full mesh/distributed runtime
-    仍是后续 admission lane；
-    schema 已在 `TTProgram`
-    层表达，
-    runtime 当前只 admission unit mesh /
-    replicated `MeshBuffer`
-    subset
+## Status Policy
 
-## 推荐阅读顺序
+Current implementation state is intentionally not duplicated here.
+Read `tasks/progress.md`.
+
+The durable architecture is:
+
+```text
+Normalized Tile TIR
+  -> SpatialPlan
+  -> TTProgram
+  -> ExecutableSpec
+```
+
+The current active lane and next task are maintained only in
+`tasks/progress.md`.
+
+## Recommended Reading Order
 
 1. `tasks/dev_design/final_blackhole_backend_redesign.md`
-2. `tasks/progress.md`
-3. `tasks/dev_design/README.md`
-4. `tasks/dev_design/task0_ir_layering_root_cause.md`
-5. `tasks/dev_design/task1_spatial_plan_companion.md`
-6. `tasks/dev_design/task2_ttprogram_companion_cutover.md`
-7. `tasks/dev_design/task3_runtime_gate_and_workload_cutover.md`
-8. `tasks/dev_design/2026-04-23-blackhole-live-form-materialization-admission.md`
-9. `tasks/dev_design/2026-04-27-blackhole-tile-compute-preservation.md`
-10. `tasks/dev_design/2026-04-27-blackhole-post-preservation-pass-shrink.md`
-11. `tasks/dev_design/2026-04-28-blackhole-lower-tile-op-normalizer-dedup.md`
-12. `tasks/dev_design/2026-04-28-blackhole-algorithmic-generalization.md`
-13. `tasks/dev_design/2026-04-28-blackhole-tile-compute-legalizer-dag-covering.md`
-14. `tasks/dev_design/blackhole_first_principles_protocol_audit.md`
-15. `AGENTS.md` 或 `CLAUDE.md`
-16. `memory/general_dev.md`
-17. `memory/bugs.md`
-18. 相关源码与测试
+2. `tasks/dev_design/task0_ir_layering_root_cause.md`
+3. `tasks/dev_design/task1_spatial_plan_companion.md`
+4. `tasks/dev_design/task2_ttprogram_companion_cutover.md`
+5. `tasks/dev_design/task3_runtime_gate_and_workload_cutover.md`
+6. `tasks/progress.md`
+7. `tasks/dev_design/README.md`
+8. Current lane docs listed in `tasks/dev_design/README.md`
+9. `memory/general_dev.md`
+10. `memory/bugs.md`
+11. Relevant code and tests
 
-## 仓库结构
+## Repository Layout
 
-- `tilelang_repo/`：TileLang 开发仓库，Blackhole 后端实现主要在这里
-- `tt_metal_repo/`：TT-Metal 开发仓库，API、示例和运行时参考主要在这里
-- `tasks/`：设计文档、进度和任务安排
-- `memory/`：稳定工程经验和问题记录
-- `scripts/`：环境准备和辅助脚本
+- `tilelang_repo/`:
+  TileLang development checkout; Blackhole implementation lives mostly here.
+- `tt_metal_repo/`:
+  TT-Metal checkout; API, runtime, simulator, and examples reference.
+- `tasks/`:
+  design contracts, progress board, and archived task history.
+- `memory/`:
+  stable engineering lessons and reusable bug records.
+- `scripts/`:
+  environment setup and helper scripts.
 
-## 当前约束
+## Documentation Rules
 
-- 不再新增第二份总体设计文档。
-- 当前实现和后续计划都以 `tasks/dev_design/final_blackhole_backend_redesign.md` 为准。
-- `tasks/dev_design/` 根目录只保留当前入口文档、
-  当前活动 / 已完成但仍约束实现的 lane 设计文档
-  和 protocol audit；
-  `archive/` 下全部视为历史记录，
-  不再作为当前实现入口。
-- 如果文档与代码发生冲突，先同步设计，再动实现。
+- Do not add a second overall design document.
+- Keep current status only in `tasks/progress.md`.
+- Keep active design docs as contracts, not chronological notebooks.
+- Put durable lessons in `memory/`.
+- If docs and code diverge, update the relevant design/status first, then
+  continue implementation.

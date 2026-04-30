@@ -908,45 +908,17 @@ cd <当前 checkout 或 worktree>/tilelang_repo
 - `TT_METAL_SLOW_DISPATCH_MODE=1` 对 TT-Sim 很关键
 - direct path kernel 临时目录必须每次执行唯一化
 - 优先消费 TT-Metal local install tree，不要把 `.cpmcache` 整片塞进 include path
-- 现阶段 Blackhole runtime/direct-runtime regression 默认统一用 `bf16` 输入；
-  不要再把 `fp16` 当成 TT-Sim 上的正式 runtime baseline
-- 当前 runtime correctness gate
-  的 admitted runtime
-  只包括
-  copy / GEMM，
-  以及 live-form /
-  materialization admission
-  后的当前 supported shapes：
-  constant
-  和
-  `fragment_fill -> cast -> publish`
-  的
-  `pack_thread_direct_store`
-  path，
-  以及 zero-preclear
-  GEMM post-merge
-  direct cast consumer
-  的
-  `pack_tile`
-  path；
-  当前 direct runtime admitted subset
-  仍只覆盖 small / 32x32 bf16 MHA-GQA；
-  seq64 / multi-K-step
-  只完成 compile/source/spec
-  exact-CB republish admission，
-  direct-runtime correctness
-  继续通过 typed unsupported-reason
-  metadata gate fail closed；
-  更宽 direct cast /
+- Blackhole runtime/direct-runtime regression 默认统一用 `bf16` 输入；
+  不要再把 `fp16` 当成 TT-Sim 上的正式 runtime baseline。
+- Admitted runtime support boundary 是动态状态；
+  只看 `tasks/progress.md`，
+  不在 `memory/` 里维护第二份支持矩阵。
+- 扩更宽 direct cast /
   live-in materialization /
-  stage2-block64 multi-page event
-  仍不能混进
-  TT-Sim hard gate，
-  需要先按
-  `tasks/dev_design/2026-04-23-blackhole-live-form-materialization-admission.md`
-  扩 explicit live-form /
+  multi-page event
+  时，必须先扩 explicit live-form /
   materialization protocol，
-  不要写 runtime-only patch
+  不要写 runtime-only patch。
 - 对 `flash-attn` / multi-op compute kernel，
   不要再靠后段从 `SeqStmt`、builtin 序列或 buffer 形态
   恢复 producer-consumer / republish / reduce / broadcast 语义；
@@ -1516,7 +1488,9 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   不能变成新的 matcher payload
   或 source-string protocol。
 - 2026-04-28 早先记录的 Blackhole 任务顺序
-  后来又被 2026-04-29 hardware-codegen usefulness gate 修正：
+  后来又被 2026-04-29 hardware-codegen usefulness gate 修正；
+  该记录只说明当时路线为何调整，
+  不代表 repo HEAD 的当前 active lane：
   `AccessRegion` /
   graph-backed `SpatialPlan` dependence /
   `LiveValueSSA` /
@@ -1525,8 +1499,7 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   并在 admitted live-form /
   materialization surface
   上有 selected decision-use；
-  当前 active lane
-  是 tile-compute explicit leaf normalization boundary repair。
+  当前 active lane 统一只看 `tasks/progress.md`。
   `TileComputeDAG` /
   legalizer /
   covering
@@ -1539,12 +1512,6 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   不能靠 composite pseudo-leaf
   或 source hook expansion
   证明 production 价值。
-  完成该修复后再进入 core /
-  buffer planning、
-  multi-block flash-attn runtime admission、
-  exact-CB multi-page event admission、
-  mesh/distributed runtime admission
-  和 wider flash-attn workload scale。
 - 2026-04-28 Algorithmic generalization Phase A
   已添加 typed `AccessRegion` 到 `SpatialPlan`。
   builder 从 execution-unit `read_buffers` /
@@ -1682,7 +1649,9 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   support lane,
   protocol audit,
   and `progress.md`
-  must agree on the current active lane and support boundary.
+  must keep a single status owner:
+  dynamic lane / blocker / support boundary
+  live in `tasks/progress.md`.
   Archive docs are historical only and cannot authorize legacy residue.
 - 2026-04-28 状态文件边界：
   `tasks/progress.md`

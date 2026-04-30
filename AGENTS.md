@@ -93,10 +93,9 @@
 5. `tasks/dev_design/task3_runtime_gate_and_workload_cutover.md` — `ExecutableSpec / leaf reader` 主设计合同
 6. `tasks/progress.md` — 当前 repo HEAD 状态与下一步
 7. `tasks/dev_design/README.md` — 当前活动设计文档索引
-8. `tasks/dev_design/2026-04-28-blackhole-algorithmic-generalization.md` — 当前 algorithmic decision-use cutover 设计合同
-9. `tasks/dev_design/2026-04-28-blackhole-tile-compute-legalizer-dag-covering.md` — 后续 tile compute legalizer / covering gate 设计合同
-10. 如果涉及构建/调试/历史问题，再读 `memory/general_dev.md` 和 `memory/bugs.md`
-11. 然后读代码，不要只看文档
+8. `tasks/dev_design/README.md` 里列出的 current lane docs
+9. 如果涉及构建/调试/历史问题，再读 `memory/general_dev.md` 和 `memory/bugs.md`
+10. 然后读代码，不要只看文档
 
 ## 工作区偏好
 
@@ -219,67 +218,17 @@ cd <当前 checkout 或 worktree>/tilelang_repo
 
 ## 当前推进顺序
 
-1. 文档、任务安排和实现边界统一以当前入口文档为准：
-   - `tasks/dev_design/final_blackhole_backend_redesign.md`
-   - `tasks/progress.md`
-   - `tasks/dev_design/README.md`
-   - `tasks/dev_design/task0_ir_layering_root_cause.md`
-   - `tasks/dev_design/task1_spatial_plan_companion.md`
-   - `tasks/dev_design/task2_ttprogram_companion_cutover.md`
-   - `tasks/dev_design/task3_runtime_gate_and_workload_cutover.md`
-   - `tasks/dev_design/2026-04-28-blackhole-algorithmic-generalization.md`
-   - `tasks/dev_design/2026-04-28-blackhole-tile-compute-legalizer-dag-covering.md`
-2. 历史 cleanup 主线
-   `Task 1 -> Task 2 -> Task 3 -> Legacy Protocol Deletion`
-   已完成；
-   它不是当前 active backlog
-3. 当前 active lane
-   统一看 `tasks/progress.md`；
-   当前是
-   `Tile-compute explicit leaf normalization boundary repair`
-4. `tasks/progress.md`
-   只维护 repo HEAD 当前状态 /
-   blocker /
-   下一步
-5. cleanup `task0-task5`
-   已完成并归档到
-   `tasks/dev_design/archive/`
-   - 它们只作完成期历史记录
-   - 不再作为当前活动设计入口
-   - 当前任务顺序只看
-     `tasks/progress.md`
-6. Algorithmic generalization
-   Phase A-D
-   已作为 foundation 完成：
-   - `AccessRegion`
-   - graph-backed `SpatialPlan` dependence
-   - `LiveValueSSA`
-   - 第一版 TT live-form solver
-   Phase E 已有 selected decision-use：
-   这些结构已经影响 admitted live-form /
-   materialization legality 和 typed plans。
-   但它们不是 compute expression lowering 解法，
-   也不是全局 resource allocator；
-   后续扩展必须继续通过 hardware-codegen usefulness gate
-   证明其 active-chain 作用
-7. `materialization / source-live-form`
-   已重新收束为
-   `tasks/dev_design/2026-04-23-blackhole-live-form-materialization-admission.md`
-   下的 support-surface admission lane，
-   不再作为单独顶层路线
-8. `TileComputeDAG` /
-   legalizer /
-   covering
-   只能保留为 explicit leaf graph
-   上的 pass-local legality /
-   covering /
-   fanout /
-   materialization /
-   resource-demand input。
-   在 composite pseudo-leaf
-   清理完成前，
-   不能作为 production-complete 面进入更宽 resource /
-   runtime migration
+1. 当前 active lane、blocker、下一步统一只看
+   `tasks/progress.md`。
+2. 当前 active design / support-lane docs 统一只看
+   `tasks/dev_design/README.md`。
+3. 历史 cleanup `task0-task5`
+   和旧 implementation plan
+   只作为 `tasks/dev_design/archive/`
+   下的历史记录；
+   不再作为当前活动设计入口。
+4. 后续所有架构推进以当前 layered IR 为准：
+   `Normalized Tile TIR -> SpatialPlan -> TTProgram -> ExecutableSpec`。
 
 ---
 
@@ -320,99 +269,34 @@ cd <当前 checkout 或 worktree>/tilelang_repo
 
 ## 当前事实约束
 
-- Blackhole 正式执行路径只剩 `BlackholeModule` 进程内 direct host path
-- `tilelang.compile(..., execution_backend="tvm_ffi")` 的 Blackhole wrapper/export path 已恢复
-- 默认开发构建目录固定为 `tilelang_repo/build/`
-- 默认并行编译线程数按 `-j32` 执行
-- `build_blackhole/` 和 legacy runner 都已删除
-- `tasks/dev_design/` 根目录只保留当前入口文档、
-  当前活动 / 已完成但仍约束实现的 lane 设计文档
-  和 protocol audit；
-  `tasks/dev_design/archive/` 下内容全部视为历史记录，不再作为当前入口
-- semantic manifest 路径已完成；`AnalyzeSemanticStructure` 已全面改成 manifest-first
-- 当前实际 active chain 是：
-  `Normalized Tile TIR -> BuildSpatialPlan -> ValidateSpatialPlan -> SplitBlackholeKernel -> PlanTTBlocks -> SelectBlackholeTTMetalBuiltins -> PlanTTCompute / PlanTTTransport / PlanTTSync / PlanTTABI / PlanTTExecution -> BuildTTProgram -> ValidateTTProgram -> MaterializeBlackholeExecutable -> runtime / codegen leaf readers`
-- 上面这串名字描述的是当前 pass/phase 实现，不是新的长期 IR 层；
-  长期主链仍然只有 `Normalized Tile TIR -> SpatialPlan -> TTProgram -> ExecutableSpec`
-- 当前协议边界事实：
-  - `tl.blackhole_logical_buffer_tile_bridge_specs`
-    已从 active code path 删除；
-    不能再作为新的 bridge exception
-    或长期边界重新引入
-  - `compute_contract` / `gemm_contract` /
-    `multi_*_contracts`
-    已退出
-    `TTProgram -> ExecutableSpec -> runtime`
-    active chain；
-    compute truth 只能经
-    typed `TTComputeOpPlan`
-    / `KernelSpec.compute_ops`
-    流动
-  - `blackhole.segment_kind`
-    只允许作为
-    `lower_blackhole_ops.cc`
-    内部 pass-local mechanics，
-    final IR / leaf reader 前必须剥离
-- `SplitBlackholeKernel` 已实现并已接入管线；纯 copy 走 `fused_dataflow` 单 kernel，GEMM 走 3-kernel（reader/compute/writer）
-- direct runtime 当前 admitted 支持面：
-  - copy：equal source/dest range，且 stride = 1
-  - GEMM：A/B-separated reader range + writer output range；fresh fragment / preclear zero-init 统一走 `clear_accum=true` direct path
-  - accessor：仅 interleaved + DRAM + `common_runtime_arg_count = 0`
-  - communication：non-oversubscribed explicit semaphore / remote-endpoint subset
-  - live-form / materialization：
-    当前 admitted bf16 subset 包括
-    `fragment_fill -> cast -> publish`
-    的 `pack_thread_direct_store`
-    path，
-    以及 GEMM post-merge
-    direct cast consumer
-    zero-preclear full-tile
-    `pack_tile`
-    path
-- `flash-attn` compile-path / source/spec baseline 已稳定；
-  当前 admitted bf16 direct runtime subset
-  覆盖 small single-work-item
-  和 32x32 MHA / GQA；
-  seq64 / multi-K-step
-  只完成 compile/source/spec
-  exact-CB republish admission，
-  direct-runtime correctness
-  仍通过
-  `multi-block exact CB-republish flash-attention direct runtime correctness`
-  typed unsupported reason gate 住
-- TT-Sim `fp16` 仍按 simulator capability boundary 处理，不作为当前 correctness gate
-- 当前总体 blocker
-  统一以 `tasks/progress.md`
-  里的主线任务状态为准；
-  当前首先要修复
-  tile-compute source lowering
-  中的 composite pseudo-leaf residue：
-  `exp2_tile(mode, lhs, rhs, scale, ...)`
-  和
-  `mul_tiles_bcast_cols("div", ...)`
-  不能继续作为 leaf-looking payload
-  或 source hook expansion
-  存在；
-  相关 TIR 计算必须在
-  `Normalized Tile TIR`
-  中显式分解成 TT-Metal leaf op sequence，
-  再交给
-  `TileComputeDAG`
-  做 leaf covering
-- Algorithmic generalization
-  必须同时遵守：
-  - anti-overdesign pay-rent rule：
-    新结构必须改变 legality /
-    query /
-    typed plan /
-    unsupported diagnostic
-    或删除旧 matcher/helper/payload/fallback
-    但不能为了 pay rent
-    把 analysis / DAG
-    变成 composite lowering owner
-  - problem-family generality rule：
-    当前 workload case
-    只能作为 active-chain witness，
-    不能成为协议定义
-- 后续所有架构推进以当前 layered IR 为准：
+- 当前 active lane、blocker、support boundary、下一步统一只看
+  `tasks/progress.md`；本文件不复制动态状态。
+- 长期主链固定为：
   `Normalized Tile TIR -> SpatialPlan -> TTProgram -> ExecutableSpec`
+- Blackhole 正式执行路径是
+  `BlackholeModule` 进程内 direct host path；
+  `tilelang.compile(..., execution_backend="tvm_ffi")`
+  的 Blackhole wrapper/export path 可用。
+- 默认开发构建目录固定为 `tilelang_repo/build/`；
+  默认并行编译线程数按 `-j32` 执行。
+- `build_blackhole/` 和 legacy external runner
+  不再作为有效路径。
+- `tasks/dev_design/archive/`
+  只作历史参考，不能作为当前活动入口
+  或继续保留旧协议面的理由。
+- 已退出 active protocol 的 surfaces
+  不得作为公共协议重新引入：
+  top-level `TTProgram.payload`、
+  `tl.blackhole_logical_buffer_tile_bridge_specs`、
+  `compute_contract` / `gemm_contract` / `multi_*_contracts`、
+  lowering facts bags、compute-op seed maps、
+  leaf defaults / fallbacks、
+  runtime / codegen semantic recovery。
+- `blackhole.segment_kind`
+  只允许作为 `lower_blackhole_ops.cc`
+  内部 pass-local mechanics；
+  final IR / leaf reader 前必须剥离。
+- Algorithmic structures 必须通过 hardware-codegen usefulness gate：
+  改变 legality / query / typed plan / unsupported diagnostic，
+  或删除旧 matcher / helper / payload / fallback；
+  不能成为 composite lowering owner。

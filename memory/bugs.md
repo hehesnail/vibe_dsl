@@ -1436,7 +1436,7 @@
     验证，
     不能只靠高层 buffer 名称或“row/col”直觉
 
-#### flash-attn exact softmax 中间 CB 不能用 Float32 物理页作为当前 admitted lane
+#### flash-attn exact softmax 中间 CB 不能用 Float32 物理页作为 admitted BF16 lane
 
 - **症状**:
   - P2.2 gate 打开后，

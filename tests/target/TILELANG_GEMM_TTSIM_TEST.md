@@ -13,15 +13,18 @@ host layout contract, and no longer reflects the Blackhole direct-path execution
 - Its host-side data movement contract diverged from the real runtime path.
 - Keeping it in-tree risked treating a stale bring-up sample as the canonical reference.
 
-## Current Validation Path
+## Maintained Validation Path
 
-Use the Python direct-path tests instead:
+Use the maintained Python direct-path tests selected by
+`tasks/progress.md`. For TT-Sim runtime tests, source the environment
+in the same shell as the test command:
 
 ```bash
-pytest -q tilelang_repo/testing/python/target/blackhole/test_blackhole_gemm.py
 source /root/dev/vibe_dsl/scripts/setup_tt_sim.sh
-pytest -q tilelang_repo/testing/python/target/blackhole/test_blackhole_copy_runtime.py
+export TILELANG_HOME=/root/dev/vibe_dsl/tilelang_repo
+cd /root/dev/vibe_dsl/tilelang_repo
+pytest -q <selected blackhole pytest target>
 ```
 
-These tests exercise the maintained TileLang -> Blackhole direct host path and are the current
-source of truth for TT-Sim validation in this repository.
+This note records why the old hand-written TT-Metal example was removed;
+it is not a task-level test matrix.
