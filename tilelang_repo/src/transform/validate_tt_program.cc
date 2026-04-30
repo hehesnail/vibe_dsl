@@ -31,18 +31,20 @@ using tvm::ffi::Array;
 using tvm::ffi::Map;
 using tvm::ffi::String;
 
-Map<String, Any> AsMap(const Any& any) {
+Map<String, Any> AsMap(const Any &any) {
   return any.as<Map<String, Any>>().value_or(Map<String, Any>());
 }
 
-int64_t GetIntOrDefault(const Map<String, Any>& map, const char* key, int64_t default_value = -1) {
+int64_t GetIntOrDefault(const Map<String, Any> &map, const char *key,
+                        int64_t default_value = -1) {
   if (auto value = map.Get(String(key))) {
     return Downcast<Integer>(value.value())->value;
   }
   return default_value;
 }
 
-int64_t RequireInt(const Map<String, Any>& map, const char* key, const std::string& context) {
+int64_t RequireInt(const Map<String, Any> &map, const char *key,
+                   const std::string &context) {
   auto value = map.Get(String(key));
   ICHECK(value.has_value()) << context << " requires " << key;
   return Downcast<Integer>(value.value())->value;
@@ -59,8 +61,8 @@ std::string CoreCoordKey(int64_t x, int64_t y) {
   return std::to_string(x) + "," + std::to_string(y);
 }
 
-std::optional<Target> FindBlackholeTarget(const IRModule& mod) {
-  for (const auto& [gvar, base_func] : mod->functions) {
+std::optional<Target> FindBlackholeTarget(const IRModule &mod) {
+  for (const auto &[gvar, base_func] : mod->functions) {
     auto func = base_func.as<tir::PrimFunc>();
     if (!func || !IsBlackholePrimFunc(func.value())) {
       continue;
@@ -73,7 +75,7 @@ std::optional<Target> FindBlackholeTarget(const IRModule& mod) {
   return std::nullopt;
 }
 
-std::optional<TTHardwareModel> GetValidationHardwareModel(const IRModule& mod) {
+std::optional<TTHardwareModel> GetValidationHardwareModel(const IRModule &mod) {
   if (auto maybe_hardware_model = GetModuleTTHardwareModel(mod)) {
     return maybe_hardware_model.value();
   }
@@ -83,14 +85,15 @@ std::optional<TTHardwareModel> GetValidationHardwareModel(const IRModule& mod) {
   return std::nullopt;
 }
 
-void ValidatePositiveIntegerArray(const Array<Integer>& values, const std::string& context) {
+void ValidatePositiveIntegerArray(const Array<Integer> &values,
+                                  const std::string &context) {
   ICHECK(!values.empty()) << context << " requires non-empty shape";
-  for (const Integer& value : values) {
+  for (const Integer &value : values) {
     ICHECK_GT(value->value, 0) << context << " requires positive dimensions";
   }
 }
 
-void ValidateMeshPlan(const TTMeshPlan& mesh_plan) {
+void ValidateMeshPlan(const TTMeshPlan &mesh_plan) {
   ICHECK(!mesh_plan->name.empty()) << "TTMeshPlan requires name";
   ICHECK(!mesh_plan->mesh_kind.empty()) << "TTMeshPlan requires mesh_kind";
   ValidatePositiveIntegerArray(mesh_plan->mesh_shape, "TTMeshPlan mesh_shape");
@@ -103,35 +106,46 @@ void ValidateMeshPlan(const TTMeshPlan& mesh_plan) {
         << "TTMeshPlan device_range_start requires non-negative coordinates";
     ICHECK_GT(mesh_plan->device_range_shape[i]->value, 0)
         << "TTMeshPlan device_range_shape requires positive dimensions";
-    ICHECK_LE(mesh_plan->device_range_start[i]->value + mesh_plan->device_range_shape[i]->value,
+    ICHECK_LE(mesh_plan->device_range_start[i]->value +
+                  mesh_plan->device_range_shape[i]->value,
               mesh_plan->mesh_shape[i]->value)
         << "TTMeshPlan device range must fit in mesh_shape";
   }
 }
 
 void ValidateBufferDistributionPlan(
-    const TTBufferDistributionPlan& plan,
-    const std::unordered_map<std::string, int64_t>& mesh_index_by_name,
-    const std::unordered_map<std::string, int64_t>& core_group_index_by_name,
-    const std::optional<TTHardwareModel>& maybe_hardware_model) {
+    const TTBufferDistributionPlan &plan,
+    const std::unordered_map<std::string, int64_t> &mesh_index_by_name,
+    const std::unordered_map<std::string, int64_t> &core_group_index_by_name,
+    const std::optional<TTHardwareModel> &maybe_hardware_model) {
   ICHECK(!plan->name.empty()) << "TTBufferDistributionPlan requires name";
   ICHECK(!plan->buffer.empty()) << "TTBufferDistributionPlan requires buffer";
-  ICHECK(!plan->mesh_plan.empty()) << "TTBufferDistributionPlan requires mesh_plan";
+  ICHECK(!plan->mesh_plan.empty())
+      << "TTBufferDistributionPlan requires mesh_plan";
   ICHECK_GE(plan->mesh_plan_index, 0)
       << "TTBufferDistributionPlan requires mesh_plan_index";
-  auto mesh_it = mesh_index_by_name.find(static_cast<std::string>(plan->mesh_plan));
+  auto mesh_it =
+      mesh_index_by_name.find(static_cast<std::string>(plan->mesh_plan));
   ICHECK(mesh_it != mesh_index_by_name.end())
-      << "TTBufferDistributionPlan references unknown mesh_plan " << plan->mesh_plan;
+      << "TTBufferDistributionPlan references unknown mesh_plan "
+      << plan->mesh_plan;
   ICHECK_EQ(plan->mesh_plan_index, mesh_it->second)
       << "TTBufferDistributionPlan mesh_plan_index must match mesh_plan";
   ICHECK(!plan->distribution_kind.empty())
       << "TTBufferDistributionPlan requires distribution_kind";
   const std::string distribution_kind = plan->distribution_kind;
+  const std::string sharding_strategy = plan->sharding_strategy;
+  const std::string source_region_kind = plan->source_region_kind;
+  const std::string logical_index_mapping = plan->logical_index_mapping;
+  const std::string core_local_address_mapping =
+      plan->core_local_address_mapping;
   ICHECK(distribution_kind == "replicated" || distribution_kind == "sharded" ||
          distribution_kind == "interleaved")
-      << "TTBufferDistributionPlan distribution_kind must be replicated, sharded, or interleaved";
+      << "TTBufferDistributionPlan distribution_kind must be replicated, "
+         "sharded, or interleaved";
   ICHECK(!plan->layout.empty()) << "TTBufferDistributionPlan requires layout";
-  ICHECK(!plan->memory_space.empty()) << "TTBufferDistributionPlan requires memory_space";
+  ICHECK(!plan->memory_space.empty())
+      << "TTBufferDistributionPlan requires memory_space";
   const std::string memory_space = plan->memory_space;
   ICHECK(memory_space == "DRAM" || memory_space == "L1")
       << "TTBufferDistributionPlan memory_space must be DRAM or L1";
@@ -139,63 +153,104 @@ void ValidateBufferDistributionPlan(
       << "TTBufferDistributionPlan requires non-negative page_size_bytes";
   if (distribution_kind == "interleaved") {
     ICHECK_GT(plan->page_size_bytes, 0)
-        << "TTBufferDistributionPlan interleaved placement requires page_size_bytes";
-    ICHECK(plan->shard_shape.empty())
-        << "TTBufferDistributionPlan interleaved placement cannot carry shard_shape";
+        << "TTBufferDistributionPlan interleaved placement requires "
+           "page_size_bytes";
+    ICHECK(plan->shard_shape.empty()) << "TTBufferDistributionPlan interleaved "
+                                         "placement cannot carry shard_shape";
+    ICHECK(plan->shard_grid_shape.empty())
+        << "TTBufferDistributionPlan interleaved placement cannot carry "
+           "shard_grid_shape";
   }
   if (distribution_kind == "sharded") {
     ICHECK(memory_space == "L1")
         << "TTBufferDistributionPlan sharded placement is only admitted for L1";
-    ValidatePositiveIntegerArray(plan->shard_shape, "TTBufferDistributionPlan shard_shape");
+    ValidatePositiveIntegerArray(plan->shard_shape,
+                                 "TTBufferDistributionPlan shard_shape");
+    ValidatePositiveIntegerArray(plan->shard_grid_shape,
+                                 "TTBufferDistributionPlan shard_grid_shape");
+    ICHECK(!sharding_strategy.empty() && sharding_strategy != "none")
+        << "TTBufferDistributionPlan sharded L1 placement requires "
+           "sharding_strategy";
     ICHECK_GT(plan->page_size_bytes, 0)
-        << "TTBufferDistributionPlan sharded L1 placement requires page_size_bytes";
+        << "TTBufferDistributionPlan sharded L1 placement requires "
+           "page_size_bytes";
     ICHECK(!plan->attached_core_group.empty())
-        << "TTBufferDistributionPlan sharded L1 placement requires attached_core_group";
+        << "TTBufferDistributionPlan sharded L1 placement requires "
+           "attached_core_group";
     ICHECK_GE(plan->attached_core_group_index, 0)
-        << "TTBufferDistributionPlan sharded L1 placement requires attached_core_group_index";
+        << "TTBufferDistributionPlan sharded L1 placement requires "
+           "attached_core_group_index";
+    ICHECK(!logical_index_mapping.empty() && logical_index_mapping != "none")
+        << "TTBufferDistributionPlan sharded L1 placement requires "
+           "logical_index_mapping";
+    ICHECK(!core_local_address_mapping.empty() &&
+           core_local_address_mapping != "none")
+        << "TTBufferDistributionPlan sharded L1 placement requires "
+           "core_local_address_mapping";
+    if (!plan->source_buffer.empty() || source_region_kind != "none" ||
+        !plan->source_region_shape.empty()) {
+      ICHECK(!plan->source_buffer.empty())
+          << "TTBufferDistributionPlan sharded source region requires "
+             "source_buffer";
+      ICHECK(!source_region_kind.empty() && source_region_kind != "none")
+          << "TTBufferDistributionPlan sharded source region requires "
+             "source_region_kind";
+      ValidatePositiveIntegerArray(
+          plan->source_region_shape,
+          "TTBufferDistributionPlan source_region_shape");
+    }
   }
   ICHECK(!plan->shard_orientation.empty())
       << "TTBufferDistributionPlan requires shard_orientation";
   ICHECK(!plan->host_visibility.empty())
       << "TTBufferDistributionPlan requires host_visibility";
   if (!plan->attached_core_group.empty()) {
-    auto core_group_it =
-        core_group_index_by_name.find(static_cast<std::string>(plan->attached_core_group));
+    auto core_group_it = core_group_index_by_name.find(
+        static_cast<std::string>(plan->attached_core_group));
     ICHECK(core_group_it != core_group_index_by_name.end())
-        << "TTBufferDistributionPlan attached_core_group references unknown core group "
+        << "TTBufferDistributionPlan attached_core_group references unknown "
+           "core group "
         << plan->attached_core_group;
     ICHECK_EQ(plan->attached_core_group_index, core_group_it->second)
-        << "TTBufferDistributionPlan attached_core_group_index must match attached_core_group";
+        << "TTBufferDistributionPlan attached_core_group_index must match "
+           "attached_core_group";
   } else {
     ICHECK_EQ(plan->attached_core_group_index, -1)
-        << "TTBufferDistributionPlan attached_core_group_index requires attached_core_group";
+        << "TTBufferDistributionPlan attached_core_group_index requires "
+           "attached_core_group";
   }
   if (maybe_hardware_model) {
-    const TTHardwareModel& hardware_model = maybe_hardware_model.value();
+    const TTHardwareModel &hardware_model = maybe_hardware_model.value();
     if (memory_space == "DRAM") {
       ICHECK_GT(hardware_model->dram_view_count, 0)
-          << "TTBufferDistributionPlan DRAM placement requires positive TTHardwareModel "
+          << "TTBufferDistributionPlan DRAM placement requires positive "
+             "TTHardwareModel "
              "dram_view_count";
       if (plan->page_size_bytes > 0) {
         ICHECK_GT(hardware_model->dram_view_size, 0)
-            << "TTBufferDistributionPlan DRAM placement requires positive TTHardwareModel "
+            << "TTBufferDistributionPlan DRAM placement requires positive "
+               "TTHardwareModel "
                "dram_view_size";
         ICHECK_LE(plan->page_size_bytes, hardware_model->dram_view_size)
-            << "TTBufferDistributionPlan DRAM view page_size_bytes exceeds hardware DRAM view: "
+            << "TTBufferDistributionPlan DRAM view page_size_bytes exceeds "
+               "hardware DRAM view: "
             << plan->page_size_bytes << " > " << hardware_model->dram_view_size;
       }
     }
     if (memory_space == "L1" && plan->page_size_bytes > 0) {
       ICHECK_GT(hardware_model->worker_l1_size, 0)
-          << "TTBufferDistributionPlan L1 placement requires positive TTHardwareModel "
+          << "TTBufferDistributionPlan L1 placement requires positive "
+             "TTHardwareModel "
              "worker_l1_size";
       ICHECK_GT(hardware_model->l1_allocation_alignment_bytes, 0)
-          << "TTBufferDistributionPlan L1 placement requires positive TTHardwareModel "
+          << "TTBufferDistributionPlan L1 placement requires positive "
+             "TTHardwareModel "
              "l1_allocation_alignment_bytes";
-      const int64_t aligned_page_size =
-          AlignUp(plan->page_size_bytes, hardware_model->l1_allocation_alignment_bytes);
+      const int64_t aligned_page_size = AlignUp(
+          plan->page_size_bytes, hardware_model->l1_allocation_alignment_bytes);
       ICHECK_LE(aligned_page_size, hardware_model->worker_l1_size)
-          << "TTBufferDistributionPlan L1 aligned page_size_bytes exceeds worker L1 budget: "
+          << "TTBufferDistributionPlan L1 aligned page_size_bytes exceeds "
+             "worker L1 budget: "
           << aligned_page_size << " > " << hardware_model->worker_l1_size;
     }
   }
@@ -207,45 +262,57 @@ void ValidateBufferDistributionPlan(
     ICHECK(plan->replicate_extent.defined())
         << "TTBufferDistributionPlan logical_shape requires replicate_extent";
     ICHECK(!plan->inverse_logical_index_exprs.empty())
-        << "TTBufferDistributionPlan logical_shape requires inverse layout expressions";
+        << "TTBufferDistributionPlan logical_shape requires inverse layout "
+           "expressions";
     ICHECK(!plan->inverse_logical_index_vars.empty())
-        << "TTBufferDistributionPlan logical_shape requires inverse layout variables";
+        << "TTBufferDistributionPlan logical_shape requires inverse layout "
+           "variables";
   }
 }
 
-void ValidateCoreGroup(const TTCoreGroup& core_group,
-                       const std::optional<TTHardwareModel>& maybe_hardware_model) {
-  ICHECK_GT(core_group->logical_grid_x, 0) << "TTCoreGroup requires positive logical_grid_x";
-  ICHECK_GT(core_group->logical_grid_y, 0) << "TTCoreGroup requires positive logical_grid_y";
-  ICHECK(!core_group->physical_cores.empty()) << "TTCoreGroup requires physical_cores";
-  ICHECK(!core_group->work_packets.empty()) << "TTCoreGroup requires work_packets";
+void ValidateCoreGroup(
+    const TTCoreGroup &core_group,
+    const std::optional<TTHardwareModel> &maybe_hardware_model) {
+  ICHECK_GT(core_group->logical_grid_x, 0)
+      << "TTCoreGroup requires positive logical_grid_x";
+  ICHECK_GT(core_group->logical_grid_y, 0)
+      << "TTCoreGroup requires positive logical_grid_y";
+  ICHECK(!core_group->physical_cores.empty())
+      << "TTCoreGroup requires physical_cores";
+  ICHECK(!core_group->work_packets.empty())
+      << "TTCoreGroup requires work_packets";
   int64_t hardware_grid_x = 0;
   int64_t hardware_grid_y = 0;
   int64_t functional_worker_count = 0;
   if (maybe_hardware_model) {
-    const TTHardwareModel& hardware_model = maybe_hardware_model.value();
+    const TTHardwareModel &hardware_model = maybe_hardware_model.value();
     hardware_grid_x = hardware_model->logical_worker_grid_x;
     hardware_grid_y = hardware_model->logical_worker_grid_y;
     functional_worker_count = hardware_model->functional_worker_count;
-    ICHECK_GT(hardware_grid_x, 0)
-        << "TTCoreGroup validation requires positive TTHardwareModel logical_worker_grid_x";
-    ICHECK_GT(hardware_grid_y, 0)
-        << "TTCoreGroup validation requires positive TTHardwareModel logical_worker_grid_y";
+    ICHECK_GT(hardware_grid_x, 0) << "TTCoreGroup validation requires positive "
+                                     "TTHardwareModel logical_worker_grid_x";
+    ICHECK_GT(hardware_grid_y, 0) << "TTCoreGroup validation requires positive "
+                                     "TTHardwareModel logical_worker_grid_y";
     ICHECK_GT(functional_worker_count, 0)
-        << "TTCoreGroup validation requires positive TTHardwareModel functional_worker_count";
+        << "TTCoreGroup validation requires positive TTHardwareModel "
+           "functional_worker_count";
     ICHECK_LE(static_cast<int64_t>(core_group->physical_cores.size()),
               functional_worker_count)
         << "TTCoreGroup physical_cores exceed hardware functional worker count";
   }
 
   std::unordered_set<std::string> physical_core_coords;
-  for (const Any& item : core_group->physical_cores) {
+  for (const Any &item : core_group->physical_cores) {
     Map<String, Any> core = AsMap(item);
     ICHECK(!core.empty()) << "TTCoreGroup physical_core must be a map";
-    const int64_t core_x = RequireInt(core, "core_x", "TTCoreGroup physical_core");
-    const int64_t core_y = RequireInt(core, "core_y", "TTCoreGroup physical_core");
-    ICHECK_GE(core_x, 0) << "TTCoreGroup physical_core requires non-negative core_x";
-    ICHECK_GE(core_y, 0) << "TTCoreGroup physical_core requires non-negative core_y";
+    const int64_t core_x =
+        RequireInt(core, "core_x", "TTCoreGroup physical_core");
+    const int64_t core_y =
+        RequireInt(core, "core_y", "TTCoreGroup physical_core");
+    ICHECK_GE(core_x, 0)
+        << "TTCoreGroup physical_core requires non-negative core_x";
+    ICHECK_GE(core_y, 0)
+        << "TTCoreGroup physical_core requires non-negative core_y";
     if (maybe_hardware_model) {
       ICHECK_LT(core_x, hardware_grid_x)
           << "TTCoreGroup physical_core outside hardware logical worker grid";
@@ -256,11 +323,13 @@ void ValidateCoreGroup(const TTCoreGroup& core_group,
         << "TTCoreGroup duplicate physical_core coordinate";
   }
 
-  for (const Any& item : core_group->work_packets) {
+  for (const Any &item : core_group->work_packets) {
     Map<String, Any> packet = AsMap(item);
     ICHECK(!packet.empty()) << "TTCoreGroup work_packet must be a map";
-    const int64_t core_x = RequireInt(packet, "core_x", "TTCoreGroup work_packet");
-    const int64_t core_y = RequireInt(packet, "core_y", "TTCoreGroup work_packet");
+    const int64_t core_x =
+        RequireInt(packet, "core_x", "TTCoreGroup work_packet");
+    const int64_t core_y =
+        RequireInt(packet, "core_y", "TTCoreGroup work_packet");
     ICHECK(physical_core_coords.count(CoreCoordKey(core_x, core_y)))
         << "TTCoreGroup work_packet references core outside physical_cores";
     ICHECK_GE(GetIntOrDefault(packet, "work_offset", -1), 0)
@@ -270,28 +339,34 @@ void ValidateCoreGroup(const TTCoreGroup& core_group,
   }
 }
 
-void ValidateBlockPlan(const TTBlockPlan& block_plan) {
+void ValidateBlockPlan(const TTBlockPlan &block_plan) {
   ICHECK(!block_plan->name.empty()) << "TTBlockPlan requires name";
-  ICHECK(!block_plan->placement_kind.empty()) << "TTBlockPlan requires placement_kind";
-  ICHECK(!block_plan->task_indices.empty()) << "TTBlockPlan requires task_indices";
+  ICHECK(!block_plan->placement_kind.empty())
+      << "TTBlockPlan requires placement_kind";
+  ICHECK(!block_plan->task_indices.empty())
+      << "TTBlockPlan requires task_indices";
 }
 
-void ValidateKernelPlan(const TTKernelPlan& kernel_plan, int64_t abi_plan_count,
+void ValidateKernelPlan(const TTKernelPlan &kernel_plan, int64_t abi_plan_count,
                         int64_t block_plan_count) {
   ICHECK(!kernel_plan->name.empty()) << "TTKernelPlan requires name";
   ICHECK(!kernel_plan->kind.empty()) << "TTKernelPlan requires kind";
   ICHECK(!kernel_plan->core_type.empty()) << "TTKernelPlan requires core_type";
-  ICHECK_GE(kernel_plan->abi_plan_index, 0) << "TTKernelPlan requires abi_plan_index";
+  ICHECK_GE(kernel_plan->abi_plan_index, 0)
+      << "TTKernelPlan requires abi_plan_index";
   ICHECK_LT(kernel_plan->abi_plan_index, abi_plan_count)
       << "TTKernelPlan abi_plan_index out of bounds";
-  ICHECK_GE(kernel_plan->block_plan_index, 0) << "TTKernelPlan requires block_plan_index";
+  ICHECK_GE(kernel_plan->block_plan_index, 0)
+      << "TTKernelPlan requires block_plan_index";
   ICHECK_LT(kernel_plan->block_plan_index, block_plan_count)
       << "TTKernelPlan block_plan_index out of bounds";
 }
 
-void ValidateComputeOperandBindingPlan(const TTComputeOperandBindingPlan& binding) {
+void ValidateComputeOperandBindingPlan(
+    const TTComputeOperandBindingPlan &binding) {
   ICHECK(!binding->role.empty()) << "TTComputeOperandBindingPlan requires role";
-  ICHECK(!binding->buffer.empty()) << "TTComputeOperandBindingPlan requires buffer";
+  ICHECK(!binding->buffer.empty())
+      << "TTComputeOperandBindingPlan requires buffer";
   const std::string role = binding->role;
   ICHECK(role == "a" || role == "b" || role == "c" || role == "input" ||
          role == "lhs" || role == "rhs" || role == "output" || role == "scaler")
@@ -305,28 +380,28 @@ void ValidateComputeOperandBindingPlan(const TTComputeOperandBindingPlan& bindin
   }
 }
 
-BlackholeTileComputeCoveringDecision RequireSelectedBlackholeTileComputeCoveringForPlan(
-    const TTComputeOpPlan& plan, const std::vector<std::string>& operand_roles) {
+BlackholeTileComputeCoveringDecision
+RequireSelectedBlackholeTileComputeCoveringForPlan(
+    const TTComputeOpPlan &plan,
+    const std::vector<std::string> &operand_roles) {
   const std::string operation_name = plan->operation_name;
   const BlackholeTileComputeCoveringDecision covering =
       SelectBlackholeTileComputeCovering(operation_name);
-  ICHECK(covering.selected)
-      << "TileCompute covering rejected operation " << operation_name
-      << ": " << covering.reject_reason;
+  ICHECK(covering.selected) << "TileCompute covering rejected operation "
+                            << operation_name << ": " << covering.reject_reason;
   ICHECK_EQ(static_cast<std::string>(plan->kind), covering.result_kind)
       << "TileCompute covering selected result kind " << covering.result_kind
       << " for " << operation_name << ", but TTComputeOpPlan recorded "
       << plan->kind;
-  RequireLegalBlackholeTileComputeSelection(covering.result_kind,
-                                            covering.operation_name,
-                                            operand_roles);
+  RequireLegalBlackholeTileComputeSelection(
+      covering.result_kind, covering.operation_name, operand_roles);
   return covering;
 }
 
 std::optional<BlackholeTileComputeCoveringDecision>
 FindSelectedBlackholeTileComputeCoveringForSourceEmitter(
-    const std::string& source_emitter) {
-  for (const BlackholeTileComputePattern& pattern :
+    const std::string &source_emitter) {
+  for (const BlackholeTileComputePattern &pattern :
        GetBlackholeTileComputePatterns()) {
     if (!pattern.source_emitter ||
         source_emitter != ToString(*pattern.source_emitter)) {
@@ -336,43 +411,47 @@ FindSelectedBlackholeTileComputeCoveringForSourceEmitter(
         SelectBlackholeTileComputeCovering(ToString(pattern.operation));
     ICHECK(covering.selected)
         << "TileCompute covering rejected source emitter " << source_emitter
-        << " operation " << ToString(pattern.operation)
-        << ": " << covering.reject_reason;
+        << " operation " << ToString(pattern.operation) << ": "
+        << covering.reject_reason;
     return covering;
   }
   return std::nullopt;
 }
 
-void ValidateComputeOpPlan(const TTComputeOpPlan& plan, int64_t kernel_plan_count,
-                           const std::unordered_set<std::string>& kernel_names) {
+void ValidateComputeOpPlan(
+    const TTComputeOpPlan &plan, int64_t kernel_plan_count,
+    const std::unordered_set<std::string> &kernel_names) {
   ICHECK(!plan->name.empty()) << "TTComputeOpPlan requires name";
   ICHECK(!plan->kernel_name.empty()) << "TTComputeOpPlan requires kernel_name";
   ICHECK(kernel_names.count(static_cast<std::string>(plan->kernel_name)))
       << "TTComputeOpPlan references unknown kernel " << plan->kernel_name;
-  ICHECK_GE(plan->kernel_plan_index, 0) << "TTComputeOpPlan requires kernel_plan_index";
+  ICHECK_GE(plan->kernel_plan_index, 0)
+      << "TTComputeOpPlan requires kernel_plan_index";
   ICHECK_LT(plan->kernel_plan_index, kernel_plan_count)
       << "TTComputeOpPlan kernel_plan_index out of bounds";
   ICHECK(!plan->kind.empty()) << "TTComputeOpPlan requires kind";
-  ICHECK(!plan->operation_name.empty()) << "TTComputeOpPlan requires operation_name";
+  ICHECK(!plan->operation_name.empty())
+      << "TTComputeOpPlan requires operation_name";
   const std::string kind = plan->kind;
-  ICHECK(kind == "gemm" || kind == "binary" || kind == "unary" || kind == "reduce" ||
-         kind == "sfpu" || kind == "pack" || kind == "copy")
+  ICHECK(kind == "gemm" || kind == "binary" || kind == "unary" ||
+         kind == "reduce" || kind == "sfpu" || kind == "pack" || kind == "copy")
       << "TTComputeOpPlan unsupported kind " << plan->kind;
   ICHECK(!plan->operand_bindings.empty())
       << "TTComputeOpPlan requires operand_bindings";
   std::unordered_set<std::string> roles;
   std::vector<std::string> operand_roles;
-  for (const TTComputeOperandBindingPlan& binding : plan->operand_bindings) {
+  for (const TTComputeOperandBindingPlan &binding : plan->operand_bindings) {
     ValidateComputeOperandBindingPlan(binding);
     operand_roles.push_back(static_cast<std::string>(binding->role));
     ICHECK(roles.insert(static_cast<std::string>(binding->role)).second)
         << "TTComputeOpPlan duplicate operand role " << binding->role;
   }
   if (kind == "gemm") {
-    for (const char* role : {"a", "b", "c"}) {
-      ICHECK(roles.count(role)) << "TTComputeOpPlan GEMM requires operand role " << role;
+    for (const char *role : {"a", "b", "c"}) {
+      ICHECK(roles.count(role))
+          << "TTComputeOpPlan GEMM requires operand role " << role;
     }
-    for (const TTComputeOperandBindingPlan& binding : plan->operand_bindings) {
+    for (const TTComputeOperandBindingPlan &binding : plan->operand_bindings) {
       ICHECK(!binding->host_buffer.empty())
           << "TTComputeOpPlan GEMM operand role " << binding->role
           << " requires host_buffer";
@@ -381,14 +460,20 @@ void ValidateComputeOpPlan(const TTComputeOpPlan& plan, int64_t kernel_plan_coun
         << "TTComputeOpPlan GEMM requires M/N/K problem_shape_axes";
     ICHECK_EQ(plan->problem_shape.size(), 3)
         << "TTComputeOpPlan GEMM requires M/N/K problem_shape";
-    ICHECK_EQ(plan->tile_shape.size(), 3) << "TTComputeOpPlan GEMM requires tile_shape";
-    ICHECK_EQ(plan->block_shape.size(), 3) << "TTComputeOpPlan GEMM requires block_shape";
+    ICHECK_EQ(plan->tile_shape.size(), 3)
+        << "TTComputeOpPlan GEMM requires tile_shape";
+    ICHECK_EQ(plan->block_shape.size(), 3)
+        << "TTComputeOpPlan GEMM requires block_shape";
     ICHECK_EQ(plan->subblock_shape.size(), 2)
         << "TTComputeOpPlan GEMM requires subblock_shape";
-    ValidatePositiveIntegerArray(plan->problem_shape, "TTComputeOpPlan GEMM problem_shape");
-    ValidatePositiveIntegerArray(plan->tile_shape, "TTComputeOpPlan GEMM tile_shape");
-    ValidatePositiveIntegerArray(plan->block_shape, "TTComputeOpPlan GEMM block_shape");
-    ValidatePositiveIntegerArray(plan->subblock_shape, "TTComputeOpPlan GEMM subblock_shape");
+    ValidatePositiveIntegerArray(plan->problem_shape,
+                                 "TTComputeOpPlan GEMM problem_shape");
+    ValidatePositiveIntegerArray(plan->tile_shape,
+                                 "TTComputeOpPlan GEMM tile_shape");
+    ValidatePositiveIntegerArray(plan->block_shape,
+                                 "TTComputeOpPlan GEMM block_shape");
+    ValidatePositiveIntegerArray(plan->subblock_shape,
+                                 "TTComputeOpPlan GEMM subblock_shape");
     ICHECK(!plan->accumulator_dtype.empty())
         << "TTComputeOpPlan GEMM requires accumulator_dtype";
   }
@@ -398,13 +483,15 @@ void ValidateComputeOpPlan(const TTComputeOpPlan& plan, int64_t kernel_plan_coun
         << "DAG-driven TTComputeOpPlan requires tile_compute_source_emitter";
     const std::string source_emitter = plan->tile_compute_source_emitter;
     const std::optional<BlackholeTileComputeCoveringDecision> source_covering =
-        FindSelectedBlackholeTileComputeCoveringForSourceEmitter(source_emitter);
-    ICHECK(source_covering)
-        << "DAG-driven TTComputeOpPlan references unknown tile_compute_source_emitter "
-        << source_emitter;
+        FindSelectedBlackholeTileComputeCoveringForSourceEmitter(
+            source_emitter);
+    ICHECK(source_covering) << "DAG-driven TTComputeOpPlan references unknown "
+                               "tile_compute_source_emitter "
+                            << source_emitter;
     ICHECK_EQ(plan->tile_compute_materialization_policy,
               source_covering->materialization_policy)
-        << "DAG-driven TTComputeOpPlan materialization policy must match DAG source "
+        << "DAG-driven TTComputeOpPlan materialization policy must match DAG "
+           "source "
            "covering";
     ICHECK_GE(plan->tile_compute_fanout_use_count, 0)
         << "DAG-driven TTComputeOpPlan requires non-negative fanout use count";
@@ -419,8 +506,8 @@ void ValidateComputeOpPlan(const TTComputeOpPlan& plan, int64_t kernel_plan_coun
 }
 
 void ValidateTileComputeFanoutDemand(
-    const TTTileComputeFanoutDemand& demand,
-    const std::unordered_set<std::string>& kernel_names) {
+    const TTTileComputeFanoutDemand &demand,
+    const std::unordered_set<std::string> &kernel_names) {
   ICHECK(!demand->name.empty()) << "TTTileComputeFanoutDemand requires name";
   ICHECK(!demand->kernel_name.empty())
       << "TTTileComputeFanoutDemand requires kernel_name";
@@ -445,8 +532,8 @@ void ValidateTileComputeFanoutDemand(
 }
 
 void ValidateTileComputeMaterializationDemand(
-    const TTTileComputeMaterializationDemand& demand,
-    const std::unordered_set<std::string>& kernel_names) {
+    const TTTileComputeMaterializationDemand &demand,
+    const std::unordered_set<std::string> &kernel_names) {
   ICHECK(!demand->name.empty())
       << "TTTileComputeMaterializationDemand requires name";
   ICHECK(!demand->kernel_name.empty())
@@ -468,17 +555,15 @@ void ValidateTileComputeMaterializationDemand(
       << "TTTileComputeMaterializationDemand requires evidence";
 }
 
-void ValidateResourceDemand(
-    const TTResourceDemand& demand,
-    const std::unordered_set<std::string>& kernel_names,
-    int64_t core_group_count) {
+void ValidateResourceDemand(const TTResourceDemand &demand,
+                            const std::unordered_set<std::string> &kernel_names,
+                            int64_t core_group_count) {
   ICHECK(!demand->name.empty()) << "TTResourceDemand requires name";
   ICHECK(!demand->kernel_name.empty())
       << "TTResourceDemand requires kernel_name";
   ICHECK(kernel_names.count(static_cast<std::string>(demand->kernel_name)))
       << "TTResourceDemand references unknown kernel " << demand->kernel_name;
-  ICHECK(!demand->core_group.empty())
-      << "TTResourceDemand requires core_group";
+  ICHECK(!demand->core_group.empty()) << "TTResourceDemand requires core_group";
   ICHECK_GE(demand->core_group_index, 0)
       << "TTResourceDemand requires core_group_index";
   ICHECK_LT(demand->core_group_index, core_group_count)
@@ -496,26 +581,27 @@ void ValidateResourceDemand(
          !demand->tile_compute_unsupported_reasons.empty() ||
          demand->cb_requirement_count > 0 || demand->semaphore_count > 0 ||
          demand->communication_edge_count > 0)
-      << "TTResourceDemand requires tile-compute or explicit resource demand evidence";
-  for (const TTTileComputeFanoutDemand& fanout :
+      << "TTResourceDemand requires tile-compute or explicit resource demand "
+         "evidence";
+  for (const TTTileComputeFanoutDemand &fanout :
        demand->tile_compute_fanout_demands) {
     ValidateTileComputeFanoutDemand(fanout, kernel_names);
   }
-  for (const TTTileComputeMaterializationDemand& materialization :
+  for (const TTTileComputeMaterializationDemand &materialization :
        demand->tile_compute_materialization_demands) {
     ValidateTileComputeMaterializationDemand(materialization, kernel_names);
   }
-  for (const String& reason : demand->tile_compute_unsupported_reasons) {
+  for (const String &reason : demand->tile_compute_unsupported_reasons) {
     ICHECK(!reason.empty())
         << "TTResourceDemand tile_compute_unsupported_reasons cannot be empty";
   }
 }
 
 void ValidateResourcePressureReport(
-    const TTResourcePressureReport& report,
-    const std::unordered_set<std::string>& kernel_names,
+    const TTResourcePressureReport &report,
+    const std::unordered_set<std::string> &kernel_names,
     int64_t core_group_count,
-    const std::optional<TTHardwareModel>& maybe_hardware_model) {
+    const std::optional<TTHardwareModel> &maybe_hardware_model) {
   ICHECK(!report->name.empty()) << "TTResourcePressureReport requires name";
   ICHECK(!report->kernel_name.empty())
       << "TTResourcePressureReport requires kernel_name";
@@ -528,18 +614,21 @@ void ValidateResourcePressureReport(
       << "TTResourcePressureReport requires core_group_index";
   ICHECK_LT(report->core_group_index, core_group_count)
       << "TTResourcePressureReport core_group_index out of bounds";
-  for (const TTTileComputeMaterializationDemand& materialization :
+  for (const TTTileComputeMaterializationDemand &materialization :
        report->required_materializations) {
     ValidateTileComputeMaterializationDemand(materialization, kernel_names);
   }
   ICHECK_GE(report->per_core_cb_id_pressure, 0)
-      << "TTResourcePressureReport requires non-negative per_core_cb_id_pressure";
+      << "TTResourcePressureReport requires non-negative "
+         "per_core_cb_id_pressure";
   ICHECK_GE(report->per_core_cb_l1_bytes, 0)
       << "TTResourcePressureReport requires non-negative per_core_cb_l1_bytes";
   ICHECK_GE(report->per_core_l1_buffer_bytes, 0)
-      << "TTResourcePressureReport requires non-negative per_core_l1_buffer_bytes";
+      << "TTResourcePressureReport requires non-negative "
+         "per_core_l1_buffer_bytes";
   ICHECK_GE(report->max_simultaneous_l1_bytes, 0)
-      << "TTResourcePressureReport requires non-negative max_simultaneous_l1_bytes";
+      << "TTResourcePressureReport requires non-negative "
+         "max_simultaneous_l1_bytes";
   ICHECK_GT(report->cb_id_limit, 0)
       << "TTResourcePressureReport requires positive cb_id_limit";
   ICHECK_GT(report->worker_l1_budget_bytes, 0)
@@ -547,30 +636,37 @@ void ValidateResourcePressureReport(
   ICHECK_GT(report->l1_alignment_bytes, 0)
       << "TTResourcePressureReport requires positive l1_alignment_bytes";
   ICHECK_GE(report->per_core_cb_l1_aligned_bytes, report->per_core_cb_l1_bytes)
-      << "TTResourcePressureReport aligned CB L1 bytes must cover raw CB L1 bytes";
+      << "TTResourcePressureReport aligned CB L1 bytes must cover raw CB L1 "
+         "bytes";
   ICHECK_EQ(report->l1_alignment_waste_bytes,
             report->per_core_cb_l1_aligned_bytes - report->per_core_cb_l1_bytes)
-      << "TTResourcePressureReport l1_alignment_waste_bytes must equal aligned - raw CB bytes";
+      << "TTResourcePressureReport l1_alignment_waste_bytes must equal aligned "
+         "- raw CB bytes";
   ICHECK_LE(report->per_core_cb_id_pressure, report->cb_id_limit)
-      << "ResourcePressureReport CB id pressure exceeds hardware limit: required "
+      << "ResourcePressureReport CB id pressure exceeds hardware limit: "
+         "required "
       << report->per_core_cb_id_pressure << ", limit " << report->cb_id_limit;
   ICHECK_LE(report->max_simultaneous_l1_bytes, report->worker_l1_budget_bytes)
       << "ResourcePressureReport L1 pressure exceeds worker budget: required "
       << report->max_simultaneous_l1_bytes << ", budget "
       << report->worker_l1_budget_bytes;
   ICHECK_EQ(report->max_simultaneous_l1_bytes,
-            report->per_core_cb_l1_aligned_bytes + report->per_core_l1_buffer_bytes)
-      << "TTResourcePressureReport max_simultaneous_l1_bytes must equal aligned CB bytes "
+            report->per_core_cb_l1_aligned_bytes +
+                report->per_core_l1_buffer_bytes)
+      << "TTResourcePressureReport max_simultaneous_l1_bytes must equal "
+         "aligned CB bytes "
          "plus L1 buffer bytes";
   if (maybe_hardware_model) {
-    const TTHardwareModel& hardware_model = maybe_hardware_model.value();
+    const TTHardwareModel &hardware_model = maybe_hardware_model.value();
     ICHECK_EQ(report->cb_id_limit, hardware_model->max_cb_count)
         << "TTResourcePressureReport cb_id_limit must match TTHardwareModel";
     ICHECK_EQ(report->worker_l1_budget_bytes, hardware_model->worker_l1_size)
-        << "TTResourcePressureReport worker_l1_budget_bytes must match TTHardwareModel";
+        << "TTResourcePressureReport worker_l1_budget_bytes must match "
+           "TTHardwareModel";
     ICHECK_EQ(report->l1_alignment_bytes,
               hardware_model->l1_allocation_alignment_bytes)
-        << "TTResourcePressureReport l1_alignment_bytes must match TTHardwareModel";
+        << "TTResourcePressureReport l1_alignment_bytes must match "
+           "TTHardwareModel";
   }
   ICHECK(report->tile_compute_unsupported_reasons.empty())
       << "ResourcePressureReport unsupported tile compute: "
@@ -584,26 +680,33 @@ void ValidateResourcePressureReport(
       << "TTResourcePressureReport requires dram_view_requirement";
 }
 
-void ValidateSyncPlan(const TTSyncPlan& sync_plan) {
+void ValidateSyncPlan(const TTSyncPlan &sync_plan) {
   ICHECK(!sync_plan->name.empty()) << "TTSyncPlan requires name";
   ICHECK(!sync_plan->kind.empty()) << "TTSyncPlan requires kind";
-  ICHECK_GE(sync_plan->source_task_index, 0) << "TTSyncPlan requires source_task_index";
-  ICHECK_GE(sync_plan->target_task_index, 0) << "TTSyncPlan requires target_task_index";
-  ICHECK(!sync_plan->ordering_kind.empty()) << "TTSyncPlan requires ordering_kind";
-  ICHECK(!sync_plan->completion_kind.empty()) << "TTSyncPlan requires completion_kind";
+  ICHECK_GE(sync_plan->source_task_index, 0)
+      << "TTSyncPlan requires source_task_index";
+  ICHECK_GE(sync_plan->target_task_index, 0)
+      << "TTSyncPlan requires target_task_index";
+  ICHECK(!sync_plan->ordering_kind.empty())
+      << "TTSyncPlan requires ordering_kind";
+  ICHECK(!sync_plan->completion_kind.empty())
+      << "TTSyncPlan requires completion_kind";
 }
 
-void ValidateCBPlan(const TTCBPlan& cb_plan) {
+void ValidateCBPlan(const TTCBPlan &cb_plan) {
   ICHECK(!cb_plan->name.empty()) << "TTCBPlan requires name";
-  ICHECK(!cb_plan->resource_class.empty()) << "TTCBPlan requires resource_class";
+  ICHECK(!cb_plan->resource_class.empty())
+      << "TTCBPlan requires resource_class";
   ICHECK_GT(cb_plan->num_pages, 0) << "TTCBPlan requires positive num_pages";
-  ICHECK_GT(cb_plan->page_size_bytes, 0) << "TTCBPlan requires positive page_size_bytes";
+  ICHECK_GT(cb_plan->page_size_bytes, 0)
+      << "TTCBPlan requires positive page_size_bytes";
   ICHECK(!cb_plan->data_format.empty()) << "TTCBPlan requires data_format";
   ICHECK_GE(cb_plan->initial_reserve_pages, 0)
       << "TTCBPlan requires non-negative initial_reserve_pages";
   ICHECK(!cb_plan->flow_class.empty()) << "TTCBPlan requires flow_class";
   const std::string flow_class = cb_plan->flow_class;
-  ICHECK(flow_class == "state" || flow_class == "stream" || flow_class == "republish")
+  ICHECK(flow_class == "state" || flow_class == "stream" ||
+         flow_class == "republish")
       << "TTCBPlan flow_class must be one of state/stream/republish";
   ICHECK_GE(cb_plan->publish_pages_per_event, 0)
       << "TTCBPlan requires non-negative publish_pages_per_event";
@@ -619,50 +722,61 @@ void ValidateCBPlan(const TTCBPlan& cb_plan) {
     ICHECK_LE(cb_plan->consume_pages_per_event, cb_plan->num_pages)
         << "republish TTCBPlan consume_pages_per_event must fit in num_pages";
   }
-  ICHECK_GE(cb_plan->lifetime_begin, 0) << "TTCBPlan requires non-negative lifetime_begin";
+  ICHECK_GE(cb_plan->lifetime_begin, 0)
+      << "TTCBPlan requires non-negative lifetime_begin";
   ICHECK_GE(cb_plan->lifetime_end, cb_plan->lifetime_begin)
       << "TTCBPlan requires lifetime_end >= lifetime_begin";
 }
 
-void ValidateAccessor(const TTAccessorSpec& accessor) {
+void ValidateAccessor(const TTAccessorSpec &accessor) {
   ICHECK(!accessor->buffer.empty()) << "TTABIPlan accessor requires buffer";
   ICHECK_GT(accessor->compile_time_arg_count, 0)
       << "TTABIPlan accessor requires compile_time_arg_count";
   ICHECK(!accessor->layout.empty()) << "TTABIPlan accessor requires layout";
-  ICHECK(!accessor->memory_space.empty()) << "TTABIPlan accessor requires memory_space";
+  ICHECK(!accessor->memory_space.empty())
+      << "TTABIPlan accessor requires memory_space";
 }
 
-void ValidateCompileTimeArgSpec(const TTCompileTimeArgSpec& spec) {
-  ICHECK(!spec->kind.empty()) << "TTABIPlan compile_time_arg_spec requires kind";
-  ICHECK(!spec->dtype.empty()) << "TTABIPlan compile_time_arg_spec requires dtype";
-  ICHECK_GE(spec->offset, 0) << "TTABIPlan compile_time_arg_spec requires offset";
+void ValidateCompileTimeArgSpec(const TTCompileTimeArgSpec &spec) {
+  ICHECK(!spec->kind.empty())
+      << "TTABIPlan compile_time_arg_spec requires kind";
+  ICHECK(!spec->dtype.empty())
+      << "TTABIPlan compile_time_arg_spec requires dtype";
+  ICHECK_GE(spec->offset, 0)
+      << "TTABIPlan compile_time_arg_spec requires offset";
   ICHECK_GE(spec->count, 0) << "TTABIPlan compile_time_arg_spec requires count";
 }
 
-void ValidateKernelLeafFields(const TTKernel& kernel) {
+void ValidateKernelLeafFields(const TTKernel &kernel) {
   ICHECK(kernel->launch_spec.defined()) << "TTKernel requires launch_spec";
-  ICHECK(!kernel->launch_spec->core_type.empty()) << "TTKernel launch_spec requires core_type";
+  ICHECK(!kernel->launch_spec->core_type.empty())
+      << "TTKernel launch_spec requires core_type";
 
   if (kernel->kind == "compute" || kernel->core_type == "trisc") {
-    ICHECK(kernel->compute_config.defined() && !kernel->compute_config->math_fidelity.empty())
+    ICHECK(kernel->compute_config.defined() &&
+           !kernel->compute_config->math_fidelity.empty())
         << "TTKernel compute kernels require compute_config";
     ICHECK_GT(kernel->compute_config->k_pack, 0)
         << "TTKernel compute_config requires positive k_pack";
   }
 }
 
-void ValidateLiveFormPlans(const TTProgram& program,
-                           std::unordered_set<std::string>* live_form_names) {
-  for (const TTLiveFormPlan& plan : program->live_form_plans) {
+void ValidateLiveFormPlans(const TTProgram &program,
+                           std::unordered_set<std::string> *live_form_names) {
+  for (const TTLiveFormPlan &plan : program->live_form_plans) {
     ICHECK(!plan->name.empty()) << "TTLiveFormPlan requires name";
-    ICHECK(!plan->logical_value.empty()) << "TTLiveFormPlan requires logical_value";
+    ICHECK(!plan->logical_value.empty())
+        << "TTLiveFormPlan requires logical_value";
     ICHECK(!plan->spatial_live_value.empty())
         << "TTLiveFormPlan requires spatial_live_value";
     ICHECK_GE(plan->spatial_live_value_index, 0)
         << "TTLiveFormPlan requires spatial_live_value_index";
-    ICHECK(!plan->producer_kernel.empty()) << "TTLiveFormPlan requires producer_kernel";
-    ICHECK(!plan->physical_form.empty()) << "TTLiveFormPlan requires physical_form";
-    ICHECK(!plan->execution_topology.empty()) << "TTLiveFormPlan requires execution_topology";
+    ICHECK(!plan->producer_kernel.empty())
+        << "TTLiveFormPlan requires producer_kernel";
+    ICHECK(!plan->physical_form.empty())
+        << "TTLiveFormPlan requires physical_form";
+    ICHECK(!plan->execution_topology.empty())
+        << "TTLiveFormPlan requires execution_topology";
     ICHECK_GT(plan->physical_local_extent, 0)
         << "TTLiveFormPlan requires positive physical_local_extent";
     ICHECK_GT(plan->logical_element_count, 0)
@@ -672,10 +786,11 @@ void ValidateLiveFormPlans(const TTProgram& program,
   }
 }
 
-void ValidateMaterializationPlans(const TTProgram& program,
-                                  const std::unordered_set<std::string>& live_form_names,
-                                  int64_t cb_plan_count) {
-  for (const TTMaterializationPlan& plan : program->materialization_plans) {
+void ValidateMaterializationPlans(
+    const TTProgram &program,
+    const std::unordered_set<std::string> &live_form_names,
+    int64_t cb_plan_count) {
+  for (const TTMaterializationPlan &plan : program->materialization_plans) {
     ICHECK(!plan->name.empty()) << "TTMaterializationPlan requires name";
     ICHECK(!plan->source_live_form.empty())
         << "TTMaterializationPlan requires source_live_form";
@@ -686,8 +801,10 @@ void ValidateMaterializationPlans(const TTProgram& program,
         << "TTMaterializationPlan requires materialization_boundary";
     ICHECK_GE(plan->materialization_boundary_index, 0)
         << "TTMaterializationPlan requires materialization_boundary_index";
-    ICHECK(!plan->target_buffer.empty()) << "TTMaterializationPlan requires target_buffer";
-    ICHECK(!plan->target_kernel.empty()) << "TTMaterializationPlan requires target_kernel";
+    ICHECK(!plan->target_buffer.empty())
+        << "TTMaterializationPlan requires target_buffer";
+    ICHECK(!plan->target_kernel.empty())
+        << "TTMaterializationPlan requires target_kernel";
     ICHECK(!plan->materialization_protocol.empty())
         << "TTMaterializationPlan requires materialization_protocol";
     ICHECK(!plan->publication_protocol.empty())
@@ -697,41 +814,54 @@ void ValidateMaterializationPlans(const TTProgram& program,
     ICHECK(live_form_names.count(plan->produced_live_form))
         << "TTMaterializationPlan references unknown produced_live_form "
         << plan->produced_live_form;
-    if (plan->materialization_protocol == buffer_materialization::kCBRepublish) {
+    if (plan->materialization_protocol ==
+        buffer_materialization::kCBRepublish) {
       ICHECK(!plan->required_cb_plan_indices.empty())
-          << "TTMaterializationPlan cb_republish requires required_cb_plan_indices";
-      ICHECK(plan->publication_protocol == buffer_materialization::kMailboxWritePtr ||
-             plan->publication_protocol == buffer_materialization::kPackThreadDirectStore ||
+          << "TTMaterializationPlan cb_republish requires "
+             "required_cb_plan_indices";
+      ICHECK(plan->publication_protocol ==
+                 buffer_materialization::kMailboxWritePtr ||
+             plan->publication_protocol ==
+                 buffer_materialization::kPackThreadDirectStore ||
              plan->publication_protocol == buffer_materialization::kPackTile ||
-             plan->publication_protocol == buffer_materialization::kTilizeCastFragmentSlice)
-          << "TTMaterializationPlan cb_republish has unsupported publication_protocol "
+             plan->publication_protocol ==
+                 buffer_materialization::kTilizeCastFragmentSlice)
+          << "TTMaterializationPlan cb_republish has unsupported "
+             "publication_protocol "
           << plan->publication_protocol;
-      if (plan->publication_protocol == buffer_materialization::kPackThreadDirectStore ||
+      if (plan->publication_protocol ==
+              buffer_materialization::kPackThreadDirectStore ||
           plan->publication_protocol == buffer_materialization::kPackTile) {
-        ICHECK(!plan->host_buffer.empty()) << "TTMaterializationPlan requires host_buffer";
+        ICHECK(!plan->host_buffer.empty())
+            << "TTMaterializationPlan requires host_buffer";
       }
     }
-    for (const Integer& index : plan->required_cb_plan_indices) {
-      ICHECK_GE(index->value, 0) << "TTMaterializationPlan requires non-negative CB plan index";
+    for (const Integer &index : plan->required_cb_plan_indices) {
+      ICHECK_GE(index->value, 0)
+          << "TTMaterializationPlan requires non-negative CB plan index";
       ICHECK_LT(index->value, cb_plan_count)
           << "TTMaterializationPlan required_cb_plan_indices out of bounds";
     }
   }
 }
 
-void ValidateConsumerBindingPlans(const TTProgram& program,
-                                  const std::unordered_set<std::string>& live_form_names,
-                                  int64_t abi_plan_count) {
-  for (const TTConsumerBindingPlan& plan : program->consumer_binding_plans) {
+void ValidateConsumerBindingPlans(
+    const TTProgram &program,
+    const std::unordered_set<std::string> &live_form_names,
+    int64_t abi_plan_count) {
+  for (const TTConsumerBindingPlan &plan : program->consumer_binding_plans) {
     ICHECK(!plan->name.empty()) << "TTConsumerBindingPlan requires name";
-    ICHECK(!plan->consumer_kernel.empty()) << "TTConsumerBindingPlan requires consumer_kernel";
-    ICHECK(!plan->consumer_op_kind.empty()) << "TTConsumerBindingPlan requires consumer_op_kind";
+    ICHECK(!plan->consumer_kernel.empty())
+        << "TTConsumerBindingPlan requires consumer_kernel";
+    ICHECK(!plan->consumer_op_kind.empty())
+        << "TTConsumerBindingPlan requires consumer_op_kind";
     ICHECK(!plan->source_live_form.empty())
         << "TTConsumerBindingPlan requires source_live_form";
     ICHECK(live_form_names.count(plan->source_live_form))
         << "TTConsumerBindingPlan references unknown source_live_form "
         << plan->source_live_form;
-    ICHECK(!plan->live_value_edge.empty()) << "TTConsumerBindingPlan requires live_value_edge";
+    ICHECK(!plan->live_value_edge.empty())
+        << "TTConsumerBindingPlan requires live_value_edge";
     ICHECK_GE(plan->live_value_edge_index, 0)
         << "TTConsumerBindingPlan requires live_value_edge_index";
     if (plan->abi_plan_index >= 0) {
@@ -739,23 +869,28 @@ void ValidateConsumerBindingPlans(const TTProgram& program,
           << "TTConsumerBindingPlan abi_plan_index out of bounds";
     }
     ICHECK(plan->accepts_distributed_slice || plan->requires_full_logical_tile)
-        << "TTConsumerBindingPlan must declare whether the consumer accepts a distributed slice "
+        << "TTConsumerBindingPlan must declare whether the consumer accepts a "
+           "distributed slice "
            "or requires a full logical tile";
   }
 }
 
-void ValidateSpatialLiveReferences(const TTProgram& program, const SpatialPlan& spatial_plan) {
+void ValidateSpatialLiveReferences(const TTProgram &program,
+                                   const SpatialPlan &spatial_plan) {
   std::unordered_map<std::string, std::string> live_value_name_by_form;
-  for (const TTLiveFormPlan& plan : program->live_form_plans) {
+  for (const TTLiveFormPlan &plan : program->live_form_plans) {
     ICHECK_LT(plan->spatial_live_value_index,
               static_cast<int64_t>(spatial_plan->live_values.size()))
         << "TTLiveFormPlan spatial_live_value_index out of bounds";
-    const LiveValue& live_value =
-        spatial_plan->live_values[static_cast<size_t>(plan->spatial_live_value_index)];
+    const LiveValue &live_value =
+        spatial_plan
+            ->live_values[static_cast<size_t>(plan->spatial_live_value_index)];
     ICHECK_EQ(plan->spatial_live_value, live_value->name)
-        << "TTLiveFormPlan spatial_live_value must match SpatialPlan live_values index";
+        << "TTLiveFormPlan spatial_live_value must match SpatialPlan "
+           "live_values index";
     ICHECK_EQ(plan->logical_value, live_value->subject)
-        << "TTLiveFormPlan logical_value must match SpatialPlan LiveValue subject";
+        << "TTLiveFormPlan logical_value must match SpatialPlan LiveValue "
+           "subject";
     ICHECK_GE(live_value->version_index, 0)
         << "TTLiveFormPlan requires versioned SpatialPlan LiveValue";
     ICHECK(!live_value->definition_kind.empty())
@@ -764,184 +899,229 @@ void ValidateSpatialLiveReferences(const TTProgram& program, const SpatialPlan& 
         static_cast<std::string>(plan->spatial_live_value);
   }
 
-  for (const TTMaterializationPlan& plan : program->materialization_plans) {
-    ICHECK_LT(plan->materialization_boundary_index,
-              static_cast<int64_t>(spatial_plan->materialization_boundaries.size()))
+  for (const TTMaterializationPlan &plan : program->materialization_plans) {
+    ICHECK_LT(
+        plan->materialization_boundary_index,
+        static_cast<int64_t>(spatial_plan->materialization_boundaries.size()))
         << "TTMaterializationPlan materialization_boundary_index out of bounds";
-    const MaterializationBoundary& boundary =
+    const MaterializationBoundary &boundary =
         spatial_plan->materialization_boundaries[static_cast<size_t>(
             plan->materialization_boundary_index)];
     ICHECK_EQ(plan->materialization_boundary, boundary->name)
-        << "TTMaterializationPlan materialization_boundary must match SpatialPlan index";
+        << "TTMaterializationPlan materialization_boundary must match "
+           "SpatialPlan index";
     ICHECK(!boundary->event_lifetime_kind.empty())
-        << "TTMaterializationPlan requires SpatialPlan MaterializationBoundary lifetime";
+        << "TTMaterializationPlan requires SpatialPlan MaterializationBoundary "
+           "lifetime";
     ICHECK_GE(boundary->min_publish_pages, 1)
         << "TTMaterializationPlan requires bounded publish pages";
-    auto source_it = live_value_name_by_form.find(static_cast<std::string>(plan->source_live_form));
+    auto source_it = live_value_name_by_form.find(
+        static_cast<std::string>(plan->source_live_form));
     ICHECK(source_it != live_value_name_by_form.end())
-        << "TTMaterializationPlan source_live_form missing matching TTLiveFormPlan";
-    ICHECK_EQ(source_it->second, static_cast<std::string>(boundary->source_live_value))
-        << "TTMaterializationPlan source_live_form must refer to boundary source_live_value";
+        << "TTMaterializationPlan source_live_form missing matching "
+           "TTLiveFormPlan";
+    ICHECK_EQ(source_it->second,
+              static_cast<std::string>(boundary->source_live_value))
+        << "TTMaterializationPlan source_live_form must refer to boundary "
+           "source_live_value";
     ICHECK_LT(boundary->target_live_value_index,
               static_cast<int64_t>(spatial_plan->live_values.size()))
         << "MaterializationBoundary target_live_value_index out of bounds";
-    const LiveValue& target_live_value =
-        spatial_plan->live_values[static_cast<size_t>(boundary->target_live_value_index)];
+    const LiveValue &target_live_value =
+        spatial_plan->live_values[static_cast<size_t>(
+            boundary->target_live_value_index)];
     ICHECK_EQ(boundary->target_live_value, target_live_value->name)
-        << "MaterializationBoundary target_live_value must match SpatialPlan index";
+        << "MaterializationBoundary target_live_value must match SpatialPlan "
+           "index";
     ICHECK_EQ(plan->target_buffer, target_live_value->subject)
-        << "TTMaterializationPlan target_buffer must refer to boundary target_live_value";
+        << "TTMaterializationPlan target_buffer must refer to boundary "
+           "target_live_value";
   }
 
-  for (const TTConsumerBindingPlan& plan : program->consumer_binding_plans) {
+  for (const TTConsumerBindingPlan &plan : program->consumer_binding_plans) {
     ICHECK_LT(plan->live_value_edge_index,
               static_cast<int64_t>(spatial_plan->live_value_edges.size()))
         << "TTConsumerBindingPlan live_value_edge_index out of bounds";
-    const LiveValueEdge& live_edge =
-        spatial_plan->live_value_edges[static_cast<size_t>(plan->live_value_edge_index)];
+    const LiveValueEdge &live_edge =
+        spatial_plan->live_value_edges[static_cast<size_t>(
+            plan->live_value_edge_index)];
     ICHECK_EQ(plan->live_value_edge, live_edge->name)
         << "TTConsumerBindingPlan live_value_edge must match SpatialPlan index";
     ICHECK(!live_edge->use_kind.empty())
         << "TTConsumerBindingPlan requires SpatialPlan LiveValueEdge use_kind";
     ICHECK_GE(live_edge->source_version_index, 0)
         << "TTConsumerBindingPlan requires SpatialPlan source version";
-    auto source_it = live_value_name_by_form.find(static_cast<std::string>(plan->source_live_form));
+    auto source_it = live_value_name_by_form.find(
+        static_cast<std::string>(plan->source_live_form));
     ICHECK(source_it != live_value_name_by_form.end())
-        << "TTConsumerBindingPlan source_live_form missing matching TTLiveFormPlan";
-    ICHECK_EQ(source_it->second, static_cast<std::string>(live_edge->source_live_value))
-        << "TTConsumerBindingPlan source_live_form must refer to edge source_live_value";
+        << "TTConsumerBindingPlan source_live_form missing matching "
+           "TTLiveFormPlan";
+    ICHECK_EQ(source_it->second,
+              static_cast<std::string>(live_edge->source_live_value))
+        << "TTConsumerBindingPlan source_live_form must refer to edge "
+           "source_live_value";
   }
 }
 
-void CheckTTProgram(const TTProgram& program, const SpatialPlan& spatial_plan,
-                    const std::optional<TTHardwareModel>& maybe_hardware_model) {
+void CheckTTProgram(
+    const TTProgram &program, const SpatialPlan &spatial_plan,
+    const std::optional<TTHardwareModel> &maybe_hardware_model) {
   ICHECK(!program->entry_name.empty()) << "TTProgram requires entry_name";
-  ICHECK(!program->mesh_plans.empty()) << "TTProgram requires at least one TTMeshPlan";
+  ICHECK(!program->mesh_plans.empty())
+      << "TTProgram requires at least one TTMeshPlan";
   ICHECK(!program->buffer_distribution_plans.empty())
       << "TTProgram requires at least one TTBufferDistributionPlan";
-  ICHECK(!program->block_plans.empty()) << "TTProgram requires at least one TTBlockPlan";
-  ICHECK(!program->kernel_plans.empty()) << "TTProgram requires at least one TTKernelPlan";
-  ICHECK(!program->kernels.empty()) << "TTProgram requires at least one TTKernel";
-  ICHECK(!program->core_groups.empty()) << "TTProgram requires at least one TTCoreGroup";
-  ICHECK(!program->abi_plans.empty()) << "TTProgram requires at least one TTABIPlan";
-  ICHECK(!program->execution_plans.empty()) << "TTProgram requires at least one TTExecutionPlan";
+  ICHECK(!program->block_plans.empty())
+      << "TTProgram requires at least one TTBlockPlan";
+  ICHECK(!program->kernel_plans.empty())
+      << "TTProgram requires at least one TTKernelPlan";
+  ICHECK(!program->kernels.empty())
+      << "TTProgram requires at least one TTKernel";
+  ICHECK(!program->core_groups.empty())
+      << "TTProgram requires at least one TTCoreGroup";
+  ICHECK(!program->abi_plans.empty())
+      << "TTProgram requires at least one TTABIPlan";
+  ICHECK(!program->execution_plans.empty())
+      << "TTProgram requires at least one TTExecutionPlan";
   ICHECK_EQ(program->block_plans.size(), program->core_groups.size())
       << "TTProgram requires aligned TTBlockPlan and TTCoreGroup owner truth";
   ICHECK_EQ(program->kernel_plans.size(), program->kernels.size())
       << "TTProgram requires aligned TTKernelPlan and TTKernel owner truth";
   ICHECK_EQ(program->sync_plans.size(), program->compute_sync_plans.size())
-      << "TTProgram requires aligned TTSyncPlan and TTComputeSyncPlan owner truth";
+      << "TTProgram requires aligned TTSyncPlan and TTComputeSyncPlan owner "
+         "truth";
 
   std::unordered_map<std::string, int64_t> mesh_index_by_name;
-  for (int64_t mesh_index = 0; mesh_index < static_cast<int64_t>(program->mesh_plans.size());
+  for (int64_t mesh_index = 0;
+       mesh_index < static_cast<int64_t>(program->mesh_plans.size());
        ++mesh_index) {
-    const TTMeshPlan& mesh_plan = program->mesh_plans[mesh_index];
+    const TTMeshPlan &mesh_plan = program->mesh_plans[mesh_index];
     ValidateMeshPlan(mesh_plan);
-    ICHECK(mesh_index_by_name.emplace(static_cast<std::string>(mesh_plan->name), mesh_index).second)
+    ICHECK(mesh_index_by_name
+               .emplace(static_cast<std::string>(mesh_plan->name), mesh_index)
+               .second)
         << "duplicate TTMeshPlan name " << mesh_plan->name;
   }
 
   std::unordered_set<std::string> spatial_layout_subjects;
-  for (const LayoutSpec& layout : spatial_plan->layout_specs) {
+  for (const LayoutSpec &layout : spatial_plan->layout_specs) {
     spatial_layout_subjects.insert(static_cast<std::string>(layout->subject));
   }
   std::unordered_map<std::string, int64_t> core_group_index_by_name;
   for (int64_t core_group_index = 0;
        core_group_index < static_cast<int64_t>(program->core_groups.size());
        ++core_group_index) {
-    const TTCoreGroup& core_group = program->core_groups[core_group_index];
+    const TTCoreGroup &core_group = program->core_groups[core_group_index];
     ICHECK(core_group_index_by_name
-               .emplace(static_cast<std::string>(core_group->name), core_group_index)
+               .emplace(static_cast<std::string>(core_group->name),
+                        core_group_index)
                .second)
         << "duplicate TTCoreGroup name " << core_group->name;
   }
   std::unordered_set<std::string> distributed_buffers;
-  for (const TTBufferDistributionPlan& distribution : program->buffer_distribution_plans) {
-    ValidateBufferDistributionPlan(distribution, mesh_index_by_name, core_group_index_by_name,
+  for (const TTBufferDistributionPlan &distribution :
+       program->buffer_distribution_plans) {
+    ValidateBufferDistributionPlan(distribution, mesh_index_by_name,
+                                   core_group_index_by_name,
                                    maybe_hardware_model);
-    ICHECK(distributed_buffers.insert(static_cast<std::string>(distribution->buffer)).second)
+    ICHECK(distributed_buffers
+               .insert(static_cast<std::string>(distribution->buffer))
+               .second)
         << "duplicate TTBufferDistributionPlan buffer " << distribution->buffer;
-    ICHECK(spatial_layout_subjects.count(static_cast<std::string>(distribution->buffer)))
-        << "TTBufferDistributionPlan buffer must match SpatialPlan LayoutSpec subject "
+    ICHECK(spatial_layout_subjects.count(
+        static_cast<std::string>(distribution->buffer)))
+        << "TTBufferDistributionPlan buffer must match SpatialPlan LayoutSpec "
+           "subject "
         << distribution->buffer;
   }
 
-  for (const TTBlockPlan& block_plan : program->block_plans) {
+  for (const TTBlockPlan &block_plan : program->block_plans) {
     ValidateBlockPlan(block_plan);
   }
-  for (const TTSyncPlan& sync_plan : program->sync_plans) {
+  for (const TTSyncPlan &sync_plan : program->sync_plans) {
     ValidateSyncPlan(sync_plan);
   }
 
   std::unordered_set<std::string> kernel_names;
-  for (const TTKernel& kernel : program->kernels) {
+  for (const TTKernel &kernel : program->kernels) {
     ICHECK(!kernel->name.empty()) << "TTKernel requires name";
     ICHECK(!kernel->kind.empty()) << "TTKernel requires kind";
     ICHECK(!kernel->core_type.empty()) << "TTKernel requires core_type";
     ICHECK_GE(kernel->abi_plan_index, 0) << "TTKernel requires abi_plan_index";
-    ICHECK_LT(kernel->abi_plan_index, static_cast<int64_t>(program->abi_plans.size()))
+    ICHECK_LT(kernel->abi_plan_index,
+              static_cast<int64_t>(program->abi_plans.size()))
         << "TTKernel abi_plan_index out of bounds";
-    ICHECK(kernel_names.insert(kernel->name).second) << "duplicate TTKernel name " << kernel->name;
+    ICHECK(kernel_names.insert(kernel->name).second)
+        << "duplicate TTKernel name " << kernel->name;
     ValidateKernelLeafFields(kernel);
   }
-  for (const TTKernelPlan& kernel_plan : program->kernel_plans) {
-    ValidateKernelPlan(kernel_plan, static_cast<int64_t>(program->abi_plans.size()),
+  for (const TTKernelPlan &kernel_plan : program->kernel_plans) {
+    ValidateKernelPlan(kernel_plan,
+                       static_cast<int64_t>(program->abi_plans.size()),
                        static_cast<int64_t>(program->block_plans.size()));
     ICHECK(kernel_names.count(kernel_plan->name))
-        << "TTKernelPlan missing matching TTKernel owner truth: " << kernel_plan->name;
+        << "TTKernelPlan missing matching TTKernel owner truth: "
+        << kernel_plan->name;
   }
   std::unordered_set<std::string> compute_op_names;
-  for (const TTComputeOpPlan& compute_op_plan : program->compute_op_plans) {
+  for (const TTComputeOpPlan &compute_op_plan : program->compute_op_plans) {
     ValidateComputeOpPlan(compute_op_plan,
-                          static_cast<int64_t>(program->kernel_plans.size()), kernel_names);
-    ICHECK(compute_op_names.insert(static_cast<std::string>(compute_op_plan->name)).second)
+                          static_cast<int64_t>(program->kernel_plans.size()),
+                          kernel_names);
+    ICHECK(
+        compute_op_names.insert(static_cast<std::string>(compute_op_plan->name))
+            .second)
         << "duplicate TTComputeOpPlan name " << compute_op_plan->name;
   }
 
-  std::unordered_map<std::string, const TTResourcePressureReportNode*>
+  std::unordered_map<std::string, const TTResourcePressureReportNode *>
       resource_report_by_kernel;
   std::unordered_set<std::string> resource_demand_kernels;
-  for (const TTResourcePressureReport& report :
+  for (const TTResourcePressureReport &report :
        program->resource_pressure_reports) {
     ValidateResourcePressureReport(
         report, kernel_names, static_cast<int64_t>(program->core_groups.size()),
         maybe_hardware_model);
     const std::string kernel_name = report->kernel_name;
     ICHECK(resource_report_by_kernel.emplace(kernel_name, report.get()).second)
-        << "duplicate TTResourcePressureReport for kernel " << report->kernel_name;
+        << "duplicate TTResourcePressureReport for kernel "
+        << report->kernel_name;
   }
-  for (const TTResourceDemand& demand : program->resource_demands) {
-    ValidateResourceDemand(
-        demand, kernel_names, static_cast<int64_t>(program->core_groups.size()));
+  for (const TTResourceDemand &demand : program->resource_demands) {
+    ValidateResourceDemand(demand, kernel_names,
+                           static_cast<int64_t>(program->core_groups.size()));
     ICHECK(resource_demand_kernels
                .insert(static_cast<std::string>(demand->kernel_name))
                .second)
         << "duplicate TTResourceDemand for kernel " << demand->kernel_name;
-    auto report_it =
-        resource_report_by_kernel.find(static_cast<std::string>(demand->kernel_name));
+    auto report_it = resource_report_by_kernel.find(
+        static_cast<std::string>(demand->kernel_name));
     ICHECK(report_it != resource_report_by_kernel.end())
-        << "TTResourceDemand requires matching ResourcePressureReport for kernel "
+        << "TTResourceDemand requires matching ResourcePressureReport for "
+           "kernel "
         << demand->kernel_name;
     ICHECK_GE(report_it->second->required_materializations.size(),
               demand->tile_compute_materialization_demands.size())
         << "ResourcePressureReport required_materializations must cover "
            "TTResourceDemand tile_compute_materialization_demands";
   }
-  for (const auto& entry : resource_report_by_kernel) {
+  for (const auto &entry : resource_report_by_kernel) {
     ICHECK(resource_demand_kernels.count(entry.first))
-        << "TTResourcePressureReport requires matching TTResourceDemand for kernel "
+        << "TTResourcePressureReport requires matching TTResourceDemand for "
+           "kernel "
         << entry.first;
   }
 
-  for (const TTCoreGroup& core_group : program->core_groups) {
+  for (const TTCoreGroup &core_group : program->core_groups) {
     ValidateCoreGroup(core_group, maybe_hardware_model);
   }
 
   std::unordered_set<int64_t> cb_ids;
-  for (const TTCBPlan& cb : program->cb_plans) {
+  for (const TTCBPlan &cb : program->cb_plans) {
     ValidateCBPlan(cb);
     ICHECK_GE(cb->cb_id, 0) << "TTCBPlan requires non-negative cb_id";
-    ICHECK(cb_ids.insert(cb->cb_id).second) << "duplicate TTCBPlan cb_id " << cb->cb_id;
+    ICHECK(cb_ids.insert(cb->cb_id).second)
+        << "duplicate TTCBPlan cb_id " << cb->cb_id;
   }
 
   std::unordered_set<std::string> live_form_names;
@@ -950,19 +1130,20 @@ void CheckTTProgram(const TTProgram& program, const SpatialPlan& spatial_plan,
                                static_cast<int64_t>(program->cb_plans.size()));
 
   std::unordered_set<std::string> abi_kernel_names;
-  for (const TTABIPlan& abi : program->abi_plans) {
+  for (const TTABIPlan &abi : program->abi_plans) {
     ICHECK(!abi->kernel_name.empty()) << "TTABIPlan requires kernel_name";
-    for (const TTAccessorSpec& accessor : abi->accessors) {
+    for (const TTAccessorSpec &accessor : abi->accessors) {
       ValidateAccessor(accessor);
-      ICHECK(distributed_buffers.count(static_cast<std::string>(accessor->buffer)))
+      ICHECK(
+          distributed_buffers.count(static_cast<std::string>(accessor->buffer)))
           << "TTABIPlan accessor buffer requires TTBufferDistributionPlan";
     }
-    for (const TTCompileTimeArgSpec& spec : abi->compile_time_arg_specs) {
+    for (const TTCompileTimeArgSpec &spec : abi->compile_time_arg_specs) {
       ValidateCompileTimeArgSpec(spec);
     }
     abi_kernel_names.insert(abi->kernel_name);
   }
-  for (const TTKernel& kernel : program->kernels) {
+  for (const TTKernel &kernel : program->kernels) {
     ICHECK(abi_kernel_names.count(kernel->name))
         << "TTKernel missing matching TTABIPlan: " << kernel->name;
   }
@@ -970,43 +1151,52 @@ void CheckTTProgram(const TTProgram& program, const SpatialPlan& spatial_plan,
                                static_cast<int64_t>(program->abi_plans.size()));
   ValidateSpatialLiveReferences(program, spatial_plan);
 
-  for (const TTTransportPlan& transport : program->transport_plans) {
+  for (const TTTransportPlan &transport : program->transport_plans) {
     ICHECK(!transport->kind.empty()) << "TTTransportPlan requires kind";
-    ICHECK(!transport->value_kind.empty()) << "TTTransportPlan requires value_kind";
-    ICHECK(!transport->delivery_kind.empty()) << "TTTransportPlan requires delivery_kind";
-    ICHECK_GE(transport->source_task_index, 0) << "TTTransportPlan requires source_task_index";
-    ICHECK_GE(transport->target_task_index, 0) << "TTTransportPlan requires target_task_index";
+    ICHECK(!transport->value_kind.empty())
+        << "TTTransportPlan requires value_kind";
+    ICHECK(!transport->delivery_kind.empty())
+        << "TTTransportPlan requires delivery_kind";
+    ICHECK_GE(transport->source_task_index, 0)
+        << "TTTransportPlan requires source_task_index";
+    ICHECK_GE(transport->target_task_index, 0)
+        << "TTTransportPlan requires target_task_index";
   }
 
-  for (const TTSemaphorePlan& semaphore : program->semaphore_plans) {
-    ICHECK_GE(semaphore->semaphore_id, 0) << "TTSemaphorePlan requires non-negative semaphore_id";
+  for (const TTSemaphorePlan &semaphore : program->semaphore_plans) {
+    ICHECK_GE(semaphore->semaphore_id, 0)
+        << "TTSemaphorePlan requires non-negative semaphore_id";
     ICHECK(!semaphore->kind.empty()) << "TTSemaphorePlan requires kind";
-    ICHECK(!semaphore->core_type.empty()) << "TTSemaphorePlan requires core_type";
+    ICHECK(!semaphore->core_type.empty())
+        << "TTSemaphorePlan requires core_type";
   }
 
-  for (const TTDstLayoutPlan& layout : program->dst_layout_plans) {
+  for (const TTDstLayoutPlan &layout : program->dst_layout_plans) {
     ICHECK(!layout->buffer.empty()) << "TTDstLayoutPlan requires buffer";
     ICHECK(!layout->layout.empty()) << "TTDstLayoutPlan requires layout";
-    ICHECK(!layout->memory_space.empty()) << "TTDstLayoutPlan requires memory_space";
+    ICHECK(!layout->memory_space.empty())
+        << "TTDstLayoutPlan requires memory_space";
   }
 
-  for (const TTExecutionPlan& execution : program->execution_plans) {
-    ICHECK(!execution->kernel_names.empty()) << "TTExecutionPlan requires kernel_names";
-    ICHECK(!execution->phase_indices.empty()) << "TTExecutionPlan requires phase_indices";
-    for (const tvm::ffi::String& kernel_name : execution->kernel_names) {
-      ICHECK(kernel_names.count(kernel_name)) << "TTExecutionPlan references unknown kernel "
-                                              << kernel_name;
+  for (const TTExecutionPlan &execution : program->execution_plans) {
+    ICHECK(!execution->kernel_names.empty())
+        << "TTExecutionPlan requires kernel_names";
+    ICHECK(!execution->phase_indices.empty())
+        << "TTExecutionPlan requires phase_indices";
+    for (const tvm::ffi::String &kernel_name : execution->kernel_names) {
+      ICHECK(kernel_names.count(kernel_name))
+          << "TTExecutionPlan references unknown kernel " << kernel_name;
     }
   }
 }
 
-}  // namespace
+} // namespace
 
 tvm::transform::Pass ValidateTTProgram() {
   auto pass_func = [](IRModule mod, tvm::transform::PassContext) {
     const std::optional<TTHardwareModel> maybe_hardware_model =
         GetValidationHardwareModel(mod);
-    for (const auto& [gvar, base_func] : mod->functions) {
+    for (const auto &[gvar, base_func] : mod->functions) {
       auto func = base_func.as<tir::PrimFunc>();
       if (!func || !IsBlackholePrimFunc(func.value())) {
         continue;
@@ -1015,15 +1205,17 @@ tvm::transform::Pass ValidateTTProgram() {
       if (!maybe_program) {
         continue;
       }
-      auto maybe_spatial_plan = func.value()->GetAttr<SpatialPlan>(attr::kTLSpatialPlan);
-      ICHECK(maybe_spatial_plan)
-          << "ValidateTTProgram requires tl.spatial_plan for live-form validation";
+      auto maybe_spatial_plan =
+          func.value()->GetAttr<SpatialPlan>(attr::kTLSpatialPlan);
+      ICHECK(maybe_spatial_plan) << "ValidateTTProgram requires "
+                                    "tl.spatial_plan for live-form validation";
       CheckTTProgram(maybe_program.value(), maybe_spatial_plan.value(),
                      maybe_hardware_model);
     }
     return mod;
   };
-  return tvm::transform::CreateModulePass(pass_func, 0, "tl.transform.ValidateTTProgram", {});
+  return tvm::transform::CreateModulePass(pass_func, 0,
+                                          "tl.transform.ValidateTTProgram", {});
 }
 
 TVM_FFI_STATIC_INIT_BLOCK() {
@@ -1031,5 +1223,5 @@ TVM_FFI_STATIC_INIT_BLOCK() {
   refl::GlobalDef().def("tl.transform.ValidateTTProgram", ValidateTTProgram);
 }
 
-}  // namespace tl
-}  // namespace tvm
+} // namespace tl
+} // namespace tvm

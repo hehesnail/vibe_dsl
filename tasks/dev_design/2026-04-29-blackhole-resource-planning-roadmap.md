@@ -208,13 +208,11 @@ The conservative baseline is:
   validator should not require every logical local byte size to already be an
   allocation-aligned page.
 
-The current implementation still has one coarse-marker residue:
-the sharded plan marks the L1-side working view / materialization, not the
+The sharded plan marks the L1-side working view / materialization, not the
 DRAM global tensor itself.
-`TTBufferDistributionPlan.shard_shape`
-is carrying attached core-grid shape, not the per-core tensor shard shape used
-by TT-Metal / TTNN sharded memory configs.
-The buffer address ABI gate must split this into explicit
+The buffer address ABI must keep the resident core grid separate from the
+per-core tensor shard shape used by TT-Metal / TTNN sharded memory configs.
+It uses explicit
 `shard_grid_shape`,
 `sharding_strategy`,
 per-core `shard_shape`,
@@ -222,6 +220,35 @@ source buffer / source region binding,
 logical-index to core-local address mapping,
 and DRAM-source region to L1-shard copy/address mapping before sharded
 placement is admitted for runtime emission.
+
+The first typed form of that split is:
+
+- `shard_grid_shape`: the attached physical core-grid shape for the resident
+  L1 view.
+- `sharding_strategy`: height / width / block strategy for assigning the
+  logical shard to that grid.
+- `shard_shape`: the real per-core tensor data shape of the resident L1 view.
+- `source_buffer`: the DRAM / global buffer that materializes the L1 view when
+  the view is copied from global memory.
+- `source_region_kind`: the address-region class, initially
+  `per_work_tile` for per-work TileLang shared tiles.
+- `source_region_shape`: the data shape copied from the source buffer into
+  one resident L1 shard for one logical work item.
+- `logical_index_mapping`: how a logical work id is mapped before addressing,
+  initially `work_packet_row_major`.
+- `core_local_address_mapping`: how the logical shard is addressed inside the
+  resident worker-local view, initially `l1_shard_linear`.
+
+Validators must reject sharded L1 plans that omit placement and address
+mapping fields.
+Source-region binding fields are all-or-none:
+if a sharded L1 view is materialized from a DRAM / global source, it must carry
+`source_buffer`,
+`source_region_kind`,
+and `source_region_shape`;
+pure worker-local sharded scratch must not fabricate a source binding.
+Direct runtime may still reject sharded/page-indexed forms, but the reject must
+come from these typed fields rather than source or runtime reconstruction.
 
 For TileLang programs written in a GPU style,
 `alloc_shared((tile_m, tile_n))`

@@ -235,9 +235,9 @@
   是绑定到 core group
   的 working view /
   materialization。
-  长期
+  repo HEAD 的
   `TTBufferDistributionPlan`
-  需要拆开
+  已拆开
   `shard_grid_shape`、
   `sharding_strategy`、
   per-core data
@@ -252,6 +252,15 @@
   后再让 leaf reader
   猜它到底是 grid
   还是 data shard。
+  source-region binding 是 all-or-none：
+  只有确实从 DRAM/global buffer
+  materialize 的 L1 view
+  才设置
+  `source_buffer` /
+  `source_region_kind` /
+  `source_region_shape`；
+  纯 worker-local sharded scratch
+  不应伪造 source binding。
 - Blackhole core placement
   不能长期硬编码 worker grid。
   规划应从

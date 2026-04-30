@@ -1545,6 +1545,48 @@ def test_blackhole_copy_direct_runtime_rejects_unknown_compile_time_abi_kind():
         mutated_mod["main"](a_torch, b_output)
 
 
+@pytest.mark.parametrize(
+    ("kind", "layout", "memory_space", "args_config_bits"),
+    [
+        ("sharded_accessor_cta", "sharded", "l1", 1),
+        ("page_indexed_accessor_cta", "page_indexed", "dram", 1),
+    ],
+)
+def test_blackhole_copy_codegen_rejects_non_admitted_accessor_materialization_kinds(
+    kind, layout, memory_space, args_config_bits
+):
+    can_run, msg = check_blackhole_codegen_requirements()
+    if not can_run:
+        pytest.skip(f"Blackhole requirements not met: {msg}")
+
+    kernel = staged_copy_kernel(tile_rows=1, tile_cols=1)
+    target = Target("blackhole")
+
+    with target:
+        artifact = lower(kernel, target=target)
+
+    device_funcs = {str(gvar): func for gvar, func in artifact.device_mod.functions.items()}
+    device_main = device_funcs['I.GlobalVar("main_kernel")']
+
+    def mutate_non_admitted_accessor_kind(spec, *, segment):
+        if str(spec["kind"]) == "interleaved_accessor_cta" and str(spec["buffer"]) == "A":
+            spec["kind"] = kind
+            spec["layout"] = layout
+            spec["memory_space"] = memory_space
+            spec["args_config_bits"] = args_config_bits
+        return spec
+
+    mutated_func = _with_compile_time_abi_schema(
+        device_main,
+        strip_accessors=True,
+        compile_time_arg_spec_mutator=mutate_non_admitted_accessor_kind,
+    )
+    with pytest.raises(tvm.error.InternalError, match="single layout per buffer"):
+        _rebuild_codegen_module_with_segment_plan(
+            artifact, extract_blackhole_segment_plan(mutated_func)
+        )
+
+
 def test_blackhole_copy_direct_runtime_rejects_accessor_runtime_crta_bits():
     can_run, msg = check_blackhole_direct_execution_requirements()
     if not can_run:

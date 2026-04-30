@@ -1,6 +1,7 @@
 /*!
  * \file tt_program_projection.h
- * \brief TTProgram -> ExecutableSpec projection helpers for the canonical writer boundary.
+ * \brief TTProgram -> ExecutableSpec projection helpers for the canonical
+ * writer boundary.
  */
 
 #ifndef TVM_TL_TARGET_TT_PROGRAM_PROJECTION_H_
@@ -9,11 +10,11 @@
 #include <tvm/ir/expr.h>
 #include <tvm/tir/function.h>
 
-#include <string>
-#include <unordered_set>
 #include "../transform/common/blackhole_runtime_arg_schema.h"
 #include "../transform/common/companion_base.h"
 #include "../transform/common/tt_target_program.h"
+#include <string>
+#include <unordered_set>
 
 namespace tvm {
 namespace tl {
@@ -26,41 +27,44 @@ using tvm::ffi::Map;
 using tvm::ffi::String;
 
 namespace executable_key {
-constexpr const char* kSchemaVersion = "schema_version";
-constexpr const char* kSource = "source";
-constexpr const char* kEntryName = "entry_name";
-constexpr const char* kMemberFunc = "member_func";
-constexpr const char* kMeshPlans = "mesh_plans";
-constexpr const char* kBufferDistributionPlans = "buffer_distribution_plans";
-constexpr const char* kComputeOpPlans = "compute_op_plans";
-constexpr const char* kSegmentPlan = "segment_plan";
-constexpr const char* kCBConfigs = "cb_configs";
-constexpr const char* kCorePlan = "core_plan";
-constexpr const char* kSemaphorePlan = "semaphore_plan";
-constexpr const char* kDirectRuntimeUnsupportedReasons = "direct_runtime_unsupported_reasons";
-constexpr const char* kLiveFormPlans = "live_form_plans";
-constexpr const char* kMaterializationPlans = "materialization_plans";
-constexpr const char* kConsumerBindingPlans = "consumer_binding_plans";
-constexpr const char* kResourcePressureReports = "resource_pressure_reports";
-}  // namespace executable_key
+constexpr const char *kSchemaVersion = "schema_version";
+constexpr const char *kSource = "source";
+constexpr const char *kEntryName = "entry_name";
+constexpr const char *kMemberFunc = "member_func";
+constexpr const char *kMeshPlans = "mesh_plans";
+constexpr const char *kBufferDistributionPlans = "buffer_distribution_plans";
+constexpr const char *kComputeOpPlans = "compute_op_plans";
+constexpr const char *kSegmentPlan = "segment_plan";
+constexpr const char *kCBConfigs = "cb_configs";
+constexpr const char *kCorePlan = "core_plan";
+constexpr const char *kSemaphorePlan = "semaphore_plan";
+constexpr const char *kDirectRuntimeUnsupportedReasons =
+    "direct_runtime_unsupported_reasons";
+constexpr const char *kLiveFormPlans = "live_form_plans";
+constexpr const char *kMaterializationPlans = "materialization_plans";
+constexpr const char *kConsumerBindingPlans = "consumer_binding_plans";
+constexpr const char *kResourcePressureReports = "resource_pressure_reports";
+} // namespace executable_key
 
-inline Map<String, Any> AsMap(const Any& any) {
+inline Map<String, Any> AsMap(const Any &any) {
   return any.as<Map<String, Any>>().value_or(Map<String, Any>());
 }
 
-inline tvm::ffi::Optional<TTProgram> GetTTProgram(const tir::PrimFunc& func) {
+inline tvm::ffi::Optional<TTProgram> GetTTProgram(const tir::PrimFunc &func) {
   return func->GetAttr<TTProgram>(attr::kTLTTProgram);
 }
 
-inline TTProgram RequireTTProgram(const tir::PrimFunc& func, const char* consumer) {
+inline TTProgram RequireTTProgram(const tir::PrimFunc &func,
+                                  const char *consumer) {
   auto maybe_program = GetTTProgram(func);
-  ICHECK(maybe_program) << consumer << " requires tl.tt_program for executable-writer cutover";
+  ICHECK(maybe_program)
+      << consumer << " requires tl.tt_program for executable-writer cutover";
   return maybe_program.value();
 }
 
-inline Array<Any> EncodeCBPlans(const Array<TTCBPlan>& cb_plans) {
+inline Array<Any> EncodeCBPlans(const Array<TTCBPlan> &cb_plans) {
   Array<Any> encoded;
-  for (const TTCBPlan& cb : cb_plans) {
+  for (const TTCBPlan &cb : cb_plans) {
     Map<String, Any> item;
     item.Set("name", cb->name);
     item.Set("cb_id", Integer(cb->cb_id));
@@ -86,9 +90,9 @@ inline Array<Any> EncodeCBPlans(const Array<TTCBPlan>& cb_plans) {
   return encoded;
 }
 
-inline Array<Any> EncodeMeshPlans(const Array<TTMeshPlan>& mesh_plans) {
+inline Array<Any> EncodeMeshPlans(const Array<TTMeshPlan> &mesh_plans) {
   Array<Any> encoded;
-  for (const TTMeshPlan& plan : mesh_plans) {
+  for (const TTMeshPlan &plan : mesh_plans) {
     Map<String, Any> item;
     item.Set("name", plan->name);
     item.Set("mesh_kind", plan->mesh_kind);
@@ -102,9 +106,9 @@ inline Array<Any> EncodeMeshPlans(const Array<TTMeshPlan>& mesh_plans) {
 }
 
 inline Array<Any> EncodeBufferDistributionPlans(
-    const Array<TTBufferDistributionPlan>& buffer_distribution_plans) {
+    const Array<TTBufferDistributionPlan> &buffer_distribution_plans) {
   Array<Any> encoded;
-  for (const TTBufferDistributionPlan& plan : buffer_distribution_plans) {
+  for (const TTBufferDistributionPlan &plan : buffer_distribution_plans) {
     Map<String, Any> item;
     item.Set("name", plan->name);
     item.Set("buffer", plan->buffer);
@@ -117,7 +121,28 @@ inline Array<Any> EncodeBufferDistributionPlans(
     if (!plan->shard_shape.empty()) {
       item.Set("shard_shape", plan->shard_shape);
     }
+    if (!plan->shard_grid_shape.empty()) {
+      item.Set("shard_grid_shape", plan->shard_grid_shape);
+    }
+    if (!plan->sharding_strategy.empty()) {
+      item.Set("sharding_strategy", plan->sharding_strategy);
+    }
     item.Set("shard_orientation", plan->shard_orientation);
+    if (!plan->source_buffer.empty()) {
+      item.Set("source_buffer", plan->source_buffer);
+    }
+    if (!plan->source_region_kind.empty()) {
+      item.Set("source_region_kind", plan->source_region_kind);
+    }
+    if (!plan->source_region_shape.empty()) {
+      item.Set("source_region_shape", plan->source_region_shape);
+    }
+    if (!plan->logical_index_mapping.empty()) {
+      item.Set("logical_index_mapping", plan->logical_index_mapping);
+    }
+    if (!plan->core_local_address_mapping.empty()) {
+      item.Set("core_local_address_mapping", plan->core_local_address_mapping);
+    }
     item.Set("host_visibility", plan->host_visibility);
     if (!plan->attached_core_group.empty()) {
       item.Set("attached_core_group", plan->attached_core_group);
@@ -140,7 +165,8 @@ inline Array<Any> EncodeBufferDistributionPlans(
       item.Set("inverse_logical_index_vars", plan->inverse_logical_index_vars);
     }
     if (!plan->inverse_logical_index_exprs.empty()) {
-      item.Set("inverse_logical_index_exprs", plan->inverse_logical_index_exprs);
+      item.Set("inverse_logical_index_exprs",
+               plan->inverse_logical_index_exprs);
     }
     if (!plan->spatial_layout.empty()) {
       item.Set("spatial_layout", plan->spatial_layout);
@@ -159,8 +185,8 @@ inline Array<Any> EncodeBufferDistributionPlans(
   return encoded;
 }
 
-inline Map<String, Any> EncodeComputeOperandBindingPlan(
-    const TTComputeOperandBindingPlan& binding) {
+inline Map<String, Any>
+EncodeComputeOperandBindingPlan(const TTComputeOperandBindingPlan &binding) {
   Map<String, Any> item;
   item.Set("role", binding->role);
   item.Set("buffer", binding->buffer);
@@ -179,14 +205,14 @@ inline Map<String, Any> EncodeComputeOperandBindingPlan(
   return item;
 }
 
-inline void SetIntegerShapeField(Map<String, Any>* item, const char* key,
-                                 const Array<Integer>& values, size_t index) {
+inline void SetIntegerShapeField(Map<String, Any> *item, const char *key,
+                                 const Array<Integer> &values, size_t index) {
   if (index < values.size()) {
     item->Set(String(key), values[index]);
   }
 }
 
-inline Map<String, Any> EncodeComputeOpPlan(const TTComputeOpPlan& plan) {
+inline Map<String, Any> EncodeComputeOpPlan(const TTComputeOpPlan &plan) {
   Map<String, Any> item;
   item.Set("name", plan->name);
   item.Set("kernel_name", plan->kernel_name);
@@ -195,7 +221,7 @@ inline Map<String, Any> EncodeComputeOpPlan(const TTComputeOpPlan& plan) {
   item.Set("kind", plan->kind);
   item.Set("operation_name", plan->operation_name);
   Array<Any> operand_bindings;
-  for (const TTComputeOperandBindingPlan& binding : plan->operand_bindings) {
+  for (const TTComputeOperandBindingPlan &binding : plan->operand_bindings) {
     operand_bindings.push_back(EncodeComputeOperandBindingPlan(binding));
   }
   item.Set("operand_bindings", operand_bindings);
@@ -226,7 +252,7 @@ inline Map<String, Any> EncodeComputeOpPlan(const TTComputeOpPlan& plan) {
   if (!plan->mbarrier_index_exprs.empty()) {
     item.Set("mbarrier_index_exprs", plan->mbarrier_index_exprs);
   }
-  for (const TTComputeOperandBindingPlan& binding : plan->operand_bindings) {
+  for (const TTComputeOperandBindingPlan &binding : plan->operand_bindings) {
     const std::string role = static_cast<std::string>(binding->role);
     if (role == "a") {
       item.Set("a_buffer", binding->host_buffer);
@@ -258,7 +284,8 @@ inline Map<String, Any> EncodeComputeOpPlan(const TTComputeOpPlan& plan) {
   }
   if (plan->problem_shape_axes.size() == plan->problem_shape.size()) {
     for (size_t i = 0; i < plan->problem_shape_axes.size(); ++i) {
-      const std::string axis = static_cast<std::string>(plan->problem_shape_axes[i]);
+      const std::string axis =
+          static_cast<std::string>(plan->problem_shape_axes[i]);
       if (axis == "M" || axis == "N" || axis == "K") {
         item.Set(String(axis), plan->problem_shape[i]);
       }
@@ -293,16 +320,17 @@ inline Map<String, Any> EncodeComputeOpPlan(const TTComputeOpPlan& plan) {
   return item;
 }
 
-inline Array<Any> EncodeComputeOpPlans(const Array<TTComputeOpPlan>& compute_op_plans) {
+inline Array<Any>
+EncodeComputeOpPlans(const Array<TTComputeOpPlan> &compute_op_plans) {
   Array<Any> encoded;
-  for (const TTComputeOpPlan& plan : compute_op_plans) {
+  for (const TTComputeOpPlan &plan : compute_op_plans) {
     encoded.push_back(EncodeComputeOpPlan(plan));
   }
   return encoded;
 }
 
 inline Map<String, Any> EncodeTileComputeMaterializationDemand(
-    const TTTileComputeMaterializationDemand& demand) {
+    const TTTileComputeMaterializationDemand &demand) {
   Map<String, Any> item;
   item.Set("name", demand->name);
   item.Set("kernel_name", demand->kernel_name);
@@ -315,18 +343,18 @@ inline Map<String, Any> EncodeTileComputeMaterializationDemand(
 }
 
 inline Array<Any> EncodeTileComputeMaterializationDemands(
-    const Array<TTTileComputeMaterializationDemand>& demands) {
+    const Array<TTTileComputeMaterializationDemand> &demands) {
   Array<Any> encoded;
-  for (const TTTileComputeMaterializationDemand& demand : demands) {
+  for (const TTTileComputeMaterializationDemand &demand : demands) {
     encoded.push_back(EncodeTileComputeMaterializationDemand(demand));
   }
   return encoded;
 }
 
-inline Array<Any> EncodeResourcePressureReports(
-    const Array<TTResourcePressureReport>& reports) {
+inline Array<Any>
+EncodeResourcePressureReports(const Array<TTResourcePressureReport> &reports) {
   Array<Any> encoded;
-  for (const TTResourcePressureReport& report : reports) {
+  for (const TTResourcePressureReport &report : reports) {
     Map<String, Any> item;
     item.Set("name", report->name);
     item.Set("kernel_name", report->kernel_name);
@@ -345,8 +373,7 @@ inline Array<Any> EncodeResourcePressureReports(
     item.Set("max_simultaneous_l1_bytes",
              Integer(report->max_simultaneous_l1_bytes));
     item.Set("cb_id_limit", Integer(report->cb_id_limit));
-    item.Set("worker_l1_budget_bytes",
-             Integer(report->worker_l1_budget_bytes));
+    item.Set("worker_l1_budget_bytes", Integer(report->worker_l1_budget_bytes));
     item.Set("l1_alignment_bytes", Integer(report->l1_alignment_bytes));
     item.Set("per_core_cb_l1_aligned_bytes",
              Integer(report->per_core_cb_l1_aligned_bytes));
@@ -360,7 +387,7 @@ inline Array<Any> EncodeResourcePressureReports(
   return encoded;
 }
 
-inline Map<String, Any> EncodeCoreGroup(const TTCoreGroup& core_group) {
+inline Map<String, Any> EncodeCoreGroup(const TTCoreGroup &core_group) {
   Map<String, Any> item;
   item.Set("logical_grid_x", Integer(core_group->logical_grid_x));
   item.Set("logical_grid_y", Integer(core_group->logical_grid_y));
@@ -370,9 +397,10 @@ inline Map<String, Any> EncodeCoreGroup(const TTCoreGroup& core_group) {
   return item;
 }
 
-inline Array<Any> EncodeSemaphorePlans(const Array<TTSemaphorePlan>& semaphore_plans) {
+inline Array<Any>
+EncodeSemaphorePlans(const Array<TTSemaphorePlan> &semaphore_plans) {
   Array<Any> encoded;
-  for (const TTSemaphorePlan& sem : semaphore_plans) {
+  for (const TTSemaphorePlan &sem : semaphore_plans) {
     Map<String, Any> item;
     item.Set("id", Integer(sem->semaphore_id));
     item.Set("initial_value", Integer(sem->initial_value));
@@ -385,11 +413,12 @@ inline Array<Any> EncodeSemaphorePlans(const Array<TTSemaphorePlan>& semaphore_p
   return encoded;
 }
 
-inline bool HasLaunchSpec(const TTKernelLaunchSpec& launch_spec) {
+inline bool HasLaunchSpec(const TTKernelLaunchSpec &launch_spec) {
   return launch_spec.defined() && !launch_spec->core_type.empty();
 }
 
-inline Map<String, Any> EncodeKernelLaunchSpec(const TTKernelLaunchSpec& launch_spec) {
+inline Map<String, Any>
+EncodeKernelLaunchSpec(const TTKernelLaunchSpec &launch_spec) {
   Map<String, Any> encoded;
   if (!HasLaunchSpec(launch_spec)) {
     return encoded;
@@ -400,11 +429,12 @@ inline Map<String, Any> EncodeKernelLaunchSpec(const TTKernelLaunchSpec& launch_
   return encoded;
 }
 
-inline bool HasComputeConfig(const TTKernelComputeConfig& compute_config) {
+inline bool HasComputeConfig(const TTKernelComputeConfig &compute_config) {
   return compute_config.defined() && !compute_config->math_fidelity.empty();
 }
 
-inline Map<String, Any> EncodeKernelComputeConfig(const TTKernelComputeConfig& compute_config) {
+inline Map<String, Any>
+EncodeKernelComputeConfig(const TTKernelComputeConfig &compute_config) {
   Map<String, Any> encoded;
   if (!HasComputeConfig(compute_config)) {
     return encoded;
@@ -416,7 +446,7 @@ inline Map<String, Any> EncodeKernelComputeConfig(const TTKernelComputeConfig& c
   encoded.Set("unpack_to_dest_mode", compute_config->unpack_to_dest_mode);
   encoded.Set("bfp8_pack_precise", Bool(compute_config->bfp8_pack_precise));
   Array<Any> defines;
-  for (const TTKernelDefine& define : compute_config->defines) {
+  for (const TTKernelDefine &define : compute_config->defines) {
     Map<String, Any> item;
     item.Set("name", define->name);
     item.Set("value", define->value);
@@ -424,7 +454,8 @@ inline Map<String, Any> EncodeKernelComputeConfig(const TTKernelComputeConfig& c
   }
   encoded.Set("defines", defines);
   Array<Any> named_compile_args;
-  for (const TTKernelNamedCompileArg& arg : compute_config->named_compile_args) {
+  for (const TTKernelNamedCompileArg &arg :
+       compute_config->named_compile_args) {
     Map<String, Any> item;
     item.Set("name", arg->name);
     item.Set("value", Integer(arg->value));
@@ -439,18 +470,21 @@ inline Map<String, Any> EncodeKernelComputeConfig(const TTKernelComputeConfig& c
   return encoded;
 }
 
-inline Array<Any> EncodePerWorkArgSpecs(const Array<TTPerWorkArgSpec>& per_work_arg_specs) {
+inline Array<Any>
+EncodePerWorkArgSpecs(const Array<TTPerWorkArgSpec> &per_work_arg_specs) {
   Array<Any> encoded;
-  for (const TTPerWorkArgSpec& spec : per_work_arg_specs) {
+  for (const TTPerWorkArgSpec &spec : per_work_arg_specs) {
     Map<String, Any> item;
     item.Set(::tvm::tl::blackhole_runtime_arg_schema::kArgKind, spec->arg_kind);
-    item.Set(::tvm::tl::blackhole_runtime_arg_schema::kArgIdentity, spec->arg_identity);
+    item.Set(::tvm::tl::blackhole_runtime_arg_schema::kArgIdentity,
+             spec->arg_identity);
     if (!spec->buffer.empty()) {
       item.Set(::tvm::tl::blackhole_runtime_arg_schema::kBuffer, spec->buffer);
     }
     item.Set(::tvm::tl::blackhole_runtime_arg_schema::kDescriptorKind,
              spec->descriptor_kind);
-    item.Set(::tvm::tl::blackhole_runtime_arg_schema::kValueSource, spec->value_source);
+    item.Set(::tvm::tl::blackhole_runtime_arg_schema::kValueSource,
+             spec->value_source);
     if (spec->value_source ==
         ::tvm::tl::blackhole_runtime_arg_schema::kValueSourceConstant) {
       item.Set(::tvm::tl::blackhole_runtime_arg_schema::kConstantValue,
@@ -461,9 +495,10 @@ inline Array<Any> EncodePerWorkArgSpecs(const Array<TTPerWorkArgSpec>& per_work_
   return encoded;
 }
 
-inline Array<Any> EncodeRuntimeArgSpecs(const Array<TTRuntimeArgSpec>& runtime_args) {
+inline Array<Any>
+EncodeRuntimeArgSpecs(const Array<TTRuntimeArgSpec> &runtime_args) {
   Array<Any> encoded;
-  for (const TTRuntimeArgSpec& spec : runtime_args) {
+  for (const TTRuntimeArgSpec &spec : runtime_args) {
     Map<String, Any> item;
     item.Set("name", spec->name);
     item.Set("kind", spec->kind);
@@ -486,9 +521,9 @@ inline Array<Any> EncodeRuntimeArgSpecs(const Array<TTRuntimeArgSpec>& runtime_a
 }
 
 inline Array<Any> EncodeCompileTimeArgSpecs(
-    const Array<TTCompileTimeArgSpec>& compile_time_arg_specs) {
+    const Array<TTCompileTimeArgSpec> &compile_time_arg_specs) {
   Array<Any> encoded;
-  for (const TTCompileTimeArgSpec& spec : compile_time_arg_specs) {
+  for (const TTCompileTimeArgSpec &spec : compile_time_arg_specs) {
     Map<String, Any> item;
     item.Set("name", spec->name);
     item.Set("kind", spec->kind);
@@ -527,15 +562,17 @@ inline Array<Any> EncodeCompileTimeArgSpecs(
   return encoded;
 }
 
-inline Array<Any> EncodeAccessorSpecs(const Array<TTAccessorSpec>& accessors) {
+inline Array<Any> EncodeAccessorSpecs(const Array<TTAccessorSpec> &accessors) {
   Array<Any> encoded;
-  for (const TTAccessorSpec& spec : accessors) {
+  for (const TTAccessorSpec &spec : accessors) {
     Map<String, Any> item;
     item.Set("buffer", spec->buffer);
     item.Set("compile_time_arg_offset", Integer(spec->compile_time_arg_offset));
     item.Set("compile_time_arg_count", Integer(spec->compile_time_arg_count));
-    item.Set("common_runtime_arg_offset", Integer(spec->common_runtime_arg_offset));
-    item.Set("common_runtime_arg_count", Integer(spec->common_runtime_arg_count));
+    item.Set("common_runtime_arg_offset",
+             Integer(spec->common_runtime_arg_offset));
+    item.Set("common_runtime_arg_count",
+             Integer(spec->common_runtime_arg_count));
     item.Set("args_config_bits", Integer(spec->args_config_bits));
     if (spec->transport_page_size > 0) {
       item.Set("transport_page_size", Integer(spec->transport_page_size));
@@ -554,9 +591,9 @@ inline Array<Any> EncodeAccessorSpecs(const Array<TTAccessorSpec>& accessors) {
 }
 
 inline Array<Any> EncodeSemaphoreBindingSpecs(
-    const Array<TTSemaphoreBindingSpec>& semaphore_bindings) {
+    const Array<TTSemaphoreBindingSpec> &semaphore_bindings) {
   Array<Any> encoded;
-  for (const TTSemaphoreBindingSpec& spec : semaphore_bindings) {
+  for (const TTSemaphoreBindingSpec &spec : semaphore_bindings) {
     Map<String, Any> item;
     item.Set("name", spec->name);
     item.Set("semaphore_id", Integer(spec->semaphore_id));
@@ -566,14 +603,16 @@ inline Array<Any> EncodeSemaphoreBindingSpecs(
   return encoded;
 }
 
-inline Array<Any> EncodeLiveFormPlans(const Array<TTLiveFormPlan>& live_form_plans) {
+inline Array<Any>
+EncodeLiveFormPlans(const Array<TTLiveFormPlan> &live_form_plans) {
   Array<Any> encoded;
-  for (const TTLiveFormPlan& plan : live_form_plans) {
+  for (const TTLiveFormPlan &plan : live_form_plans) {
     Map<String, Any> item;
     item.Set("name", plan->name);
     item.Set("logical_value", plan->logical_value);
     item.Set("spatial_live_value", plan->spatial_live_value);
-    item.Set("spatial_live_value_index", Integer(plan->spatial_live_value_index));
+    item.Set("spatial_live_value_index",
+             Integer(plan->spatial_live_value_index));
     item.Set("producer_kernel", plan->producer_kernel);
     item.Set("physical_form", plan->physical_form);
     item.Set("execution_topology", plan->execution_topology);
@@ -586,14 +625,15 @@ inline Array<Any> EncodeLiveFormPlans(const Array<TTLiveFormPlan>& live_form_pla
 }
 
 inline Array<Any> EncodeMaterializationPlans(
-    const Array<TTMaterializationPlan>& materialization_plans) {
+    const Array<TTMaterializationPlan> &materialization_plans) {
   Array<Any> encoded;
-  for (const TTMaterializationPlan& plan : materialization_plans) {
+  for (const TTMaterializationPlan &plan : materialization_plans) {
     Map<String, Any> item;
     item.Set("name", plan->name);
     item.Set("source_live_form", plan->source_live_form);
     item.Set("materialization_boundary", plan->materialization_boundary);
-    item.Set("materialization_boundary_index", Integer(plan->materialization_boundary_index));
+    item.Set("materialization_boundary_index",
+             Integer(plan->materialization_boundary_index));
     item.Set("target_buffer", plan->target_buffer);
     item.Set("host_buffer", plan->host_buffer);
     item.Set("target_kernel", plan->target_kernel);
@@ -616,9 +656,9 @@ inline Array<Any> EncodeMaterializationPlans(
 }
 
 inline Array<Any> EncodeConsumerBindingPlans(
-    const Array<TTConsumerBindingPlan>& consumer_binding_plans) {
+    const Array<TTConsumerBindingPlan> &consumer_binding_plans) {
   Array<Any> encoded;
-  for (const TTConsumerBindingPlan& plan : consumer_binding_plans) {
+  for (const TTConsumerBindingPlan &plan : consumer_binding_plans) {
     Map<String, Any> item;
     item.Set("name", plan->name);
     item.Set("consumer_kernel", plan->consumer_kernel);
@@ -632,8 +672,10 @@ inline Array<Any> EncodeConsumerBindingPlans(
     }
     item.Set("live_value_edge", plan->live_value_edge);
     item.Set("live_value_edge_index", Integer(plan->live_value_edge_index));
-    item.Set("accepts_distributed_slice", Bool(plan->accepts_distributed_slice));
-    item.Set("requires_full_logical_tile", Bool(plan->requires_full_logical_tile));
+    item.Set("accepts_distributed_slice",
+             Bool(plan->accepts_distributed_slice));
+    item.Set("requires_full_logical_tile",
+             Bool(plan->requires_full_logical_tile));
     if (plan->abi_plan_index >= 0) {
       item.Set("abi_plan_index", Integer(plan->abi_plan_index));
     }
@@ -642,11 +684,12 @@ inline Array<Any> EncodeConsumerBindingPlans(
   return encoded;
 }
 
-inline Array<Any> EncodeSegmentPlan(const TTProgram& program) {
+inline Array<Any> EncodeSegmentPlan(const TTProgram &program) {
   Array<Any> segments;
-  for (const TTKernel& kernel : program->kernels) {
+  for (const TTKernel &kernel : program->kernels) {
     ICHECK_GE(kernel->abi_plan_index, 0);
-    const TTABIPlan& abi = program->abi_plans[static_cast<size_t>(kernel->abi_plan_index)];
+    const TTABIPlan &abi =
+        program->abi_plans[static_cast<size_t>(kernel->abi_plan_index)];
     Map<String, Any> segment;
     segment.Set("name", kernel->name);
     segment.Set("kind", kernel->kind);
@@ -655,14 +698,15 @@ inline Array<Any> EncodeSegmentPlan(const TTProgram& program) {
       segment.Set("launch_spec", EncodeKernelLaunchSpec(kernel->launch_spec));
     }
     if (HasComputeConfig(kernel->compute_config)) {
-      segment.Set("compute_config", EncodeKernelComputeConfig(kernel->compute_config));
+      segment.Set("compute_config",
+                  EncodeKernelComputeConfig(kernel->compute_config));
     }
     if (!kernel->per_work_arg_specs.empty()) {
       segment.Set(::tvm::tl::blackhole_runtime_arg_schema::kPerWorkArgSpecs,
                   EncodePerWorkArgSpecs(kernel->per_work_arg_specs));
     }
     Array<Any> compute_ops;
-    for (const TTComputeOpPlan& plan : program->compute_op_plans) {
+    for (const TTComputeOpPlan &plan : program->compute_op_plans) {
       if (plan->kernel_name == kernel->name) {
         compute_ops.push_back(EncodeComputeOpPlan(plan));
       }
@@ -674,7 +718,8 @@ inline Array<Any> EncodeSegmentPlan(const TTProgram& program) {
       segment.Set("runtime_args", EncodeRuntimeArgSpecs(abi->runtime_args));
     }
     if (!abi->common_runtime_args.empty()) {
-      segment.Set("common_runtime_args", EncodeRuntimeArgSpecs(abi->common_runtime_args));
+      segment.Set("common_runtime_args",
+                  EncodeRuntimeArgSpecs(abi->common_runtime_args));
     }
     if (!abi->compile_time_arg_specs.empty()) {
       segment.Set("compile_time_arg_specs",
@@ -684,101 +729,129 @@ inline Array<Any> EncodeSegmentPlan(const TTProgram& program) {
       segment.Set("accessors", EncodeAccessorSpecs(abi->accessors));
     }
     if (!abi->semaphore_bindings.empty()) {
-      segment.Set("semaphore_bindings", EncodeSemaphoreBindingSpecs(abi->semaphore_bindings));
+      segment.Set("semaphore_bindings",
+                  EncodeSemaphoreBindingSpecs(abi->semaphore_bindings));
     }
     segments.push_back(segment);
   }
   return segments;
 }
 
-inline Array<Any> GetSegmentPlanFromTTProgram(const TTProgram& program) {
+inline Array<Any> GetSegmentPlanFromTTProgram(const TTProgram &program) {
   return EncodeSegmentPlan(program);
 }
 
-inline Array<Any> GetSegmentPlanFromTTProgram(const tir::PrimFunc& func, const char* consumer) {
+inline Array<Any> GetSegmentPlanFromTTProgram(const tir::PrimFunc &func,
+                                              const char *consumer) {
   return EncodeSegmentPlan(RequireTTProgram(func, consumer));
 }
 
-inline Array<Any> GetCBConfigsFromTTProgram(const TTProgram& program) {
+inline Array<Any> GetCBConfigsFromTTProgram(const TTProgram &program) {
   return EncodeCBPlans(program->cb_plans);
 }
 
-inline Array<Any> GetCBConfigsFromTTProgram(const tir::PrimFunc& func, const char* consumer) {
+inline Array<Any> GetCBConfigsFromTTProgram(const tir::PrimFunc &func,
+                                            const char *consumer) {
   return EncodeCBPlans(RequireTTProgram(func, consumer)->cb_plans);
 }
 
-inline Array<Any> GetSemaphorePlanFromTTProgram(const TTProgram& program) {
+inline Array<Any> GetSemaphorePlanFromTTProgram(const TTProgram &program) {
   return EncodeSemaphorePlans(program->semaphore_plans);
 }
 
-inline Array<Any> GetSemaphorePlanFromTTProgram(const tir::PrimFunc& func,
-                                                const char* consumer) {
-  return EncodeSemaphorePlans(RequireTTProgram(func, consumer)->semaphore_plans);
+inline Array<Any> GetSemaphorePlanFromTTProgram(const tir::PrimFunc &func,
+                                                const char *consumer) {
+  return EncodeSemaphorePlans(
+      RequireTTProgram(func, consumer)->semaphore_plans);
 }
 
-inline Map<String, Any> GetCorePlanFromTTProgram(const TTProgram& program) {
+inline Map<String, Any> GetCorePlanFromTTProgram(const TTProgram &program) {
   if (!program->core_groups.empty()) {
     return EncodeCoreGroup(program->core_groups[0]);
   }
   return Map<String, Any>();
 }
 
-inline Map<String, Any> GetCorePlanFromTTProgram(const tir::PrimFunc& func, const char* consumer) {
+inline Map<String, Any> GetCorePlanFromTTProgram(const tir::PrimFunc &func,
+                                                 const char *consumer) {
   return GetCorePlanFromTTProgram(RequireTTProgram(func, consumer));
 }
 
-inline void ValidateLiveProjectionEvidence(const TTProgram& program) {
+inline void ValidateLiveProjectionEvidence(const TTProgram &program) {
   std::unordered_set<std::string> live_form_names;
-  for (const TTLiveFormPlan& plan : program->live_form_plans) {
-    ICHECK(!plan->name.empty()) << "executable projection requires TTLiveFormPlan name";
+  for (const TTLiveFormPlan &plan : program->live_form_plans) {
+    ICHECK(!plan->name.empty())
+        << "executable projection requires TTLiveFormPlan name";
     ICHECK_GE(plan->spatial_live_value_index, 0)
-        << "executable projection requires TTLiveFormPlan spatial_live_value_index";
+        << "executable projection requires TTLiveFormPlan "
+           "spatial_live_value_index";
     live_form_names.insert(plan->name);
   }
-  for (const TTMaterializationPlan& plan : program->materialization_plans) {
-    ICHECK(!plan->name.empty()) << "executable projection requires TTMaterializationPlan name";
+  for (const TTMaterializationPlan &plan : program->materialization_plans) {
+    ICHECK(!plan->name.empty())
+        << "executable projection requires TTMaterializationPlan name";
     ICHECK(!plan->source_live_form.empty())
-        << "executable projection requires TTMaterializationPlan source_live_form";
-    ICHECK(live_form_names.count(static_cast<std::string>(plan->source_live_form)))
-        << "executable projection requires TTMaterializationPlan source_live_form to reference "
+        << "executable projection requires TTMaterializationPlan "
+           "source_live_form";
+    ICHECK(
+        live_form_names.count(static_cast<std::string>(plan->source_live_form)))
+        << "executable projection requires TTMaterializationPlan "
+           "source_live_form to reference "
            "a TTLiveFormPlan";
     ICHECK(!plan->produced_live_form.empty())
-        << "executable projection requires TTMaterializationPlan produced_live_form";
-    ICHECK(live_form_names.count(static_cast<std::string>(plan->produced_live_form)))
-        << "executable projection requires TTMaterializationPlan produced_live_form to reference "
+        << "executable projection requires TTMaterializationPlan "
+           "produced_live_form";
+    ICHECK(live_form_names.count(
+        static_cast<std::string>(plan->produced_live_form)))
+        << "executable projection requires TTMaterializationPlan "
+           "produced_live_form to reference "
            "a TTLiveFormPlan";
     ICHECK(!plan->materialization_boundary.empty())
-        << "executable projection requires TTMaterializationPlan materialization_boundary";
+        << "executable projection requires TTMaterializationPlan "
+           "materialization_boundary";
     ICHECK_GE(plan->materialization_boundary_index, 0)
-        << "executable projection requires TTMaterializationPlan materialization_boundary_index";
+        << "executable projection requires TTMaterializationPlan "
+           "materialization_boundary_index";
     ICHECK(!plan->target_buffer.empty())
         << "executable projection requires TTMaterializationPlan target_buffer";
     ICHECK(!plan->materialization_protocol.empty())
-        << "executable projection requires TTMaterializationPlan materialization_protocol";
+        << "executable projection requires TTMaterializationPlan "
+           "materialization_protocol";
     ICHECK(!plan->publication_protocol.empty())
-        << "executable projection requires TTMaterializationPlan publication_protocol";
+        << "executable projection requires TTMaterializationPlan "
+           "publication_protocol";
   }
-  for (const TTConsumerBindingPlan& plan : program->consumer_binding_plans) {
-    ICHECK(!plan->name.empty()) << "executable projection requires TTConsumerBindingPlan name";
+  for (const TTConsumerBindingPlan &plan : program->consumer_binding_plans) {
+    ICHECK(!plan->name.empty())
+        << "executable projection requires TTConsumerBindingPlan name";
     ICHECK(!plan->source_live_form.empty())
-        << "executable projection requires TTConsumerBindingPlan source_live_form";
-    ICHECK(live_form_names.count(static_cast<std::string>(plan->source_live_form)))
-        << "executable projection requires TTConsumerBindingPlan source_live_form to reference "
+        << "executable projection requires TTConsumerBindingPlan "
+           "source_live_form";
+    ICHECK(
+        live_form_names.count(static_cast<std::string>(plan->source_live_form)))
+        << "executable projection requires TTConsumerBindingPlan "
+           "source_live_form to reference "
            "a TTLiveFormPlan";
     ICHECK(!plan->live_value_edge.empty())
-        << "executable projection requires TTConsumerBindingPlan live_value_edge";
+        << "executable projection requires TTConsumerBindingPlan "
+           "live_value_edge";
     ICHECK_GE(plan->live_value_edge_index, 0)
-        << "executable projection requires TTConsumerBindingPlan live_value_edge_index";
+        << "executable projection requires TTConsumerBindingPlan "
+           "live_value_edge_index";
     ICHECK(plan->accepts_distributed_slice || plan->requires_full_logical_tile)
-        << "executable projection requires TTConsumerBindingPlan to declare a consumer "
+        << "executable projection requires TTConsumerBindingPlan to declare a "
+           "consumer "
            "coverage requirement";
-    ICHECK(!(plan->accepts_distributed_slice && plan->requires_full_logical_tile))
-        << "executable projection requires TTConsumerBindingPlan to choose one consumer "
+    ICHECK(
+        !(plan->accepts_distributed_slice && plan->requires_full_logical_tile))
+        << "executable projection requires TTConsumerBindingPlan to choose one "
+           "consumer "
            "coverage requirement";
   }
 }
 
-inline Map<String, Any> MaterializeBlackholeExecutableProjection(const TTProgram& program) {
+inline Map<String, Any>
+MaterializeBlackholeExecutableProjection(const TTProgram &program) {
   ValidateLiveProjectionEvidence(program);
 
   Map<String, Any> executable;
@@ -834,13 +907,15 @@ inline Map<String, Any> MaterializeBlackholeExecutableProjection(const TTProgram
   Array<Any> materialization_plans =
       EncodeMaterializationPlans(program->materialization_plans);
   if (!materialization_plans.empty()) {
-    executable.Set(String(executable_key::kMaterializationPlans), materialization_plans);
+    executable.Set(String(executable_key::kMaterializationPlans),
+                   materialization_plans);
   }
 
   Array<Any> consumer_binding_plans =
       EncodeConsumerBindingPlans(program->consumer_binding_plans);
   if (!consumer_binding_plans.empty()) {
-    executable.Set(String(executable_key::kConsumerBindingPlans), consumer_binding_plans);
+    executable.Set(String(executable_key::kConsumerBindingPlans),
+                   consumer_binding_plans);
   }
   Array<Any> resource_pressure_reports =
       EncodeResourcePressureReports(program->resource_pressure_reports);
@@ -851,66 +926,80 @@ inline Map<String, Any> MaterializeBlackholeExecutableProjection(const TTProgram
   return executable;
 }
 
-inline tir::PrimFunc MaterializeBlackholeExecutableProjectionAttr(const tir::PrimFunc& func) {
+inline tir::PrimFunc
+MaterializeBlackholeExecutableProjectionAttr(const tir::PrimFunc &func) {
   auto maybe_program = GetTTProgram(func);
   if (!maybe_program) {
     return func;
   }
-  return WithAttr(std::move(func), attr::kTLBlackholeExecutable,
-                  MaterializeBlackholeExecutableProjection(maybe_program.value()));
+  return WithAttr(
+      std::move(func), attr::kTLBlackholeExecutable,
+      MaterializeBlackholeExecutableProjection(maybe_program.value()));
 }
 
-inline Map<String, Any> GetBlackholeExecutableProjection(const tir::PrimFunc& func) {
+inline Map<String, Any>
+GetBlackholeExecutableProjection(const tir::PrimFunc &func) {
   return func->GetAttr<Map<String, Any>>(attr::kTLBlackholeExecutable)
       .value_or(Map<String, Any>());
 }
 
-inline Map<String, Any> RequireBlackholeExecutableProjection(const tir::PrimFunc& func,
-                                                             const char* consumer) {
+inline Map<String, Any>
+RequireBlackholeExecutableProjection(const tir::PrimFunc &func,
+                                     const char *consumer) {
   Map<String, Any> executable = GetBlackholeExecutableProjection(func);
   ICHECK(!executable.empty())
-      << consumer << " requires tl.blackhole_executable for executable-writer cutover";
+      << consumer
+      << " requires tl.blackhole_executable for executable-writer cutover";
   return executable;
 }
 
-inline Array<Any> GetExecutableArrayField(const Map<String, Any>& executable, const char* key) {
+inline Array<Any> GetExecutableArrayField(const Map<String, Any> &executable,
+                                          const char *key) {
   if (auto value = executable.Get(String(key))) {
     return Downcast<Array<Any>>(value.value());
   }
   return Array<Any>();
 }
 
-inline Array<Any> GetExecutableArrayField(const tir::PrimFunc& func, const char* consumer,
-                                          const char* key) {
-  return GetExecutableArrayField(RequireBlackholeExecutableProjection(func, consumer), key);
+inline Array<Any> GetExecutableArrayField(const tir::PrimFunc &func,
+                                          const char *consumer,
+                                          const char *key) {
+  return GetExecutableArrayField(
+      RequireBlackholeExecutableProjection(func, consumer), key);
 }
 
-inline Map<String, Any> GetExecutableMapField(const Map<String, Any>& executable, const char* key) {
+inline Map<String, Any>
+GetExecutableMapField(const Map<String, Any> &executable, const char *key) {
   if (auto value = executable.Get(String(key))) {
     return AsMap(value.value());
   }
   return Map<String, Any>();
 }
 
-inline Map<String, Any> GetExecutableMapField(const tir::PrimFunc& func, const char* consumer,
-                                              const char* key) {
-  return GetExecutableMapField(RequireBlackholeExecutableProjection(func, consumer), key);
+inline Map<String, Any> GetExecutableMapField(const tir::PrimFunc &func,
+                                              const char *consumer,
+                                              const char *key) {
+  return GetExecutableMapField(
+      RequireBlackholeExecutableProjection(func, consumer), key);
 }
 
-inline Array<Any> GetSegmentPlanFromExecutable(const tir::PrimFunc& func, const char* consumer) {
+inline Array<Any> GetSegmentPlanFromExecutable(const tir::PrimFunc &func,
+                                               const char *consumer) {
   return GetExecutableArrayField(func, consumer, executable_key::kSegmentPlan);
 }
 
-inline Array<Any> GetCBConfigsFromExecutable(const tir::PrimFunc& func, const char* consumer) {
+inline Array<Any> GetCBConfigsFromExecutable(const tir::PrimFunc &func,
+                                             const char *consumer) {
   return GetExecutableArrayField(func, consumer, executable_key::kCBConfigs);
 }
 
-inline Map<String, Any> GetCorePlanFromExecutable(const tir::PrimFunc& func, const char* consumer) {
+inline Map<String, Any> GetCorePlanFromExecutable(const tir::PrimFunc &func,
+                                                  const char *consumer) {
   return GetExecutableMapField(func, consumer, executable_key::kCorePlan);
 }
 
-}  // namespace tt_program_projection
-}  // namespace tl
-}  // namespace tvm
+} // namespace tt_program_projection
+} // namespace tl
+} // namespace tvm
 
-#endif  // TVM_TL_TARGET_TT_PROGRAM_PROJECTION_H_
+#endif // TVM_TL_TARGET_TT_PROGRAM_PROJECTION_H_

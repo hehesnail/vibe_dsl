@@ -69,15 +69,31 @@
   普通 per-worker local L1 保持 device-local replicated placement。
   Page size 来自 ABI layout、TIR buffer storage 和 CB plan，
   projection 会携带 attached core group/index。
+- L1 sharded placement 的 coarse marker 已拆成 typed buffer address
+  ABI fields：
+  `shard_grid_shape` 表达 resident physical core grid，
+  `sharding_strategy` / `shard_shape` 表达 per-core data shard，
+  `source_buffer` / `source_region_kind` / `source_region_shape`
+  表达可 materialize 的 DRAM/global source region，
+  `logical_index_mapping` 和 `core_local_address_mapping`
+  表达 logical work id 到 worker-local address 的映射。
+  Pure local sharded L1 scratch 不伪造 source-region binding。
 - `ValidateTTProgram`
   已消费 buffer distribution placement：
   unsupported memory space / distribution kind、
   invalid page size、
   shard shape、
+  shard grid / sharding strategy / address mapping、
   attached-core reference/index、
   DRAM view size
   和 L1 worker budget
   会在 source / runtime emission 前 fail closed。
+- Accessor compile-time ABI kind 已按 typed accessor layout / memory space
+  分成 `interleaved_accessor_cta`、
+  `sharded_accessor_cta`
+  和 `page_indexed_accessor_cta`。
+  Direct runtime 仍只 admission interleaved DRAM；
+  sharded / page-indexed 形态必须 typed fail closed。
 - Blackhole C++ audit 第一批已收口：
   scalar bitcast、
   DLTensor compact-layout gate、
@@ -88,35 +104,26 @@
 
 ## Current Blocker
 
-Buffer placement baseline 已进入 typed `TTProgram`，
-但 buffer address ABI 仍不够显式。
-
-Source / runtime reader 仍需要 typed interleaved、
+Buffer placement split 已进入 typed `TTProgram` / projection / validator，
+但 source / runtime emission 还没有完整消费 typed
 sharded、
 page-indexed
-和 per-work buffer address 参数，
+和 per-work buffer address ABI。
+
+下一步 blocker 是把这些 typed fields 下沉到 source/spec/direct-runtime
+admission：
+supported interleaved forms 继续 materialize；
+unsupported sharded / page-indexed / shared runtime address-argument forms
+必须从
+`TTBufferDistributionPlan`
+/
+`TTAccessorSpec`
+/
+per-work descriptors
+推出 typed reject，
 不能在 emission / runtime reader 里从名字、
 布局字符串
 或旧 runtime args 重新猜。
-
-当前 sharded placement 仍是 coarse marker，
-而且标记对象是 L1-side working view / materialization，
-不是 DRAM 上的 global tensor 本体：
-现有 `TTBufferDistributionPlan.shard_shape`
-实际装的是 attached core-group grid shape，
-不是 TT-Metal / TTNN 意义上的 per-core data shard shape。
-下一步必须把 L1 sharded view 与其 source buffer / source region
-显式关联，并拆出
-`shard_grid_shape`
-/
-`sharding_strategy`
-/
-真实 `shard_shape`
-/
-logical-index 到 core-local address mapping
-/
-DRAM-source region 到 L1 shard 的 copy/address mapping，
-再让 source / runtime emission 消费。
 
 Buffer address ABI 还必须把 TileLang/GPU 风格的逻辑 work grid
 和 Blackhole 物理 worker grid 分开：
@@ -139,19 +146,22 @@ GPU-style
 
 ## Next Task Order
 
-1. Tighten buffer address ABI:
-   make interleaved / sharded / page-indexed buffer address parameters,
+1. Finish buffer address ABI consumption:
+   source/spec/direct-runtime readers must consume typed interleaved /
+   sharded / page-indexed buffer address parameters,
    compile-time args,
    runtime args,
    per-work descriptors,
-   and typed rejects explicit.
+   and typed rejects.
    Preserve the separation between logical work grid,
    physical core group,
    temporal work packets,
    and per-worker L1 / CB scratch reuse.
-   For sharded placement, split the current coarse grid marker from the
-   real per-core shard data shape and strategy, and bind the L1 sharded
-   view to its DRAM/global source region before emitting addresses.
+   For sharded placement, consume the typed split between resident core grid,
+   real per-core shard data shape/strategy,
+   optional DRAM/global source region,
+   logical index mapping,
+   and core-local address mapping before emitting addresses.
    Do not silently retile GPU-style shared buffers to fill Blackhole L1;
    report underutilization or add an explicit retile/work-coarsening plan
    before changing those shapes.
@@ -220,18 +230,20 @@ GPU-style
 ## Latest Verification
 
 Latest implementation batch:
-hardware-model-backed buffer distribution placement baseline.
+typed sharded L1 buffer address ABI split and fail-closed validator/projection
+gates.
 
 Verified:
 
 - `cmake --build build -j32`
-- `pytest -q testing/python/transform/test_blackhole_spatial_ir.py`
-  (`89 passed`)
-- `pytest -q testing/python/target/blackhole/test_blackhole_copy_pipeline.py`
-  (`52 passed, 10 skipped, 1 xfailed`)
-- `pytest -q testing/python/target/blackhole/test_blackhole_flash_attention_pipeline.py testing/python/target/blackhole/test_blackhole_gemm.py`
-  (`111 passed, 15 skipped`)
+- `pytest -q tilelang_repo/testing/python/transform/test_blackhole_spatial_ir.py`
+  (`90 passed`)
+- `pytest -q tilelang_repo/testing/python/target/blackhole/test_blackhole_copy_pipeline.py tilelang_repo/testing/python/target/blackhole/test_blackhole_flash_attention_pipeline.py tilelang_repo/testing/python/target/blackhole/test_blackhole_gemm.py`
+  (`165 passed, 25 skipped, 1 xfailed, 4 warnings`)
 - TT-Sim env via `scripts/setup_tt_sim.sh`,
   then
   `pytest -q testing/python/target/blackhole/test_blackhole_copy_runtime.py testing/python/target/blackhole/test_blackhole_tvm_ffi_export.py`
   (`16 passed`)
+- TT-Sim env via `scripts/setup_tt_sim.sh`,
+  then copy-pipeline direct-runtime ABI subset
+  (`9 passed`)

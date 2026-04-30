@@ -583,7 +583,14 @@ def _rebuild_tt_buffer_distribution_plan(
     memory_space=None,
     page_size_bytes=None,
     shard_shape=None,
+    shard_grid_shape=None,
+    sharding_strategy=None,
     shard_orientation=None,
+    source_buffer=None,
+    source_region_kind=None,
+    source_region_shape=None,
+    logical_index_mapping=None,
+    core_local_address_mapping=None,
     host_visibility=None,
     attached_core_group=None,
     attached_core_group_index=None,
@@ -601,7 +608,26 @@ def _rebuild_tt_buffer_distribution_plan(
         str(plan.memory_space) if memory_space is None else memory_space,
         int(plan.page_size_bytes) if page_size_bytes is None else page_size_bytes,
         list(plan.shard_shape) if shard_shape is None else shard_shape,
+        list(plan.shard_grid_shape)
+        if shard_grid_shape is None
+        else shard_grid_shape,
+        str(plan.sharding_strategy)
+        if sharding_strategy is None
+        else sharding_strategy,
         str(plan.shard_orientation) if shard_orientation is None else shard_orientation,
+        str(plan.source_buffer) if source_buffer is None else source_buffer,
+        str(plan.source_region_kind)
+        if source_region_kind is None
+        else source_region_kind,
+        list(plan.source_region_shape)
+        if source_region_shape is None
+        else source_region_shape,
+        str(plan.logical_index_mapping)
+        if logical_index_mapping is None
+        else logical_index_mapping,
+        str(plan.core_local_address_mapping)
+        if core_local_address_mapping is None
+        else core_local_address_mapping,
         str(plan.host_visibility) if host_visibility is None else host_visibility,
         str(plan.attached_core_group)
         if attached_core_group is None
@@ -2428,8 +2454,15 @@ def test_plan_tt_abi_uses_hardware_backed_buffer_distribution():
     assert str(l1_plan.distribution_kind) == "sharded"
     assert str(l1_plan.memory_space) == "L1"
     assert int(l1_plan.page_size_bytes) > 0
-    assert tuple(int(dim) for dim in l1_plan.shard_shape) == (3, 3)
+    assert tuple(int(dim) for dim in l1_plan.shard_grid_shape) == (2, 2)
+    assert str(l1_plan.sharding_strategy) == "block"
+    assert tuple(int(dim) for dim in l1_plan.shard_shape) == (32, 32)
+    assert tuple(int(dim) for dim in l1_plan.source_region_shape) == (32, 32)
     assert str(l1_plan.shard_orientation) == "block"
+    assert str(l1_plan.source_buffer) == "A"
+    assert str(l1_plan.source_region_kind) == "per_work_tile"
+    assert str(l1_plan.logical_index_mapping) == "work_packet_row_major"
+    assert str(l1_plan.core_local_address_mapping) == "l1_shard_linear"
     assert str(l1_plan.attached_core_group) == "main_core_group"
     assert int(l1_plan.attached_core_group_index) == 0
     assert str(l1_plan.host_visibility) == "device_local"
@@ -2452,6 +2485,10 @@ def test_plan_tt_abi_uses_hardware_backed_buffer_distribution():
     }
     assert str(executable_distributions["A"]["distribution_kind"]) == "interleaved"
     assert str(executable_distributions["A_shared"]["distribution_kind"]) == "sharded"
+    assert tuple(int(dim) for dim in executable_distributions["A_shared"]["shard_grid_shape"]) == (2, 2)
+    assert tuple(int(dim) for dim in executable_distributions["A_shared"]["shard_shape"]) == (32, 32)
+    assert str(executable_distributions["A_shared"]["source_buffer"]) == "A"
+    assert str(executable_distributions["A_shared"]["source_region_kind"]) == "per_work_tile"
     assert str(executable_distributions["A_shared"]["attached_core_group"]) == "main_core_group"
 
 
@@ -2481,6 +2518,58 @@ def test_validate_tt_program_rejects_invalid_buffer_distribution_placement():
 
     with pytest.raises(Exception, match="attached_core_group"):
         tilelang.transform.ValidateTTProgram()(invalid)
+
+
+def test_validate_tt_program_rejects_incomplete_sharded_address_abi():
+    mod = _prepare_blackhole_tt_program_module(grid_indexed_staged_copy_kernel(3, 3))
+    main = mod["main"]
+    tt_program = main.attrs["tl.tt_program"]
+    distributions = list(tt_program.buffer_distribution_plans)
+    l1_index = next(
+        index
+        for index, plan in enumerate(distributions)
+        if str(plan.memory_space) == "L1"
+    )
+
+    distributions_without_grid = list(distributions)
+    distributions_without_grid[l1_index] = _rebuild_tt_buffer_distribution_plan(
+        distributions_without_grid[l1_index],
+        shard_grid_shape=[],
+    )
+    invalid_grid = tvm.IRModule(
+        {
+            "main": main.with_attr(
+                "tl.tt_program",
+                _rebuild_tt_program(
+                    tt_program,
+                    buffer_distribution_plans=distributions_without_grid,
+                ),
+            )
+        },
+        global_infos=mod.global_infos,
+    )
+    with pytest.raises(Exception, match="shard_grid_shape"):
+        tilelang.transform.ValidateTTProgram()(invalid_grid)
+
+    distributions_without_source = list(distributions)
+    distributions_without_source[l1_index] = _rebuild_tt_buffer_distribution_plan(
+        distributions_without_source[l1_index],
+        source_buffer="",
+    )
+    invalid_source = tvm.IRModule(
+        {
+            "main": main.with_attr(
+                "tl.tt_program",
+                _rebuild_tt_program(
+                    tt_program,
+                    buffer_distribution_plans=distributions_without_source,
+                ),
+            )
+        },
+        global_infos=mod.global_infos,
+    )
+    with pytest.raises(Exception, match="source_buffer"):
+        tilelang.transform.ValidateTTProgram()(invalid_source)
 
 
 def test_validate_tt_program_rejects_dram_buffer_distribution_over_hardware_view():

@@ -10,12 +10,11 @@ namespace tl {
 
 namespace {
 
-template <typename NodeT>
-void RegisterNodeReflection() {
+template <typename NodeT> void RegisterNodeReflection() {
   NodeT::RegisterReflection();
 }
 
-}  // namespace
+} // namespace
 
 void TTMeshPlanNode::RegisterReflection() {
   namespace refl = tvm::ffi::reflection;
@@ -50,12 +49,27 @@ void TTBufferDistributionPlanNode::RegisterReflection() {
       .def_ro("buffer", &TTBufferDistributionPlanNode::buffer)
       .def_ro("mesh_plan", &TTBufferDistributionPlanNode::mesh_plan)
       .def_ro("mesh_plan_index", &TTBufferDistributionPlanNode::mesh_plan_index)
-      .def_ro("distribution_kind", &TTBufferDistributionPlanNode::distribution_kind)
+      .def_ro("distribution_kind",
+              &TTBufferDistributionPlanNode::distribution_kind)
       .def_ro("layout", &TTBufferDistributionPlanNode::layout)
       .def_ro("memory_space", &TTBufferDistributionPlanNode::memory_space)
       .def_ro("page_size_bytes", &TTBufferDistributionPlanNode::page_size_bytes)
       .def_ro("shard_shape", &TTBufferDistributionPlanNode::shard_shape)
-      .def_ro("shard_orientation", &TTBufferDistributionPlanNode::shard_orientation)
+      .def_ro("shard_grid_shape",
+              &TTBufferDistributionPlanNode::shard_grid_shape)
+      .def_ro("sharding_strategy",
+              &TTBufferDistributionPlanNode::sharding_strategy)
+      .def_ro("shard_orientation",
+              &TTBufferDistributionPlanNode::shard_orientation)
+      .def_ro("source_buffer", &TTBufferDistributionPlanNode::source_buffer)
+      .def_ro("source_region_kind",
+              &TTBufferDistributionPlanNode::source_region_kind)
+      .def_ro("source_region_shape",
+              &TTBufferDistributionPlanNode::source_region_shape)
+      .def_ro("logical_index_mapping",
+              &TTBufferDistributionPlanNode::logical_index_mapping)
+      .def_ro("core_local_address_mapping",
+              &TTBufferDistributionPlanNode::core_local_address_mapping)
       .def_ro("host_visibility", &TTBufferDistributionPlanNode::host_visibility)
       .def_ro("attached_core_group",
               &TTBufferDistributionPlanNode::attached_core_group)
@@ -64,7 +78,8 @@ void TTBufferDistributionPlanNode::RegisterReflection() {
       .def_ro("logical_shape", &TTBufferDistributionPlanNode::logical_shape)
       .def_ro("local_shape", &TTBufferDistributionPlanNode::local_shape)
       .def_ro("thread_extent", &TTBufferDistributionPlanNode::thread_extent)
-      .def_ro("replicate_extent", &TTBufferDistributionPlanNode::replicate_extent)
+      .def_ro("replicate_extent",
+              &TTBufferDistributionPlanNode::replicate_extent)
       .def_ro("inverse_logical_index_vars",
               &TTBufferDistributionPlanNode::inverse_logical_index_vars)
       .def_ro("inverse_logical_index_exprs",
@@ -73,16 +88,22 @@ void TTBufferDistributionPlanNode::RegisterReflection() {
       .def_ro("spatial_distribution_kind",
               &TTBufferDistributionPlanNode::spatial_distribution_kind)
       .def_ro("abi_layout", &TTBufferDistributionPlanNode::abi_layout)
-      .def_ro("abi_memory_space", &TTBufferDistributionPlanNode::abi_memory_space);
+      .def_ro("abi_memory_space",
+              &TTBufferDistributionPlanNode::abi_memory_space);
 }
 
 TTBufferDistributionPlan::TTBufferDistributionPlan(
-    ffi::String name, ffi::String buffer, ffi::String mesh_plan, int64_t mesh_plan_index,
-    ffi::String distribution_kind, ffi::String layout, ffi::String memory_space,
-    int64_t page_size_bytes, ffi::Array<Integer> shard_shape, ffi::String shard_orientation,
-    ffi::String host_visibility, ffi::String attached_core_group,
-    int64_t attached_core_group_index, ffi::Array<PrimExpr> logical_shape,
-    ffi::Array<PrimExpr> local_shape, PrimExpr thread_extent, PrimExpr replicate_extent,
+    ffi::String name, ffi::String buffer, ffi::String mesh_plan,
+    int64_t mesh_plan_index, ffi::String distribution_kind, ffi::String layout,
+    ffi::String memory_space, int64_t page_size_bytes,
+    ffi::Array<Integer> shard_shape, ffi::Array<Integer> shard_grid_shape,
+    ffi::String sharding_strategy, ffi::String shard_orientation,
+    ffi::String source_buffer, ffi::String source_region_kind,
+    ffi::Array<Integer> source_region_shape, ffi::String logical_index_mapping,
+    ffi::String core_local_address_mapping, ffi::String host_visibility,
+    ffi::String attached_core_group, int64_t attached_core_group_index,
+    ffi::Array<PrimExpr> logical_shape, ffi::Array<PrimExpr> local_shape,
+    PrimExpr thread_extent, PrimExpr replicate_extent,
     ffi::Array<PrimExpr> inverse_logical_index_vars,
     ffi::Array<PrimExpr> inverse_logical_index_exprs,
     ffi::String spatial_layout, ffi::String spatial_distribution_kind,
@@ -97,7 +118,14 @@ TTBufferDistributionPlan::TTBufferDistributionPlan(
   n->memory_space = std::move(memory_space);
   n->page_size_bytes = page_size_bytes;
   n->shard_shape = std::move(shard_shape);
+  n->shard_grid_shape = std::move(shard_grid_shape);
+  n->sharding_strategy = std::move(sharding_strategy);
   n->shard_orientation = std::move(shard_orientation);
+  n->source_buffer = std::move(source_buffer);
+  n->source_region_kind = std::move(source_region_kind);
+  n->source_region_shape = std::move(source_region_shape);
+  n->logical_index_mapping = std::move(logical_index_mapping);
+  n->core_local_address_mapping = std::move(core_local_address_mapping);
   n->host_visibility = std::move(host_visibility);
   n->attached_core_group = std::move(attached_core_group);
   n->attached_core_group_index = attached_core_group_index;
@@ -122,12 +150,14 @@ void TTComputeOperandBindingPlanNode::RegisterReflection() {
       .def_ro("host_buffer", &TTComputeOperandBindingPlanNode::host_buffer)
       .def_ro("tensor_dtype", &TTComputeOperandBindingPlanNode::tensor_dtype)
       .def_ro("cb_dtype", &TTComputeOperandBindingPlanNode::cb_dtype)
-      .def_ro("transform_kind", &TTComputeOperandBindingPlanNode::transform_kind);
+      .def_ro("transform_kind",
+              &TTComputeOperandBindingPlanNode::transform_kind);
 }
 
 TTComputeOperandBindingPlan::TTComputeOperandBindingPlan(
-    ffi::String role, ffi::String buffer, ffi::String host_buffer, ffi::String tensor_dtype,
-    ffi::String cb_dtype, ffi::String transform_kind) {
+    ffi::String role, ffi::String buffer, ffi::String host_buffer,
+    ffi::String tensor_dtype, ffi::String cb_dtype,
+    ffi::String transform_kind) {
   auto n = ffi::make_object<TTComputeOperandBindingPlanNode>();
   n->role = std::move(role);
   n->buffer = std::move(buffer);
@@ -156,7 +186,8 @@ void TTComputeOpPlanNode::RegisterReflection() {
       .def_ro("accumulator_dtype", &TTComputeOpPlanNode::accumulator_dtype)
       .def_ro("mbarrier_buffer", &TTComputeOpPlanNode::mbarrier_buffer)
       .def_ro("mbarrier_scope", &TTComputeOpPlanNode::mbarrier_scope)
-      .def_ro("mbarrier_index_exprs", &TTComputeOpPlanNode::mbarrier_index_exprs)
+      .def_ro("mbarrier_index_exprs",
+              &TTComputeOpPlanNode::mbarrier_index_exprs)
       .def_ro("tile_compute_dag_node_id",
               &TTComputeOpPlanNode::tile_compute_dag_node_id)
       .def_ro("tile_compute_source_emitter",
@@ -170,16 +201,15 @@ void TTComputeOpPlanNode::RegisterReflection() {
 }
 
 TTComputeOpPlan::TTComputeOpPlan(
-    ffi::String name, ffi::String kernel_name, int64_t kernel_plan_index, ffi::String kind,
-    ffi::String operation_name, bool enabled,
+    ffi::String name, ffi::String kernel_name, int64_t kernel_plan_index,
+    ffi::String kind, ffi::String operation_name, bool enabled,
     ffi::Array<TTComputeOperandBindingPlan> operand_bindings,
-    ffi::Array<ffi::String> problem_shape_axes, ffi::Array<Integer> problem_shape,
-    ffi::Array<Integer> tile_shape, ffi::Array<Integer> block_shape,
-    ffi::Array<Integer> subblock_shape, ffi::String accumulator_dtype,
-    ffi::String mbarrier_buffer, ffi::String mbarrier_scope,
-    ffi::Array<ffi::String> mbarrier_index_exprs,
-    int64_t tile_compute_dag_node_id,
-    ffi::String tile_compute_source_emitter,
+    ffi::Array<ffi::String> problem_shape_axes,
+    ffi::Array<Integer> problem_shape, ffi::Array<Integer> tile_shape,
+    ffi::Array<Integer> block_shape, ffi::Array<Integer> subblock_shape,
+    ffi::String accumulator_dtype, ffi::String mbarrier_buffer,
+    ffi::String mbarrier_scope, ffi::Array<ffi::String> mbarrier_index_exprs,
+    int64_t tile_compute_dag_node_id, ffi::String tile_compute_source_emitter,
     ffi::String tile_compute_materialization_policy,
     int64_t tile_compute_fanout_use_count,
     ffi::String tile_compute_fanout_policy) {
@@ -300,8 +330,8 @@ TTResourceDemand::TTResourceDemand(
     ffi::Array<TTTileComputeMaterializationDemand>
         tile_compute_materialization_demands,
     ffi::Array<ffi::String> tile_compute_unsupported_reasons,
-    int64_t cb_requirement_count, int64_t cb_l1_bytes,
-    int64_t semaphore_count, int64_t communication_edge_count) {
+    int64_t cb_requirement_count, int64_t cb_l1_bytes, int64_t semaphore_count,
+    int64_t communication_edge_count) {
   auto n = ffi::make_object<TTResourceDemandNode>();
   n->name = std::move(name);
   n->kernel_name = std::move(kernel_name);
@@ -365,8 +395,8 @@ TTResourcePressureReport::TTResourcePressureReport(
     int64_t per_core_l1_buffer_bytes, int64_t max_simultaneous_l1_bytes,
     int64_t cb_id_limit, int64_t worker_l1_budget_bytes,
     int64_t l1_alignment_bytes, int64_t per_core_cb_l1_aligned_bytes,
-    int64_t l1_alignment_waste_bytes,
-    ffi::String core_grid_requirement, ffi::String dram_view_requirement,
+    int64_t l1_alignment_waste_bytes, ffi::String core_grid_requirement,
+    ffi::String dram_view_requirement,
     ffi::Array<ffi::String> unsupported_reasons) {
   auto n = ffi::make_object<TTResourcePressureReportNode>();
   n->name = std::move(name);
@@ -423,8 +453,9 @@ void TTKernelPlanNode::RegisterReflection() {
       .def_ro("abi_plan_index", &TTKernelPlanNode::abi_plan_index);
 }
 
-TTKernelPlan::TTKernelPlan(ffi::String name, ffi::String kind, ffi::String core_type,
-                           int64_t block_plan_index, int64_t abi_plan_index) {
+TTKernelPlan::TTKernelPlan(ffi::String name, ffi::String kind,
+                           ffi::String core_type, int64_t block_plan_index,
+                           int64_t abi_plan_index) {
   auto n = ffi::make_object<TTKernelPlanNode>();
   n->name = std::move(name);
   n->kind = std::move(kind);
@@ -442,8 +473,8 @@ void TTKernelLaunchSpecNode::RegisterReflection() {
       .def_ro("noc", &TTKernelLaunchSpecNode::noc);
 }
 
-TTKernelLaunchSpec::TTKernelLaunchSpec(ffi::String core_type, ffi::String processor,
-                                       ffi::String noc) {
+TTKernelLaunchSpec::TTKernelLaunchSpec(ffi::String core_type,
+                                       ffi::String processor, ffi::String noc) {
   auto n = ffi::make_object<TTKernelLaunchSpecNode>();
   n->core_type = std::move(core_type);
   n->processor = std::move(processor);
@@ -472,7 +503,8 @@ void TTKernelNamedCompileArgNode::RegisterReflection() {
       .def_ro("value", &TTKernelNamedCompileArgNode::value);
 }
 
-TTKernelNamedCompileArg::TTKernelNamedCompileArg(ffi::String name, int64_t value) {
+TTKernelNamedCompileArg::TTKernelNamedCompileArg(ffi::String name,
+                                                 int64_t value) {
   auto n = ffi::make_object<TTKernelNamedCompileArgNode>();
   n->name = std::move(name);
   n->value = value;
@@ -486,10 +518,13 @@ void TTKernelComputeConfigNode::RegisterReflection() {
       .def_ro("fp32_dest_acc_en", &TTKernelComputeConfigNode::fp32_dest_acc_en)
       .def_ro("dst_full_sync_en", &TTKernelComputeConfigNode::dst_full_sync_en)
       .def_ro("math_approx_mode", &TTKernelComputeConfigNode::math_approx_mode)
-      .def_ro("unpack_to_dest_mode", &TTKernelComputeConfigNode::unpack_to_dest_mode)
-      .def_ro("bfp8_pack_precise", &TTKernelComputeConfigNode::bfp8_pack_precise)
+      .def_ro("unpack_to_dest_mode",
+              &TTKernelComputeConfigNode::unpack_to_dest_mode)
+      .def_ro("bfp8_pack_precise",
+              &TTKernelComputeConfigNode::bfp8_pack_precise)
       .def_ro("defines", &TTKernelComputeConfigNode::defines)
-      .def_ro("named_compile_args", &TTKernelComputeConfigNode::named_compile_args)
+      .def_ro("named_compile_args",
+              &TTKernelComputeConfigNode::named_compile_args)
       .def_ro("clear_accum", &TTKernelComputeConfigNode::clear_accum)
       .def_ro("k_pack", &TTKernelComputeConfigNode::k_pack)
       .def_ro("wg_wait", &TTKernelComputeConfigNode::wg_wait)
@@ -502,7 +537,8 @@ TTKernelComputeConfig::TTKernelComputeConfig(
     bool math_approx_mode, ffi::Array<ffi::String> unpack_to_dest_mode,
     bool bfp8_pack_precise, ffi::Array<TTKernelDefine> defines,
     ffi::Array<TTKernelNamedCompileArg> named_compile_args, bool clear_accum,
-    int64_t k_pack, int64_t wg_wait, int64_t policy_type, ffi::String policy_name) {
+    int64_t k_pack, int64_t wg_wait, int64_t policy_type,
+    ffi::String policy_name) {
   auto n = ffi::make_object<TTKernelComputeConfigNode>();
   n->math_fidelity = std::move(math_fidelity);
   n->fp32_dest_acc_en = fp32_dest_acc_en;
@@ -531,9 +567,11 @@ void TTPerWorkArgSpecNode::RegisterReflection() {
       .def_ro("constant_value", &TTPerWorkArgSpecNode::constant_value);
 }
 
-TTPerWorkArgSpec::TTPerWorkArgSpec(ffi::String arg_kind, ffi::String arg_identity,
-                                   ffi::String buffer, ffi::String descriptor_kind,
-                                   ffi::String value_source, int64_t constant_value) {
+TTPerWorkArgSpec::TTPerWorkArgSpec(ffi::String arg_kind,
+                                   ffi::String arg_identity, ffi::String buffer,
+                                   ffi::String descriptor_kind,
+                                   ffi::String value_source,
+                                   int64_t constant_value) {
   auto n = ffi::make_object<TTPerWorkArgSpecNode>();
   n->arg_kind = std::move(arg_kind);
   n->arg_identity = std::move(arg_identity);
@@ -557,8 +595,7 @@ void TTKernelNode::RegisterReflection() {
 }
 
 TTKernel::TTKernel(ffi::String name, ffi::String kind, ffi::String core_type,
-                   int64_t abi_plan_index,
-                   TTKernelLaunchSpec launch_spec,
+                   int64_t abi_plan_index, TTKernelLaunchSpec launch_spec,
                    TTKernelComputeConfig compute_config,
                    ffi::Array<TTPerWorkArgSpec> per_work_arg_specs) {
   auto n = ffi::make_object<TTKernelNode>();
@@ -583,8 +620,9 @@ void TTCoreGroupNode::RegisterReflection() {
       .def_ro("work_packets", &TTCoreGroupNode::work_packets);
 }
 
-TTCoreGroup::TTCoreGroup(ffi::String name, int64_t logical_grid_x, int64_t logical_grid_y,
-                         ffi::String linearization, ffi::Array<ffi::Any> physical_cores,
+TTCoreGroup::TTCoreGroup(ffi::String name, int64_t logical_grid_x,
+                         int64_t logical_grid_y, ffi::String linearization,
+                         ffi::Array<ffi::Any> physical_cores,
                          ffi::Array<ffi::Any> work_packets) {
   auto n = ffi::make_object<TTCoreGroupNode>();
   n->name = std::move(name);
@@ -615,11 +653,12 @@ void TTCBPlanNode::RegisterReflection() {
       .def_ro("requirement_indices", &TTCBPlanNode::requirement_indices);
 }
 
-TTCBPlan::TTCBPlan(ffi::String name, int64_t cb_id, ffi::String resource_class, int64_t num_pages,
-                   int64_t page_size_bytes, ffi::String data_format,
-                   int64_t initial_reserve_pages, ffi::String flow_class,
-                   int64_t publish_pages_per_event, int64_t consume_pages_per_event,
-                   int64_t lifetime_begin, int64_t lifetime_end,
+TTCBPlan::TTCBPlan(ffi::String name, int64_t cb_id, ffi::String resource_class,
+                   int64_t num_pages, int64_t page_size_bytes,
+                   ffi::String data_format, int64_t initial_reserve_pages,
+                   ffi::String flow_class, int64_t publish_pages_per_event,
+                   int64_t consume_pages_per_event, int64_t lifetime_begin,
+                   int64_t lifetime_end,
                    ffi::Array<ffi::String> requirement_names,
                    ffi::Array<Integer> requirement_indices) {
   auto n = ffi::make_object<TTCBPlanNode>();
@@ -652,9 +691,12 @@ void TTTransportPlanNode::RegisterReflection() {
       .def_ro("subject", &TTTransportPlanNode::subject);
 }
 
-TTTransportPlan::TTTransportPlan(ffi::String name, ffi::String kind, int64_t source_task_index,
-                                 int64_t target_task_index, ffi::String value_kind,
-                                 ffi::String delivery_kind, ffi::String subject) {
+TTTransportPlan::TTTransportPlan(ffi::String name, ffi::String kind,
+                                 int64_t source_task_index,
+                                 int64_t target_task_index,
+                                 ffi::String value_kind,
+                                 ffi::String delivery_kind,
+                                 ffi::String subject) {
   auto n = ffi::make_object<TTTransportPlanNode>();
   n->name = std::move(name);
   n->kind = std::move(kind);
@@ -677,9 +719,9 @@ void TTSyncPlanNode::RegisterReflection() {
       .def_ro("completion_kind", &TTSyncPlanNode::completion_kind);
 }
 
-TTSyncPlan::TTSyncPlan(ffi::String name, ffi::String kind, int64_t source_task_index,
-                       int64_t target_task_index, ffi::String ordering_kind,
-                       ffi::String completion_kind) {
+TTSyncPlan::TTSyncPlan(ffi::String name, ffi::String kind,
+                       int64_t source_task_index, int64_t target_task_index,
+                       ffi::String ordering_kind, ffi::String completion_kind) {
   auto n = ffi::make_object<TTSyncPlanNode>();
   n->name = std::move(name);
   n->kind = std::move(kind);
@@ -703,9 +745,11 @@ void TTSemaphorePlanNode::RegisterReflection() {
       .def_ro("core_ranges", &TTSemaphorePlanNode::core_ranges);
 }
 
-TTSemaphorePlan::TTSemaphorePlan(ffi::String name, ffi::String kind, int64_t semaphore_id,
-                                 int64_t initial_value, ffi::String core_type,
-                                 int64_t source_task_index, int64_t target_task_index,
+TTSemaphorePlan::TTSemaphorePlan(ffi::String name, ffi::String kind,
+                                 int64_t semaphore_id, int64_t initial_value,
+                                 ffi::String core_type,
+                                 int64_t source_task_index,
+                                 int64_t target_task_index,
                                  ffi::Array<ffi::Any> core_ranges) {
   auto n = ffi::make_object<TTSemaphorePlanNode>();
   n->name = std::move(name);
@@ -727,11 +771,14 @@ void TTComputeSyncPlanNode::RegisterReflection() {
       .def_ro("source_task_index", &TTComputeSyncPlanNode::source_task_index)
       .def_ro("target_task_index", &TTComputeSyncPlanNode::target_task_index)
       .def_ro("ordering_kind", &TTComputeSyncPlanNode::ordering_kind)
-      .def_ro("materialization_kind", &TTComputeSyncPlanNode::materialization_kind);
+      .def_ro("materialization_kind",
+              &TTComputeSyncPlanNode::materialization_kind);
 }
 
-TTComputeSyncPlan::TTComputeSyncPlan(ffi::String name, ffi::String kind, int64_t source_task_index,
-                                     int64_t target_task_index, ffi::String ordering_kind,
+TTComputeSyncPlan::TTComputeSyncPlan(ffi::String name, ffi::String kind,
+                                     int64_t source_task_index,
+                                     int64_t target_task_index,
+                                     ffi::String ordering_kind,
                                      ffi::String materialization_kind) {
   auto n = ffi::make_object<TTComputeSyncPlanNode>();
   n->name = std::move(name);
@@ -753,8 +800,9 @@ void TTDstLayoutPlanNode::RegisterReflection() {
       .def_ro("page_size_bytes", &TTDstLayoutPlanNode::page_size_bytes);
 }
 
-TTDstLayoutPlan::TTDstLayoutPlan(ffi::String name, ffi::String buffer, ffi::String layout,
-                                 ffi::String memory_space, int64_t page_size_bytes) {
+TTDstLayoutPlan::TTDstLayoutPlan(ffi::String name, ffi::String buffer,
+                                 ffi::String layout, ffi::String memory_space,
+                                 int64_t page_size_bytes) {
   auto n = ffi::make_object<TTDstLayoutPlanNode>();
   n->name = std::move(name);
   n->buffer = std::move(buffer);
@@ -770,21 +818,24 @@ void TTLiveFormPlanNode::RegisterReflection() {
       .def_ro("name", &TTLiveFormPlanNode::name)
       .def_ro("logical_value", &TTLiveFormPlanNode::logical_value)
       .def_ro("spatial_live_value", &TTLiveFormPlanNode::spatial_live_value)
-      .def_ro("spatial_live_value_index", &TTLiveFormPlanNode::spatial_live_value_index)
+      .def_ro("spatial_live_value_index",
+              &TTLiveFormPlanNode::spatial_live_value_index)
       .def_ro("producer_kernel", &TTLiveFormPlanNode::producer_kernel)
       .def_ro("physical_form", &TTLiveFormPlanNode::physical_form)
       .def_ro("execution_topology", &TTLiveFormPlanNode::execution_topology)
-      .def_ro("physical_local_extent", &TTLiveFormPlanNode::physical_local_extent)
-      .def_ro("logical_element_count", &TTLiveFormPlanNode::logical_element_count)
+      .def_ro("physical_local_extent",
+              &TTLiveFormPlanNode::physical_local_extent)
+      .def_ro("logical_element_count",
+              &TTLiveFormPlanNode::logical_element_count)
       .def_ro("ownership_kind", &TTLiveFormPlanNode::ownership_kind);
 }
 
-TTLiveFormPlan::TTLiveFormPlan(ffi::String name, ffi::String logical_value,
-                               ffi::String spatial_live_value,
-                               int64_t spatial_live_value_index,
-                               ffi::String producer_kernel, ffi::String physical_form,
-                               ffi::String execution_topology, int64_t physical_local_extent,
-                               int64_t logical_element_count, ffi::String ownership_kind) {
+TTLiveFormPlan::TTLiveFormPlan(
+    ffi::String name, ffi::String logical_value, ffi::String spatial_live_value,
+    int64_t spatial_live_value_index, ffi::String producer_kernel,
+    ffi::String physical_form, ffi::String execution_topology,
+    int64_t physical_local_extent, int64_t logical_element_count,
+    ffi::String ownership_kind) {
   auto n = ffi::make_object<TTLiveFormPlanNode>();
   n->name = std::move(name);
   n->logical_value = std::move(logical_value);
@@ -812,24 +863,30 @@ void TTMaterializationPlanNode::RegisterReflection() {
       .def_ro("host_buffer", &TTMaterializationPlanNode::host_buffer)
       .def_ro("target_kernel", &TTMaterializationPlanNode::target_kernel)
       .def_ro("bridge_kind", &TTMaterializationPlanNode::bridge_kind)
-      .def_ro("materialization_kind", &TTMaterializationPlanNode::materialization_kind)
-      .def_ro("materialization_protocol", &TTMaterializationPlanNode::materialization_protocol)
-      .def_ro("publication_protocol", &TTMaterializationPlanNode::publication_protocol)
+      .def_ro("materialization_kind",
+              &TTMaterializationPlanNode::materialization_kind)
+      .def_ro("materialization_protocol",
+              &TTMaterializationPlanNode::materialization_protocol)
+      .def_ro("publication_protocol",
+              &TTMaterializationPlanNode::publication_protocol)
       .def_ro("required_cb_plan_indices",
               &TTMaterializationPlanNode::required_cb_plan_indices)
       .def_ro("required_sync_plan_indices",
               &TTMaterializationPlanNode::required_sync_plan_indices)
-      .def_ro("produced_live_form", &TTMaterializationPlanNode::produced_live_form);
+      .def_ro("produced_live_form",
+              &TTMaterializationPlanNode::produced_live_form);
 }
 
 TTMaterializationPlan::TTMaterializationPlan(
-    ffi::String name, ffi::String source_live_form, ffi::String materialization_boundary,
+    ffi::String name, ffi::String source_live_form,
+    ffi::String materialization_boundary,
     int64_t materialization_boundary_index, ffi::String target_buffer,
     ffi::String host_buffer, ffi::String target_kernel, ffi::String bridge_kind,
     ffi::String materialization_kind, ffi::String materialization_protocol,
     ffi::String publication_protocol,
     ffi::Array<Integer> required_cb_plan_indices,
-    ffi::Array<Integer> required_sync_plan_indices, ffi::String produced_live_form) {
+    ffi::Array<Integer> required_sync_plan_indices,
+    ffi::String produced_live_form) {
   auto n = ffi::make_object<TTMaterializationPlanNode>();
   n->name = std::move(name);
   n->source_live_form = std::move(source_live_form);
@@ -856,20 +913,22 @@ void TTConsumerBindingPlanNode::RegisterReflection() {
       .def_ro("consumer_op_kind", &TTConsumerBindingPlanNode::consumer_op_kind)
       .def_ro("source_live_form", &TTConsumerBindingPlanNode::source_live_form)
       .def_ro("live_value_edge", &TTConsumerBindingPlanNode::live_value_edge)
-      .def_ro("live_value_edge_index", &TTConsumerBindingPlanNode::live_value_edge_index)
+      .def_ro("live_value_edge_index",
+              &TTConsumerBindingPlanNode::live_value_edge_index)
       .def_ro("accepts_distributed_slice",
               &TTConsumerBindingPlanNode::accepts_distributed_slice)
       .def_ro("requires_full_logical_tile",
               &TTConsumerBindingPlanNode::requires_full_logical_tile)
       .def_ro("abi_plan_index", &TTConsumerBindingPlanNode::abi_plan_index)
       .def_ro("target_buffer", &TTConsumerBindingPlanNode::target_buffer)
-      .def_ro("materialization_plan", &TTConsumerBindingPlanNode::materialization_plan);
+      .def_ro("materialization_plan",
+              &TTConsumerBindingPlanNode::materialization_plan);
 }
 
 TTConsumerBindingPlan::TTConsumerBindingPlan(
     ffi::String name, ffi::String consumer_kernel, ffi::String consumer_op_kind,
-    ffi::String source_live_form, ffi::String live_value_edge, int64_t live_value_edge_index,
-    bool accepts_distributed_slice,
+    ffi::String source_live_form, ffi::String live_value_edge,
+    int64_t live_value_edge_index, bool accepts_distributed_slice,
     bool requires_full_logical_tile, int64_t abi_plan_index,
     ffi::String target_buffer, ffi::String materialization_plan) {
   auto n = ffi::make_object<TTConsumerBindingPlanNode>();
@@ -899,9 +958,10 @@ void TTRuntimeArgSpecNode::RegisterReflection() {
       .def_ro("core_y", &TTRuntimeArgSpecNode::core_y);
 }
 
-TTRuntimeArgSpec::TTRuntimeArgSpec(ffi::String name, ffi::String kind, ffi::String dtype,
-                                   ffi::String buffer, ffi::String identity,
-                                   int64_t core_x, int64_t core_y) {
+TTRuntimeArgSpec::TTRuntimeArgSpec(ffi::String name, ffi::String kind,
+                                   ffi::String dtype, ffi::String buffer,
+                                   ffi::String identity, int64_t core_x,
+                                   int64_t core_y) {
   auto n = ffi::make_object<TTRuntimeArgSpecNode>();
   n->name = std::move(name);
   n->kind = std::move(kind);
@@ -925,7 +985,8 @@ void TTCompileTimeArgSpecNode::RegisterReflection() {
       .def_ro("segment_role", &TTCompileTimeArgSpecNode::segment_role)
       .def_ro("values", &TTCompileTimeArgSpecNode::values)
       .def_ro("args_config_bits", &TTCompileTimeArgSpecNode::args_config_bits)
-      .def_ro("transport_page_size", &TTCompileTimeArgSpecNode::transport_page_size)
+      .def_ro("transport_page_size",
+              &TTCompileTimeArgSpecNode::transport_page_size)
       .def_ro("layout", &TTCompileTimeArgSpecNode::layout)
       .def_ro("memory_space", &TTCompileTimeArgSpecNode::memory_space)
       .def_ro("host_axis_order", &TTCompileTimeArgSpecNode::host_axis_order)
@@ -933,10 +994,11 @@ void TTCompileTimeArgSpecNode::RegisterReflection() {
 }
 
 TTCompileTimeArgSpec::TTCompileTimeArgSpec(
-    ffi::String name, ffi::String kind, ffi::String dtype, int64_t offset, int64_t count,
-    ffi::String buffer, ffi::String segment_role, ffi::Array<Integer> values,
-    int64_t args_config_bits, int64_t transport_page_size, ffi::String layout,
-    ffi::String memory_space, ffi::Array<Integer> host_axis_order, bool transpose_2d) {
+    ffi::String name, ffi::String kind, ffi::String dtype, int64_t offset,
+    int64_t count, ffi::String buffer, ffi::String segment_role,
+    ffi::Array<Integer> values, int64_t args_config_bits,
+    int64_t transport_page_size, ffi::String layout, ffi::String memory_space,
+    ffi::Array<Integer> host_axis_order, bool transpose_2d) {
   auto n = ffi::make_object<TTCompileTimeArgSpecNode>();
   n->name = std::move(name);
   n->kind = std::move(kind);
@@ -959,10 +1021,14 @@ void TTAccessorSpecNode::RegisterReflection() {
   namespace refl = tvm::ffi::reflection;
   refl::ObjectDef<TTAccessorSpecNode>()
       .def_ro("buffer", &TTAccessorSpecNode::buffer)
-      .def_ro("compile_time_arg_offset", &TTAccessorSpecNode::compile_time_arg_offset)
-      .def_ro("compile_time_arg_count", &TTAccessorSpecNode::compile_time_arg_count)
-      .def_ro("common_runtime_arg_offset", &TTAccessorSpecNode::common_runtime_arg_offset)
-      .def_ro("common_runtime_arg_count", &TTAccessorSpecNode::common_runtime_arg_count)
+      .def_ro("compile_time_arg_offset",
+              &TTAccessorSpecNode::compile_time_arg_offset)
+      .def_ro("compile_time_arg_count",
+              &TTAccessorSpecNode::compile_time_arg_count)
+      .def_ro("common_runtime_arg_offset",
+              &TTAccessorSpecNode::common_runtime_arg_offset)
+      .def_ro("common_runtime_arg_count",
+              &TTAccessorSpecNode::common_runtime_arg_count)
       .def_ro("args_config_bits", &TTAccessorSpecNode::args_config_bits)
       .def_ro("transport_page_size", &TTAccessorSpecNode::transport_page_size)
       .def_ro("layout", &TTAccessorSpecNode::layout)
@@ -971,13 +1037,12 @@ void TTAccessorSpecNode::RegisterReflection() {
       .def_ro("transpose_2d", &TTAccessorSpecNode::transpose_2d);
 }
 
-TTAccessorSpec::TTAccessorSpec(ffi::String buffer, int64_t compile_time_arg_offset,
-                               int64_t compile_time_arg_count,
-                               int64_t common_runtime_arg_offset,
-                               int64_t common_runtime_arg_count, int64_t args_config_bits,
-                               int64_t transport_page_size, ffi::String layout,
-                               ffi::String memory_space, ffi::Array<Integer> host_axis_order,
-                               bool transpose_2d) {
+TTAccessorSpec::TTAccessorSpec(
+    ffi::String buffer, int64_t compile_time_arg_offset,
+    int64_t compile_time_arg_count, int64_t common_runtime_arg_offset,
+    int64_t common_runtime_arg_count, int64_t args_config_bits,
+    int64_t transport_page_size, ffi::String layout, ffi::String memory_space,
+    ffi::Array<Integer> host_axis_order, bool transpose_2d) {
   auto n = ffi::make_object<TTAccessorSpecNode>();
   n->buffer = std::move(buffer);
   n->compile_time_arg_offset = compile_time_arg_offset;
@@ -1001,7 +1066,8 @@ void TTSemaphoreBindingSpecNode::RegisterReflection() {
       .def_ro("arg_kind", &TTSemaphoreBindingSpecNode::arg_kind);
 }
 
-TTSemaphoreBindingSpec::TTSemaphoreBindingSpec(ffi::String name, int64_t semaphore_id,
+TTSemaphoreBindingSpec::TTSemaphoreBindingSpec(ffi::String name,
+                                               int64_t semaphore_id,
                                                ffi::String arg_kind) {
   auto n = ffi::make_object<TTSemaphoreBindingSpecNode>();
   n->name = std::move(name);
@@ -1047,7 +1113,8 @@ void TTExecutionPlanNode::RegisterReflection() {
       .def_ro("phase_indices", &TTExecutionPlanNode::phase_indices);
 }
 
-TTExecutionPlan::TTExecutionPlan(ffi::String name, ffi::Array<ffi::String> kernel_names,
+TTExecutionPlan::TTExecutionPlan(ffi::String name,
+                                 ffi::Array<ffi::String> kernel_names,
                                  ffi::Array<Integer> phase_indices) {
   auto n = ffi::make_object<TTExecutionPlanNode>();
   n->name = std::move(name);
@@ -1062,7 +1129,8 @@ void TTProgramNode::RegisterReflection() {
       .def_ro("entry_name", &TTProgramNode::entry_name)
       .def_ro("member_func", &TTProgramNode::member_func)
       .def_ro("mesh_plans", &TTProgramNode::mesh_plans)
-      .def_ro("buffer_distribution_plans", &TTProgramNode::buffer_distribution_plans)
+      .def_ro("buffer_distribution_plans",
+              &TTProgramNode::buffer_distribution_plans)
       .def_ro("block_plans", &TTProgramNode::block_plans)
       .def_ro("kernel_plans", &TTProgramNode::kernel_plans)
       .def_ro("compute_op_plans", &TTProgramNode::compute_op_plans)
@@ -1084,27 +1152,24 @@ void TTProgramNode::RegisterReflection() {
               &TTProgramNode::resource_pressure_reports);
 }
 
-TTProgram::TTProgram(ffi::String entry_name, ffi::String member_func,
-                     ffi::Array<TTMeshPlan> mesh_plans,
-                     ffi::Array<TTBufferDistributionPlan> buffer_distribution_plans,
-                     ffi::Array<TTBlockPlan> block_plans,
-                     ffi::Array<TTKernelPlan> kernel_plans,
-                     ffi::Array<TTComputeOpPlan> compute_op_plans,
-                     ffi::Array<TTTransportPlan> transport_plans,
-                     ffi::Array<TTSyncPlan> sync_plans,
-                     ffi::Array<TTABIPlan> abi_plans,
-                     ffi::Array<TTExecutionPlan> execution_plans,
-                     ffi::Array<TTKernel> kernels, ffi::Array<TTCoreGroup> core_groups,
-                     ffi::Array<TTCBPlan> cb_plans,
-                     ffi::Array<TTSemaphorePlan> semaphore_plans,
-                     ffi::Array<TTComputeSyncPlan> compute_sync_plans,
-                     ffi::Array<TTDstLayoutPlan> dst_layout_plans,
-                     ffi::Array<TTLiveFormPlan> live_form_plans,
-                     ffi::Array<TTMaterializationPlan> materialization_plans,
-                     ffi::Array<TTConsumerBindingPlan> consumer_binding_plans,
-                     ffi::Array<TTResourceDemand> resource_demands,
-                     ffi::Array<TTResourcePressureReport>
-                         resource_pressure_reports) {
+TTProgram::TTProgram(
+    ffi::String entry_name, ffi::String member_func,
+    ffi::Array<TTMeshPlan> mesh_plans,
+    ffi::Array<TTBufferDistributionPlan> buffer_distribution_plans,
+    ffi::Array<TTBlockPlan> block_plans, ffi::Array<TTKernelPlan> kernel_plans,
+    ffi::Array<TTComputeOpPlan> compute_op_plans,
+    ffi::Array<TTTransportPlan> transport_plans,
+    ffi::Array<TTSyncPlan> sync_plans, ffi::Array<TTABIPlan> abi_plans,
+    ffi::Array<TTExecutionPlan> execution_plans, ffi::Array<TTKernel> kernels,
+    ffi::Array<TTCoreGroup> core_groups, ffi::Array<TTCBPlan> cb_plans,
+    ffi::Array<TTSemaphorePlan> semaphore_plans,
+    ffi::Array<TTComputeSyncPlan> compute_sync_plans,
+    ffi::Array<TTDstLayoutPlan> dst_layout_plans,
+    ffi::Array<TTLiveFormPlan> live_form_plans,
+    ffi::Array<TTMaterializationPlan> materialization_plans,
+    ffi::Array<TTConsumerBindingPlan> consumer_binding_plans,
+    ffi::Array<TTResourceDemand> resource_demands,
+    ffi::Array<TTResourcePressureReport> resource_pressure_reports) {
   auto n = ffi::make_object<TTProgramNode>();
   n->entry_name = std::move(entry_name);
   n->member_func = std::move(member_func);
@@ -1171,19 +1236,25 @@ TVM_FFI_STATIC_INIT_BLOCK() {
   namespace refl = tvm::ffi::reflection;
   refl::GlobalDef().def(
       "tl.TTMeshPlan",
-      [](ffi::String name, ffi::String mesh_kind, ffi::Array<Integer> mesh_shape,
-         ffi::Array<Integer> device_range_start, ffi::Array<Integer> device_range_shape,
-         ffi::String system_mesh_ref) {
-        return TTMeshPlan(std::move(name), std::move(mesh_kind), std::move(mesh_shape),
-                          std::move(device_range_start), std::move(device_range_shape),
+      [](ffi::String name, ffi::String mesh_kind,
+         ffi::Array<Integer> mesh_shape, ffi::Array<Integer> device_range_start,
+         ffi::Array<Integer> device_range_shape, ffi::String system_mesh_ref) {
+        return TTMeshPlan(std::move(name), std::move(mesh_kind),
+                          std::move(mesh_shape), std::move(device_range_start),
+                          std::move(device_range_shape),
                           std::move(system_mesh_ref));
       });
   refl::GlobalDef().def(
       "tl.TTBufferDistributionPlan",
       [](ffi::String name, ffi::String buffer, ffi::String mesh_plan,
-         int64_t mesh_plan_index, ffi::String distribution_kind, ffi::String layout,
-         ffi::String memory_space, int64_t page_size_bytes, ffi::Array<Integer> shard_shape,
-         ffi::String shard_orientation, ffi::String host_visibility,
+         int64_t mesh_plan_index, ffi::String distribution_kind,
+         ffi::String layout, ffi::String memory_space, int64_t page_size_bytes,
+         ffi::Array<Integer> shard_shape, ffi::Array<Integer> shard_grid_shape,
+         ffi::String sharding_strategy, ffi::String shard_orientation,
+         ffi::String source_buffer, ffi::String source_region_kind,
+         ffi::Array<Integer> source_region_shape,
+         ffi::String logical_index_mapping,
+         ffi::String core_local_address_mapping, ffi::String host_visibility,
          ffi::String attached_core_group, int64_t attached_core_group_index,
          ffi::Array<PrimExpr> logical_shape, ffi::Array<PrimExpr> local_shape,
          PrimExpr thread_extent, PrimExpr replicate_extent,
@@ -1192,33 +1263,41 @@ TVM_FFI_STATIC_INIT_BLOCK() {
          ffi::String spatial_layout, ffi::String spatial_distribution_kind,
          ffi::String abi_layout, ffi::String abi_memory_space) {
         return TTBufferDistributionPlan(
-            std::move(name), std::move(buffer), std::move(mesh_plan), mesh_plan_index,
-            std::move(distribution_kind), std::move(layout), std::move(memory_space),
-            page_size_bytes, std::move(shard_shape), std::move(shard_orientation),
-            std::move(host_visibility), std::move(attached_core_group),
-            attached_core_group_index, std::move(logical_shape), std::move(local_shape),
+            std::move(name), std::move(buffer), std::move(mesh_plan),
+            mesh_plan_index, std::move(distribution_kind), std::move(layout),
+            std::move(memory_space), page_size_bytes, std::move(shard_shape),
+            std::move(shard_grid_shape), std::move(sharding_strategy),
+            std::move(shard_orientation), std::move(source_buffer),
+            std::move(source_region_kind), std::move(source_region_shape),
+            std::move(logical_index_mapping),
+            std::move(core_local_address_mapping), std::move(host_visibility),
+            std::move(attached_core_group), attached_core_group_index,
+            std::move(logical_shape), std::move(local_shape),
             std::move(thread_extent), std::move(replicate_extent),
-            std::move(inverse_logical_index_vars), std::move(inverse_logical_index_exprs),
-            std::move(spatial_layout), std::move(spatial_distribution_kind),
-            std::move(abi_layout), std::move(abi_memory_space));
+            std::move(inverse_logical_index_vars),
+            std::move(inverse_logical_index_exprs), std::move(spatial_layout),
+            std::move(spatial_distribution_kind), std::move(abi_layout),
+            std::move(abi_memory_space));
       });
-  refl::GlobalDef().def(
-      "tl.TTComputeOperandBindingPlan",
-      [](ffi::String role, ffi::String buffer, ffi::String host_buffer,
-         ffi::String tensor_dtype, ffi::String cb_dtype, ffi::String transform_kind) {
-        return TTComputeOperandBindingPlan(
-            std::move(role), std::move(buffer), std::move(host_buffer),
-            std::move(tensor_dtype), std::move(cb_dtype), std::move(transform_kind));
-      });
+  refl::GlobalDef().def("tl.TTComputeOperandBindingPlan",
+                        [](ffi::String role, ffi::String buffer,
+                           ffi::String host_buffer, ffi::String tensor_dtype,
+                           ffi::String cb_dtype, ffi::String transform_kind) {
+                          return TTComputeOperandBindingPlan(
+                              std::move(role), std::move(buffer),
+                              std::move(host_buffer), std::move(tensor_dtype),
+                              std::move(cb_dtype), std::move(transform_kind));
+                        });
   refl::GlobalDef().def(
       "tl.TTComputeOpPlan",
       [](ffi::String name, ffi::String kernel_name, int64_t kernel_plan_index,
          ffi::String kind, ffi::String operation_name, bool enabled,
          ffi::Array<TTComputeOperandBindingPlan> operand_bindings,
-         ffi::Array<ffi::String> problem_shape_axes, ffi::Array<Integer> problem_shape,
-         ffi::Array<Integer> tile_shape, ffi::Array<Integer> block_shape,
-         ffi::Array<Integer> subblock_shape, ffi::String accumulator_dtype,
-         ffi::String mbarrier_buffer, ffi::String mbarrier_scope,
+         ffi::Array<ffi::String> problem_shape_axes,
+         ffi::Array<Integer> problem_shape, ffi::Array<Integer> tile_shape,
+         ffi::Array<Integer> block_shape, ffi::Array<Integer> subblock_shape,
+         ffi::String accumulator_dtype, ffi::String mbarrier_buffer,
+         ffi::String mbarrier_scope,
          ffi::Array<ffi::String> mbarrier_index_exprs,
          int64_t tile_compute_dag_node_id,
          ffi::String tile_compute_source_emitter,
@@ -1226,15 +1305,17 @@ TVM_FFI_STATIC_INIT_BLOCK() {
          int64_t tile_compute_fanout_use_count,
          ffi::String tile_compute_fanout_policy) {
         return TTComputeOpPlan(
-            std::move(name), std::move(kernel_name), kernel_plan_index, std::move(kind),
-            std::move(operation_name), enabled, std::move(operand_bindings),
-            std::move(problem_shape_axes), std::move(problem_shape),
-            std::move(tile_shape), std::move(block_shape), std::move(subblock_shape),
-            std::move(accumulator_dtype), std::move(mbarrier_buffer), std::move(mbarrier_scope),
-            std::move(mbarrier_index_exprs), tile_compute_dag_node_id,
-            std::move(tile_compute_source_emitter),
+            std::move(name), std::move(kernel_name), kernel_plan_index,
+            std::move(kind), std::move(operation_name), enabled,
+            std::move(operand_bindings), std::move(problem_shape_axes),
+            std::move(problem_shape), std::move(tile_shape),
+            std::move(block_shape), std::move(subblock_shape),
+            std::move(accumulator_dtype), std::move(mbarrier_buffer),
+            std::move(mbarrier_scope), std::move(mbarrier_index_exprs),
+            tile_compute_dag_node_id, std::move(tile_compute_source_emitter),
             std::move(tile_compute_materialization_policy),
-            tile_compute_fanout_use_count, std::move(tile_compute_fanout_policy));
+            tile_compute_fanout_use_count,
+            std::move(tile_compute_fanout_policy));
       });
   refl::GlobalDef().def(
       "tl.TTTileComputeFanoutDemand",
@@ -1285,8 +1366,8 @@ TVM_FFI_STATIC_INIT_BLOCK() {
          int64_t per_core_l1_buffer_bytes, int64_t max_simultaneous_l1_bytes,
          int64_t cb_id_limit, int64_t worker_l1_budget_bytes,
          int64_t l1_alignment_bytes, int64_t per_core_cb_l1_aligned_bytes,
-         int64_t l1_alignment_waste_bytes,
-         ffi::String core_grid_requirement, ffi::String dram_view_requirement,
+         int64_t l1_alignment_waste_bytes, ffi::String core_grid_requirement,
+         ffi::String dram_view_requirement,
          ffi::Array<ffi::String> unsupported_reasons) {
         return TTResourcePressureReport(
             std::move(name), std::move(kernel_name), std::move(core_group),
@@ -1299,63 +1380,68 @@ TVM_FFI_STATIC_INIT_BLOCK() {
             std::move(dram_view_requirement), std::move(unsupported_reasons));
       });
   refl::GlobalDef().def(
-      "tl.TTBlockPlan",
-      [](ffi::String name, ffi::String placement_kind, ffi::Array<Integer> task_indices,
-         ffi::String core_group, int64_t core_group_index) {
-        return TTBlockPlan(std::move(name), std::move(placement_kind), std::move(task_indices),
-                           std::move(core_group), core_group_index);
+      "tl.TTBlockPlan", [](ffi::String name, ffi::String placement_kind,
+                           ffi::Array<Integer> task_indices,
+                           ffi::String core_group, int64_t core_group_index) {
+        return TTBlockPlan(std::move(name), std::move(placement_kind),
+                           std::move(task_indices), std::move(core_group),
+                           core_group_index);
       });
-  refl::GlobalDef().def(
-      "tl.TTKernelPlan",
-      [](ffi::String name, ffi::String kind, ffi::String core_type, int64_t block_plan_index,
-         int64_t abi_plan_index) {
-        return TTKernelPlan(std::move(name), std::move(kind), std::move(core_type),
-                            block_plan_index, abi_plan_index);
-      });
+  refl::GlobalDef().def("tl.TTKernelPlan",
+                        [](ffi::String name, ffi::String kind,
+                           ffi::String core_type, int64_t block_plan_index,
+                           int64_t abi_plan_index) {
+                          return TTKernelPlan(std::move(name), std::move(kind),
+                                              std::move(core_type),
+                                              block_plan_index, abi_plan_index);
+                        });
   refl::GlobalDef().def(
       "tl.TTKernelLaunchSpec",
       [](ffi::String core_type, ffi::String processor, ffi::String noc) {
-        return TTKernelLaunchSpec(std::move(core_type), std::move(processor), std::move(noc));
+        return TTKernelLaunchSpec(std::move(core_type), std::move(processor),
+                                  std::move(noc));
       });
   refl::GlobalDef().def(
-      "tl.TTKernelDefine",
-      [](ffi::String name, ffi::String value) {
+      "tl.TTKernelDefine", [](ffi::String name, ffi::String value) {
         return TTKernelDefine(std::move(name), std::move(value));
       });
   refl::GlobalDef().def(
-      "tl.TTKernelNamedCompileArg",
-      [](ffi::String name, int64_t value) {
+      "tl.TTKernelNamedCompileArg", [](ffi::String name, int64_t value) {
         return TTKernelNamedCompileArg(std::move(name), value);
       });
   refl::GlobalDef().def(
       "tl.TTKernelComputeConfig",
-      [](ffi::String math_fidelity, bool fp32_dest_acc_en, bool dst_full_sync_en,
-         bool math_approx_mode, ffi::Array<ffi::String> unpack_to_dest_mode,
-         bool bfp8_pack_precise, ffi::Array<TTKernelDefine> defines,
-         ffi::Array<TTKernelNamedCompileArg> named_compile_args, bool clear_accum,
-         int64_t k_pack, int64_t wg_wait, int64_t policy_type, ffi::String policy_name) {
+      [](ffi::String math_fidelity, bool fp32_dest_acc_en,
+         bool dst_full_sync_en, bool math_approx_mode,
+         ffi::Array<ffi::String> unpack_to_dest_mode, bool bfp8_pack_precise,
+         ffi::Array<TTKernelDefine> defines,
+         ffi::Array<TTKernelNamedCompileArg> named_compile_args,
+         bool clear_accum, int64_t k_pack, int64_t wg_wait, int64_t policy_type,
+         ffi::String policy_name) {
         return TTKernelComputeConfig(
-            std::move(math_fidelity), fp32_dest_acc_en, dst_full_sync_en, math_approx_mode,
-            std::move(unpack_to_dest_mode), bfp8_pack_precise, std::move(defines),
-            std::move(named_compile_args), clear_accum, k_pack, wg_wait, policy_type,
-            std::move(policy_name));
+            std::move(math_fidelity), fp32_dest_acc_en, dst_full_sync_en,
+            math_approx_mode, std::move(unpack_to_dest_mode), bfp8_pack_precise,
+            std::move(defines), std::move(named_compile_args), clear_accum,
+            k_pack, wg_wait, policy_type, std::move(policy_name));
       });
-  refl::GlobalDef().def(
-      "tl.TTPerWorkArgSpec",
-      [](ffi::String arg_kind, ffi::String arg_identity, ffi::String buffer,
-         ffi::String descriptor_kind, ffi::String value_source, int64_t constant_value) {
-        return TTPerWorkArgSpec(std::move(arg_kind), std::move(arg_identity),
-                                std::move(buffer), std::move(descriptor_kind),
-                                std::move(value_source), constant_value);
-      });
+  refl::GlobalDef().def("tl.TTPerWorkArgSpec",
+                        [](ffi::String arg_kind, ffi::String arg_identity,
+                           ffi::String buffer, ffi::String descriptor_kind,
+                           ffi::String value_source, int64_t constant_value) {
+                          return TTPerWorkArgSpec(
+                              std::move(arg_kind), std::move(arg_identity),
+                              std::move(buffer), std::move(descriptor_kind),
+                              std::move(value_source), constant_value);
+                        });
   refl::GlobalDef().def(
       "tl.TTKernel",
-      [](ffi::String name, ffi::String kind, ffi::String core_type, int64_t abi_plan_index,
-         TTKernelLaunchSpec launch_spec,
+      [](ffi::String name, ffi::String kind, ffi::String core_type,
+         int64_t abi_plan_index, TTKernelLaunchSpec launch_spec,
          TTKernelComputeConfig compute_config,
          ffi::Array<TTPerWorkArgSpec> per_work_arg_specs) {
-        return TTKernel(std::move(name), std::move(kind), std::move(core_type), abi_plan_index,
-                        std::move(launch_spec), std::move(compute_config),
+        return TTKernel(std::move(name), std::move(kind), std::move(core_type),
+                        abi_plan_index, std::move(launch_spec),
+                        std::move(compute_config),
                         std::move(per_work_arg_specs));
       });
   refl::GlobalDef().def(
@@ -1369,168 +1455,197 @@ TVM_FFI_STATIC_INIT_BLOCK() {
       });
   refl::GlobalDef().def(
       "tl.TTCBPlan",
-      [](ffi::String name, int64_t cb_id, ffi::String resource_class, int64_t num_pages,
-         int64_t page_size_bytes, ffi::String data_format, int64_t initial_reserve_pages,
-         ffi::String flow_class, int64_t publish_pages_per_event,
-         int64_t consume_pages_per_event, int64_t lifetime_begin, int64_t lifetime_end,
+      [](ffi::String name, int64_t cb_id, ffi::String resource_class,
+         int64_t num_pages, int64_t page_size_bytes, ffi::String data_format,
+         int64_t initial_reserve_pages, ffi::String flow_class,
+         int64_t publish_pages_per_event, int64_t consume_pages_per_event,
+         int64_t lifetime_begin, int64_t lifetime_end,
          ffi::Array<ffi::String> requirement_names,
          ffi::Array<Integer> requirement_indices) {
-        return TTCBPlan(std::move(name), cb_id, std::move(resource_class), num_pages,
-                        page_size_bytes, std::move(data_format), initial_reserve_pages,
-                        std::move(flow_class), publish_pages_per_event,
-                        consume_pages_per_event, lifetime_begin, lifetime_end,
-                        std::move(requirement_names), std::move(requirement_indices));
+        return TTCBPlan(
+            std::move(name), cb_id, std::move(resource_class), num_pages,
+            page_size_bytes, std::move(data_format), initial_reserve_pages,
+            std::move(flow_class), publish_pages_per_event,
+            consume_pages_per_event, lifetime_begin, lifetime_end,
+            std::move(requirement_names), std::move(requirement_indices));
       });
   refl::GlobalDef().def(
       "tl.TTTransportPlan",
-      [](ffi::String name, ffi::String kind, int64_t source_task_index, int64_t target_task_index,
-         ffi::String value_kind, ffi::String delivery_kind, ffi::String subject) {
-        return TTTransportPlan(std::move(name), std::move(kind), source_task_index,
-                               target_task_index, std::move(value_kind),
-                               std::move(delivery_kind), std::move(subject));
+      [](ffi::String name, ffi::String kind, int64_t source_task_index,
+         int64_t target_task_index, ffi::String value_kind,
+         ffi::String delivery_kind, ffi::String subject) {
+        return TTTransportPlan(std::move(name), std::move(kind),
+                               source_task_index, target_task_index,
+                               std::move(value_kind), std::move(delivery_kind),
+                               std::move(subject));
       });
-  refl::GlobalDef().def(
-      "tl.TTSyncPlan",
-      [](ffi::String name, ffi::String kind, int64_t source_task_index, int64_t target_task_index,
-         ffi::String ordering_kind, ffi::String completion_kind) {
-        return TTSyncPlan(std::move(name), std::move(kind), source_task_index,
-                          target_task_index, std::move(ordering_kind),
-                          std::move(completion_kind));
-      });
+  refl::GlobalDef().def("tl.TTSyncPlan", [](ffi::String name, ffi::String kind,
+                                            int64_t source_task_index,
+                                            int64_t target_task_index,
+                                            ffi::String ordering_kind,
+                                            ffi::String completion_kind) {
+    return TTSyncPlan(std::move(name), std::move(kind), source_task_index,
+                      target_task_index, std::move(ordering_kind),
+                      std::move(completion_kind));
+  });
   refl::GlobalDef().def(
       "tl.TTSemaphorePlan",
-      [](ffi::String name, ffi::String kind, int64_t semaphore_id, int64_t initial_value,
-         ffi::String core_type, int64_t source_task_index, int64_t target_task_index,
+      [](ffi::String name, ffi::String kind, int64_t semaphore_id,
+         int64_t initial_value, ffi::String core_type,
+         int64_t source_task_index, int64_t target_task_index,
          ffi::Array<ffi::Any> core_ranges) {
-        return TTSemaphorePlan(std::move(name), std::move(kind), semaphore_id, initial_value,
-                               std::move(core_type), source_task_index, target_task_index,
+        return TTSemaphorePlan(std::move(name), std::move(kind), semaphore_id,
+                               initial_value, std::move(core_type),
+                               source_task_index, target_task_index,
                                std::move(core_ranges));
       });
   refl::GlobalDef().def(
       "tl.TTComputeSyncPlan",
-      [](ffi::String name, ffi::String kind, int64_t source_task_index, int64_t target_task_index,
-         ffi::String ordering_kind, ffi::String materialization_kind) {
-        return TTComputeSyncPlan(std::move(name), std::move(kind), source_task_index,
-                                 target_task_index, std::move(ordering_kind),
+      [](ffi::String name, ffi::String kind, int64_t source_task_index,
+         int64_t target_task_index, ffi::String ordering_kind,
+         ffi::String materialization_kind) {
+        return TTComputeSyncPlan(std::move(name), std::move(kind),
+                                 source_task_index, target_task_index,
+                                 std::move(ordering_kind),
                                  std::move(materialization_kind));
       });
   refl::GlobalDef().def(
       "tl.TTDstLayoutPlan",
-      [](ffi::String name, ffi::String buffer, ffi::String layout, ffi::String memory_space,
-         int64_t page_size_bytes) {
-        return TTDstLayoutPlan(std::move(name), std::move(buffer), std::move(layout),
-                               std::move(memory_space), page_size_bytes);
+      [](ffi::String name, ffi::String buffer, ffi::String layout,
+         ffi::String memory_space, int64_t page_size_bytes) {
+        return TTDstLayoutPlan(std::move(name), std::move(buffer),
+                               std::move(layout), std::move(memory_space),
+                               page_size_bytes);
       });
   refl::GlobalDef().def(
       "tl.TTLiveFormPlan",
-      [](ffi::String name, ffi::String logical_value, ffi::String spatial_live_value,
-         int64_t spatial_live_value_index, ffi::String producer_kernel,
-         ffi::String physical_form, ffi::String execution_topology,
-         int64_t physical_local_extent, int64_t logical_element_count,
-         ffi::String ownership_kind) {
-        return TTLiveFormPlan(std::move(name), std::move(logical_value),
-                              std::move(spatial_live_value), spatial_live_value_index,
-                              std::move(producer_kernel), std::move(physical_form),
-                              std::move(execution_topology), physical_local_extent,
-                              logical_element_count, std::move(ownership_kind));
+      [](ffi::String name, ffi::String logical_value,
+         ffi::String spatial_live_value, int64_t spatial_live_value_index,
+         ffi::String producer_kernel, ffi::String physical_form,
+         ffi::String execution_topology, int64_t physical_local_extent,
+         int64_t logical_element_count, ffi::String ownership_kind) {
+        return TTLiveFormPlan(
+            std::move(name), std::move(logical_value),
+            std::move(spatial_live_value), spatial_live_value_index,
+            std::move(producer_kernel), std::move(physical_form),
+            std::move(execution_topology), physical_local_extent,
+            logical_element_count, std::move(ownership_kind));
       });
   refl::GlobalDef().def(
       "tl.TTMaterializationPlan",
-      [](ffi::String name, ffi::String source_live_form, ffi::String materialization_boundary,
+      [](ffi::String name, ffi::String source_live_form,
+         ffi::String materialization_boundary,
          int64_t materialization_boundary_index, ffi::String target_buffer,
-         ffi::String host_buffer, ffi::String target_kernel, ffi::String bridge_kind,
-         ffi::String materialization_kind, ffi::String materialization_protocol,
-         ffi::String publication_protocol,
+         ffi::String host_buffer, ffi::String target_kernel,
+         ffi::String bridge_kind, ffi::String materialization_kind,
+         ffi::String materialization_protocol, ffi::String publication_protocol,
          ffi::Array<Integer> required_cb_plan_indices,
-         ffi::Array<Integer> required_sync_plan_indices, ffi::String produced_live_form) {
+         ffi::Array<Integer> required_sync_plan_indices,
+         ffi::String produced_live_form) {
         return TTMaterializationPlan(
-            std::move(name), std::move(source_live_form), std::move(materialization_boundary),
-            materialization_boundary_index, std::move(target_buffer), std::move(host_buffer),
-            std::move(target_kernel), std::move(bridge_kind), std::move(materialization_kind),
-            std::move(materialization_protocol), std::move(publication_protocol),
-            std::move(required_cb_plan_indices), std::move(required_sync_plan_indices),
+            std::move(name), std::move(source_live_form),
+            std::move(materialization_boundary), materialization_boundary_index,
+            std::move(target_buffer), std::move(host_buffer),
+            std::move(target_kernel), std::move(bridge_kind),
+            std::move(materialization_kind),
+            std::move(materialization_protocol),
+            std::move(publication_protocol),
+            std::move(required_cb_plan_indices),
+            std::move(required_sync_plan_indices),
             std::move(produced_live_form));
       });
   refl::GlobalDef().def(
       "tl.TTConsumerBindingPlan",
-      [](ffi::String name, ffi::String consumer_kernel, ffi::String consumer_op_kind,
-         ffi::String source_live_form, ffi::String live_value_edge,
-         int64_t live_value_edge_index, bool accepts_distributed_slice,
-         bool requires_full_logical_tile, int64_t abi_plan_index,
-         ffi::String target_buffer, ffi::String materialization_plan) {
-        return TTConsumerBindingPlan(std::move(name), std::move(consumer_kernel),
-                                     std::move(consumer_op_kind), std::move(source_live_form),
-                                     std::move(live_value_edge), live_value_edge_index,
-                                     accepts_distributed_slice, requires_full_logical_tile,
-                                     abi_plan_index, std::move(target_buffer),
-                                     std::move(materialization_plan));
+      [](ffi::String name, ffi::String consumer_kernel,
+         ffi::String consumer_op_kind, ffi::String source_live_form,
+         ffi::String live_value_edge, int64_t live_value_edge_index,
+         bool accepts_distributed_slice, bool requires_full_logical_tile,
+         int64_t abi_plan_index, ffi::String target_buffer,
+         ffi::String materialization_plan) {
+        return TTConsumerBindingPlan(
+            std::move(name), std::move(consumer_kernel),
+            std::move(consumer_op_kind), std::move(source_live_form),
+            std::move(live_value_edge), live_value_edge_index,
+            accepts_distributed_slice, requires_full_logical_tile,
+            abi_plan_index, std::move(target_buffer),
+            std::move(materialization_plan));
       });
   refl::GlobalDef().def(
       "tl.TTRuntimeArgSpec",
-      [](ffi::String name, ffi::String kind, ffi::String dtype, ffi::String buffer,
-         ffi::String identity, int64_t core_x, int64_t core_y) {
-        return TTRuntimeArgSpec(std::move(name), std::move(kind), std::move(dtype),
-                                std::move(buffer), std::move(identity), core_x, core_y);
+      [](ffi::String name, ffi::String kind, ffi::String dtype,
+         ffi::String buffer, ffi::String identity, int64_t core_x,
+         int64_t core_y) {
+        return TTRuntimeArgSpec(std::move(name), std::move(kind),
+                                std::move(dtype), std::move(buffer),
+                                std::move(identity), core_x, core_y);
       });
   refl::GlobalDef().def(
       "tl.TTCompileTimeArgSpec",
       [](ffi::String name, ffi::String kind, ffi::String dtype, int64_t offset,
          int64_t count, ffi::String buffer, ffi::String segment_role,
-         ffi::Array<Integer> values, int64_t args_config_bits, int64_t transport_page_size,
-         ffi::String layout, ffi::String memory_space, ffi::Array<Integer> host_axis_order,
+         ffi::Array<Integer> values, int64_t args_config_bits,
+         int64_t transport_page_size, ffi::String layout,
+         ffi::String memory_space, ffi::Array<Integer> host_axis_order,
          bool transpose_2d) {
         return TTCompileTimeArgSpec(
             std::move(name), std::move(kind), std::move(dtype), offset, count,
-            std::move(buffer), std::move(segment_role), std::move(values), args_config_bits,
-            transport_page_size, std::move(layout), std::move(memory_space),
-            std::move(host_axis_order), transpose_2d);
+            std::move(buffer), std::move(segment_role), std::move(values),
+            args_config_bits, transport_page_size, std::move(layout),
+            std::move(memory_space), std::move(host_axis_order), transpose_2d);
       });
   refl::GlobalDef().def(
       "tl.TTAccessorSpec",
       [](ffi::String buffer, int64_t compile_time_arg_offset,
          int64_t compile_time_arg_count, int64_t common_runtime_arg_offset,
          int64_t common_runtime_arg_count, int64_t args_config_bits,
-         int64_t transport_page_size, ffi::String layout, ffi::String memory_space,
-         ffi::Array<Integer> host_axis_order, bool transpose_2d) {
-        return TTAccessorSpec(std::move(buffer), compile_time_arg_offset,
-                              compile_time_arg_count, common_runtime_arg_offset,
-                              common_runtime_arg_count, args_config_bits, transport_page_size,
-                              std::move(layout), std::move(memory_space),
-                              std::move(host_axis_order), transpose_2d);
+         int64_t transport_page_size, ffi::String layout,
+         ffi::String memory_space, ffi::Array<Integer> host_axis_order,
+         bool transpose_2d) {
+        return TTAccessorSpec(
+            std::move(buffer), compile_time_arg_offset, compile_time_arg_count,
+            common_runtime_arg_offset, common_runtime_arg_count,
+            args_config_bits, transport_page_size, std::move(layout),
+            std::move(memory_space), std::move(host_axis_order), transpose_2d);
       });
   refl::GlobalDef().def(
       "tl.TTSemaphoreBindingSpec",
       [](ffi::String name, int64_t semaphore_id, ffi::String arg_kind) {
-        return TTSemaphoreBindingSpec(std::move(name), semaphore_id, std::move(arg_kind));
+        return TTSemaphoreBindingSpec(std::move(name), semaphore_id,
+                                      std::move(arg_kind));
       });
   refl::GlobalDef().def(
       "tl.TTABIPlan",
-      [](ffi::String name, ffi::String kernel_name, ffi::Array<TTRuntimeArgSpec> runtime_args,
+      [](ffi::String name, ffi::String kernel_name,
+         ffi::Array<TTRuntimeArgSpec> runtime_args,
          ffi::Array<TTRuntimeArgSpec> common_runtime_args,
          ffi::Array<TTCompileTimeArgSpec> compile_time_arg_specs,
          ffi::Array<TTAccessorSpec> accessors,
          ffi::Array<TTSemaphoreBindingSpec> semaphore_bindings) {
-        return TTABIPlan(std::move(name), std::move(kernel_name), std::move(runtime_args),
-                         std::move(common_runtime_args), std::move(compile_time_arg_specs),
-                         std::move(accessors), std::move(semaphore_bindings));
+        return TTABIPlan(
+            std::move(name), std::move(kernel_name), std::move(runtime_args),
+            std::move(common_runtime_args), std::move(compile_time_arg_specs),
+            std::move(accessors), std::move(semaphore_bindings));
       });
   refl::GlobalDef().def(
       "tl.TTExecutionPlan",
-      [](ffi::String name, ffi::Array<ffi::String> kernel_names, ffi::Array<Integer> phase_indices) {
+      [](ffi::String name, ffi::Array<ffi::String> kernel_names,
+         ffi::Array<Integer> phase_indices) {
         return TTExecutionPlan(std::move(name), std::move(kernel_names),
                                std::move(phase_indices));
       });
   refl::GlobalDef().def(
       "tl.TTProgram",
-      [](ffi::String entry_name, ffi::String member_func, ffi::Array<TTMeshPlan> mesh_plans,
+      [](ffi::String entry_name, ffi::String member_func,
+         ffi::Array<TTMeshPlan> mesh_plans,
          ffi::Array<TTBufferDistributionPlan> buffer_distribution_plans,
          ffi::Array<TTBlockPlan> block_plans,
          ffi::Array<TTKernelPlan> kernel_plans,
          ffi::Array<TTComputeOpPlan> compute_op_plans,
          ffi::Array<TTTransportPlan> transport_plans,
          ffi::Array<TTSyncPlan> sync_plans, ffi::Array<TTABIPlan> abi_plans,
-         ffi::Array<TTExecutionPlan> execution_plans, ffi::Array<TTKernel> kernels,
-         ffi::Array<TTCoreGroup> core_groups, ffi::Array<TTCBPlan> cb_plans,
+         ffi::Array<TTExecutionPlan> execution_plans,
+         ffi::Array<TTKernel> kernels, ffi::Array<TTCoreGroup> core_groups,
+         ffi::Array<TTCBPlan> cb_plans,
          ffi::Array<TTSemaphorePlan> semaphore_plans,
          ffi::Array<TTComputeSyncPlan> compute_sync_plans,
          ffi::Array<TTDstLayoutPlan> dst_layout_plans,
@@ -1539,21 +1654,20 @@ TVM_FFI_STATIC_INIT_BLOCK() {
          ffi::Array<TTConsumerBindingPlan> consumer_binding_plans,
          ffi::Array<TTResourceDemand> resource_demands,
          ffi::Array<TTResourcePressureReport> resource_pressure_reports) {
-        return TTProgram(std::move(entry_name), std::move(member_func),
-                         std::move(mesh_plans), std::move(buffer_distribution_plans),
-                         std::move(block_plans), std::move(kernel_plans),
-                         std::move(compute_op_plans),
-                         std::move(transport_plans), std::move(sync_plans),
-                         std::move(abi_plans), std::move(execution_plans),
-                         std::move(kernels), std::move(core_groups), std::move(cb_plans),
-                         std::move(semaphore_plans), std::move(compute_sync_plans),
-                         std::move(dst_layout_plans), std::move(live_form_plans),
-                         std::move(materialization_plans),
-                         std::move(consumer_binding_plans),
-                         std::move(resource_demands),
-                         std::move(resource_pressure_reports));
+        return TTProgram(
+            std::move(entry_name), std::move(member_func),
+            std::move(mesh_plans), std::move(buffer_distribution_plans),
+            std::move(block_plans), std::move(kernel_plans),
+            std::move(compute_op_plans), std::move(transport_plans),
+            std::move(sync_plans), std::move(abi_plans),
+            std::move(execution_plans), std::move(kernels),
+            std::move(core_groups), std::move(cb_plans),
+            std::move(semaphore_plans), std::move(compute_sync_plans),
+            std::move(dst_layout_plans), std::move(live_form_plans),
+            std::move(materialization_plans), std::move(consumer_binding_plans),
+            std::move(resource_demands), std::move(resource_pressure_reports));
       });
 }
 
-}  // namespace tl
-}  // namespace tvm
+} // namespace tl
+} // namespace tvm

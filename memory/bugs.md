@@ -136,6 +136,43 @@
 
 ## 2. 已解决但值得记住的模式
 
+### sharded L1 source-region ABI 必须 all-or-none，不能给纯 local scratch 伪造 source
+
+- **症状**:
+  - 将 `TTBufferDistributionPlan.source_region_shape`
+    对所有 sharded L1 plan 都填上后，
+    flash-attn、GEMM 和 fragment/local buffer 用例在
+    `ValidateTTProgram`
+    处失败：
+    validator 看到 source-region 字段存在，
+    但没有对应 `source_buffer`。
+- **根因**:
+  - L1 sharded plan 有两类对象：
+    从 DRAM/global buffer materialize 出来的 resident L1 view，
+    以及纯 worker-local scratch / fragment / intermediate。
+    前者需要 source buffer / source region binding；
+    后者没有全局 source，
+    不能为了让 shape 字段完整而伪造 source binding。
+- **修法**:
+  - `BuildTTProgram`
+    只在能从当前 IR / CB plan 稳定证明 materialized source
+    时设置
+    `source_buffer` /
+    `source_region_kind` /
+    `source_region_shape`。
+  - `ValidateTTProgram`
+    对 source-region group 做 all-or-none 校验；
+    sharded L1 placement 仍必须有
+    `shard_grid_shape`、
+    `sharding_strategy`、
+    `shard_shape`
+    和 address mapping。
+- **教训**:
+  - source-region ABI 和 resident placement ABI 是两个对象。
+    validator 要 fail-close 不完整 source binding，
+    但不能把“没有 source”的 pure local scratch
+    误判成缺协议。
+
 ### live-form solver 不能把 self carry boundary 当成 physical transfer
 
 - **症状**:
