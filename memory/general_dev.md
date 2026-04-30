@@ -1895,6 +1895,14 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   not require every logical local byte size to already be alignment-sized.
   Copy/transport-only kernels still need resource-only `TTResourceDemand`
   records even when the tile-compute DAG is empty.
+- 2026-05-01 Blackhole sharded placement residue:
+  current `TTBufferDistributionPlan.shard_shape` is a coarse core-grid marker,
+  not a real per-core data shard shape.
+  Before sharded runtime address emission, split the representation into
+  shard grid shape, sharding strategy, per-core shard data shape, and explicit
+  logical-index to core-local address mapping.
+  Do not let source or runtime readers infer sharded addressing from buffer
+  names, layout strings, or the old `shard_shape` field.
 - 2026-04-30 active-doc cleanup rule:
   when a design doc starts carrying implementation closeout notes, command
   matrices, or historical explanations needed only once, rewrite it back to

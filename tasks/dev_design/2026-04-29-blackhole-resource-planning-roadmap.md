@@ -167,6 +167,17 @@ The conservative baseline is:
   validator should not require every logical local byte size to already be an
   allocation-aligned page.
 
+The current implementation still has one coarse-marker residue:
+`TTBufferDistributionPlan.shard_shape`
+is carrying attached core-grid shape, not the per-core tensor shard shape used
+by TT-Metal / TTNN sharded memory configs.
+The buffer address ABI gate must split this into explicit
+`shard_grid_shape`,
+`sharding_strategy`,
+per-core `shard_shape`,
+and logical-index to core-local address mapping before sharded placement is
+admitted for runtime emission.
+
 ## Direction 5: Workload Slices Before Full Runtime Expansion
 
 Only after typed core and buffer placement exist should the backend expand

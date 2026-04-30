@@ -99,6 +99,20 @@ page-indexed
 布局字符串
 或旧 runtime args 重新猜。
 
+当前 sharded placement 仍是 coarse marker：
+现有 `TTBufferDistributionPlan.shard_shape`
+实际装的是 attached core-group grid shape，
+不是 TT-Metal / TTNN 意义上的 per-core data shard shape。
+下一步必须先拆出
+`shard_grid_shape`
+/
+`sharding_strategy`
+/
+真实 `shard_shape`
+/
+logical-index 到 core-local address mapping，
+再让 source / runtime emission 消费。
+
 ## Next Task Order
 
 1. Tighten buffer address ABI:
@@ -107,6 +121,8 @@ page-indexed
    runtime args,
    per-work descriptors,
    and typed rejects explicit.
+   For sharded placement, split the current coarse grid marker from the
+   real per-core shard data shape and strategy before emitting addresses.
 2. Keep admission levels separate for every new subset:
    compile,
    source/spec,
