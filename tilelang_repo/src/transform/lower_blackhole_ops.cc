@@ -476,7 +476,7 @@ bool HasResidualFragmentFill(const Stmt& body);
 bool HasResidualFragmentAdd(const Stmt& body);
 bool HasResidualFragmentMax(const Stmt& body);
 bool HasResidualFragmentCast(const Stmt& body);
-bool HasResidualRowBroadcast(const Stmt& body);
+bool HasResidualScalarLoadBroadcast(const Stmt& body);
 }  // namespace
 
 static std::vector<std::string> CollectLeafUnsupportedComputeOpsFromBody(const Stmt& body) {
@@ -487,7 +487,7 @@ static std::vector<std::string> CollectLeafUnsupportedComputeOpsFromBody(const S
       unsupported_ops.push_back(op_name);
     }
   };
-  if (HasResidualRowBroadcast(body)) {
+  if (HasResidualScalarLoadBroadcast(body)) {
     push("broadcast");
   }
   if (HasResidualFragmentFill(body)) {
@@ -1230,7 +1230,8 @@ PrimFunc PlanTTKernelABI::Transform(const PrimFunc& func) {
     }
   };
   for (const std::string& op_name : expected_unsupported_ops) {
-    if (op_name == "broadcast" && HasResidualRowBroadcast(body_with_segment_markers)) {
+    if (op_name == "broadcast" &&
+        HasResidualScalarLoadBroadcast(body_with_segment_markers)) {
       push_unresolved("broadcast");
       continue;
     }
@@ -1638,7 +1639,7 @@ bool HasResidualFragmentCast(const Stmt& body) {
   return found;
 }
 
-bool HasResidualRowBroadcast(const Stmt& body) {
+bool HasResidualScalarLoadBroadcast(const Stmt& body) {
   bool found = false;
   tir::PostOrderVisit(body, [&](const ObjectRef& node) {
     const auto* store = node.as<BufferStoreNode>();

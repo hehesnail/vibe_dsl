@@ -1814,7 +1814,7 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   call to expand into several semantic leaf compute ops.
   Composite TIR expressions such as
   `exp2(lhs * s0 - rhs * s1)`
-  or row-broadcast division must first be decomposed into explicit
+  or division by a scalar-load operand must first be decomposed into explicit
   `Normalized Tile TIR`
   leaf statements.
   If a computation is not admitted,
@@ -1841,7 +1841,7 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   `add_tiles_bcast_cols` /
   `exp2_tile`
   leaf statements,
-  and row-broadcast division as
+  and division by a scalar-load operand as
   `recip_tile`
   plus
   `mul_tiles_bcast_cols`.
@@ -1889,11 +1889,14 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   sequence.
   Avoid pure `Try* -> Normalize*` forwarding wrappers; keep `Try*` only for
   real may-fail matchers.
-- 2026-04-30 Blackhole normalizer rule-driver cleanup:
-  for target leaf normalization, prefer a small local rule registry and a
-  shared builder over one large store-expression matcher.
-  Rule matchers should produce an ordered explicit leaf-call plan, and the
-  builder should be the only place that renders
+- 2026-04-30 Blackhole normalizer cleanup correction:
+  target leaf normalization should stay a bounded local normalizer, not an
+  open-ended rule registry / benefit table / workload-pattern catalog.
+  A shared builder is still useful for rendering repeated unary / binary leaf
+  call shapes, but source-expression helpers must not create named composite
+  semantic families.
+  Local normalization should produce an ordered explicit leaf-call plan, and
+  the builder should be the only place that renders
   `tl.tileop.blackhole_compute` statements.
   Source projection metadata for same-shaped leaves belongs in the leaf
   pattern schema; do not maintain a parallel hook table that repeats the same

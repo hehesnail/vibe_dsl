@@ -32,14 +32,17 @@ or composite-expression decomposition.
 
 - Output is explicit tile-compute TIR.
 - One emitted call represents one TT-Metal semantic leaf op.
-- The implementation should be organized as a small rule driver:
-  a rule registry, local-benefit ordering, match routines that produce an
-  explicit leaf-call plan, and a shared builder that renders that plan into
-  TIR.
-  The driver is pass-local mechanics, not a new IR or a persistent semantic
-  graph.
-- A match result may carry operands, scalar parameters, logical temp requests,
-  and the ordered leaf calls to render.
+- The implementation is a bounded normalizer, not a pattern engine.
+  It may dispatch on the current TIR store value root and use local helper
+  predicates, but it must not grow an open-ended rule registry, benefit table,
+  or workload-pattern catalog.
+- New workload coverage should normally preserve or introduce explicit
+  leaf-level TIR earlier.
+  Adding another scalarized source idiom to this normalizer is only valid when
+  the source idiom is already part of the admitted scalar-loop residue and can
+  be lowered immediately to TT-Metal leaves.
+- A local normalization result may carry operands, scalar parameters, logical
+  temp requests, and the ordered leaf calls to render.
   It must not carry production operation names such as
   `exp2_affine`,
   `row_div`,
@@ -72,8 +75,6 @@ or composite-expression decomposition.
 - Same-shaped leaf calls should be built by shared unary / binary helpers.
   The normalizer must not carry one hand-written call builder per builtin
   when only the operation name differs.
-- Rule ordering may encode local normalization priority.
-  It must not be used as a hidden cross-stage contract.
 - Operation-changing `mode` /
   `kind`
   payloads are forbidden.
@@ -100,7 +101,7 @@ Required examples:
   `add_tiles` or `add_tiles_bcast_cols` /
   `exp2_tile`
   leaf statements with logical temps as needed.
-- row-broadcast division becomes
+- division by a scalar-load operand becomes
   `recip_tile`
   plus
   `mul_tiles_bcast_cols`.
@@ -133,11 +134,11 @@ Required checks:
 - the normalizer has one loop-normalization implementation surface,
   without a pure forwarding `TryNormalizeBlackholeTileComputeLoop`
   wrapper
-- the normalizer has a rule registry / driver boundary,
-  and does not implement all store-expression normalization as one large
-  `TryNormalizeBlackholeTileComputeStore`
-  function
+- the normalizer has one store-normalization dispatch,
+  no open-ended rule registry / benefit table,
+  and no large `TryNormalizeBlackholeTileComputeStore`
+  compatibility shell
 - frontend normalization emits only admitted leaf operation names
 - composite payload strings are absent from leaf-looking calls
-- row-division normalization produces `recip_tile`
+- division-by-scalar-load normalization produces `recip_tile`
 - Blackhole transform tests cover the normalized source surface

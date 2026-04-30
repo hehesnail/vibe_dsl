@@ -64,6 +64,12 @@
   改为
   `recip_tile + mul_tiles_bcast_cols`。
   Source hooks 现在只能投影一个 selected semantic TT-Metal leaf op。
+  Blackhole tile-compute normalizer 保留共享 leaf-call builder，
+  但不再保留 rule registry /
+  benefit table
+  或 workload-pattern catalog；
+  store normalization 只做 bounded root dispatch，
+  并立即产出 explicit TT-Metal leaf statements。
 - First typed resource-pressure surface 已存在：
   `TTResourceDemand`
   /
@@ -133,7 +139,7 @@ Core placement 和 buffer distribution 仍然过粗：
 
 Latest code implementation batch:
 current HEAD after
-Blackhole tile-compute rule-driver cleanup.
+Blackhole tile-compute bounded-normalizer cleanup.
 
 Verification for this batch:
 
@@ -159,9 +165,12 @@ Verification for this batch:
   no longer declares tile-compute source emitter hook methods,
   source projection no longer carries a second hook table or per-leaf
   add/mul/exp2/recip emit methods,
-  normalizer source has a local rule registry / driver instead of one large
-  `TryNormalizeBlackholeTileComputeStore`
-  function,
+  normalizer source has shared leaf-call rendering and bounded store-value
+  root dispatch without
+  `TileComputeRewriteRule`,
+  `GetBlackholeTileComputeRewriteRules`,
+  benefit ordering,
+  or a large `TryNormalizeBlackholeTileComputeStore` compatibility shell,
   and `lower_blackhole_tile_compute.cc`
   no longer hand-writes CB / tile-register / pack calls outside
   `ExactTileComputeEmitter`.

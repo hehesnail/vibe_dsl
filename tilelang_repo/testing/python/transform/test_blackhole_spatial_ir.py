@@ -1565,10 +1565,11 @@ def test_lower_tile_op_has_single_blackhole_tile_compute_normalizer_surface():
     assert "MakeBlackholeTileComputeCall(" not in lower_tile_source
     assert "TryNormalizeBlackholeTileComputeStore(" not in lower_tile_source
     assert "TryNormalizeBlackholeTileComputeLoop(" not in lower_tile_source
-    assert "struct TileComputeRewriteRule" in normalizer_source
     assert "class TileComputeIRBuilder" in normalizer_source
-    assert "GetBlackholeTileComputeRewriteRules" in normalizer_source
-    assert "for (const TileComputeRewriteRule& rule" in normalizer_source
+    assert "NormalizeBlackholeTileComputeStore(" in normalizer_source
+    assert "struct TileComputeRewriteRule" not in normalizer_source
+    assert "GetBlackholeTileComputeRewriteRules" not in normalizer_source
+    assert "for (const TileComputeRewriteRule& rule" not in normalizer_source
     assert "TryNormalizeBlackholeTileComputeStore(" not in normalizer_source
 
     helper_defs = re.findall(

@@ -169,10 +169,13 @@ as a compatibility shell.
     分别在 `LowerTileOpPass`
     和 `BlackholeTileComputeNormalizer`
     中的实现收束成单一共享 helper
-  - normalizer 内部改成本地 rule registry /
-    driver /
-    `TileComputeIRBuilder`；
-    matcher 产出 ordered leaf-call plan，
+  - normalizer 内部保留共享
+    `TileComputeIRBuilder`
+    作为 leaf-call 渲染去重边界；
+    不保留 rule registry /
+    benefit table
+    或 workload-pattern catalog；
+    本地 root dispatch 只产出 ordered leaf-call plan，
     builder 统一渲染 explicit
     `tl.tileop.blackhole_compute`
     statements

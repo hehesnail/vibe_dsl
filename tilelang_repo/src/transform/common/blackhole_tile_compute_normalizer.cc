@@ -321,20 +321,9 @@ class TileComputeIRBuilder {
   int* temp_index_;
 };
 
-using TileComputeRewriteMatchFn =
-    bool (*)(const TileComputeRewriteContext& ctx,
-             TileComputeRewriteMatch* match,
-             TileComputeIRBuilder* builder);
-
-struct TileComputeRewriteRule {
-  const char* name;
-  int benefit;
-  TileComputeRewriteMatchFn match;
-};
-
-bool MatchTypecastTileRule(const TileComputeRewriteContext& ctx,
-                           TileComputeRewriteMatch* match,
-                           TileComputeIRBuilder* builder) {
+bool EmitTypecastTileIfMatched(const TileComputeRewriteContext& ctx,
+                               TileComputeRewriteMatch* match,
+                               TileComputeIRBuilder* builder) {
   (void)builder;
   Buffer src;
   PrimExpr src_index;
@@ -348,9 +337,9 @@ bool MatchTypecastTileRule(const TileComputeRewriteContext& ctx,
   return true;
 }
 
-bool MatchCopyTileRule(const TileComputeRewriteContext& ctx,
-                       TileComputeRewriteMatch* match,
-                       TileComputeIRBuilder* builder) {
+bool EmitCopyTileIfMatched(const TileComputeRewriteContext& ctx,
+                           TileComputeRewriteMatch* match,
+                           TileComputeIRBuilder* builder) {
   (void)builder;
   Buffer src;
   PrimExpr src_index;
@@ -364,9 +353,9 @@ bool MatchCopyTileRule(const TileComputeRewriteContext& ctx,
   return true;
 }
 
-bool MatchBinaryMaxTileRule(const TileComputeRewriteContext& ctx,
-                            TileComputeRewriteMatch* match,
-                            TileComputeIRBuilder* builder) {
+bool EmitBinaryMaxTileIfMatched(const TileComputeRewriteContext& ctx,
+                                TileComputeRewriteMatch* match,
+                                TileComputeIRBuilder* builder) {
   (void)builder;
   auto match_ordered_max = [&](const PrimExpr& lhs,
                                const PrimExpr& rhs) -> bool {
@@ -385,9 +374,9 @@ bool MatchBinaryMaxTileRule(const TileComputeRewriteContext& ctx,
                  match_ordered_max(max->b, max->a));
 }
 
-bool MatchFmaTileRule(const TileComputeRewriteContext& ctx,
-                      TileComputeRewriteMatch* match,
-                      TileComputeIRBuilder* builder) {
+bool EmitAddRootTileComputeIfMatched(const TileComputeRewriteContext& ctx,
+                                     TileComputeRewriteMatch* match,
+                                     TileComputeIRBuilder* builder) {
   (void)builder;
   auto match_ordered_fma = [&](const PrimExpr& mul_expr,
                                const PrimExpr& add_expr) -> bool {
@@ -426,9 +415,9 @@ bool MatchFmaTileRule(const TileComputeRewriteContext& ctx,
                  match_ordered_fma(add->b, add->a));
 }
 
-bool MatchExp2ScaledDifferenceRule(const TileComputeRewriteContext& ctx,
-                                   TileComputeRewriteMatch* match,
-                                   TileComputeIRBuilder* builder) {
+bool EmitExp2RootTileComputeIfMatched(const TileComputeRewriteContext& ctx,
+                                      TileComputeRewriteMatch* match,
+                                      TileComputeIRBuilder* builder) {
   PrimExpr exp2_arg;
   if (!MatchExp2Call(ctx.store->value, &exp2_arg)) {
     return false;
@@ -488,9 +477,9 @@ bool MatchExp2ScaledDifferenceRule(const TileComputeRewriteContext& ctx,
   return true;
 }
 
-bool MatchRowBroadcastMulRule(const TileComputeRewriteContext& ctx,
-                              TileComputeRewriteMatch* match,
-                              TileComputeIRBuilder* builder) {
+bool EmitMulRootTileComputeIfMatched(const TileComputeRewriteContext& ctx,
+                                     TileComputeRewriteMatch* match,
+                                     TileComputeIRBuilder* builder) {
   (void)builder;
   auto match_ordered_broadcast = [&](const PrimExpr& self_expr,
                                      const PrimExpr& scalar_expr) -> bool {
@@ -510,9 +499,9 @@ bool MatchRowBroadcastMulRule(const TileComputeRewriteContext& ctx,
                  match_ordered_broadcast(mul->b, mul->a));
 }
 
-bool MatchRowBroadcastDivRule(const TileComputeRewriteContext& ctx,
-                              TileComputeRewriteMatch* match,
-                              TileComputeIRBuilder* builder) {
+bool EmitDivRootTileComputeIfMatched(const TileComputeRewriteContext& ctx,
+                                     TileComputeRewriteMatch* match,
+                                     TileComputeIRBuilder* builder) {
   const auto* div = ctx.store->value.as<DivNode>();
   Buffer scalar;
   if (!div ||
@@ -532,9 +521,9 @@ bool MatchRowBroadcastDivRule(const TileComputeRewriteContext& ctx,
   return true;
 }
 
-bool MatchFillTileRule(const TileComputeRewriteContext& ctx,
-                       TileComputeRewriteMatch* match,
-                       TileComputeIRBuilder* builder) {
+bool EmitFillTileIfMatched(const TileComputeRewriteContext& ctx,
+                           TileComputeRewriteMatch* match,
+                           TileComputeIRBuilder* builder) {
   (void)builder;
   if (!IsLiteralScalarValue(ctx.store->value)) {
     return false;
@@ -543,25 +532,10 @@ bool MatchFillTileRule(const TileComputeRewriteContext& ctx,
   return true;
 }
 
-const std::vector<TileComputeRewriteRule>&
-GetBlackholeTileComputeRewriteRules() {
-  static const std::vector<TileComputeRewriteRule> rules = {
-      {"typecast_tile", 100, &MatchTypecastTileRule},
-      {"copy_tile", 90, &MatchCopyTileRule},
-      {"binary_max_tile", 80, &MatchBinaryMaxTileRule},
-      {"fma_leaf_sequence", 70, &MatchFmaTileRule},
-      {"exp2_leaf_sequence", 60, &MatchExp2ScaledDifferenceRule},
-      {"row_broadcast_mul_leaf", 50, &MatchRowBroadcastMulRule},
-      {"row_broadcast_div_leaf_sequence", 40, &MatchRowBroadcastDivRule},
-      {"fill_tile", 10, &MatchFillTileRule},
-  };
-  return rules;
-}
-
-Stmt ApplyBlackholeTileComputeRewriteRules(const BufferStoreNode* store,
-                                           const PrimExpr& linear_index,
-                                           const PrimExpr& num_elements,
-                                           int* temp_index) {
+Stmt NormalizeBlackholeTileComputeStore(const BufferStoreNode* store,
+                                        const PrimExpr& linear_index,
+                                        const PrimExpr& num_elements,
+                                        int* temp_index) {
   if (!store || !IsBlackholeComputeBuffer(store->buffer) ||
       store->indices.size() != 1U ||
       !ProvenEqual(store->indices[0], linear_index)) {
@@ -569,18 +543,43 @@ Stmt ApplyBlackholeTileComputeRewriteRules(const BufferStoreNode* store,
   }
   TileComputeIRBuilder builder(temp_index);
   const TileComputeRewriteContext ctx{store, linear_index, num_elements};
-  int previous_benefit = 1000000000;
-  for (const TileComputeRewriteRule& rule :
-       GetBlackholeTileComputeRewriteRules()) {
-    ICHECK(rule.name != nullptr);
-    ICHECK_LE(rule.benefit, previous_benefit)
-        << "Blackhole tile compute rewrite rules must be ordered by "
-           "non-increasing local benefit";
-    previous_benefit = rule.benefit;
+
+  auto render_if_matched = [&](auto emit) -> Stmt {
     TileComputeRewriteMatch match;
-    if (rule.match(ctx, &match, &builder)) {
+    if (emit(ctx, &match, &builder)) {
       return builder.Render(match);
     }
+    return Stmt();
+  };
+
+  if (Stmt stmt = render_if_matched(EmitTypecastTileIfMatched); stmt.defined()) {
+    return stmt;
+  }
+  if (Stmt stmt = render_if_matched(EmitCopyTileIfMatched); stmt.defined()) {
+    return stmt;
+  }
+  if (Stmt stmt = render_if_matched(EmitBinaryMaxTileIfMatched);
+      stmt.defined()) {
+    return stmt;
+  }
+  if (Stmt stmt = render_if_matched(EmitAddRootTileComputeIfMatched);
+      stmt.defined()) {
+    return stmt;
+  }
+  if (Stmt stmt = render_if_matched(EmitExp2RootTileComputeIfMatched);
+      stmt.defined()) {
+    return stmt;
+  }
+  if (Stmt stmt = render_if_matched(EmitMulRootTileComputeIfMatched);
+      stmt.defined()) {
+    return stmt;
+  }
+  if (Stmt stmt = render_if_matched(EmitDivRootTileComputeIfMatched);
+      stmt.defined()) {
+    return stmt;
+  }
+  if (Stmt stmt = render_if_matched(EmitFillTileIfMatched); stmt.defined()) {
+    return stmt;
   }
   return Stmt();
 }
@@ -614,8 +613,8 @@ class BlackholeTileComputeNormalizer : public StmtExprMutator {
 Stmt NormalizeBlackholeTileComputeLoop(const ForNode* op, int* temp_index) {
   if (const auto* store = op->body.as<BufferStoreNode>()) {
     if (store->indices.size() == 1U) {
-      return ApplyBlackholeTileComputeRewriteRules(store, store->indices[0],
-                                                   op->extent, temp_index);
+      return NormalizeBlackholeTileComputeStore(store, store->indices[0],
+                                                op->extent, temp_index);
     }
   }
   const auto* inner_loop = op->body.as<ForNode>();
@@ -623,7 +622,7 @@ Stmt NormalizeBlackholeTileComputeLoop(const ForNode* op, int* temp_index) {
       inner_loop ? inner_loop->body.as<BufferStoreNode>() : nullptr;
   if (inner_loop && inner_store && inner_store->indices.size() == 1U) {
     arith::Analyzer analyzer;
-    return ApplyBlackholeTileComputeRewriteRules(
+    return NormalizeBlackholeTileComputeStore(
         inner_store, inner_store->indices[0],
         analyzer.Simplify(op->extent * inner_loop->extent), temp_index);
   }
