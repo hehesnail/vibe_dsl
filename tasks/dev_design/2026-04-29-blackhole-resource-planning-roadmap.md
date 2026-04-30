@@ -168,6 +168,8 @@ The conservative baseline is:
   allocation-aligned page.
 
 The current implementation still has one coarse-marker residue:
+the sharded plan marks the L1-side working view / materialization, not the
+DRAM global tensor itself.
 `TTBufferDistributionPlan.shard_shape`
 is carrying attached core-grid shape, not the per-core tensor shard shape used
 by TT-Metal / TTNN sharded memory configs.
@@ -175,8 +177,10 @@ The buffer address ABI gate must split this into explicit
 `shard_grid_shape`,
 `sharding_strategy`,
 per-core `shard_shape`,
-and logical-index to core-local address mapping before sharded placement is
-admitted for runtime emission.
+source buffer / source region binding,
+logical-index to core-local address mapping,
+and DRAM-source region to L1-shard copy/address mapping before sharded
+placement is admitted for runtime emission.
 
 ## Direction 5: Workload Slices Before Full Runtime Expansion
 

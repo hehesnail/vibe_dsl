@@ -1896,11 +1896,14 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   Copy/transport-only kernels still need resource-only `TTResourceDemand`
   records even when the tile-compute DAG is empty.
 - 2026-05-01 Blackhole sharded placement residue:
-  current `TTBufferDistributionPlan.shard_shape` is a coarse core-grid marker,
+  current sharded placement marks the L1-side working view/materialization,
+  not the DRAM/global tensor itself.
+  `TTBufferDistributionPlan.shard_shape` is a coarse core-grid marker,
   not a real per-core data shard shape.
   Before sharded runtime address emission, split the representation into
-  shard grid shape, sharding strategy, per-core shard data shape, and explicit
-  logical-index to core-local address mapping.
+  shard grid shape, sharding strategy, per-core shard data shape,
+  source buffer / source region binding, explicit logical-index to core-local
+  address mapping, and DRAM-source region to L1-shard copy/address mapping.
   Do not let source or runtime readers infer sharded addressing from buffer
   names, layout strings, or the old `shard_shape` field.
 - 2026-04-30 active-doc cleanup rule:
