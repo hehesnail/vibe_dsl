@@ -1879,3 +1879,13 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   When adding new common `.cc` files, rerun `cmake -S . -B build` before
   rebuilding because the current CMake source glob is resolved at configure
   time.
+- 2026-04-30 Blackhole duplicate-lowering cleanup:
+  after splitting a large lowering file by responsibility, immediately check
+  whether same-shaped logic was merely moved into per-op methods.
+  Binary, broadcast-cols, and unary tile compute leaves should share category
+  emitters when only builtin call names differ.
+  Row-reduction and other exact tile compute sequences should reuse the common
+  CB / tile-register / pack emitter instead of open-coding a parallel source
+  sequence.
+  Avoid pure `Try* -> Normalize*` forwarding wrappers; keep `Try*` only for
+  real may-fail matchers.

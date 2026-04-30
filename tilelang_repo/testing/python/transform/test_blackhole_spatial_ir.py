@@ -1584,13 +1584,14 @@ def test_lower_tile_op_has_single_blackhole_tile_compute_normalizer_surface():
         normalizer_source,
     )
     loop_defs = re.findall(
-        r"\bStmt\s+TryNormalize(?:BlackholeTileCompute)?Loop\s*\(",
+        r"\bStmt\s+NormalizeBlackholeTileComputeLoop\s*\(",
         normalizer_source,
     )
 
     assert helper_defs == ["Stmt MakeBlackholeTileComputeCall("]
     assert len(store_defs) == 1
     assert len(loop_defs) == 1
+    assert "TryNormalizeBlackholeTileComputeLoop(" not in normalizer_source
 
 
 def test_tile_compute_source_projection_is_not_declared_on_plan_tt_kernel_abi():
@@ -1606,6 +1607,13 @@ def test_tile_compute_source_projection_is_not_declared_on_plan_tt_kernel_abi():
     assert "EmitFillFragmentTileComputeSource" not in planner_header
     assert "EmitRecipTileComputeSource" not in planner_header
     assert "BlackholeTileComputeSourceProjection::Emit" in tile_compute_source
+    assert "EmitAddTiles(" not in tile_compute_source
+    assert "EmitMulTiles(" not in tile_compute_source
+    assert "EmitExp2(" not in tile_compute_source
+    assert "EmitRecip(" not in tile_compute_source
+    assert "EmitBinary(" in tile_compute_source
+    assert "EmitBroadcastColsBinary(" in tile_compute_source
+    assert "EmitUnary(" in tile_compute_source
 
 
 def test_spatial_plan_records_preserved_reduce_as_compute_producer():

@@ -75,6 +75,9 @@ generic validators
   - owns TT-Metal leaf compute sequence emission for
     fill / copy / row-reduce / binary /
     broadcast-cols / exp2 exact tile sequences
+  - uses category-level source projection emitters for same-shaped
+    binary / broadcast-cols / unary leaf ops,
+    instead of one static emitter per TT-Metal builtin name
   - keeps the public pass entry and class state in
     `PlanTTKernelABI`
     without adding a new cross-pass protocol
@@ -84,6 +87,8 @@ generic validators
 作为 pass-local helper，
 集中 reserve / wait / pop / push /
 pack tile 这些重复 leaf emission mechanics。
+Row-reduction source generation also goes through this helper;
+it no longer hand-writes a second CB / tile-register / pack sequence.
 
 第二刀拆出：
 
@@ -163,6 +168,10 @@ as a compatibility shell.
     分别在 `LowerTileOpPass`
     和 `BlackholeTileComputeNormalizer`
     中的实现收束成单一共享 helper
+  - normalizer 内部继续用 unary / binary call builders
+    收束同形 leaf-call construction，
+    不保留纯转发的 `TryNormalizeBlackholeTileComputeLoop`
+    wrapper
   - 继续产出显式
     `tl.tileop.blackhole_compute`
     而不是下游 matcher

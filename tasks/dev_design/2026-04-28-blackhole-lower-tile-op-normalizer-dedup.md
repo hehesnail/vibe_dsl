@@ -56,6 +56,9 @@ or composite-expression decomposition.
   and
   `output`
   roles.
+- Same-shaped leaf calls should be built by shared unary / binary helpers.
+  The normalizer must not carry one hand-written call builder per builtin
+  when only the operation name differs.
 - Operation-changing `mode` /
   `kind`
   payloads are forbidden.
@@ -112,6 +115,9 @@ Required checks:
 - there is a single shared Blackhole tile-compute normalizer surface
 - `lower_tile_op.cc`
   calls the normalizer but does not define it
+- the normalizer has one loop-normalization implementation surface,
+  without a pure forwarding `TryNormalizeBlackholeTileComputeLoop`
+  wrapper
 - frontend normalization emits only admitted leaf operation names
 - composite payload strings are absent from leaf-looking calls
 - row-division normalization produces `recip_tile`

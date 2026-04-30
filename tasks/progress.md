@@ -7,7 +7,7 @@
 
 ## Status
 
-- Date: `2026-04-29`
+- Date: `2026-04-30`
 - Active lane: `Hardware-model-backed core and buffer placement`
 - Main chain:
   `Normalized Tile TIR -> SpatialPlan -> TTProgram -> ExecutableSpec`
@@ -36,6 +36,12 @@
   `PlanTTKernelABI`
   大接口面收窄到
   `BlackholeTileComputeSourceProjection`。
+  当前实现继续收缩重复 lowering mechanics：
+  normalizer 用 unary / binary leaf builders 生成同形 calls；
+  source projection 用 binary / broadcast-cols / unary category emitters；
+  row-reduction source emission 复用
+  `ExactTileComputeEmitter`
+  的 CB / tile-register / pack sequence。
 - Algorithmic generalization foundation 已存在并在 admitted live-form /
   materialization 决策中使用：
   `AccessRegion`,
@@ -125,20 +131,21 @@ Core placement 和 buffer distribution 仍然过粗：
 
 ## Latest Verification
 
-Latest code implementation commit:
+Latest code implementation batch:
 current HEAD after
-`Refactor Blackhole tile compute lowering boundaries`.
+Blackhole tile-compute lowering duplicate-logic cleanup.
 
-Verification from that commit:
+Verification for this batch:
 
-- `cmake -S . -B build`
 - `cmake --build build -j32`
-- `pytest -q testing/python/transform/test_blackhole_spatial_ir.py -k 'tile_compute or tt_metal_api_granularity or builtin_selector or single_blackhole_tile_compute_normalizer_surface or source_projection_is_not_declared'`
-  (`30 passed, 50 deselected`)
+- `pytest -q testing/python/transform/test_blackhole_spatial_ir.py -k 'single_blackhole_tile_compute_normalizer_surface or source_projection_is_not_declared or tile_compute or builtin_selector'`
+  (`29 passed, 51 deselected`)
 - `pytest -q testing/python/transform/test_blackhole_spatial_ir.py`
   (`80 passed`)
 - `pytest -q testing/python/target/blackhole/test_blackhole_flash_attention_pipeline.py -k 'leaf_compute_ops or optimized_path_lowers_acc_o_broadcast_updates or optimized_path_lowers_exp2_to_leaf_tile_ops or projects_non_gemm_exact_compute_ops'`
   (`3 passed, 64 deselected`)
+- `git diff --check`
+  (`passed`)
 - Cleanup scan found no active
   `GetBlackholeTileComputeStringArg`,
   old composite generator,
@@ -148,8 +155,13 @@ Verification from that commit:
   `lower_tile_op.cc`
   no longer defines Blackhole leaf-call builders /
   normalizer helpers,
-  and `lower_blackhole_ops.h`
-  no longer declares tile-compute source emitter hook methods.
+  `lower_blackhole_ops.h`
+  no longer declares tile-compute source emitter hook methods,
+  source projection no longer carries per-leaf add/mul/exp2/recip emit
+  methods,
+  and `lower_blackhole_tile_compute.cc`
+  no longer hand-writes CB / tile-register / pack calls outside
+  `ExactTileComputeEmitter`.
 
 Latest doc cleanup verification:
 
