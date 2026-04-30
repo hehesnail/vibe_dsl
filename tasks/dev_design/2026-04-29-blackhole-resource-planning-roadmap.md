@@ -166,7 +166,7 @@ Only after typed core and buffer placement exist should the backend add:
 Adding these before typed placement exists would recreate the current
 over-complexity problem under a new name.
 
-## Current Order
+## Planning Order
 
 1. Keep explicit leaf tile-compute and DAG covering boundaries clean.
 2. Use typed resource demand / pressure reports as admission surfaces.
