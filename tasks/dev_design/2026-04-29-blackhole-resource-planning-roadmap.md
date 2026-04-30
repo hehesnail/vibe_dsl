@@ -153,6 +153,20 @@ to represent:
 - shard shape
 - attached core range
 
+The conservative baseline is:
+
+- DRAM buffers with ABI interleaved layout become interleaved DRAM
+  placement.
+- Shared or CB-backed L1 buffers become attached-core sharded L1
+  placement.
+- Per-worker local L1 state stays device-local replicated placement until
+  the buffer address ABI can express a stronger per-work indexed contract.
+- CB-backed buffers use CB page facts for placement and are not counted again
+  as allocator-managed L1 buffers.
+- L1 logical byte sizes are admitted against aligned hardware budget; the
+  validator should not require every logical local byte size to already be an
+  allocation-aligned page.
+
 ## Direction 5: Workload Slices Before Full Runtime Expansion
 
 Only after typed core and buffer placement exist should the backend expand

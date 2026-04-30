@@ -6,7 +6,7 @@
 ## Status
 
 - Date: `2026-04-30`
-- Active lane: `Hardware-model-backed buffer placement`
+- Active lane: `Buffer address ABI gate`
 - Main chain:
   `Normalized Tile TIR -> SpatialPlan -> TTProgram -> ExecutableSpec`
 
@@ -59,6 +59,25 @@
   validators 会拒绝 out-of-grid core、
   duplicate core
   和非法 work packet。
+- `TTBufferDistributionPlan`
+  已从假
+  `unit_mesh` /
+  `replicated`
+  baseline 扩到硬件模型约束的 placement：
+  DRAM ABI layout 产出 interleaved placement；
+  shared / CB-backed L1 产出 attached-core sharded placement；
+  普通 per-worker local L1 保持 device-local replicated placement。
+  Page size 来自 ABI layout、TIR buffer storage 和 CB plan，
+  projection 会携带 attached core group/index。
+- `ValidateTTProgram`
+  已消费 buffer distribution placement：
+  unsupported memory space / distribution kind、
+  invalid page size、
+  shard shape、
+  attached-core reference/index、
+  DRAM view size
+  和 L1 worker budget
+  会在 source / runtime emission 前 fail closed。
 - Blackhole C++ audit 第一批已收口：
   scalar bitcast、
   DLTensor compact-layout gate、
@@ -69,36 +88,32 @@
 
 ## Current Blocker
 
-`TTBufferDistributionPlan`
-仍主要停留在
-`unit_mesh` /
-`replicated`。
+Buffer placement baseline 已进入 typed `TTProgram`，
+但 buffer address ABI 仍不够显式。
 
-Wider runtime admission 还需要 buffer placement
-继续消费 `TTHardwareModel`
-的 L1 / DRAM facts，
-并在 source / runtime emission 前给出 typed reject。
+Source / runtime reader 仍需要 typed interleaved、
+sharded、
+page-indexed
+和 per-work buffer address 参数，
+不能在 emission / runtime reader 里从名字、
+布局字符串
+或旧 runtime args 重新猜。
 
 ## Next Task Order
 
-1. Upgrade buffer placement:
-   expand `TTBufferDistributionPlan`
-   beyond `unit_mesh` / `replicated`,
-   consume L1 / DRAM hardware facts,
-   and validate placement before emission.
-2. Tighten buffer address ABI:
+1. Tighten buffer address ABI:
    make interleaved / sharded / page-indexed buffer address parameters,
    compile-time args,
    runtime args,
    per-work descriptors,
    and typed rejects explicit.
-3. Keep admission levels separate for every new subset:
+2. Keep admission levels separate for every new subset:
    compile,
    source/spec,
    direct runtime,
    TT-Sim bf16 correctness,
    and typed unsupported reason.
-4. Admit first-subset workloads in this order:
+3. Admit first-subset workloads in this order:
    non-flash leaf compute / GEMM variants,
    standalone `topk`,
    exact-CB / materialization / partial-combine primitive
@@ -109,8 +124,8 @@ Wider runtime admission 还需要 buffer placement
    paged GQA decode,
    paged MLA decode,
    then chunk recurrence / scan.
-5. Pull forward only the P3 primitives required by the current first subset.
-6. Defer production distributed variants until mesh / sharding / CCL /
+4. Pull forward only the P3 primitives required by the current first subset.
+5. Defer production distributed variants until mesh / sharding / CCL /
    NoC / multicast / global scheduling plans are typed and validated.
    Full MoE and full paged decode are not admitted by their first subsets.
 
@@ -156,25 +171,19 @@ Wider runtime admission 还需要 buffer placement
 
 ## Latest Verification
 
-Latest docs-only planning update:
-remaining workload order was re-split around buffer placement,
-buffer address ABI,
-admission-level verification,
-first-subset workload admission,
-and later production distributed runtime.
-No build or pytest was required for docs-only changes.
-
 Latest implementation batch:
-Blackhole modern C++ audit and hardware-model-backed core-group repair.
+hardware-model-backed buffer distribution placement baseline.
 
 Verified:
 
-- C++ build passed.
-- Full `test_blackhole_spatial_ir.py` passed.
-- Full Blackhole copy runtime suite passed under TT-Sim.
-- Full Blackhole GEMM suite passed under TT-Sim.
-- Blackhole export/load,
-  leaf-reader fail-closed,
-  compile-time ABI,
-  and non-compact DLTensor gates passed.
-- `git diff --check` passed.
+- `cmake --build build -j32`
+- `pytest -q testing/python/transform/test_blackhole_spatial_ir.py`
+  (`89 passed`)
+- `pytest -q testing/python/target/blackhole/test_blackhole_copy_pipeline.py`
+  (`52 passed, 10 skipped, 1 xfailed`)
+- `pytest -q testing/python/target/blackhole/test_blackhole_flash_attention_pipeline.py testing/python/target/blackhole/test_blackhole_gemm.py`
+  (`111 passed, 15 skipped`)
+- TT-Sim env via `scripts/setup_tt_sim.sh`,
+  then
+  `pytest -q testing/python/target/blackhole/test_blackhole_copy_runtime.py testing/python/target/blackhole/test_blackhole_tvm_ffi_export.py`
+  (`16 passed`)

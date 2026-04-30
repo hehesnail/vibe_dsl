@@ -155,7 +155,11 @@ def _with_test_hardware_model(
     logical_worker_grid_x,
     logical_worker_grid_y,
     functional_worker_count,
+    dram_view_count=8,
+    worker_l1_size=1572864,
+    dram_view_size=4278190080,
     max_cb_count=64,
+    l1_allocation_alignment_bytes=32,
 ):
     make_hardware_model = tvm.get_global_func("tl.TTHardwareModel")
     hardware_model = make_hardware_model(
@@ -165,11 +169,11 @@ def _with_test_hardware_model(
         logical_worker_grid_y,
         functional_worker_count,
         0,
-        8,
-        1572864,
-        4278190080,
+        dram_view_count,
+        worker_l1_size,
+        dram_view_size,
         max_cb_count,
-        32,
+        l1_allocation_alignment_bytes,
         True,
         2,
         2,
@@ -568,6 +572,53 @@ def _rebuild_tt_core_group(
         str(core_group.linearization) if linearization is None else linearization,
         list(core_group.physical_cores) if physical_cores is None else physical_cores,
         list(core_group.work_packets) if work_packets is None else work_packets,
+    )
+
+
+def _rebuild_tt_buffer_distribution_plan(
+    plan,
+    *,
+    distribution_kind=None,
+    layout=None,
+    memory_space=None,
+    page_size_bytes=None,
+    shard_shape=None,
+    shard_orientation=None,
+    host_visibility=None,
+    attached_core_group=None,
+    attached_core_group_index=None,
+):
+    make_plan = tvm.get_global_func("tl.TTBufferDistributionPlan")
+    return make_plan(
+        str(plan.name),
+        str(plan.buffer),
+        str(plan.mesh_plan),
+        int(plan.mesh_plan_index),
+        str(plan.distribution_kind)
+        if distribution_kind is None
+        else distribution_kind,
+        str(plan.layout) if layout is None else layout,
+        str(plan.memory_space) if memory_space is None else memory_space,
+        int(plan.page_size_bytes) if page_size_bytes is None else page_size_bytes,
+        list(plan.shard_shape) if shard_shape is None else shard_shape,
+        str(plan.shard_orientation) if shard_orientation is None else shard_orientation,
+        str(plan.host_visibility) if host_visibility is None else host_visibility,
+        str(plan.attached_core_group)
+        if attached_core_group is None
+        else attached_core_group,
+        int(plan.attached_core_group_index)
+        if attached_core_group_index is None
+        else attached_core_group_index,
+        list(plan.logical_shape),
+        list(plan.local_shape),
+        plan.thread_extent,
+        plan.replicate_extent,
+        list(plan.inverse_logical_index_vars),
+        list(plan.inverse_logical_index_exprs),
+        str(plan.spatial_layout),
+        str(plan.spatial_distribution_kind),
+        str(plan.abi_layout),
+        str(plan.abi_memory_space),
     )
 
 
@@ -2324,7 +2375,9 @@ def test_build_tt_program_exposes_mesh_and_buffer_distribution_plans():
     assert spatial_subjects.issubset(distributions)
     assert all(str(plan.mesh_plan) == "unit_mesh" for plan in distributions.values())
     assert all(int(plan.mesh_plan_index) == 0 for plan in distributions.values())
-    assert {str(plan.distribution_kind) for plan in distributions.values()} == {"replicated"}
+    assert str(distributions["A"].distribution_kind) == "interleaved"
+    assert str(distributions["A_shared"].distribution_kind) == "sharded"
+    assert str(distributions["B"].distribution_kind) == "interleaved"
     assert str(distributions["A"].memory_space) == "DRAM"
     assert str(distributions["A_shared"].memory_space) == "L1"
 
@@ -2332,6 +2385,136 @@ def test_build_tt_program_exposes_mesh_and_buffer_distribution_plans():
     executable = mod["main"].attrs["tl.blackhole_executable"]
     assert "mesh_plans" in executable
     assert "buffer_distribution_plans" in executable
+
+
+def test_plan_tt_abi_uses_hardware_backed_buffer_distribution():
+    mod = _prepare_blackhole_phase_b_module(grid_indexed_staged_copy_kernel(3, 3))
+    mod = _with_test_hardware_model(
+        mod,
+        logical_worker_grid_x=2,
+        logical_worker_grid_y=2,
+        functional_worker_count=4,
+        dram_view_count=8,
+        worker_l1_size=1572864,
+        l1_allocation_alignment_bytes=32,
+    )
+    mod = tilelang.transform.PlanTTBlocks()(mod)
+    mod = tilelang.transform.SelectBlackholeTTMetalBuiltins()(mod)
+    mod = tilelang.transform.PlanTTCompute()(mod)
+    mod = tilelang.transform.PlanTTTransport()(mod)
+    mod = tilelang.transform.PlanTTSync()(mod)
+    mod = tilelang.transform.PlanTTABI()(mod)
+    mod = tilelang.transform.PlanTTExecution()(mod)
+    mod = tilelang.transform.BuildTTProgram()(mod)
+    mod = tilelang.transform.ValidateTTProgram()(mod)
+
+    tt_program = mod["main"].attrs["tl.tt_program"]
+    distributions = {
+        str(plan.buffer): plan for plan in tt_program.buffer_distribution_plans
+    }
+    input_plan = distributions["A"]
+    output_plan = distributions["B"]
+    l1_plan = distributions["A_shared"]
+
+    assert str(input_plan.distribution_kind) == "interleaved"
+    assert str(output_plan.distribution_kind) == "interleaved"
+    assert str(input_plan.layout) == "interleaved"
+    assert str(input_plan.memory_space) == "DRAM"
+    assert int(input_plan.page_size_bytes) == 2048
+    assert not list(input_plan.shard_shape)
+    assert str(input_plan.attached_core_group) == ""
+    assert int(input_plan.attached_core_group_index) == -1
+
+    assert str(l1_plan.distribution_kind) == "sharded"
+    assert str(l1_plan.memory_space) == "L1"
+    assert int(l1_plan.page_size_bytes) > 0
+    assert tuple(int(dim) for dim in l1_plan.shard_shape) == (3, 3)
+    assert str(l1_plan.shard_orientation) == "block"
+    assert str(l1_plan.attached_core_group) == "main_core_group"
+    assert int(l1_plan.attached_core_group_index) == 0
+    assert str(l1_plan.host_visibility) == "device_local"
+
+    report = tt_program.resource_pressure_reports[0]
+    if str(l1_plan.layout) == "circular_buffer":
+        assert int(report.per_core_cb_l1_bytes) >= int(l1_plan.page_size_bytes)
+        assert int(report.per_core_l1_buffer_bytes) == 0
+    else:
+        assert int(report.per_core_l1_buffer_bytes) >= int(l1_plan.page_size_bytes)
+    assert int(report.max_simultaneous_l1_bytes) == (
+        int(report.per_core_cb_l1_aligned_bytes)
+        + int(report.per_core_l1_buffer_bytes)
+    )
+
+    mod = tilelang.transform.MaterializeBlackholeExecutable()(mod)
+    executable = mod["main"].attrs["tl.blackhole_executable"]
+    executable_distributions = {
+        str(plan["buffer"]): plan for plan in executable["buffer_distribution_plans"]
+    }
+    assert str(executable_distributions["A"]["distribution_kind"]) == "interleaved"
+    assert str(executable_distributions["A_shared"]["distribution_kind"]) == "sharded"
+    assert str(executable_distributions["A_shared"]["attached_core_group"]) == "main_core_group"
+
+
+def test_validate_tt_program_rejects_invalid_buffer_distribution_placement():
+    mod = _prepare_blackhole_tt_program_module(grid_indexed_staged_copy_kernel(3, 3))
+    main = mod["main"]
+    tt_program = main.attrs["tl.tt_program"]
+    distributions = list(tt_program.buffer_distribution_plans)
+    l1_index = next(
+        index
+        for index, plan in enumerate(distributions)
+        if str(plan.memory_space) == "L1"
+    )
+    distributions[l1_index] = _rebuild_tt_buffer_distribution_plan(
+        distributions[l1_index],
+        attached_core_group="",
+        attached_core_group_index=-1,
+    )
+    invalid_program = _rebuild_tt_program(
+        tt_program,
+        buffer_distribution_plans=distributions,
+    )
+    invalid = tvm.IRModule(
+        {"main": main.with_attr("tl.tt_program", invalid_program)},
+        global_infos=mod.global_infos,
+    )
+
+    with pytest.raises(Exception, match="attached_core_group"):
+        tilelang.transform.ValidateTTProgram()(invalid)
+
+
+def test_validate_tt_program_rejects_dram_buffer_distribution_over_hardware_view():
+    mod = _prepare_blackhole_tt_program_module(staged_copy_kernel(tile_rows=2, tile_cols=1))
+    mod = _with_test_hardware_model(
+        mod,
+        logical_worker_grid_x=8,
+        logical_worker_grid_y=8,
+        functional_worker_count=64,
+        dram_view_size=1024,
+    )
+    main = mod["main"]
+    tt_program = main.attrs["tl.tt_program"]
+    distributions = list(tt_program.buffer_distribution_plans)
+    dram_index = next(
+        index
+        for index, plan in enumerate(distributions)
+        if str(plan.memory_space) == "DRAM"
+    )
+    distributions[dram_index] = _rebuild_tt_buffer_distribution_plan(
+        distributions[dram_index],
+        page_size_bytes=2048,
+    )
+    invalid_program = _rebuild_tt_program(
+        tt_program,
+        buffer_distribution_plans=distributions,
+    )
+    invalid = tvm.IRModule(
+        {"main": main.with_attr("tl.tt_program", invalid_program)},
+        global_infos=mod.global_infos,
+    )
+
+    with pytest.raises(Exception, match="DRAM view"):
+        tilelang.transform.ValidateTTProgram()(invalid)
 
 
 def test_build_tt_program_exposes_typed_compute_op_plans():

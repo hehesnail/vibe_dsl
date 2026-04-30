@@ -48,6 +48,13 @@ int64_t RequireInt(const Map<String, Any>& map, const char* key, const std::stri
   return Downcast<Integer>(value.value())->value;
 }
 
+int64_t AlignUp(int64_t value, int64_t alignment) {
+  if (alignment <= 0) {
+    return value;
+  }
+  return ((value + alignment - 1) / alignment) * alignment;
+}
+
 std::string CoreCoordKey(int64_t x, int64_t y) {
   return std::to_string(x) + "," + std::to_string(y);
 }
@@ -104,7 +111,9 @@ void ValidateMeshPlan(const TTMeshPlan& mesh_plan) {
 
 void ValidateBufferDistributionPlan(
     const TTBufferDistributionPlan& plan,
-    const std::unordered_map<std::string, int64_t>& mesh_index_by_name) {
+    const std::unordered_map<std::string, int64_t>& mesh_index_by_name,
+    const std::unordered_map<std::string, int64_t>& core_group_index_by_name,
+    const std::optional<TTHardwareModel>& maybe_hardware_model) {
   ICHECK(!plan->name.empty()) << "TTBufferDistributionPlan requires name";
   ICHECK(!plan->buffer.empty()) << "TTBufferDistributionPlan requires buffer";
   ICHECK(!plan->mesh_plan.empty()) << "TTBufferDistributionPlan requires mesh_plan";
@@ -118,8 +127,9 @@ void ValidateBufferDistributionPlan(
   ICHECK(!plan->distribution_kind.empty())
       << "TTBufferDistributionPlan requires distribution_kind";
   const std::string distribution_kind = plan->distribution_kind;
-  ICHECK(distribution_kind == "replicated" || distribution_kind == "sharded")
-      << "TTBufferDistributionPlan distribution_kind must be replicated or sharded";
+  ICHECK(distribution_kind == "replicated" || distribution_kind == "sharded" ||
+         distribution_kind == "interleaved")
+      << "TTBufferDistributionPlan distribution_kind must be replicated, sharded, or interleaved";
   ICHECK(!plan->layout.empty()) << "TTBufferDistributionPlan requires layout";
   ICHECK(!plan->memory_space.empty()) << "TTBufferDistributionPlan requires memory_space";
   const std::string memory_space = plan->memory_space;
@@ -127,13 +137,68 @@ void ValidateBufferDistributionPlan(
       << "TTBufferDistributionPlan memory_space must be DRAM or L1";
   ICHECK_GE(plan->page_size_bytes, 0)
       << "TTBufferDistributionPlan requires non-negative page_size_bytes";
+  if (distribution_kind == "interleaved") {
+    ICHECK_GT(plan->page_size_bytes, 0)
+        << "TTBufferDistributionPlan interleaved placement requires page_size_bytes";
+    ICHECK(plan->shard_shape.empty())
+        << "TTBufferDistributionPlan interleaved placement cannot carry shard_shape";
+  }
   if (distribution_kind == "sharded") {
+    ICHECK(memory_space == "L1")
+        << "TTBufferDistributionPlan sharded placement is only admitted for L1";
     ValidatePositiveIntegerArray(plan->shard_shape, "TTBufferDistributionPlan shard_shape");
+    ICHECK_GT(plan->page_size_bytes, 0)
+        << "TTBufferDistributionPlan sharded L1 placement requires page_size_bytes";
+    ICHECK(!plan->attached_core_group.empty())
+        << "TTBufferDistributionPlan sharded L1 placement requires attached_core_group";
+    ICHECK_GE(plan->attached_core_group_index, 0)
+        << "TTBufferDistributionPlan sharded L1 placement requires attached_core_group_index";
   }
   ICHECK(!plan->shard_orientation.empty())
       << "TTBufferDistributionPlan requires shard_orientation";
   ICHECK(!plan->host_visibility.empty())
       << "TTBufferDistributionPlan requires host_visibility";
+  if (!plan->attached_core_group.empty()) {
+    auto core_group_it =
+        core_group_index_by_name.find(static_cast<std::string>(plan->attached_core_group));
+    ICHECK(core_group_it != core_group_index_by_name.end())
+        << "TTBufferDistributionPlan attached_core_group references unknown core group "
+        << plan->attached_core_group;
+    ICHECK_EQ(plan->attached_core_group_index, core_group_it->second)
+        << "TTBufferDistributionPlan attached_core_group_index must match attached_core_group";
+  } else {
+    ICHECK_EQ(plan->attached_core_group_index, -1)
+        << "TTBufferDistributionPlan attached_core_group_index requires attached_core_group";
+  }
+  if (maybe_hardware_model) {
+    const TTHardwareModel& hardware_model = maybe_hardware_model.value();
+    if (memory_space == "DRAM") {
+      ICHECK_GT(hardware_model->dram_view_count, 0)
+          << "TTBufferDistributionPlan DRAM placement requires positive TTHardwareModel "
+             "dram_view_count";
+      if (plan->page_size_bytes > 0) {
+        ICHECK_GT(hardware_model->dram_view_size, 0)
+            << "TTBufferDistributionPlan DRAM placement requires positive TTHardwareModel "
+               "dram_view_size";
+        ICHECK_LE(plan->page_size_bytes, hardware_model->dram_view_size)
+            << "TTBufferDistributionPlan DRAM view page_size_bytes exceeds hardware DRAM view: "
+            << plan->page_size_bytes << " > " << hardware_model->dram_view_size;
+      }
+    }
+    if (memory_space == "L1" && plan->page_size_bytes > 0) {
+      ICHECK_GT(hardware_model->worker_l1_size, 0)
+          << "TTBufferDistributionPlan L1 placement requires positive TTHardwareModel "
+             "worker_l1_size";
+      ICHECK_GT(hardware_model->l1_allocation_alignment_bytes, 0)
+          << "TTBufferDistributionPlan L1 placement requires positive TTHardwareModel "
+             "l1_allocation_alignment_bytes";
+      const int64_t aligned_page_size =
+          AlignUp(plan->page_size_bytes, hardware_model->l1_allocation_alignment_bytes);
+      ICHECK_LE(aligned_page_size, hardware_model->worker_l1_size)
+          << "TTBufferDistributionPlan L1 aligned page_size_bytes exceeds worker L1 budget: "
+          << aligned_page_size << " > " << hardware_model->worker_l1_size;
+    }
+  }
   if (!plan->logical_shape.empty()) {
     ICHECK(!plan->local_shape.empty())
         << "TTBufferDistributionPlan logical_shape requires local_shape";
@@ -428,8 +493,10 @@ void ValidateResourceDemand(
       << "TTResourceDemand requires non-negative communication_edge_count";
   ICHECK(!demand->tile_compute_fanout_demands.empty() ||
          !demand->tile_compute_materialization_demands.empty() ||
-         !demand->tile_compute_unsupported_reasons.empty())
-      << "TTResourceDemand requires tile-compute demand evidence";
+         !demand->tile_compute_unsupported_reasons.empty() ||
+         demand->cb_requirement_count > 0 || demand->semaphore_count > 0 ||
+         demand->communication_edge_count > 0)
+      << "TTResourceDemand requires tile-compute or explicit resource demand evidence";
   for (const TTTileComputeFanoutDemand& fanout :
        demand->tile_compute_fanout_demands) {
     ValidateTileComputeFanoutDemand(fanout, kernel_names);
@@ -778,9 +845,20 @@ void CheckTTProgram(const TTProgram& program, const SpatialPlan& spatial_plan,
   for (const LayoutSpec& layout : spatial_plan->layout_specs) {
     spatial_layout_subjects.insert(static_cast<std::string>(layout->subject));
   }
+  std::unordered_map<std::string, int64_t> core_group_index_by_name;
+  for (int64_t core_group_index = 0;
+       core_group_index < static_cast<int64_t>(program->core_groups.size());
+       ++core_group_index) {
+    const TTCoreGroup& core_group = program->core_groups[core_group_index];
+    ICHECK(core_group_index_by_name
+               .emplace(static_cast<std::string>(core_group->name), core_group_index)
+               .second)
+        << "duplicate TTCoreGroup name " << core_group->name;
+  }
   std::unordered_set<std::string> distributed_buffers;
   for (const TTBufferDistributionPlan& distribution : program->buffer_distribution_plans) {
-    ValidateBufferDistributionPlan(distribution, mesh_index_by_name);
+    ValidateBufferDistributionPlan(distribution, mesh_index_by_name, core_group_index_by_name,
+                                   maybe_hardware_model);
     ICHECK(distributed_buffers.insert(static_cast<std::string>(distribution->buffer)).second)
         << "duplicate TTBufferDistributionPlan buffer " << distribution->buffer;
     ICHECK(spatial_layout_subjects.count(static_cast<std::string>(distribution->buffer)))

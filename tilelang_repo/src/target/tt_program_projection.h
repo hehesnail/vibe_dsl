@@ -119,6 +119,11 @@ inline Array<Any> EncodeBufferDistributionPlans(
     }
     item.Set("shard_orientation", plan->shard_orientation);
     item.Set("host_visibility", plan->host_visibility);
+    if (!plan->attached_core_group.empty()) {
+      item.Set("attached_core_group", plan->attached_core_group);
+      item.Set("attached_core_group_index",
+               Integer(plan->attached_core_group_index));
+    }
     if (!plan->logical_shape.empty()) {
       item.Set("logical_shape", plan->logical_shape);
     }

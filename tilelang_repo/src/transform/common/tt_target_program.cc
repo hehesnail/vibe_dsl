@@ -57,6 +57,10 @@ void TTBufferDistributionPlanNode::RegisterReflection() {
       .def_ro("shard_shape", &TTBufferDistributionPlanNode::shard_shape)
       .def_ro("shard_orientation", &TTBufferDistributionPlanNode::shard_orientation)
       .def_ro("host_visibility", &TTBufferDistributionPlanNode::host_visibility)
+      .def_ro("attached_core_group",
+              &TTBufferDistributionPlanNode::attached_core_group)
+      .def_ro("attached_core_group_index",
+              &TTBufferDistributionPlanNode::attached_core_group_index)
       .def_ro("logical_shape", &TTBufferDistributionPlanNode::logical_shape)
       .def_ro("local_shape", &TTBufferDistributionPlanNode::local_shape)
       .def_ro("thread_extent", &TTBufferDistributionPlanNode::thread_extent)
@@ -76,7 +80,8 @@ TTBufferDistributionPlan::TTBufferDistributionPlan(
     ffi::String name, ffi::String buffer, ffi::String mesh_plan, int64_t mesh_plan_index,
     ffi::String distribution_kind, ffi::String layout, ffi::String memory_space,
     int64_t page_size_bytes, ffi::Array<Integer> shard_shape, ffi::String shard_orientation,
-    ffi::String host_visibility, ffi::Array<PrimExpr> logical_shape,
+    ffi::String host_visibility, ffi::String attached_core_group,
+    int64_t attached_core_group_index, ffi::Array<PrimExpr> logical_shape,
     ffi::Array<PrimExpr> local_shape, PrimExpr thread_extent, PrimExpr replicate_extent,
     ffi::Array<PrimExpr> inverse_logical_index_vars,
     ffi::Array<PrimExpr> inverse_logical_index_exprs,
@@ -94,6 +99,8 @@ TTBufferDistributionPlan::TTBufferDistributionPlan(
   n->shard_shape = std::move(shard_shape);
   n->shard_orientation = std::move(shard_orientation);
   n->host_visibility = std::move(host_visibility);
+  n->attached_core_group = std::move(attached_core_group);
+  n->attached_core_group_index = attached_core_group_index;
   n->logical_shape = std::move(logical_shape);
   n->local_shape = std::move(local_shape);
   n->thread_extent = std::move(thread_extent);
@@ -1177,6 +1184,7 @@ TVM_FFI_STATIC_INIT_BLOCK() {
          int64_t mesh_plan_index, ffi::String distribution_kind, ffi::String layout,
          ffi::String memory_space, int64_t page_size_bytes, ffi::Array<Integer> shard_shape,
          ffi::String shard_orientation, ffi::String host_visibility,
+         ffi::String attached_core_group, int64_t attached_core_group_index,
          ffi::Array<PrimExpr> logical_shape, ffi::Array<PrimExpr> local_shape,
          PrimExpr thread_extent, PrimExpr replicate_extent,
          ffi::Array<PrimExpr> inverse_logical_index_vars,
@@ -1187,7 +1195,8 @@ TVM_FFI_STATIC_INIT_BLOCK() {
             std::move(name), std::move(buffer), std::move(mesh_plan), mesh_plan_index,
             std::move(distribution_kind), std::move(layout), std::move(memory_space),
             page_size_bytes, std::move(shard_shape), std::move(shard_orientation),
-            std::move(host_visibility), std::move(logical_shape), std::move(local_shape),
+            std::move(host_visibility), std::move(attached_core_group),
+            attached_core_group_index, std::move(logical_shape), std::move(local_shape),
             std::move(thread_extent), std::move(replicate_extent),
             std::move(inverse_logical_index_vars), std::move(inverse_logical_index_exprs),
             std::move(spatial_layout), std::move(spatial_distribution_kind),

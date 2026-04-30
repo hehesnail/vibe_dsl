@@ -7,6 +7,7 @@
 #include <tvm/ir/attrs.h>
 #include <tvm/ir/transform.h>
 #include <tvm/target/target.h>
+#include <tvm/tir/stmt_functor.h>
 
 #include <algorithm>
 #include <optional>
@@ -46,6 +47,11 @@ struct LogicalTileLayoutInfo {
   PrimExpr replicate_extent;
   Array<PrimExpr> inverse_logical_index_vars;
   Array<PrimExpr> inverse_logical_index_exprs;
+};
+
+struct BufferStorageInfo {
+  int64_t byte_size = 0;
+  std::string scope;
 };
 
 std::unordered_map<std::string, LogicalTileLayoutInfo> CollectLogicalTileLayoutsFromBody(
@@ -116,6 +122,70 @@ std::unordered_map<std::string, LogicalTileLayoutInfo> CollectLogicalTileLayouts
     std::unordered_map<std::string, LogicalTileLayoutInfo> layout_by_buffer_;
   };
   return Collector().Collect(body);
+}
+
+std::optional<int64_t> ConstIntValue(const PrimExpr& expr) {
+  if (const auto* int_imm = expr.as<IntImmNode>()) {
+    return int_imm->value;
+  }
+  return std::nullopt;
+}
+
+int64_t DTypeStorageBytes(const DataType& dtype) {
+  return std::max<int64_t>(1, (static_cast<int64_t>(dtype.bits()) *
+                                  static_cast<int64_t>(dtype.lanes()) +
+                              7) /
+                                 8);
+}
+
+int64_t EstimateBufferByteSize(const tir::Buffer& buffer) {
+  int64_t elements = 1;
+  if (buffer->shape.empty()) {
+    return 0;
+  }
+  for (const PrimExpr& extent : buffer->shape) {
+    auto maybe_extent = ConstIntValue(extent);
+    if (!maybe_extent || maybe_extent.value() <= 0) {
+      return 0;
+    }
+    elements *= maybe_extent.value();
+  }
+  return elements * DTypeStorageBytes(buffer->dtype);
+}
+
+std::unordered_map<std::string, BufferStorageInfo> CollectBufferStorageInfo(
+    const tir::PrimFunc& func) {
+  std::unordered_map<std::string, BufferStorageInfo> info_by_name;
+
+  auto record_buffer = [&](const tir::Buffer& buffer) {
+    const std::string name = static_cast<std::string>(buffer->name);
+    if (name.empty()) {
+      return;
+    }
+    BufferStorageInfo& info = info_by_name[name];
+    info.byte_size = std::max(info.byte_size, EstimateBufferByteSize(buffer));
+    if (info.scope.empty()) {
+      info.scope = buffer.scope();
+    }
+  };
+
+  for (const auto& entry : func->buffer_map) {
+    record_buffer(entry.second);
+  }
+  tir::PostOrderVisit(func->body, [&](const ObjectRef& node) {
+    if (const auto* store = node.as<tir::BufferStoreNode>()) {
+      record_buffer(store->buffer);
+    }
+    if (const auto* load = node.as<tir::BufferLoadNode>()) {
+      record_buffer(load->buffer);
+    }
+    if (const auto* block = node.as<tir::BlockNode>()) {
+      for (const tir::Buffer& buffer : block->alloc_buffers) {
+        record_buffer(buffer);
+      }
+    }
+  });
+  return info_by_name;
 }
 
 tir::PrimFunc StripTTIntermediateAttrs(tir::PrimFunc func) {
@@ -404,6 +474,12 @@ String PrimaryComputeKernelName(const TTProgramSlices& slices) {
       return kernel->name;
     }
   }
+  if (!slices.kernel_plans.empty()) {
+    return slices.kernel_plans[0]->name;
+  }
+  if (!slices.kernels.empty()) {
+    return slices.kernels[0]->name;
+  }
   return String("compute");
 }
 
@@ -530,7 +606,21 @@ Array<TTResourceDemand> BuildTileComputeResourceDemands(
     const tir::PrimFunc& func, const TTProgramSlices& slices) {
   const BlackholeTileComputeDAG dag = BuildBlackholeTileComputeDAG(func);
   if (dag.nodes.empty()) {
-    return {};
+    if (slices.cb_plans.empty() && slices.semaphore_plans.empty() &&
+        slices.transport_plans.empty()) {
+      return {};
+    }
+    const String kernel_name = PrimaryComputeKernelName(slices);
+    Array<TTResourceDemand> demands;
+    demands.push_back(TTResourceDemand(
+        String("resource_demand_" + static_cast<std::string>(kernel_name)),
+        kernel_name, PrimaryCoreGroupName(slices), PrimaryCoreGroupIndex(slices),
+        Array<TTTileComputeFanoutDemand>{},
+        Array<TTTileComputeMaterializationDemand>{}, Array<String>{},
+        static_cast<int64_t>(slices.cb_plans.size()), TotalCBL1Bytes(slices.cb_plans),
+        static_cast<int64_t>(slices.semaphore_plans.size()),
+        static_cast<int64_t>(slices.transport_plans.size())));
+    return demands;
   }
 
   const String kernel_name = PrimaryComputeKernelName(slices);
@@ -656,12 +746,22 @@ bool IsL1MemorySpace(const String& memory_space) {
   return memory_space == "L1" || memory_space == "interleaved_l1";
 }
 
+bool IsCBBackedL1Layout(const String& layout) {
+  return layout == "circular_buffer";
+}
+
+bool IsSharedSpatialDistributionKind(const String& distribution_kind) {
+  return distribution_kind == "shared_visible";
+}
+
 int64_t TotalAlignedL1BufferBytes(
     const Array<TTBufferDistributionPlan>& buffer_distribution_plans,
     int64_t alignment) {
   int64_t bytes = 0;
   for (const TTBufferDistributionPlan& plan : buffer_distribution_plans) {
-    if (!IsL1MemorySpace(plan->memory_space) || plan->page_size_bytes <= 0) {
+    if (!IsL1MemorySpace(plan->memory_space) ||
+        IsCBBackedL1Layout(plan->layout) ||
+        plan->page_size_bytes <= 0) {
       continue;
     }
     bytes += AlignUp(plan->page_size_bytes, alignment);
@@ -880,6 +980,14 @@ String MemorySpaceFromLayoutScope(const String& scope) {
   return String("L1");
 }
 
+String LayoutFromLayoutScope(const String& scope) {
+  const std::string value = str(scope);
+  if (value.rfind("blackhole.cb.", 0) == 0) {
+    return String("circular_buffer");
+  }
+  return String("local");
+}
+
 LogicalTileLayoutInfo LogicalTileLayoutInfoFromLayoutSpec(const LayoutSpec& layout_spec) {
   LogicalTileLayoutInfo info;
   info.logical_shape = layout_spec->logical_shape;
@@ -891,8 +999,26 @@ LogicalTileLayoutInfo LogicalTileLayoutInfoFromLayoutSpec(const LayoutSpec& layo
   return info;
 }
 
+String ShardOrientationForCoreGroup(const TTCoreGroup& core_group) {
+  if (core_group->logical_grid_x > 1 && core_group->logical_grid_y > 1) {
+    return String("block");
+  }
+  if (core_group->logical_grid_x > 1) {
+    return String("width");
+  }
+  if (core_group->logical_grid_y > 1) {
+    return String("height");
+  }
+  return String("block");
+}
+
+Array<Integer> ShardShapeForCoreGroup(const TTCoreGroup& core_group) {
+  return Array<Integer>{Integer(core_group->logical_grid_y),
+                        Integer(core_group->logical_grid_x)};
+}
+
 Array<TTBufferDistributionPlan> BuildBufferDistributionPlans(
-    const SpatialPlan& spatial_plan, const Array<TTDstLayoutPlan>& dst_layout_plans,
+    const SpatialPlan& spatial_plan, const TTProgramSlices& slices,
     const tir::PrimFunc& func) {
   struct DstLayoutInfo {
     String layout;
@@ -901,7 +1027,7 @@ Array<TTBufferDistributionPlan> BuildBufferDistributionPlans(
   };
 
   std::unordered_map<std::string, DstLayoutInfo> dst_layout_by_buffer;
-  for (const TTDstLayoutPlan& dst_layout : dst_layout_plans) {
+  for (const TTDstLayoutPlan& dst_layout : slices.dst_layout_plans) {
     DstLayoutInfo info;
     info.layout = dst_layout->layout;
     info.memory_space = NormalizeMemorySpace(dst_layout->memory_space);
@@ -911,6 +1037,17 @@ Array<TTBufferDistributionPlan> BuildBufferDistributionPlans(
 
   const std::unordered_map<std::string, LogicalTileLayoutInfo> current_layouts_by_buffer =
       CollectLogicalTileLayoutsFromBody(func->body);
+  const std::unordered_map<std::string, BufferStorageInfo> storage_info_by_buffer =
+      CollectBufferStorageInfo(func);
+  std::unordered_map<std::string, int64_t> cb_page_size_by_buffer;
+  for (const TTCBPlan& cb_plan : slices.cb_plans) {
+    for (const String& requirement_name : cb_plan->requirement_names) {
+      const std::string buffer_name = str(requirement_name);
+      int64_t& page_size = cb_page_size_by_buffer[buffer_name];
+      page_size = std::max(page_size, cb_plan->page_size_bytes);
+    }
+  }
+  const bool has_core_group = !slices.core_groups.empty();
   Array<TTBufferDistributionPlan> distribution_plans;
   std::unordered_set<std::string> seen;
   for (const LayoutSpec& layout_spec : spatial_plan->layout_specs) {
@@ -918,7 +1055,7 @@ Array<TTBufferDistributionPlan> BuildBufferDistributionPlans(
     if (buffer.empty() || !seen.insert(buffer).second) {
       continue;
     }
-    String layout = String("local");
+    String layout = LayoutFromLayoutScope(layout_spec->scope);
     String memory_space = MemorySpaceFromLayoutScope(layout_spec->scope);
     int64_t page_size_bytes = 0;
     String spatial_layout = layout_spec->name;
@@ -933,6 +1070,33 @@ Array<TTBufferDistributionPlan> BuildBufferDistributionPlans(
       abi_layout = dst_it->second.layout;
       abi_memory_space = dst_it->second.memory_space;
     }
+    auto storage_it = storage_info_by_buffer.find(buffer);
+    if (str(memory_space) == "L1" && page_size_bytes == 0 &&
+        storage_it != storage_info_by_buffer.end()) {
+      page_size_bytes = storage_it->second.byte_size;
+    }
+    auto cb_page_it = cb_page_size_by_buffer.find(buffer);
+    const bool has_cb_page = cb_page_it != cb_page_size_by_buffer.end();
+    if (str(memory_space) == "L1" && has_cb_page) {
+      page_size_bytes = std::max(page_size_bytes, cb_page_it->second);
+    }
+    String distribution_kind = String("replicated");
+    Array<Integer> shard_shape;
+    String shard_orientation = String("row_major");
+    String attached_core_group_name;
+    int64_t attached_core_group_index = -1;
+    if (str(memory_space) == "DRAM" && str(layout) == "interleaved") {
+      distribution_kind = String("interleaved");
+    } else if (str(memory_space) == "L1" && has_core_group &&
+               (IsSharedSpatialDistributionKind(spatial_distribution_kind) ||
+                IsCBBackedL1Layout(layout) || has_cb_page)) {
+      const TTCoreGroup& core_group = slices.core_groups[0];
+      distribution_kind = String("sharded");
+      shard_shape = ShardShapeForCoreGroup(core_group);
+      shard_orientation = ShardOrientationForCoreGroup(core_group);
+      attached_core_group_name = core_group->name;
+      attached_core_group_index = 0;
+    }
     const String host_visibility =
         str(memory_space) == "DRAM" ? String("host_visible") : String("device_local");
     LogicalTileLayoutInfo layout_info = LogicalTileLayoutInfoFromLayoutSpec(layout_spec);
@@ -943,8 +1107,9 @@ Array<TTBufferDistributionPlan> BuildBufferDistributionPlans(
     }
     distribution_plans.push_back(TTBufferDistributionPlan(
         String("buffer_distribution_" + buffer), String(buffer), String("unit_mesh"),
-        /*mesh_plan_index=*/0, String("replicated"), layout, memory_space, page_size_bytes,
-        Array<Integer>{}, String("row_major"), host_visibility, layout_info.logical_shape,
+        /*mesh_plan_index=*/0, distribution_kind, layout, memory_space, page_size_bytes,
+        shard_shape, shard_orientation, host_visibility, attached_core_group_name,
+        attached_core_group_index, layout_info.logical_shape,
         layout_info.local_shape, layout_info.thread_extent, layout_info.replicate_extent,
         layout_info.inverse_logical_index_vars, layout_info.inverse_logical_index_exprs,
         spatial_layout, spatial_distribution_kind, abi_layout, abi_memory_space));
@@ -1087,6 +1252,9 @@ tvm::transform::Pass PlanTTTransport() {
       slices.materialization_plans =
           RemapMaterializationCBRequirementIndices(slices.materialization_plans, slices.cb_plans);
       slices.transport_plans = BuildTransportPlans(spatial_plan);
+      if (slices.resource_demands.empty()) {
+        slices.resource_demands = BuildTileComputeResourceDemands(func.value(), slices);
+      }
       RefreshResourcePlanningSlices(&slices);
       planned = WithTTProgramAttr(std::move(planned), PackTTProgram(std::move(slices)));
       updated->Add(gvar, planned, true);
@@ -1111,6 +1279,9 @@ tvm::transform::Pass PlanTTSync() {
       slices.sync_plans = BuildSyncPlans(compute_sync_plans);
       slices.compute_sync_plans = compute_sync_plans;
       slices.semaphore_plans = BuildSemaphorePlans(func.value());
+      if (slices.resource_demands.empty()) {
+        slices.resource_demands = BuildTileComputeResourceDemands(func.value(), slices);
+      }
       RefreshResourcePlanningSlices(&slices);
       planned = WithTTProgramAttr(std::move(planned), PackTTProgram(std::move(slices)));
       updated->Add(gvar, planned, true);
@@ -1122,6 +1293,8 @@ tvm::transform::Pass PlanTTSync() {
 
 tvm::transform::Pass PlanTTABI() {
   auto pass_func = [](IRModule mod, tvm::transform::PassContext) {
+    std::optional<TTHardwareModel> maybe_hardware_model =
+        EnsureBlackholeHardwareModel(&mod);
     IRModule updated = mod;
     for (const auto& [gvar, base_func] : mod->functions) {
       auto func = base_func.as<tir::PrimFunc>();
@@ -1136,8 +1309,8 @@ tvm::transform::Pass PlanTTABI() {
           << "PlanTTABI requires TTABIPlan owner truth; Run PlanTTCompute before PlanTTABI";
       slices.dst_layout_plans = BuildDstLayoutPlans(slices.abi_plans);
       slices.buffer_distribution_plans =
-          BuildBufferDistributionPlans(spatial_plan, slices.dst_layout_plans, func.value());
-      RefreshResourcePlanningSlices(&slices);
+          BuildBufferDistributionPlans(spatial_plan, slices, func.value());
+      RefreshResourcePlanningSlices(&slices, maybe_hardware_model);
       tir::PrimFunc planned = WithTTProgramAttr(func.value(), PackTTProgram(std::move(slices)));
       updated->Add(gvar, planned, true);
     }

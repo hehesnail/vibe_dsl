@@ -1884,6 +1884,17 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   `SaveToBytes` plus `ffi.Module.load_from_bytes.blackhole`; returning empty
   bytes is worse than failing because it produces a load-time trap detached
   from the original module.
+- 2026-04-30 Blackhole buffer placement boundary:
+  do not classify every L1 layout as sharded.
+  Shared-visible or CB-backed L1 buffers should carry attached-core sharded
+  placement; ordinary per-worker local L1 state can remain device-local
+  replicated until the address ABI grows per-work indexed descriptors.
+  CB-backed buffers should take page size from `TTCBPlan` and must not be
+  double-counted as allocator-managed L1 in resource pressure.
+  Validator L1 checks should compare aligned size against worker L1 budget,
+  not require every logical local byte size to already be alignment-sized.
+  Copy/transport-only kernels still need resource-only `TTResourceDemand`
+  records even when the tile-compute DAG is empty.
 - 2026-04-30 active-doc cleanup rule:
   when a design doc starts carrying implementation closeout notes, command
   matrices, or historical explanations needed only once, rewrite it back to

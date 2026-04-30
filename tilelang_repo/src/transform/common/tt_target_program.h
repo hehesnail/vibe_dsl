@@ -49,6 +49,8 @@ class TTBufferDistributionPlanNode : public Object {
   ffi::Array<Integer> shard_shape;
   ffi::String shard_orientation;
   ffi::String host_visibility;
+  ffi::String attached_core_group;
+  int64_t attached_core_group_index = -1;
   ffi::Array<PrimExpr> logical_shape;
   ffi::Array<PrimExpr> local_shape;
   PrimExpr thread_extent;
@@ -74,6 +76,8 @@ class TTBufferDistributionPlan : public ObjectRef {
                                    ffi::Array<Integer> shard_shape,
                                    ffi::String shard_orientation,
                                    ffi::String host_visibility,
+                                   ffi::String attached_core_group,
+                                   int64_t attached_core_group_index,
                                    ffi::Array<PrimExpr> logical_shape,
                                    ffi::Array<PrimExpr> local_shape,
                                    PrimExpr thread_extent, PrimExpr replicate_extent,
