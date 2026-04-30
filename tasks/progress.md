@@ -5,7 +5,7 @@
 
 ## Status
 
-- Date: `2026-04-30`
+- Date: `2026-05-01`
 - Active lane: `Buffer address ABI gate`
 - Main chain:
   `Normalized Tile TIR -> SpatialPlan -> TTProgram -> ExecutableSpec`
@@ -118,6 +118,25 @@ logical-index 到 core-local address mapping
 DRAM-source region 到 L1 shard 的 copy/address mapping，
 再让 source / runtime emission 消费。
 
+Buffer address ABI 还必须把 TileLang/GPU 风格的逻辑 work grid
+和 Blackhole 物理 worker grid 分开：
+`T.Kernel(grid_x, grid_y)` 是 logical work item 域，
+`TTCoreGroup.physical_cores` 是实际常驻 worker，
+`work_packets` 是 logical work id 到 worker 的 temporal 映射。
+当 logical block 数超过 physical core 数时，
+每个 worker 在自己的 packet 上循环执行，
+并复用同一份 per-worker L1 / CB scratch。
+source / runtime reader 不能按 logical block 数复制 L1 / CB allocation，
+也不能在 reader 里重新猜每个 work id 对应的 DRAM source region。
+
+GPU-style
+`alloc_shared((tile_m, tile_n))`
+目前应被解释为 per-worker、per-work-item 的 L1 / CB scratch shape。
+这个 shape 对 Blackhole L1 来说可能偏小，
+但 baseline correctness 必须尊重前端形状并做 capacity/admission 检查。
+填满更多 L1 是显式 TT retile / work-coarsening 任务，
+不能由 buffer placement 或 address ABI 静默改大。
+
 ## Next Task Order
 
 1. Tighten buffer address ABI:
@@ -126,9 +145,16 @@ DRAM-source region 到 L1 shard 的 copy/address mapping，
    runtime args,
    per-work descriptors,
    and typed rejects explicit.
+   Preserve the separation between logical work grid,
+   physical core group,
+   temporal work packets,
+   and per-worker L1 / CB scratch reuse.
    For sharded placement, split the current coarse grid marker from the
    real per-core shard data shape and strategy, and bind the L1 sharded
    view to its DRAM/global source region before emitting addresses.
+   Do not silently retile GPU-style shared buffers to fill Blackhole L1;
+   report underutilization or add an explicit retile/work-coarsening plan
+   before changing those shapes.
 2. Keep admission levels separate for every new subset:
    compile,
    source/spec,

@@ -170,6 +170,88 @@
   和 typed diagnostics，
   不替代 TT-Metal allocator
   的 physical address assignment。
+- CB page 需求和 L1 buffer placement 要分开：
+  `page_size`
+  /
+  `num_pages`
+  由 op lowering、
+  data movement、
+  exact-CB publication、
+  materialization lifetime
+  这类 protocol 决定，
+  进入
+  `CBRequirement`
+  /
+  `TTCBPlan`；
+  L1 admission 只消费 typed CB plan
+  汇总 CB-backed L1 bytes
+  和 allocator-managed L1 bytes。
+  buffer placement /
+  address ABI
+  不应从 buffer 名、
+  source hook
+  或 runtime reader fallback
+  重新推 CB 深度。
+- TileLang/GPU 风格的
+  `T.Kernel(grid_x, grid_y)`
+  是 logical work item 域，
+  Blackhole
+  `TTCoreGroup.physical_cores`
+  是实际常驻 worker，
+  `work_packets`
+  表达 logical work id
+  到 physical worker
+  的 temporal 映射。
+  当 logical block 数超过 physical core 数时，
+  每个 worker 在自己的 packet 上循环执行，
+  per-worker L1 /
+  CB scratch
+  随 temporal work item
+  复用；
+  不能按 logical block 数复制 resident L1 /
+  CB allocation。
+- GPU-style
+  `alloc_shared((tile_m, tile_n))`
+  在 Blackhole 后端中应先解释为
+  per-worker、
+  per-work-item
+  的 L1 /
+  CB-backed scratch shape。
+  这个 shape 可能远小于 Blackhole worker L1，
+  但 baseline correctness
+  必须尊重前端形状并做 capacity gate。
+  想利用更多 L1
+  要显式引入 TT-specific retile /
+  work-coarsening plan，
+  同时更新 logical work mapping
+  和 source-region /
+  core-local address mapping；
+  buffer placement
+  不能静默改大 shared tile shape。
+- 当前 sharded tensor 讨论里的关键区分：
+  DRAM/global tensor
+  是完整 logical source，
+  L1 sharded tensor
+  是绑定到 core group
+  的 working view /
+  materialization。
+  长期
+  `TTBufferDistributionPlan`
+  需要拆开
+  `shard_grid_shape`、
+  `sharding_strategy`、
+  per-core data
+  `shard_shape`、
+  source buffer /
+  source region binding
+  和 logical-index
+  到 core-local address mapping。
+  不要把 core-grid shape
+  写进
+  `shard_shape`
+  后再让 leaf reader
+  猜它到底是 grid
+  还是 data shard。
 - Blackhole core placement
   不能长期硬编码 worker grid。
   规划应从

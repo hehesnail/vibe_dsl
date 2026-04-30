@@ -82,13 +82,19 @@ Represents physical mesh and device-coordinate coverage:
 
 Represents worker placement and logical work packets:
 
-- logical grid requirement
-- physical worker coordinates
-- deterministic work packets
+- logical work grid requirement from the DSL kernel domain
+- physical worker coordinates admitted by the hardware model
+- deterministic work packets that map one or more logical work items onto a
+  physical worker
 - linearization policy
 
 Physical cores must be inside the hardware worker grid.
 Logical work may exceed physical workers only through explicit work packets.
+In that case the physical worker runs a temporal loop over its packet,
+recomputing logical block coordinates from the work-linear id.
+Per-worker L1 / CB scratch is resident on the physical worker and reused for
+each temporal work item; it is not multiplied by the total logical block
+count.
 
 ### TTBufferDistributionPlan
 
@@ -98,11 +104,32 @@ Represents buffer distribution and placement class:
 - memory space
 - layout
 - page size
-- shard shape and orientation when sharded
+- sharding strategy when sharded
+- shard-grid shape when sharded
+- real per-core data shard shape when sharded
+- logical-index to core-local address mapping when sharded or per-work
+  indexed
+- source buffer / source region binding when an L1 view materializes data
+  from a DRAM/global tensor
 - host visibility
 - attached core range when relevant
 
 This is the current active expansion point.
+
+`shard_shape`
+means the per-core tensor data shape in the durable contract.
+It must not be used as a synonym for the physical or logical core-grid shape.
+Core-grid attachment belongs to the attached core group and shard-grid fields.
+
+GPU-style
+`alloc_shared`
+shapes in the frontend are interpreted as per-work-item local scratch shapes
+for TT planning.
+The backend may validate them against worker L1 / CB capacity and report
+underutilization, but it must not silently enlarge the scratch shape to fill
+Blackhole L1.
+Any TT-specific retile or work-coarsening choice must be represented as an
+explicit planning decision before source / runtime emission.
 
 ### TTComputeOpPlan
 

@@ -114,6 +114,28 @@ L1 planning should be pressure admission first:
 This layer rejects unsafe pressure.
 It does not assign physical L1 addresses.
 
+CB sizing is op and live-form dependent.
+`page_size`
+comes from the data movement or compute protocol for one page / tile of the
+value being published or consumed.
+`num_pages`
+comes from the protocol depth:
+double buffering,
+exact tiled publication,
+producer / consumer event shape,
+or materialization lifetime.
+The durable separation is:
+
+- op lowering / materialization logic creates `CBRequirement`
+- `TTCBPlan` owns the typed CB page count, page size, flow class, and
+  publish / consume event shape
+- `TTResourceDemand` and `TTResourcePressureReport` aggregate CB count and
+  CB-backed L1 bytes for admission
+
+Buffer placement and address ABI must consume these typed CB plans.
+They must not rederive CB depth from buffer names, source hooks, or runtime
+reader defaults.
+
 ## Direction 4: Core And Buffer Placement
 
 Core placement and buffer placement are separate responsibilities.
@@ -137,6 +159,25 @@ Initial policy should be conservative:
   explicit deterministic work packets on admitted workers
 - typed reject when requested physical workers or coordinates exceed
   `TTHardwareModel`
+
+The frontend kernel grid and TT worker grid are different axes:
+
+- `T.Kernel(grid_x, grid_y)` describes logical work items.
+- `TTCoreGroup.physical_cores` describes resident Blackhole worker cores.
+- `TTCoreGroup.work_packets` describes the temporal mapping from logical
+  work ids to each resident worker.
+- L1 / CB scratch belongs to the resident worker and is reused across the
+  worker's temporal packet.
+
+Therefore a logical grid larger than the physical core count is legal only
+when the executable address ABI can derive per-work source / destination
+regions from
+`work_offset`,
+`work_count`,
+`logical_grid_x`,
+and the linearization policy.
+It is not legal to allocate one independent L1 / CB instance per logical
+block when those blocks exceed resident workers.
 
 `TTBufferDistributionPlan`
 must grow beyond
@@ -181,6 +222,18 @@ source buffer / source region binding,
 logical-index to core-local address mapping,
 and DRAM-source region to L1-shard copy/address mapping before sharded
 placement is admitted for runtime emission.
+
+For TileLang programs written in a GPU style,
+`alloc_shared((tile_m, tile_n))`
+is treated as the per-worker, per-work-item L1 / CB-backed scratch footprint.
+On Blackhole this footprint may be much smaller than the available worker L1.
+That is a performance opportunity, not a correctness license to mutate the
+buffer shape during placement.
+The legal first step is to preserve the frontend shape, validate it against
+L1 / CB capacity, and surface an underutilization diagnostic if useful.
+Using more L1 requires an explicit TT-specific retile or work-coarsening plan
+that changes the logical work mapping and source-region / address mapping
+together.
 
 ## Direction 5: Workload Slices Before Full Runtime Expansion
 
@@ -230,12 +283,22 @@ generic "later runtime" bucket.
    compile-time args,
    runtime args,
    and per-work descriptors.
+   Treat logical block grid,
+   physical worker group,
+   temporal work packets,
+   and per-work L1 / CB scratch as distinct address dimensions.
+   The ABI must map each logical work id to its DRAM / global source region
+   and reused core-local L1 / CB view before source or runtime code may index
+   the buffer.
    Exit when supported forms materialize from typed plans,
    and unsupported sharded,
    page-indexed,
    or shared runtime address-argument forms fail
    closed with typed reasons instead of being reconstructed by source or
    runtime readers.
+   GPU-style shared-tile shapes may remain smaller than Blackhole L1 in this
+   exit state; filling more L1 belongs to an explicit retile /
+   work-coarsening step, not to silent buffer placement expansion.
 3. Verification and admission gate:
    keep compile,
    source/spec projection,
