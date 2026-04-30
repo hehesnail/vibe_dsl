@@ -155,8 +155,14 @@ to represent:
 
 ## Direction 5: NoC / Multicast / Scheduling Later
 
-Only after typed core and buffer placement exist should the backend add:
+Only after typed core and buffer placement exist should the backend expand
+wider workload / runtime admission:
 
+- non-flash standalone leaf compute workloads
+- GEMM variants
+- multi-block flash-attn
+- wider exact-CB events
+- mesh / distributed runtime
 - communication-weighted placement
 - multicast grouping
 - NoC0 / NoC1 role-aware scoring
@@ -173,7 +179,9 @@ over-complexity problem under a new name.
 3. Keep CB / L1 admission hardware-backed.
 4. Keep core groups hardware-model-backed and replace unit buffer placement
    with explicit buffer distribution.
-5. Re-enter wider runtime admission:
+5. Re-enter wider workload / runtime admission:
+   non-flash leaf compute workloads,
+   GEMM variants,
    multi-block flash-attn,
    wider exact-CB events,
    mesh / distributed runtime,

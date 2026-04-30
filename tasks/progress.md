@@ -29,6 +29,12 @@
   `TileComputeDAG`
   只作为 pass-local explicit-leaf legalization /
   covering input。
+- 非 flash-attn 计算面没有删除：
+  typed leaf compute surface 仍覆盖
+  matmul / copy / unary / binary / broadcast /
+  reduce / pack / typecast 等 TT-Metal leaf families。
+  Runtime admitted subset 比 typed compute surface 窄，
+  以本文件的 support boundary 为准。
 - Algorithmic foundation 已存在并有 active consumers：
   `AccessRegion`,
   graph-backed `SpatialPlan` dependence,
@@ -80,7 +86,10 @@ Wider runtime admission 还需要 buffer placement
    beyond `unit_mesh` / `replicated`,
    consume L1 / DRAM hardware facts,
    and validate placement before emission.
-2. Resume wider runtime admission:
+2. Resume wider workload / runtime admission:
+   non-flash compute workloads
+   (GEMM variants plus standalone unary / binary /
+   broadcast / reduce / pack / typecast leaf families),
    multi-block flash-attn direct runtime,
    wider exact-CB events,
    mesh / distributed runtime,
@@ -94,6 +103,11 @@ Wider runtime admission 还需要 buffer placement
   interleaved DRAM accessor with `common_runtime_arg_count = 0`;
   non-oversubscribed explicit semaphore / remote-endpoint subset;
   admitted bf16 live-form paths.
+- Typed compute surface broader than direct runtime:
+  matmul / copy / unary / binary / broadcast /
+  reduce / pack / typecast leaf families must get
+  workload-specific admission and correctness gates
+  before being counted as runtime support.
 - Flash-attn admitted direct-runtime subset:
   small single-work-item and 32x32 MHA / GQA bf16.
 - Flash-attn compile/source/spec stable but runtime-gated subset:

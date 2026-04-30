@@ -306,7 +306,7 @@ The active resource-planning surface is:
 CB / L1 planning should fail closed using hardware facts before source or
 runtime emission.
 Core placement and buffer distribution must likewise become hardware-model
-backed before wider runtime admission expands.
+backed before wider workload / runtime admission expands.
 
 TT-Metal remains responsible for physical allocator address assignment.
 The compiler plans placement classes, pressure, and legality.
@@ -322,6 +322,27 @@ That narrowness must surface as backend admission, not as upstream IR shape.
 Long-term codegen/export targets TT-Metal
 `Program / MeshWorkload / MeshBuffer`
 style explicit program construction.
+
+## Workload Admission Boundary
+
+`flash-attn` is a stress witness, not the only workload family.
+
+Non-flash compute remains in scope:
+
+- copy / layout movement
+- GEMM variants
+- standalone unary / binary / broadcast / reduce / pack / typecast leaf
+  compute workloads
+- later selection / indexing,
+  grouped / ragged / routed dispatch,
+  paged or indexed sparse access,
+  stateful reduction-update,
+  and scan / recurrence families
+
+A workload is admitted only when typed plans,
+backend admission,
+and correctness verification match its risk.
+Compile/source/spec success alone is not direct-runtime correctness.
 
 ## Current Rewrite Direction
 
@@ -340,7 +361,8 @@ The current ordering is:
 4. Keep `TileComputeDAG`
    pass-local and production-useful only for explicit leaf graph covering.
 5. Upgrade core placement and buffer distribution using `TTHardwareModel`.
-6. Re-enter wider runtime admission after resource evidence is explicit.
+6. Re-enter wider workload / runtime admission after resource evidence is
+   explicit.
 
 ## Completion Criteria
 

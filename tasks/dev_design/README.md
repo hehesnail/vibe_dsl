@@ -57,7 +57,7 @@ Pass 名字、helper、payload、bag、bridge attr
 
 ```text
 Hardware-model-backed buffer placement
-  -> wider runtime admission
+  -> wider workload / runtime admission
 ```
 
 ## Maintenance Rules
