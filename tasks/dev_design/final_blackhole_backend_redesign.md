@@ -333,11 +333,11 @@ Non-flash compute remains in scope:
 - GEMM variants
 - standalone unary / binary / broadcast / reduce / pack / typecast leaf
   compute workloads
-- later selection / indexing,
-  grouped / ragged / routed dispatch,
-  paged or indexed sparse access,
-  stateful reduction-update,
-  and scan / recurrence families
+- `topk` / selection / indexing
+- MoE / `fusedmoe` routed or segmented dispatch
+- paged attention / paged decode / MLA decode with paged KV access
+- grouped / ragged / sparse attention variants
+- stateful reduction-update and chunk recurrence / scan families
 
 A workload is admitted only when typed plans,
 backend admission,

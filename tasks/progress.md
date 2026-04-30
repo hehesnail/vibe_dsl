@@ -90,6 +90,11 @@ Wider runtime admission 还需要 buffer placement
    non-flash compute workloads
    (GEMM variants plus standalone unary / binary /
    broadcast / reduce / pack / typecast leaf families),
+   `topk`,
+   MoE / `fusedmoe` routed or segmented workloads,
+   paged attention / paged decode / MLA decode paged,
+   grouped / ragged / sparse attention,
+   chunk recurrence / scan,
    multi-block flash-attn direct runtime,
    wider exact-CB events,
    mesh / distributed runtime,
@@ -108,6 +113,13 @@ Wider runtime admission 还需要 buffer placement
   reduce / pack / typecast leaf families must get
   workload-specific admission and correctness gates
   before being counted as runtime support.
+- Workload backlog broader than flash-attn:
+  `topk`, MoE / `fusedmoe`, paged attention /
+  paged decode / MLA decode paged,
+  grouped / ragged / sparse attention,
+  and chunk recurrence / scan are not admitted yet;
+  they require explicit subset definitions and regressions
+  before being counted as supported.
 - Flash-attn admitted direct-runtime subset:
   small single-work-item and 32x32 MHA / GQA bf16.
 - Flash-attn compile/source/spec stable but runtime-gated subset:

@@ -160,6 +160,11 @@ wider workload / runtime admission:
 
 - non-flash standalone leaf compute workloads
 - GEMM variants
+- `topk` / selection workloads
+- MoE / `fusedmoe` routed or segmented workloads
+- paged attention / paged decode / MLA decode workloads
+- grouped / ragged / sparse attention workloads
+- chunk recurrence / scan workloads
 - multi-block flash-attn
 - wider exact-CB events
 - mesh / distributed runtime
@@ -182,6 +187,8 @@ over-complexity problem under a new name.
 5. Re-enter wider workload / runtime admission:
    non-flash leaf compute workloads,
    GEMM variants,
+   `topk` / `fusedmoe` / paged decode /
+   MLA decode paged / chunk recurrence families,
    multi-block flash-attn,
    wider exact-CB events,
    mesh / distributed runtime,
