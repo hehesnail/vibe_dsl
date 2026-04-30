@@ -19,7 +19,7 @@
 
 /*!
  * \file assign_blackhole_cores.h
- * \brief Assign T.Kernel grid work items to Blackhole 11x10 logical worker cores
+ * \brief Assign T.Kernel grid work items to Blackhole logical worker cores
  */
 
 #ifndef TVM_TL_ASSIGN_BLACKHOLE_CORES_H_
@@ -30,13 +30,16 @@
 #include <tvm/tir/stmt_functor.h>
 #include <tvm/tir/transform.h>
 
+#include <optional>
+
+#include "common/tt_hardware_model.h"
+
 namespace tvm {
 namespace tl {
 
 /*!
  * \brief Core coordinate on Blackhole logical worker grid
- * Logical x: 0-10
- * Logical y: 0-9
+ * The coordinate bounds come from TTHardwareModel.
  */
 struct CoreCoord {
   int x, y;
@@ -47,13 +50,14 @@ struct CoreCoord {
  */
 struct CoreAssignment {
   int grid_x, grid_y;           // T.Kernel grid dimensions
-  int core_grid_x, core_grid_y; // Blackhole logical worker grid (11, 10)
+  int core_grid_x, core_grid_y; // Blackhole logical worker grid
+  int available_worker_cores;   // Usable logical worker cores
   int work_per_core;            // Work items per core
   int cores_needed;             // Total cores needed
 
   CoreAssignment()
       : grid_x(1), grid_y(1), core_grid_x(11), core_grid_y(10),
-        work_per_core(1), cores_needed(1) {}
+        available_worker_cores(110), work_per_core(1), cores_needed(1) {}
 };
 
 /*!
@@ -70,12 +74,14 @@ struct RuntimeArgs {
  * \brief PlanTTCoreGroups Pass
  *
  * This pass analyzes T.Kernel grid dimensions and assigns work items
- * to Blackhole's 11x10 logical worker core grid.
+ * to the target hardware model's logical worker core grid.
  */
 class PlanTTCoreGroups : public tvm::tir::StmtExprMutator {
  public:
   /*! \brief Main entry point */
-  tvm::tir::PrimFunc Transform(const tvm::tir::PrimFunc& func);
+  tvm::tir::PrimFunc Transform(
+      const tvm::tir::PrimFunc& func,
+      std::optional<TTHardwareModel> hardware_model = std::nullopt);
 
   /*! \brief Get core assignment result */
   CoreAssignment GetCoreAssignment() const { return assignment_; }
@@ -89,7 +95,7 @@ class PlanTTCoreGroups : public tvm::tir::StmtExprMutator {
   /*! \brief Check if a core coordinate is valid */
   bool IsValidCoreCoord(const CoreCoord& coord) const;
 
-  /*! \brief Blackhole grid constants */
+  /*! \brief Conservative fallback grid constants */
   static constexpr int kBlackholeGridX = 11;
   static constexpr int kBlackholeGridY = 10;
   static constexpr int kTotalCores = 110;
@@ -100,6 +106,10 @@ class PlanTTCoreGroups : public tvm::tir::StmtExprMutator {
 
   /*! \brief Calculate work distribution across cores */
   void CalculateWorkDistribution(CoreAssignment& assignment);
+
+  /*! \brief Apply target hardware limits to a logical assignment. */
+  void ApplyHardwareModel(CoreAssignment& assignment,
+                          const std::optional<TTHardwareModel>& hardware_model);
 
   /*! \brief Store assignment in function attributes */
   void StoreAssignment(tvm::tir::PrimFunc& func, const CoreAssignment& assignment);

@@ -736,6 +736,11 @@ def rebuild_tt_compute_op_plan(
     mbarrier_buffer=None,
     mbarrier_scope=None,
     mbarrier_index_exprs=None,
+    tile_compute_dag_node_id=None,
+    tile_compute_source_emitter=None,
+    tile_compute_materialization_policy=None,
+    tile_compute_fanout_use_count=None,
+    tile_compute_fanout_policy=None,
 ):
     """Rebuild a TTComputeOpPlan with optional field overrides."""
     make_compute_op = tilelang.tvm.get_global_func("tl.TTComputeOpPlan")
@@ -770,6 +775,21 @@ def rebuild_tt_compute_op_plan(
         list(compute_op.mbarrier_index_exprs)
         if mbarrier_index_exprs is None
         else mbarrier_index_exprs,
+        int(compute_op.tile_compute_dag_node_id)
+        if tile_compute_dag_node_id is None
+        else tile_compute_dag_node_id,
+        str(compute_op.tile_compute_source_emitter)
+        if tile_compute_source_emitter is None
+        else tile_compute_source_emitter,
+        str(compute_op.tile_compute_materialization_policy)
+        if tile_compute_materialization_policy is None
+        else tile_compute_materialization_policy,
+        int(compute_op.tile_compute_fanout_use_count)
+        if tile_compute_fanout_use_count is None
+        else tile_compute_fanout_use_count,
+        str(compute_op.tile_compute_fanout_policy)
+        if tile_compute_fanout_policy is None
+        else tile_compute_fanout_policy,
     )
 
 

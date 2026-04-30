@@ -1901,3 +1901,17 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   Source projection metadata for same-shaped leaves belongs in the leaf
   pattern schema; do not maintain a parallel hook table that repeats the same
   operation-to-emitter mapping.
+- 2026-04-30 Blackhole modern C++ audit baseline:
+  host/runtime and generated scalar bitcasts must use memcpy-style bit casts,
+  never aliasing `reinterpret_cast` or union punning.
+  Raw DLTensor direct-runtime copies are only valid for compact row-major
+  layouts; non-compact strides must fail before memcpy.
+  Blackhole hardware facts should have one owner truth in `TTHardwareModel`
+  and target attrs (`max_cb_count == 64` for current Blackhole), with CB/core
+  validators consuming the same facts before source/runtime emission.
+  Runtime leaf readers should require typed `ExecutableSpec` fields instead of
+  defaulting to empty maps or `(0, 0)` cores.
+  TVM export of imported Blackhole modules needs real non-empty
+  `SaveToBytes` plus `ffi.Module.load_from_bytes.blackhole`; returning empty
+  bytes is worse than failing because it produces a load-time trap detached
+  from the original module.

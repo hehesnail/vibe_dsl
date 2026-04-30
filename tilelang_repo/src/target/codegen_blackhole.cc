@@ -364,6 +364,14 @@ void CodeGenBlackhole::AddFunction(const tvm::GlobalVar &gvar,
     decl_stream << "#include <cmath>\n";
     decl_stream << "#include <limits>\n";
     decl_stream << "\n";
+    decl_stream << "template <typename To, typename From>\n";
+    decl_stream << "static inline To tilelang_bit_cast(From value) {\n";
+    decl_stream << "  static_assert(sizeof(To) == sizeof(From), \"tilelang_bit_cast requires equal-sized types\");\n";
+    decl_stream << "  To out;\n";
+    decl_stream << "  __builtin_memcpy(&out, &value, sizeof(To));\n";
+    decl_stream << "  return out;\n";
+    decl_stream << "}\n";
+    decl_stream << "\n";
 
     // Detect core type from function attributes (IR-driven, not function name)
     std::string core_type_str = GetCoreTypeForCodegen(f);
@@ -409,12 +417,11 @@ void CodeGenBlackhole::AddFunction(const tvm::GlobalVar &gvar,
         decl_stream << "#include \"api/debug/waypoint.h\"\n";
         decl_stream << "#include \"experimental/circular_buffer.h\"\n";
         decl_stream << "#include \"hostdevcommon/kernel_structs.h\"\n";
-        decl_stream << "using half = _Float16;\n";
-        decl_stream << "static constexpr float inff = std::numeric_limits<float>::infinity();\n";
-        decl_stream << "ALWI uint32_t tilelang_bitcast_float_to_u32(float value) {\n";
-        decl_stream << "  union { float f; uint32_t u; } bits{value};\n";
-        decl_stream << "  return bits.u;\n";
-        decl_stream << "}\n";
+	        decl_stream << "using half = _Float16;\n";
+	        decl_stream << "static constexpr float inff = std::numeric_limits<float>::infinity();\n";
+	        decl_stream << "ALWI uint32_t tilelang_bitcast_float_to_u32(float value) {\n";
+	        decl_stream << "  return tilelang_bit_cast<uint32_t>(value);\n";
+	        decl_stream << "}\n";
         decl_stream << "ALWI uint16_t tilelang_float_to_half_bits(float value) {\n";
         decl_stream << "  const uint32_t bits = tilelang_bitcast_float_to_u32(value);\n";
         decl_stream << "  const uint32_t sign = (bits >> 16) & 0x8000u;\n";
@@ -459,13 +466,13 @@ void CodeGenBlackhole::AddFunction(const tvm::GlobalVar &gvar,
         decl_stream << "    }\n";
         decl_stream << "  }\n";
         decl_stream << "  return static_cast<uint16_t>(sign | (static_cast<uint32_t>(half_exponent) << 10) | (half_mantissa & 0x3ffu));\n";
-        decl_stream << "}\n";
-        decl_stream << "ALWI uint16_t tilelang_float_to_bfloat_bits(float value) {\n";
-        decl_stream << "  union { float f; uint32_t i; } bits{value};\n";
-        decl_stream << "  const uint32_t lsb = (bits.i >> 16) & 1u;\n";
-        decl_stream << "  const uint32_t rounding_bias = 0x7fffu + lsb;\n";
-        decl_stream << "  return static_cast<uint16_t>((bits.i + rounding_bias) >> 16);\n";
-        decl_stream << "}\n";
+	        decl_stream << "}\n";
+	        decl_stream << "ALWI uint16_t tilelang_float_to_bfloat_bits(float value) {\n";
+	        decl_stream << "  const uint32_t bits = tilelang_bit_cast<uint32_t>(value);\n";
+	        decl_stream << "  const uint32_t lsb = (bits >> 16) & 1u;\n";
+	        decl_stream << "  const uint32_t rounding_bias = 0x7fffu + lsb;\n";
+	        decl_stream << "  return static_cast<uint16_t>((bits + rounding_bias) >> 16);\n";
+	        decl_stream << "}\n";
         decl_stream << "ALWI float tilelang_fast_exp2f(float x) {\n";
         decl_stream << "  if (x <= -126.0f) { return 0.0f; }\n";
         decl_stream << "  if (x >= 126.0f) { x = 126.0f; }\n";
@@ -473,9 +480,9 @@ void CodeGenBlackhole::AddFunction(const tvm::GlobalVar &gvar,
         decl_stream << "  if (static_cast<float>(ipart) > x) { --ipart; }\n";
         decl_stream << "  const float fpart = x - static_cast<float>(ipart);\n";
         decl_stream << "  const float poly = 1.0f + fpart * (0.69314718f + fpart * (0.24022651f + fpart * (0.05550411f + fpart * 0.00961813f)));\n";
-        decl_stream << "  union { uint32_t i; float f; } exponent_bits{static_cast<uint32_t>(ipart + 127) << 23};\n";
-        decl_stream << "  return exponent_bits.f * poly;\n";
-        decl_stream << "}\n";
+	        decl_stream << "  const uint32_t exponent_bits = static_cast<uint32_t>(ipart + 127) << 23;\n";
+	        decl_stream << "  return tilelang_bit_cast<float>(exponent_bits) * poly;\n";
+	        decl_stream << "}\n";
         decl_stream << "template <typename T>\n";
         decl_stream << "__attribute__((noinline, noclone)) void tilelang_fill_fragment(T* dst, uint32_t num_elements, T value) {\n";
         decl_stream << "  for (uint32_t i = 0; i < num_elements; ++i) { dst[i] = value; }\n";
@@ -638,13 +645,16 @@ void CodeGenBlackhole::GenerateGenericKernelMain(const tvm::tir::PrimFunc &f,
       stream << "  " << dtype << " " << param_name
              << " = get_arg_val<uint32_t>(" << arg_idx++ << ");\n";
     } else if (dtype.is_float()) {
+      ICHECK_EQ(dtype.bits(), 32)
+          << "Blackhole codegen supports only 32-bit float scalar runtime arguments, got "
+          << dtype;
       // Float scalar argument - passed as bits in uint32_t
       stream << "  // Argument " << arg_idx << ": " << param_name << " ("
              << dtype << ")\n";
       stream << "  uint32_t " << param_name << "_bits = get_arg_val<uint32_t>("
              << arg_idx++ << ");\n";
       stream << "  " << dtype << " " << param_name
-             << " = *reinterpret_cast<" << dtype << "*>(&" << param_name
+             << " = tilelang_bit_cast<" << dtype << ">(" << param_name
              << "_bits);\n";
     } else {
       // Other types - default to uint32_t

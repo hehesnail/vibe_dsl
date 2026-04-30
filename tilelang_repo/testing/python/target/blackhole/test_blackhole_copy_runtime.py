@@ -587,6 +587,44 @@ def test_blackhole_module_direct_call_rejects_empty_work_packets_at_build_time()
         _rebuild_direct_runtime_module_with_core_plan(artifact, core_plan)
 
 
+def test_blackhole_copy_direct_runtime_rejects_noncompact_input_tensor_layout():
+    can_run, msg = check_blackhole_direct_execution_requirements()
+    if not can_run:
+        pytest.skip(f"Blackhole requirements not met: {msg}")
+
+    target = Target("blackhole")
+    kernel = staged_copy_kernel(tile_rows=1, tile_cols=1)
+    with target:
+        artifact = lower(kernel, target=target)
+
+    base = torch.randn(32, 64, dtype=torch.bfloat16)
+    a_torch = base[:, ::2]
+    b_output = torch.zeros(32, 32, dtype=torch.bfloat16)
+    assert not a_torch.is_contiguous()
+
+    with pytest.raises(tvm.error.InternalError, match="compact row-major"):
+        artifact.codegen_mod["main"](a_torch, b_output)
+
+
+def test_blackhole_copy_direct_runtime_rejects_noncompact_output_tensor_layout():
+    can_run, msg = check_blackhole_direct_execution_requirements()
+    if not can_run:
+        pytest.skip(f"Blackhole requirements not met: {msg}")
+
+    target = Target("blackhole")
+    kernel = staged_copy_kernel(tile_rows=1, tile_cols=1)
+    with target:
+        artifact = lower(kernel, target=target)
+
+    a_torch = torch.randn(32, 32, dtype=torch.bfloat16)
+    base = torch.zeros(32, 64, dtype=torch.bfloat16)
+    b_output = base[:, ::2]
+    assert not b_output.is_contiguous()
+
+    with pytest.raises(tvm.error.InternalError, match="compact row-major"):
+        artifact.codegen_mod["main"](a_torch, b_output)
+
+
 def test_blackhole_large_shape_copy_keeps_per_core_l1_small():
     kernel = staged_copy_kernel(tile_rows=25, tile_cols=32)
     target = Target("blackhole")

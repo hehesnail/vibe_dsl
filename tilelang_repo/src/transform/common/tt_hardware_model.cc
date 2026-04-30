@@ -10,6 +10,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <initializer_list>
 #include <optional>
 #include <regex>
 #include <sstream>
@@ -119,6 +120,17 @@ int64_t GetTargetIntAttr(const Target& target, const char* key, int64_t fallback
   return fallback;
 }
 
+int64_t GetTargetIntAttrAny(const Target& target,
+                            std::initializer_list<const char*> keys,
+                            int64_t fallback) {
+  for (const char* key : keys) {
+    if (auto value = target->GetAttr<Integer>(key)) {
+      return value.value()->value;
+    }
+  }
+  return fallback;
+}
+
 }  // namespace
 
 TTHardwareModel::TTHardwareModel(ffi::String arch_name, ffi::String descriptor_path,
@@ -162,13 +174,15 @@ TTHardwareModel BuildBlackholeTTHardwareModel(const Target& target) {
           MatchInt(descriptor_text, R"(worker_l1_size:\s*([0-9]+))").value_or(1572864));
   const int64_t dram_view_size =
       MatchInt(descriptor_text, R"(dram_view_size:\s*([0-9]+))").value_or(4278190080LL);
-  const int64_t max_cb_count = GetTargetIntAttr(target, "max_cb_count", 32);
+  const int64_t max_cb_count = GetTargetIntAttrAny(target, {"max_cb_count", "num_cbs"}, 64);
   const int64_t l1_allocation_alignment_bytes =
       GetTargetIntAttr(target, "l1_allocation_alignment_bytes", 32);
-  const int64_t functional_worker_count =
+  const int64_t descriptor_functional_worker_count =
       descriptor_text.empty() ? logical_worker_grid_x * logical_worker_grid_y
                               : CountMatches(ExtractSection(descriptor_text, "functional_workers"),
                                              R"(\b[0-9]+-[0-9]+\b)");
+  const int64_t functional_worker_count =
+      GetTargetIntAttr(target, "num_cores", descriptor_functional_worker_count);
   const int64_t router_only_count =
       descriptor_text.empty() ? 0
                               : CountMatches(ExtractSection(descriptor_text, "router_only"),

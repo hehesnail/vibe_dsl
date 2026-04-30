@@ -30,6 +30,7 @@ import example_mha_fwd_bshd as mha_example
 from common import (
     fragment_fill_cast_publish_kernel,
     gemm_kernel,
+    grid_indexed_staged_copy_kernel,
     lower_blackhole_to_tt_target,
     staged_copy_kernel,
 )
@@ -146,6 +147,37 @@ def _prepare_blackhole_tt_program_module(prim_func):
             mod = LowerAndLegalize(mod, target)
         mod = lower_blackhole_to_tt_target(mod)
     return mod
+
+
+def _with_test_hardware_model(
+    mod,
+    *,
+    logical_worker_grid_x,
+    logical_worker_grid_y,
+    functional_worker_count,
+    max_cb_count=64,
+):
+    make_hardware_model = tvm.get_global_func("tl.TTHardwareModel")
+    hardware_model = make_hardware_model(
+        "BLACKHOLE_TEST",
+        "",
+        logical_worker_grid_x,
+        logical_worker_grid_y,
+        functional_worker_count,
+        0,
+        8,
+        1572864,
+        4278190080,
+        max_cb_count,
+        32,
+        True,
+        2,
+        2,
+        2,
+    )
+    return tvm.IRModule({"main": mod["main"]}, global_infos={
+        "tl.tt_hardware_model": [hardware_model]
+    })
 
 
 def _prepare_blackhole_builtin_selection_module(prim_func):
@@ -479,6 +511,7 @@ def _rebuild_tt_program(
     consumer_binding_plans=None,
     resource_demands=None,
     resource_pressure_reports=None,
+    core_groups=None,
     kernels=None,
 ):
     make_tt_program = tvm.get_global_func("tl.TTProgram")
@@ -497,7 +530,7 @@ def _rebuild_tt_program(
         list(program.abi_plans),
         list(program.execution_plans),
         list(program.kernels) if kernels is None else kernels,
-        list(program.core_groups),
+        list(program.core_groups) if core_groups is None else core_groups,
         list(program.cb_plans) if cb_plans is None else cb_plans,
         list(program.semaphore_plans),
         list(program.compute_sync_plans),
@@ -515,6 +548,26 @@ def _rebuild_tt_program(
         list(program.resource_pressure_reports)
         if resource_pressure_reports is None
         else resource_pressure_reports,
+    )
+
+
+def _rebuild_tt_core_group(
+    core_group,
+    *,
+    logical_grid_x=None,
+    logical_grid_y=None,
+    linearization=None,
+    physical_cores=None,
+    work_packets=None,
+):
+    make_tt_core_group = tvm.get_global_func("tl.TTCoreGroup")
+    return make_tt_core_group(
+        str(core_group.name),
+        int(core_group.logical_grid_x) if logical_grid_x is None else logical_grid_x,
+        int(core_group.logical_grid_y) if logical_grid_y is None else logical_grid_y,
+        str(core_group.linearization) if linearization is None else linearization,
+        list(core_group.physical_cores) if physical_cores is None else physical_cores,
+        list(core_group.work_packets) if work_packets is None else work_packets,
     )
 
 
@@ -716,6 +769,57 @@ def test_task5_source_tree_has_no_internal_tt_or_resource_plan_definition_surfac
         REPO_ROOT / "tilelang_repo/tilelang",
     )
     assert hits == []
+
+
+def test_modern_cpp_audit_blackhole_scalar_and_tensor_boundaries_fail_closed():
+    module_source = (
+        REPO_ROOT / "tilelang_repo/src/target/blackhole_module.cc"
+    ).read_text()
+    codegen_source = (
+        REPO_ROOT / "tilelang_repo/src/target/codegen_blackhole.cc"
+    ).read_text()
+
+    assert "*reinterpret_cast<uint32_t*>(&f)" not in module_source
+    assert "reinterpret_cast<\" << dtype << \"*>(&\" << param_name" not in codegen_source
+    assert "RequireCompactRowMajorLayout" in module_source
+    assert 'RequireCompactRowMajorLayout(tensor, "input transfer"' in module_source
+    assert 'RequireCompactRowMajorLayout(binding.tensor, "output transfer"' in module_source
+    assert "unsupported scalar argument" in module_source
+
+
+def test_modern_cpp_audit_blackhole_runtime_leaf_readers_are_not_fail_open():
+    source = (REPO_ROOT / "tilelang_repo/src/target/rt_mod_blackhole.cc").read_text()
+
+    assert "value_or(ffi::Map<ffi::String, ffi::Any>())" not in source
+    assert "plan.physical_cores.push_back(PhysicalCore{});" not in source
+    assert "RequireMap" in source
+    assert "RequireExecutableArrayField" in source
+
+
+def test_modern_cpp_audit_blackhole_serialization_contract_is_real():
+    header = (REPO_ROOT / "tilelang_repo/src/target/blackhole_module.h").read_text()
+    source = (REPO_ROOT / "tilelang_repo/src/target/blackhole_module.cc").read_text()
+
+    assert "opaque imported runtime modules" in header
+    assert "kBinarySerializable | ffi::Module::kRunnable" in header
+    assert "tilelang.blackhole.module.v1" in source
+    assert "WriteExecutableSpecMap(stream, fmap_)" in source
+    assert "ReadExecutableSpecMap(stream)" in source
+    assert "ffi.Module.load_from_bytes.blackhole" in source
+    assert "BlackholeModule SaveToBytes not implemented" not in source
+    assert "BlackholeModule WriteToFile not implemented" in source
+    assert 'return ffi::Bytes("")' not in source
+
+
+def test_modern_cpp_audit_blackhole_resource_canonicalizer_has_no_var_name_fallback():
+    source = (
+        REPO_ROOT
+        / "tilelang_repo/src/transform/blackhole_device_resource_canonicalization.cc"
+    ).read_text()
+
+    assert "name_to_new_var_" not in source
+    assert "Name-based fallback" not in source
+    assert "VisitExpr_(const VarNode* op)" in source
 
 
 def test_blackhole_lowering_support_facts_have_no_contract_map_surface():
@@ -1299,6 +1403,8 @@ def test_resource_pressure_report_carries_hardware_cb_l1_admission_facts():
     report = tt_program.resource_pressure_reports[0]
     hardware_model = mod.global_infos["tl.tt_hardware_model"][0]
 
+    assert int(hardware_model.max_cb_count) == 64
+
     raw_cb_l1 = sum(
         int(plan.num_pages) * int(plan.page_size_bytes)
         for plan in tt_program.cb_plans
@@ -1321,6 +1427,63 @@ def test_resource_pressure_report_carries_hardware_cb_l1_admission_facts():
     assert int(report.max_simultaneous_l1_bytes) <= int(
         report.worker_l1_budget_bytes
     )
+
+
+def test_plan_tt_blocks_uses_hardware_model_for_core_group_capacity():
+    mod = _prepare_blackhole_phase_b_module(grid_indexed_staged_copy_kernel(3, 3))
+    mod = _with_test_hardware_model(
+        mod,
+        logical_worker_grid_x=2,
+        logical_worker_grid_y=2,
+        functional_worker_count=4,
+    )
+
+    mod = tilelang.transform.PlanTTBlocks()(mod)
+    tt_program = mod["main"].attrs["tl.tt_program"]
+    core_group = tt_program.core_groups[0]
+
+    assert int(core_group.logical_grid_x) == 3
+    assert int(core_group.logical_grid_y) == 3
+    assert len(core_group.physical_cores) == 4
+    assert len(core_group.work_packets) == 4
+    assert {
+        (int(core["core_x"]), int(core["core_y"]))
+        for core in core_group.physical_cores
+    } == {(0, 0), (1, 0), (0, 1), (1, 1)}
+    assert sum(int(packet["work_count"]) for packet in core_group.work_packets) == 9
+
+
+def test_validate_tt_program_rejects_core_group_outside_hardware_grid():
+    mod = _prepare_blackhole_tt_program_module(grid_indexed_staged_copy_kernel(1, 1))
+    main = mod["main"]
+    tt_program = main.attrs["tl.tt_program"]
+    mod = _with_test_hardware_model(
+        mod,
+        logical_worker_grid_x=1,
+        logical_worker_grid_y=1,
+        functional_worker_count=1,
+    )
+
+    core_group = tt_program.core_groups[0]
+    invalid_core = {"core_x": 1, "core_y": 0}
+    invalid_packet = {"core_x": 1, "core_y": 0, "work_offset": 0, "work_count": 1}
+    invalid_program = _rebuild_tt_program(
+        tt_program,
+        core_groups=[
+            _rebuild_tt_core_group(
+                core_group,
+                physical_cores=[invalid_core],
+                work_packets=[invalid_packet],
+            )
+        ],
+    )
+    broken = tvm.IRModule(
+        {"main": main.with_attr("tl.tt_program", invalid_program)},
+        global_infos=mod.global_infos,
+    )
+
+    with pytest.raises(Exception, match="TTCoreGroup.*hardware"):
+        tilelang.transform.ValidateTTProgram()(broken)
 
 
 def test_validate_tt_program_rejects_cb_id_pressure_over_hardware_limit():

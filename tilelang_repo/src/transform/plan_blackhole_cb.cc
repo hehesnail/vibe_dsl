@@ -23,7 +23,7 @@
  *
  * MVP Implementation (Phase 1):
  * - Read staged CB requirements from TTProgram cb_plans
- * - Validate constraints from TTHardwareModel (default CB count <= 32, total L1 <= 1.5MB)
+ * - Validate constraints from TTHardwareModel (default CB count <= 64, total L1 <= 1.5MB)
  * - Assign CB IDs following TT-Metal convention: 0-15 input, 16-31 output
  * - Rewrite placeholder requirement indices in the IR to final CB IDs
  */
@@ -62,8 +62,8 @@ using tvm::ffi::Array;
 using tvm::ffi::Any;
 
 // Blackhole / TT-Metal compute API CB identifiers are architectural CB indices.
-// Kernel APIs such as pack_tile and cb_wait_front operate on IDs in [0, 31].
-constexpr int kDefaultMaxCBs = 32;
+// Kernel APIs such as pack_tile and cb_wait_front operate on architectural CB IDs.
+constexpr int kDefaultMaxCBs = 64;
 constexpr int kDefaultMaxL1Size = 1572864;  // 1.5MB = 1,572,864 bytes
 
 // CB ID allocation ranges

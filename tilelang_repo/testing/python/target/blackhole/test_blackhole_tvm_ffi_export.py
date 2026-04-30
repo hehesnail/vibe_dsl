@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 
 import tilelang
+import tvm
 
 from .common import check_blackhole_codegen_requirements, staged_copy_kernel
 
@@ -28,5 +29,6 @@ def test_blackhole_tvm_ffi_export_generates_valid_host_shim(
 
     lib0_c = debug_dir / "lib0.c"
     assert output.exists()
+    assert tvm.runtime.load_module(str(output)) is not None
     assert lib0_c.exists()
     assert "kernel_error_code = ;" not in lib0_c.read_text()

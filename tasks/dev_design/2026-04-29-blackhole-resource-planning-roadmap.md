@@ -130,7 +130,11 @@ Initial policy should be conservative:
 - logical coordinates
 - deterministic row-major work packets
 - rectangular core ranges when useful
-- typed reject when requested work exceeds available workers
+- do not materialize physical cores outside the hardware worker grid
+- allow logical work items to exceed physical worker count only through
+  explicit deterministic work packets on admitted workers
+- typed reject when requested physical workers or coordinates exceed
+  `TTHardwareModel`
 
 `TTBufferDistributionPlan`
 must grow beyond
@@ -165,8 +169,8 @@ over-complexity problem under a new name.
 1. Keep explicit leaf tile-compute and DAG covering boundaries clean.
 2. Use typed resource demand / pressure reports as admission surfaces.
 3. Keep CB / L1 admission hardware-backed.
-4. Replace hard-coded core grid and unit buffer placement with
-   hardware-model-backed core groups and explicit buffer distribution.
+4. Keep core groups hardware-model-backed and replace unit buffer placement
+   with explicit buffer distribution.
 5. Re-enter wider runtime admission:
    multi-block flash-attn,
    wider exact-CB events,
@@ -181,7 +185,8 @@ This roadmap is implemented only when:
   records
 - validators consume the reports and fail closed
 - CB / L1 checks use hardware-model facts
-- core groups are derived from hardware facts, not hard-coded constants
+- core groups are derived from hardware facts, not hard-coded constants,
+  and validators reject out-of-grid physical cores
 - buffer distribution can express the placement choices needed by admitted
   workloads
 - no resource truth is carried by bags, payloads, source hooks, or runtime

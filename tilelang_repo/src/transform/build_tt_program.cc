@@ -140,6 +140,21 @@ std::optional<Target> FindBlackholeTarget(const IRModule& mod) {
   return std::nullopt;
 }
 
+std::optional<TTHardwareModel> EnsureBlackholeHardwareModel(IRModule* mod) {
+  if (auto maybe_hardware_model = GetModuleTTHardwareModel(*mod)) {
+    return maybe_hardware_model.value();
+  }
+  auto maybe_target = FindBlackholeTarget(*mod);
+  if (!maybe_target) {
+    return std::nullopt;
+  }
+  TTHardwareModel hardware_model = BuildBlackholeTTHardwareModel(maybe_target.value());
+  *mod = (*mod)->ShallowCopy();
+  (*mod)->UpdateGlobalInfo(attr::kTLTTHardwareModel,
+                           Array<GlobalInfo>{hardware_model});
+  return hardware_model;
+}
+
 String GetStringOrDefault(const Map<String, Any>& dict, const char* key, String default_value = String()) {
   if (auto value = dict.Get(String(key))) {
     return Downcast<String>(value.value());
@@ -587,7 +602,7 @@ String DRAMViewRequirement(const TTProgramSlices& slices) {
   return String("dram_buffer_views:" + std::to_string(dram_buffers));
 }
 
-constexpr int64_t kDefaultCBIdLimit = 32;
+constexpr int64_t kDefaultCBIdLimit = 64;
 constexpr int64_t kDefaultWorkerL1BudgetBytes = 1572864;
 constexpr int64_t kDefaultL1AlignmentBytes = 32;
 
@@ -994,6 +1009,8 @@ Array<TTExecutionPlan> BuildExecutionPlans(const SpatialPlan& plan, const Array<
 
 tvm::transform::Pass PlanTTBlocks() {
   auto pass_func = [](IRModule mod, tvm::transform::PassContext) {
+    std::optional<TTHardwareModel> maybe_hardware_model =
+        EnsureBlackholeHardwareModel(&mod);
     IRModule updated = mod;
     for (const auto& [gvar, base_func] : mod->functions) {
       auto func = base_func.as<tir::PrimFunc>();
@@ -1002,14 +1019,14 @@ tvm::transform::Pass PlanTTBlocks() {
       }
       const SpatialPlan spatial_plan = RequireValidatedSpatialPlan(func.value(), "PlanTTBlocks");
       PlanTTCoreGroups planner;
-      tir::PrimFunc planned = planner.Transform(func.value());
+      tir::PrimFunc planned = planner.Transform(func.value(), maybe_hardware_model);
       const Array<TTCoreGroup> core_groups = BuildCoreGroups(planner);
       TTProgramSlices slices = GetOrCreateTTProgramSlices(planned, gvar, spatial_plan);
       slices.mesh_plans = BuildUnitMeshPlans();
       slices.block_plans = BuildBlockPlans(spatial_plan, core_groups);
       slices.core_groups = core_groups;
       slices.resource_demands = BuildTileComputeResourceDemands(func.value(), slices);
-      RefreshResourcePlanningSlices(&slices);
+      RefreshResourcePlanningSlices(&slices, maybe_hardware_model);
       planned = WithTTProgramAttr(std::move(planned), PackTTProgram(std::move(slices)));
       updated->Add(gvar, planned, true);
     }
@@ -1131,14 +1148,8 @@ tvm::transform::Pass PlanTTABI() {
 
 tvm::transform::Pass PlanTTExecution() {
   auto pass_func = [](IRModule mod, tvm::transform::PassContext) {
-    auto maybe_hardware_model = GetModuleTTHardwareModel(mod);
-    if (!maybe_hardware_model) {
-      auto maybe_target = FindBlackholeTarget(mod);
-      ICHECK(maybe_target) << "PlanTTExecution requires blackhole target";
-      maybe_hardware_model = BuildBlackholeTTHardwareModel(maybe_target.value());
-      mod = mod->ShallowCopy();
-      mod->UpdateGlobalInfo(attr::kTLTTHardwareModel, Array<GlobalInfo>{maybe_hardware_model.value()});
-    }
+    auto maybe_hardware_model = EnsureBlackholeHardwareModel(&mod);
+    ICHECK(maybe_hardware_model) << "PlanTTExecution requires blackhole target";
     IRModule updated = mod;
     for (const auto& [gvar, base_func] : mod->functions) {
       auto func = base_func.as<tir::PrimFunc>();

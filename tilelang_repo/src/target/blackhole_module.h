@@ -20,9 +20,6 @@
 namespace tvm {
 namespace runtime {
 
-/*! \brief Maximum number of CBs supported on Blackhole */
-static constexpr const uint32_t kBlackholeMaxCBs = 64;
-
 /*!
  * \brief Runtime-ready circular buffer configuration.
  */
@@ -862,6 +859,9 @@ class BlackholeModuleNode : public ffi::ModuleObj {
 
   /*! \brief Get module properties */
   int GetPropertyMask() const final {
+    // TVM export_library uses this bit to allow opaque imported runtime modules
+    // in the host module tree. Actual Blackhole byte/file serialization remains
+    // fail-closed until a real ExecutableSpec loader exists.
     return ffi::Module::kBinarySerializable | ffi::Module::kRunnable;
   }
 

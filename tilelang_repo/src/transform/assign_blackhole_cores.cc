@@ -19,7 +19,7 @@
 
 /*!
  * \file assign_blackhole_cores.cc
- * \brief Assign T.Kernel grid work items to Blackhole 11x10 logical worker cores
+ * \brief Assign T.Kernel grid work items to Blackhole logical worker cores
  */
 
 #include "assign_blackhole_cores.h"
@@ -35,6 +35,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <optional>
 
 namespace tvm {
 namespace tl {
@@ -54,10 +55,20 @@ using tvm::Integer;
 using tvm::ffi::Array;
 using tvm::ffi::String;
 
+namespace {
+
+int PositiveOrDefault(int64_t value, int fallback) {
+  return value > 0 ? static_cast<int>(value) : fallback;
+}
+
+}  // namespace
+
 // Main entry point
-PrimFunc PlanTTCoreGroups::Transform(const PrimFunc& func) {
+PrimFunc PlanTTCoreGroups::Transform(const PrimFunc& func,
+                                     std::optional<TTHardwareModel> hardware_model) {
   // Analyze grid dimensions
   assignment_ = AnalyzeGrid(func);
+  ApplyHardwareModel(assignment_, hardware_model);
 
   // Calculate work distribution
   CalculateWorkDistribution(assignment_);
@@ -115,16 +126,37 @@ CoreAssignment PlanTTCoreGroups::AnalyzeGrid(const PrimFunc& func) {
   if (assignment.grid_x <= 0) assignment.grid_x = 1;
   if (assignment.grid_y <= 0) assignment.grid_y = 1;
 
+  return assignment;
+}
+
+void PlanTTCoreGroups::ApplyHardwareModel(
+    CoreAssignment& assignment,
+    const std::optional<TTHardwareModel>& hardware_model) {
+  if (hardware_model) {
+    const TTHardwareModel& model = hardware_model.value();
+    assignment.core_grid_x =
+        PositiveOrDefault(model->logical_worker_grid_x, kBlackholeGridX);
+    assignment.core_grid_y =
+        PositiveOrDefault(model->logical_worker_grid_y, kBlackholeGridY);
+    const int grid_capacity =
+        std::max(1, assignment.core_grid_x * assignment.core_grid_y);
+    assignment.available_worker_cores =
+        std::min(grid_capacity,
+                 PositiveOrDefault(model->functional_worker_count, grid_capacity));
+    return;
+  }
+
   assignment.core_grid_x = kBlackholeGridX;
   assignment.core_grid_y = kBlackholeGridY;
-
-  return assignment;
+  assignment.available_worker_cores = kTotalCores;
 }
 
 // Calculate work distribution across cores
 void PlanTTCoreGroups::CalculateWorkDistribution(CoreAssignment& assignment) {
   const int total_work = std::max(1, assignment.grid_x * assignment.grid_y);
-  const int available_cores = kBlackholeGridX * kBlackholeGridY;
+  const int available_cores =
+      std::max(1, std::min(assignment.available_worker_cores,
+                           assignment.core_grid_x * assignment.core_grid_y));
 
   assignment.cores_needed = std::min(total_work, available_cores);
   const int base_work = total_work / assignment.cores_needed;
@@ -156,16 +188,17 @@ RuntimeArgs PlanTTCoreGroups::GetRuntimeArgs(int core_idx) const {
 CoreCoord PlanTTCoreGroups::GetCoreCoord(int core_idx) const {
   CoreCoord coord;
 
-  coord.x = core_idx % kBlackholeGridX;
-  coord.y = core_idx / kBlackholeGridX;
+  const int core_grid_x = std::max(1, assignment_.core_grid_x);
+  coord.x = core_idx % core_grid_x;
+  coord.y = core_idx / core_grid_x;
 
   return coord;
 }
 
 // Check if a core coordinate is valid
 bool PlanTTCoreGroups::IsValidCoreCoord(const CoreCoord& coord) const {
-  bool valid_x = coord.x >= 0 && coord.x < kBlackholeGridX;
-  bool valid_y = coord.y >= 0 && coord.y < kBlackholeGridY;
+  bool valid_x = coord.x >= 0 && coord.x < assignment_.core_grid_x;
+  bool valid_y = coord.y >= 0 && coord.y < assignment_.core_grid_y;
 
   return valid_x && valid_y;
 }

@@ -85,33 +85,48 @@
   allocator-managed L1 pressure。
   `ValidateTTProgram`
   会在 source / runtime emission 前 fail closed。
+- Core group planning 已开始消费
+  `TTHardwareModel`
+  的 logical worker grid / functional worker count。
+  `PlanTTCoreGroups`
+  现在只 materialize hardware-grid 内的 physical cores，
+  用 deterministic work packets 覆盖更大的 logical grid；
+  `ValidateTTProgram`
+  校验 core 坐标、重复 core、work packet membership
+  和 harvested worker count。
+- Blackhole runtime / codegen C++ audit 第一批已收口：
+  host/generated scalar bitcast 改为 memcpy-style bit cast；
+  direct runtime DLTensor raw transfer 要求 compact row-major layout；
+  runtime leaf readers 对缺失 typed fields fail closed；
+  device resource canonicalizer 删除跨对象 Var name fallback；
+  Blackhole imported module 提供真实 non-empty bytes serialization
+  和 `ffi.Module.load_from_bytes.blackhole` loader，
+  同时保留 file export 的 fail-closed 行为。
 
 ## Current Blocker
 
-Core placement 和 buffer distribution 仍然过粗：
+Buffer distribution 仍然过粗：
 
-- `PlanTTCoreGroups`
-  仍主要走 hard-coded logical grid path。
 - `TTBufferDistributionPlan`
   仍主要是
   `unit_mesh`
   /
   `replicated`。
 - Wider runtime admission
-  需要 core groups 和 buffer placement
-  先消费
+  还需要 buffer placement
+  继续消费
   `TTHardwareModel`
   facts，
   并在 source / runtime emission 前给出 typed reject。
 
 ## Next Task Order
 
-1. Upgrade core and buffer placement:
+1. Upgrade buffer placement:
+   expand `TTBufferDistributionPlan`
+   beyond `unit_mesh` / `replicated`,
    use `TTHardwareModel`
-   for worker grid / worker count / L1 / DRAM facts,
-   produce safe logical-coordinate core groups,
-   and expand `TTBufferDistributionPlan`
-   beyond `unit_mesh` / `replicated`.
+   for L1 / DRAM facts,
+   and produce source/runtime-visible typed rejects before emission.
 2. Resume wider runtime admission:
    multi-block flash-attn direct runtime,
    wider exact-CB events,
@@ -139,41 +154,33 @@ Core placement 和 buffer distribution 仍然过粗：
 
 Latest code implementation batch:
 current HEAD after
-Blackhole tile-compute bounded-normalizer cleanup.
+modern C++ audit fixes for Blackhole runtime/codegen/typed plan readers
+and hardware-model-backed core-group repair.
 
 Verification for this batch:
 
 - `cmake --build build -j32`
-- `pytest -q testing/python/transform/test_blackhole_spatial_ir.py -k 'tile_compute or builtin_selector or single_blackhole_tile_compute_normalizer_surface or source_projection_is_not_declared or source_emission_schema'`
-  (`29 passed, 51 deselected`)
+- `pytest -q testing/python/transform/test_blackhole_spatial_ir.py -k 'modern_cpp_audit'`
+  (`4 passed, 82 deselected`)
 - `pytest -q testing/python/transform/test_blackhole_spatial_ir.py`
-  (`80 passed`)
-- `pytest -q testing/python/target/blackhole/test_blackhole_flash_attention_pipeline.py -k 'leaf_compute_ops or optimized_path_lowers_acc_o_broadcast_updates or optimized_path_lowers_exp2_to_leaf_tile_ops or projects_non_gemm_exact_compute_ops'`
-  (`3 passed, 64 deselected`)
+  (`86 passed`)
+- `source /root/dev/vibe_dsl/scripts/setup_tt_sim.sh && export TILELANG_HOME=/root/dev/vibe_dsl/tilelang_repo && cd /root/dev/vibe_dsl/tilelang_repo && pytest -q testing/python/target/blackhole/test_blackhole_tvm_ffi_export.py testing/python/target/blackhole/test_blackhole_copy_runtime.py -k 'tvm_ffi_export or noncompact or empty_work_packets or large_shape_copy_keeps_per_core_l1_small'`
+  (`5 passed, 11 deselected`)
+- `source /root/dev/vibe_dsl/scripts/setup_tt_sim.sh && export TILELANG_HOME=/root/dev/vibe_dsl/tilelang_repo && cd /root/dev/vibe_dsl/tilelang_repo && pytest -q testing/python/target/blackhole/test_blackhole_copy_pipeline.py -k 'leaf_readers_do_not_keep_legacy_defaults_or_slot_fallbacks or direct_runtime_materializes_compile_time_abi_schema or rejects_accessor_common_runtime_arg_count'`
+  (`3 passed, 60 deselected`)
+- `source /root/dev/vibe_dsl/scripts/setup_tt_sim.sh && export TILELANG_HOME=/root/dev/vibe_dsl/tilelang_repo && cd /root/dev/vibe_dsl/tilelang_repo && pytest -q testing/python/target/blackhole/test_blackhole_copy_runtime.py`
+  (`15 passed`)
+- `source /root/dev/vibe_dsl/scripts/setup_tt_sim.sh && export TILELANG_HOME=/root/dev/vibe_dsl/tilelang_repo && cd /root/dev/vibe_dsl/tilelang_repo && pytest -q testing/python/target/blackhole/test_blackhole_gemm.py`
+  (`59 passed`)
 - `git diff --check`
   (`passed`)
-- Cleanup scan found no active
-  `GetBlackholeTileComputeStringArg`,
-  old composite generator,
-  or string-mode composite payload residue under
-  `tilelang_repo/src/transform`.
-- Boundary scan asserts
-  `lower_tile_op.cc`
-  no longer defines Blackhole leaf-call builders /
-  normalizer helpers,
-  `lower_blackhole_ops.h`
-  no longer declares tile-compute source emitter hook methods,
-  source projection no longer carries a second hook table or per-leaf
-  add/mul/exp2/recip emit methods,
-  normalizer source has shared leaf-call rendering and bounded store-value
-  root dispatch without
-  `TileComputeRewriteRule`,
-  `GetBlackholeTileComputeRewriteRules`,
-  benefit ordering,
-  or a large `TryNormalizeBlackholeTileComputeStore` compatibility shell,
-  and `lower_blackhole_tile_compute.cc`
-  no longer hand-writes CB / tile-register / pack calls outside
-  `ExactTileComputeEmitter`.
+- Source scan found no active
+  empty map leaf-reader fallback,
+  default physical core fallback,
+  empty `SaveToBytes`,
+  resource Var name fallback,
+  old host scalar aliasing bitcast,
+  or stale `kBlackholeMaxCBs`.
 
 Latest doc cleanup verification:
 

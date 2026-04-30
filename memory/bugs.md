@@ -1691,6 +1691,96 @@
     一旦 tiled live-form owner 改写或清除，
     exact-output alias 必须一起失效
 
+#### Blackhole runtime module 不能用空 bytes 冒充 binary serialization
+
+- **症状**:
+  - `tilelang.compile(..., execution_backend="tvm_ffi")`
+    的 Blackhole export path 需要 imported runtime module
+    通过 TVM import-tree packing
+  - 如果 `BlackholeModule` 声明 `kBinarySerializable`
+    但 `SaveToBytes` 返回空 bytes，
+    export 可能生成看似有效的 host shim，
+    但 load/import 阶段没有可恢复的
+    `ExecutableSpec`
+- **根因**:
+  - TVM `export_library`
+    对非 DSO imported modules 会实际调用
+    `SaveToBytes`
+    并依赖
+    `ffi.Module.load_from_bytes.<kind>`
+    恢复 import tree
+  - Blackhole 不能只靠 property mask
+    通过 traversal；
+    serialization bytes 和 loader 必须同属一个真实 contract
+- **修法**:
+  - `BlackholeModule::SaveToBytes`
+    写出 versioned module payload、
+    kernel dir
+    和 typed `ExecutableSpec` map
+  - 注册
+    `ffi.Module.load_from_bytes.blackhole`
+    读回同一 payload，
+    并复用 `BlackholeModuleNode`
+    构造校验
+  - 文件级 `WriteToFile`
+    在没有真实 file format 前继续 fail closed
+- **教训**:
+  - 对 TVM runtime modules，
+    `kBinarySerializable`
+    是 loadable import-tree contract，
+    不是“允许 export 通过”的标签
+  - 空 bytes / warning-return
+    会把错误推迟到更远的 load/runtime 边界，
+    应改成真实序列化或明确 fail closed
+
+#### Blackhole direct runtime raw memcpy 必须先验证 DLTensor compact layout
+
+- **症状**:
+  - 非 compact stride 的输入或输出 tensor
+    可能被 direct runtime 当成连续 buffer
+    原样 memcpy，
+    造成 silent wrong copy 或覆盖错误区域
+- **根因**:
+  - `DLTensor`
+    的 shape 和 dtype 只能给出元素总量，
+    不能证明 host memory layout compact
+  - direct runtime 的当前 transfer path
+    没有 stride-aware pack/unpack 实现
+- **修法**:
+  - host input transfer 和 output copy-back
+    在 raw memcpy 前统一要求
+    compact row-major layout
+  - 非 compact tensor 先 fail closed；
+    以后若要支持 stride，
+    必须实现显式 stride-aware staging
+- **教训**:
+  - direct runtime 的 admitted subset
+    要把 host tensor layout 写进边界条件；
+    不要让 DLPack 的可表达 stride
+    被低层 memcpy silently ignored
+
+#### TTComputeOpPlan helper 漂移会伪装成 target runtime 回归
+
+- **症状**:
+  - target tests 在重建 mutated `TTComputeOpPlan`
+    时失败：
+    `Expected 21 but got 16 arguments`
+- **根因**:
+  - 生产侧 `TTComputeOpPlan`
+    schema 增加了 tile-compute DAG /
+    materialization /
+    fanout fields
+  - `testing/python/target/blackhole/common.py`
+    的 rebuild helper
+    仍按旧 16 参数构造对象
+- **修法**:
+  - 测试 helper 必须完整透传当前 typed plan fields，
+    和 transform 测试中的 rebuild helper 保持一致
+- **教训**:
+  - 看到 FFI constructor arity mismatch
+    先查测试 helper / schema drift，
+    不要误判成 codegen 或 direct runtime 行为失败
+
 ## 3. 环境问题速查
 
 | 问题 | 解决 |

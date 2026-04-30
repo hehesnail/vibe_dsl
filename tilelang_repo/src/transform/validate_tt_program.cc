@@ -35,13 +35,21 @@ Map<String, Any> AsMap(const Any& any) {
   return any.as<Map<String, Any>>().value_or(Map<String, Any>());
 }
 
-bool HasKey(const Map<String, Any>& map, const char* key) { return map.Get(String(key)).has_value(); }
-
 int64_t GetIntOrDefault(const Map<String, Any>& map, const char* key, int64_t default_value = -1) {
   if (auto value = map.Get(String(key))) {
     return Downcast<Integer>(value.value())->value;
   }
   return default_value;
+}
+
+int64_t RequireInt(const Map<String, Any>& map, const char* key, const std::string& context) {
+  auto value = map.Get(String(key));
+  ICHECK(value.has_value()) << context << " requires " << key;
+  return Downcast<Integer>(value.value())->value;
+}
+
+std::string CoreCoordKey(int64_t x, int64_t y) {
+  return std::to_string(x) + "," + std::to_string(y);
 }
 
 std::optional<Target> FindBlackholeTarget(const IRModule& mod) {
@@ -140,14 +148,56 @@ void ValidateBufferDistributionPlan(
   }
 }
 
-void ValidateCoreGroup(const TTCoreGroup& core_group) {
+void ValidateCoreGroup(const TTCoreGroup& core_group,
+                       const std::optional<TTHardwareModel>& maybe_hardware_model) {
   ICHECK_GT(core_group->logical_grid_x, 0) << "TTCoreGroup requires positive logical_grid_x";
   ICHECK_GT(core_group->logical_grid_y, 0) << "TTCoreGroup requires positive logical_grid_y";
   ICHECK(!core_group->physical_cores.empty()) << "TTCoreGroup requires physical_cores";
   ICHECK(!core_group->work_packets.empty()) << "TTCoreGroup requires work_packets";
+  int64_t hardware_grid_x = 0;
+  int64_t hardware_grid_y = 0;
+  int64_t functional_worker_count = 0;
+  if (maybe_hardware_model) {
+    const TTHardwareModel& hardware_model = maybe_hardware_model.value();
+    hardware_grid_x = hardware_model->logical_worker_grid_x;
+    hardware_grid_y = hardware_model->logical_worker_grid_y;
+    functional_worker_count = hardware_model->functional_worker_count;
+    ICHECK_GT(hardware_grid_x, 0)
+        << "TTCoreGroup validation requires positive TTHardwareModel logical_worker_grid_x";
+    ICHECK_GT(hardware_grid_y, 0)
+        << "TTCoreGroup validation requires positive TTHardwareModel logical_worker_grid_y";
+    ICHECK_GT(functional_worker_count, 0)
+        << "TTCoreGroup validation requires positive TTHardwareModel functional_worker_count";
+    ICHECK_LE(static_cast<int64_t>(core_group->physical_cores.size()),
+              functional_worker_count)
+        << "TTCoreGroup physical_cores exceed hardware functional worker count";
+  }
+
+  std::unordered_set<std::string> physical_core_coords;
+  for (const Any& item : core_group->physical_cores) {
+    Map<String, Any> core = AsMap(item);
+    ICHECK(!core.empty()) << "TTCoreGroup physical_core must be a map";
+    const int64_t core_x = RequireInt(core, "core_x", "TTCoreGroup physical_core");
+    const int64_t core_y = RequireInt(core, "core_y", "TTCoreGroup physical_core");
+    ICHECK_GE(core_x, 0) << "TTCoreGroup physical_core requires non-negative core_x";
+    ICHECK_GE(core_y, 0) << "TTCoreGroup physical_core requires non-negative core_y";
+    if (maybe_hardware_model) {
+      ICHECK_LT(core_x, hardware_grid_x)
+          << "TTCoreGroup physical_core outside hardware logical worker grid";
+      ICHECK_LT(core_y, hardware_grid_y)
+          << "TTCoreGroup physical_core outside hardware logical worker grid";
+    }
+    ICHECK(physical_core_coords.insert(CoreCoordKey(core_x, core_y)).second)
+        << "TTCoreGroup duplicate physical_core coordinate";
+  }
+
   for (const Any& item : core_group->work_packets) {
     Map<String, Any> packet = AsMap(item);
     ICHECK(!packet.empty()) << "TTCoreGroup work_packet must be a map";
+    const int64_t core_x = RequireInt(packet, "core_x", "TTCoreGroup work_packet");
+    const int64_t core_y = RequireInt(packet, "core_y", "TTCoreGroup work_packet");
+    ICHECK(physical_core_coords.count(CoreCoordKey(core_x, core_y)))
+        << "TTCoreGroup work_packet references core outside physical_cores";
     ICHECK_GE(GetIntOrDefault(packet, "work_offset", -1), 0)
         << "TTCoreGroup work_packet requires non-negative work_offset";
     ICHECK_GT(GetIntOrDefault(packet, "work_count", 0), 0)
@@ -806,7 +856,7 @@ void CheckTTProgram(const TTProgram& program, const SpatialPlan& spatial_plan,
   }
 
   for (const TTCoreGroup& core_group : program->core_groups) {
-    ValidateCoreGroup(core_group);
+    ValidateCoreGroup(core_group, maybe_hardware_model);
   }
 
   std::unordered_set<int64_t> cb_ids;

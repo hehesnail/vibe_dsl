@@ -19,8 +19,10 @@
 #include <sstream>
 #include <iostream>
 #include <cstdlib>
+#include <cstring>
 #include <unistd.h>
 #include <filesystem>
+#include <limits>
 #include <type_traits>
 #include <unordered_map>
 #include <unordered_set>
@@ -58,17 +60,886 @@ static std::string EncodeExecutableSpecMetadata(const ExecutableSpec& spec) {
   return os.str();
 }
 
+static constexpr const char* kBlackholeModuleSerializationMagic =
+    "tilelang.blackhole.module.v1";
+
+static uint64_t ReadUInt64(dmlc::Stream* stream, const char* field) {
+  uint64_t value = 0;
+  ICHECK(stream->Read(&value)) << "BlackholeModule LoadFromBytes missing " << field;
+  return value;
+}
+
+static int64_t ReadInt64(dmlc::Stream* stream, const char* field) {
+  int64_t value = 0;
+  ICHECK(stream->Read(&value)) << "BlackholeModule LoadFromBytes missing " << field;
+  return value;
+}
+
+static uint32_t ReadUInt32(dmlc::Stream* stream, const char* field) {
+  const uint64_t value = ReadUInt64(stream, field);
+  ICHECK_LE(value, static_cast<uint64_t>(std::numeric_limits<uint32_t>::max()))
+      << "BlackholeModule LoadFromBytes field " << field << " exceeds uint32 range";
+  return static_cast<uint32_t>(value);
+}
+
+static int32_t ReadInt32(dmlc::Stream* stream, const char* field) {
+  const int64_t value = ReadInt64(stream, field);
+  ICHECK_GE(value, static_cast<int64_t>(std::numeric_limits<int32_t>::min()))
+      << "BlackholeModule LoadFromBytes field " << field << " is below int32 range";
+  ICHECK_LE(value, static_cast<int64_t>(std::numeric_limits<int32_t>::max()))
+      << "BlackholeModule LoadFromBytes field " << field << " exceeds int32 range";
+  return static_cast<int32_t>(value);
+}
+
+static bool ReadBool(dmlc::Stream* stream, const char* field) {
+  bool value = false;
+  ICHECK(stream->Read(&value)) << "BlackholeModule LoadFromBytes missing " << field;
+  return value;
+}
+
+static std::string ReadString(dmlc::Stream* stream, const char* field) {
+  std::string value;
+  ICHECK(stream->Read(&value)) << "BlackholeModule LoadFromBytes missing " << field;
+  return value;
+}
+
+static void WriteUInt64(dmlc::Stream* stream, uint64_t value) {
+  stream->Write(value);
+}
+
+static void WriteInt64(dmlc::Stream* stream, int64_t value) {
+  stream->Write(value);
+}
+
+static void WriteUInt32(dmlc::Stream* stream, uint32_t value) {
+  WriteUInt64(stream, static_cast<uint64_t>(value));
+}
+
+static void WriteInt32(dmlc::Stream* stream, int32_t value) {
+  WriteInt64(stream, static_cast<int64_t>(value));
+}
+
+static void WriteBool(dmlc::Stream* stream, bool value) {
+  stream->Write(value);
+}
+
+static void WriteString(dmlc::Stream* stream, const std::string& value) {
+  stream->Write(value);
+}
+
+template <typename T, typename WriteOne>
+static void WriteVectorField(dmlc::Stream* stream, const std::vector<T>& values,
+                             WriteOne write_one) {
+  WriteUInt64(stream, static_cast<uint64_t>(values.size()));
+  for (const auto& value : values) {
+    write_one(stream, value);
+  }
+}
+
+template <typename T, typename ReadOne>
+static std::vector<T> ReadVectorField(dmlc::Stream* stream, const char* field,
+                                      ReadOne read_one) {
+  const uint64_t size = ReadUInt64(stream, field);
+  ICHECK_LE(size, 10000000ULL)
+      << "BlackholeModule LoadFromBytes field " << field << " has unreasonable size";
+  std::vector<T> values;
+  values.reserve(static_cast<size_t>(size));
+  for (uint64_t i = 0; i < size; ++i) {
+    values.push_back(read_one(stream));
+  }
+  return values;
+}
+
+static void WriteUInt32Vector(dmlc::Stream* stream, const std::vector<uint32_t>& values) {
+  WriteVectorField<uint32_t>(stream, values,
+                             [](dmlc::Stream* stream, uint32_t value) {
+                               WriteUInt32(stream, value);
+                             });
+}
+
+static std::vector<uint32_t> ReadUInt32Vector(dmlc::Stream* stream, const char* field) {
+  return ReadVectorField<uint32_t>(stream, field, [field](dmlc::Stream* stream) {
+    return ReadUInt32(stream, field);
+  });
+}
+
+static void WriteInt64Vector(dmlc::Stream* stream, const std::vector<int64_t>& values) {
+  WriteVectorField<int64_t>(stream, values,
+                            [](dmlc::Stream* stream, int64_t value) {
+                              WriteInt64(stream, value);
+                            });
+}
+
+static std::vector<int64_t> ReadInt64Vector(dmlc::Stream* stream, const char* field) {
+  return ReadVectorField<int64_t>(stream, field, [field](dmlc::Stream* stream) {
+    return ReadInt64(stream, field);
+  });
+}
+
+static void WriteStringVector(dmlc::Stream* stream, const std::vector<std::string>& values) {
+  WriteVectorField<std::string>(stream, values,
+                                [](dmlc::Stream* stream, const std::string& value) {
+                                  WriteString(stream, value);
+                                });
+}
+
+static std::vector<std::string> ReadStringVector(dmlc::Stream* stream, const char* field) {
+  return ReadVectorField<std::string>(stream, field, [field](dmlc::Stream* stream) {
+    return ReadString(stream, field);
+  });
+}
+
+static void WriteBoolVector(dmlc::Stream* stream, const std::vector<bool>& values) {
+  WriteUInt64(stream, static_cast<uint64_t>(values.size()));
+  for (bool value : values) {
+    WriteBool(stream, value);
+  }
+}
+
+static std::vector<bool> ReadBoolVector(dmlc::Stream* stream, const char* field) {
+  const uint64_t size = ReadUInt64(stream, field);
+  ICHECK_LE(size, 10000000ULL)
+      << "BlackholeModule LoadFromBytes field " << field << " has unreasonable size";
+  std::vector<bool> values;
+  values.reserve(static_cast<size_t>(size));
+  for (uint64_t i = 0; i < size; ++i) {
+    values.push_back(ReadBool(stream, field));
+  }
+  return values;
+}
+
+static void WriteDLDataType(dmlc::Stream* stream, DLDataType dtype) {
+  WriteUInt32(stream, static_cast<uint32_t>(dtype.code));
+  WriteUInt32(stream, static_cast<uint32_t>(dtype.bits));
+  WriteUInt32(stream, static_cast<uint32_t>(dtype.lanes));
+}
+
+static DLDataType ReadDLDataType(dmlc::Stream* stream) {
+  const uint32_t code = ReadUInt32(stream, "dtype.code");
+  const uint32_t bits = ReadUInt32(stream, "dtype.bits");
+  const uint32_t lanes = ReadUInt32(stream, "dtype.lanes");
+  ICHECK_LE(code, static_cast<uint32_t>(std::numeric_limits<uint8_t>::max()));
+  ICHECK_LE(bits, static_cast<uint32_t>(std::numeric_limits<uint8_t>::max()));
+  ICHECK_LE(lanes, static_cast<uint32_t>(std::numeric_limits<uint16_t>::max()));
+  return DLDataType{static_cast<uint8_t>(code), static_cast<uint8_t>(bits),
+                    static_cast<uint16_t>(lanes)};
+}
+
+static void WriteDLDataTypeVector(dmlc::Stream* stream, const std::vector<DLDataType>& values) {
+  WriteVectorField<DLDataType>(stream, values,
+                               [](dmlc::Stream* stream, DLDataType dtype) {
+                                 WriteDLDataType(stream, dtype);
+                               });
+}
+
+static std::vector<DLDataType> ReadDLDataTypeVector(dmlc::Stream* stream, const char* field) {
+  return ReadVectorField<DLDataType>(stream, field,
+                                     [](dmlc::Stream* stream) {
+                                       return ReadDLDataType(stream);
+                                     });
+}
+
+static void WritePhysicalCore(dmlc::Stream* stream, const PhysicalCore& spec) {
+  WriteUInt32(stream, spec.core_x);
+  WriteUInt32(stream, spec.core_y);
+}
+
+static PhysicalCore ReadPhysicalCore(dmlc::Stream* stream) {
+  PhysicalCore spec;
+  spec.core_x = ReadUInt32(stream, "physical_core.core_x");
+  spec.core_y = ReadUInt32(stream, "physical_core.core_y");
+  return spec;
+}
+
+static void WriteWorkPacket(dmlc::Stream* stream, const WorkPacket& spec) {
+  WriteUInt32(stream, spec.core_x);
+  WriteUInt32(stream, spec.core_y);
+  WriteUInt32(stream, spec.work_offset);
+  WriteUInt32(stream, spec.work_count);
+}
+
+static WorkPacket ReadWorkPacket(dmlc::Stream* stream) {
+  WorkPacket spec;
+  spec.core_x = ReadUInt32(stream, "work_packet.core_x");
+  spec.core_y = ReadUInt32(stream, "work_packet.core_y");
+  spec.work_offset = ReadUInt32(stream, "work_packet.work_offset");
+  spec.work_count = ReadUInt32(stream, "work_packet.work_count");
+  return spec;
+}
+
+static void WriteCorePlan(dmlc::Stream* stream, const CorePlan& spec) {
+  WriteUInt32(stream, spec.logical_grid_x);
+  WriteUInt32(stream, spec.logical_grid_y);
+  WriteString(stream, spec.linearization);
+  WriteVectorField<PhysicalCore>(stream, spec.physical_cores, WritePhysicalCore);
+  WriteVectorField<WorkPacket>(stream, spec.work_packets, WriteWorkPacket);
+}
+
+static CorePlan ReadCorePlan(dmlc::Stream* stream) {
+  CorePlan spec;
+  spec.logical_grid_x = ReadUInt32(stream, "core_plan.logical_grid_x");
+  spec.logical_grid_y = ReadUInt32(stream, "core_plan.logical_grid_y");
+  spec.linearization = ReadString(stream, "core_plan.linearization");
+  spec.physical_cores = ReadVectorField<PhysicalCore>(
+      stream, "core_plan.physical_cores", ReadPhysicalCore);
+  spec.work_packets = ReadVectorField<WorkPacket>(
+      stream, "core_plan.work_packets", ReadWorkPacket);
+  return spec;
+}
+
+static void WriteCoreRangeSpec(dmlc::Stream* stream, const CoreRangeSpec& spec) {
+  WritePhysicalCore(stream, spec.start);
+  WritePhysicalCore(stream, spec.end);
+}
+
+static CoreRangeSpec ReadCoreRangeSpec(dmlc::Stream* stream) {
+  CoreRangeSpec spec;
+  spec.start = ReadPhysicalCore(stream);
+  spec.end = ReadPhysicalCore(stream);
+  return spec;
+}
+
+static void WriteSemaphoreSpec(dmlc::Stream* stream, const SemaphoreSpec& spec) {
+  WriteUInt32(stream, spec.id);
+  WriteUInt32(stream, spec.initial_value);
+  WriteString(stream, spec.core_type);
+  WriteVectorField<CoreRangeSpec>(stream, spec.core_ranges, WriteCoreRangeSpec);
+}
+
+static SemaphoreSpec ReadSemaphoreSpec(dmlc::Stream* stream) {
+  SemaphoreSpec spec;
+  spec.id = ReadUInt32(stream, "semaphore.id");
+  spec.initial_value = ReadUInt32(stream, "semaphore.initial_value");
+  spec.core_type = ReadString(stream, "semaphore.core_type");
+  spec.core_ranges = ReadVectorField<CoreRangeSpec>(
+      stream, "semaphore.core_ranges", ReadCoreRangeSpec);
+  return spec;
+}
+
+static void WriteCBConfig(dmlc::Stream* stream, const CBConfig& spec) {
+  WriteUInt32(stream, spec.cb_id);
+  WriteString(stream, spec.name);
+  WriteString(stream, spec.role);
+  WriteUInt32(stream, spec.num_pages);
+  WriteUInt32(stream, spec.page_size_bytes);
+  WriteUInt32(stream, spec.initial_reserve_pages);
+  WriteString(stream, spec.flow_class);
+  WriteUInt32(stream, spec.publish_pages_per_event);
+  WriteUInt32(stream, spec.consume_pages_per_event);
+  WriteString(stream, spec.data_format);
+}
+
+static CBConfig ReadCBConfig(dmlc::Stream* stream) {
+  CBConfig spec;
+  spec.cb_id = ReadUInt32(stream, "cb_config.cb_id");
+  spec.name = ReadString(stream, "cb_config.name");
+  spec.role = ReadString(stream, "cb_config.role");
+  spec.num_pages = ReadUInt32(stream, "cb_config.num_pages");
+  spec.page_size_bytes = ReadUInt32(stream, "cb_config.page_size_bytes");
+  spec.initial_reserve_pages = ReadUInt32(stream, "cb_config.initial_reserve_pages");
+  spec.flow_class = ReadString(stream, "cb_config.flow_class");
+  spec.publish_pages_per_event = ReadUInt32(stream, "cb_config.publish_pages_per_event");
+  spec.consume_pages_per_event = ReadUInt32(stream, "cb_config.consume_pages_per_event");
+  spec.data_format = ReadString(stream, "cb_config.data_format");
+  return spec;
+}
+
+static void WriteKernelArgSpec(dmlc::Stream* stream, const KernelArgSpec& spec) {
+  WriteString(stream, spec.name);
+  WriteString(stream, spec.kind);
+  WriteString(stream, spec.dtype);
+  WriteString(stream, spec.buffer);
+  WriteString(stream, spec.identity);
+  WriteUInt32(stream, spec.core_x);
+  WriteUInt32(stream, spec.core_y);
+  WriteBool(stream, spec.has_core_coord);
+}
+
+static KernelArgSpec ReadKernelArgSpec(dmlc::Stream* stream) {
+  KernelArgSpec spec;
+  spec.name = ReadString(stream, "kernel_arg.name");
+  spec.kind = ReadString(stream, "kernel_arg.kind");
+  spec.dtype = ReadString(stream, "kernel_arg.dtype");
+  spec.buffer = ReadString(stream, "kernel_arg.buffer");
+  spec.identity = ReadString(stream, "kernel_arg.identity");
+  spec.core_x = ReadUInt32(stream, "kernel_arg.core_x");
+  spec.core_y = ReadUInt32(stream, "kernel_arg.core_y");
+  spec.has_core_coord = ReadBool(stream, "kernel_arg.has_core_coord");
+  return spec;
+}
+
+static void WriteCompileTimeArgSpec(dmlc::Stream* stream, const CompileTimeArgSpec& spec) {
+  WriteString(stream, spec.name);
+  WriteString(stream, spec.kind);
+  WriteString(stream, spec.dtype);
+  WriteUInt32(stream, spec.offset);
+  WriteUInt32(stream, spec.count);
+  WriteString(stream, spec.buffer);
+  WriteString(stream, spec.segment_role);
+  WriteUInt32Vector(stream, spec.values);
+  WriteUInt32(stream, spec.args_config_bits);
+  WriteUInt32(stream, spec.transport_page_size_bytes);
+  WriteString(stream, spec.layout);
+  WriteString(stream, spec.memory_space);
+  WriteInt64Vector(stream, spec.host_axis_order);
+  WriteBool(stream, spec.transpose_2d);
+}
+
+static CompileTimeArgSpec ReadCompileTimeArgSpec(dmlc::Stream* stream) {
+  CompileTimeArgSpec spec;
+  spec.name = ReadString(stream, "compile_time_arg.name");
+  spec.kind = ReadString(stream, "compile_time_arg.kind");
+  spec.dtype = ReadString(stream, "compile_time_arg.dtype");
+  spec.offset = ReadUInt32(stream, "compile_time_arg.offset");
+  spec.count = ReadUInt32(stream, "compile_time_arg.count");
+  spec.buffer = ReadString(stream, "compile_time_arg.buffer");
+  spec.segment_role = ReadString(stream, "compile_time_arg.segment_role");
+  spec.values = ReadUInt32Vector(stream, "compile_time_arg.values");
+  spec.args_config_bits = ReadUInt32(stream, "compile_time_arg.args_config_bits");
+  spec.transport_page_size_bytes = ReadUInt32(
+      stream, "compile_time_arg.transport_page_size_bytes");
+  spec.layout = ReadString(stream, "compile_time_arg.layout");
+  spec.memory_space = ReadString(stream, "compile_time_arg.memory_space");
+  spec.host_axis_order = ReadInt64Vector(stream, "compile_time_arg.host_axis_order");
+  spec.transpose_2d = ReadBool(stream, "compile_time_arg.transpose_2d");
+  return spec;
+}
+
+static void WritePerWorkArgSpec(dmlc::Stream* stream, const PerWorkArgSpec& spec) {
+  WriteString(stream, spec.arg_kind);
+  WriteString(stream, spec.arg_identity);
+  WriteString(stream, spec.buffer);
+  WriteString(stream, spec.descriptor_kind);
+  WriteString(stream, spec.value_source);
+  WriteUInt32(stream, spec.constant_value);
+}
+
+static PerWorkArgSpec ReadPerWorkArgSpec(dmlc::Stream* stream) {
+  PerWorkArgSpec spec;
+  spec.arg_kind = ReadString(stream, "per_work_arg.arg_kind");
+  spec.arg_identity = ReadString(stream, "per_work_arg.arg_identity");
+  spec.buffer = ReadString(stream, "per_work_arg.buffer");
+  spec.descriptor_kind = ReadString(stream, "per_work_arg.descriptor_kind");
+  spec.value_source = ReadString(stream, "per_work_arg.value_source");
+  spec.constant_value = ReadUInt32(stream, "per_work_arg.constant_value");
+  return spec;
+}
+
+static void WriteKernelLaunchSpec(dmlc::Stream* stream, const KernelLaunchSpec& spec) {
+  WriteString(stream, spec.core_type);
+  WriteString(stream, spec.processor);
+  WriteString(stream, spec.noc);
+}
+
+static KernelLaunchSpec ReadKernelLaunchSpec(dmlc::Stream* stream) {
+  KernelLaunchSpec spec;
+  spec.core_type = ReadString(stream, "kernel_launch.core_type");
+  spec.processor = ReadString(stream, "kernel_launch.processor");
+  spec.noc = ReadString(stream, "kernel_launch.noc");
+  return spec;
+}
+
+static void WriteKernelDefineSpec(dmlc::Stream* stream, const KernelDefineSpec& spec) {
+  WriteString(stream, spec.name);
+  WriteString(stream, spec.value);
+}
+
+static KernelDefineSpec ReadKernelDefineSpec(dmlc::Stream* stream) {
+  KernelDefineSpec spec;
+  spec.name = ReadString(stream, "kernel_define.name");
+  spec.value = ReadString(stream, "kernel_define.value");
+  return spec;
+}
+
+static void WriteNamedCompileArgSpec(dmlc::Stream* stream,
+                                     const NamedCompileArgSpec& spec) {
+  WriteString(stream, spec.name);
+  WriteUInt32(stream, spec.value);
+}
+
+static NamedCompileArgSpec ReadNamedCompileArgSpec(dmlc::Stream* stream) {
+  NamedCompileArgSpec spec;
+  spec.name = ReadString(stream, "named_compile_arg.name");
+  spec.value = ReadUInt32(stream, "named_compile_arg.value");
+  return spec;
+}
+
+static void WriteKernelComputeConfigSpec(dmlc::Stream* stream,
+                                         const KernelComputeConfigSpec& spec) {
+  WriteString(stream, spec.math_fidelity);
+  WriteBool(stream, spec.fp32_dest_acc_en);
+  WriteBool(stream, spec.dst_full_sync_en);
+  WriteBool(stream, spec.math_approx_mode);
+  WriteStringVector(stream, spec.unpack_to_dest_mode);
+  WriteBool(stream, spec.bfp8_pack_precise);
+  WriteBool(stream, spec.clear_accum);
+  WriteUInt32(stream, spec.k_pack);
+  WriteInt32(stream, spec.wg_wait);
+  WriteInt32(stream, spec.policy_type);
+  WriteString(stream, spec.policy_name);
+  WriteVectorField<KernelDefineSpec>(stream, spec.defines, WriteKernelDefineSpec);
+  WriteVectorField<NamedCompileArgSpec>(
+      stream, spec.named_compile_args, WriteNamedCompileArgSpec);
+}
+
+static KernelComputeConfigSpec ReadKernelComputeConfigSpec(dmlc::Stream* stream) {
+  KernelComputeConfigSpec spec;
+  spec.math_fidelity = ReadString(stream, "compute_config.math_fidelity");
+  spec.fp32_dest_acc_en = ReadBool(stream, "compute_config.fp32_dest_acc_en");
+  spec.dst_full_sync_en = ReadBool(stream, "compute_config.dst_full_sync_en");
+  spec.math_approx_mode = ReadBool(stream, "compute_config.math_approx_mode");
+  spec.unpack_to_dest_mode = ReadStringVector(stream, "compute_config.unpack_to_dest_mode");
+  spec.bfp8_pack_precise = ReadBool(stream, "compute_config.bfp8_pack_precise");
+  spec.clear_accum = ReadBool(stream, "compute_config.clear_accum");
+  spec.k_pack = ReadUInt32(stream, "compute_config.k_pack");
+  spec.wg_wait = ReadInt32(stream, "compute_config.wg_wait");
+  spec.policy_type = ReadInt32(stream, "compute_config.policy_type");
+  spec.policy_name = ReadString(stream, "compute_config.policy_name");
+  spec.defines = ReadVectorField<KernelDefineSpec>(
+      stream, "compute_config.defines", ReadKernelDefineSpec);
+  spec.named_compile_args = ReadVectorField<NamedCompileArgSpec>(
+      stream, "compute_config.named_compile_args", ReadNamedCompileArgSpec);
+  return spec;
+}
+
+static void WriteComputeOperandBindingSpec(dmlc::Stream* stream,
+                                           const ComputeOperandBindingSpec& spec) {
+  WriteString(stream, spec.role);
+  WriteString(stream, spec.buffer);
+  WriteString(stream, spec.host_buffer);
+}
+
+static ComputeOperandBindingSpec ReadComputeOperandBindingSpec(dmlc::Stream* stream) {
+  ComputeOperandBindingSpec spec;
+  spec.role = ReadString(stream, "compute_operand.role");
+  spec.buffer = ReadString(stream, "compute_operand.buffer");
+  spec.host_buffer = ReadString(stream, "compute_operand.host_buffer");
+  return spec;
+}
+
+static void WriteKernelComputeOpSpec(dmlc::Stream* stream, const KernelComputeOpSpec& spec) {
+  WriteBool(stream, spec.enabled);
+  WriteString(stream, spec.kind);
+  WriteString(stream, spec.operation_name);
+  WriteString(stream, spec.a_buffer);
+  WriteString(stream, spec.b_buffer);
+  WriteString(stream, spec.c_buffer);
+  WriteVectorField<ComputeOperandBindingSpec>(
+      stream, spec.operand_bindings, WriteComputeOperandBindingSpec);
+  WriteUInt32(stream, spec.M);
+  WriteUInt32(stream, spec.N);
+  WriteUInt32(stream, spec.K);
+  WriteUInt32(stream, spec.Mt);
+  WriteUInt32(stream, spec.Nt);
+  WriteUInt32(stream, spec.Kt);
+  WriteUInt32(stream, spec.block_m_tiles);
+  WriteUInt32(stream, spec.block_n_tiles);
+  WriteUInt32(stream, spec.block_k_tiles);
+  WriteUInt32(stream, spec.subblock_m_tiles);
+  WriteUInt32(stream, spec.subblock_n_tiles);
+  WriteBool(stream, spec.transpose_A);
+  WriteBool(stream, spec.transpose_B);
+  WriteString(stream, spec.a_tensor_dtype);
+  WriteString(stream, spec.b_tensor_dtype);
+  WriteString(stream, spec.c_tensor_dtype);
+  WriteString(stream, spec.a_cb_dtype);
+  WriteString(stream, spec.b_cb_dtype);
+  WriteString(stream, spec.c_cb_dtype);
+  WriteString(stream, spec.accumulator_dtype);
+  WriteBool(stream, spec.has_mbarrier);
+  WriteString(stream, spec.mbarrier_buffer);
+  WriteString(stream, spec.mbarrier_scope);
+  WriteStringVector(stream, spec.mbarrier_index_exprs);
+}
+
+static KernelComputeOpSpec ReadKernelComputeOpSpec(dmlc::Stream* stream) {
+  KernelComputeOpSpec spec;
+  spec.enabled = ReadBool(stream, "compute_op.enabled");
+  spec.kind = ReadString(stream, "compute_op.kind");
+  spec.operation_name = ReadString(stream, "compute_op.operation_name");
+  spec.a_buffer = ReadString(stream, "compute_op.a_buffer");
+  spec.b_buffer = ReadString(stream, "compute_op.b_buffer");
+  spec.c_buffer = ReadString(stream, "compute_op.c_buffer");
+  spec.operand_bindings = ReadVectorField<ComputeOperandBindingSpec>(
+      stream, "compute_op.operand_bindings", ReadComputeOperandBindingSpec);
+  spec.M = ReadUInt32(stream, "compute_op.M");
+  spec.N = ReadUInt32(stream, "compute_op.N");
+  spec.K = ReadUInt32(stream, "compute_op.K");
+  spec.Mt = ReadUInt32(stream, "compute_op.Mt");
+  spec.Nt = ReadUInt32(stream, "compute_op.Nt");
+  spec.Kt = ReadUInt32(stream, "compute_op.Kt");
+  spec.block_m_tiles = ReadUInt32(stream, "compute_op.block_m_tiles");
+  spec.block_n_tiles = ReadUInt32(stream, "compute_op.block_n_tiles");
+  spec.block_k_tiles = ReadUInt32(stream, "compute_op.block_k_tiles");
+  spec.subblock_m_tiles = ReadUInt32(stream, "compute_op.subblock_m_tiles");
+  spec.subblock_n_tiles = ReadUInt32(stream, "compute_op.subblock_n_tiles");
+  spec.transpose_A = ReadBool(stream, "compute_op.transpose_A");
+  spec.transpose_B = ReadBool(stream, "compute_op.transpose_B");
+  spec.a_tensor_dtype = ReadString(stream, "compute_op.a_tensor_dtype");
+  spec.b_tensor_dtype = ReadString(stream, "compute_op.b_tensor_dtype");
+  spec.c_tensor_dtype = ReadString(stream, "compute_op.c_tensor_dtype");
+  spec.a_cb_dtype = ReadString(stream, "compute_op.a_cb_dtype");
+  spec.b_cb_dtype = ReadString(stream, "compute_op.b_cb_dtype");
+  spec.c_cb_dtype = ReadString(stream, "compute_op.c_cb_dtype");
+  spec.accumulator_dtype = ReadString(stream, "compute_op.accumulator_dtype");
+  spec.has_mbarrier = ReadBool(stream, "compute_op.has_mbarrier");
+  spec.mbarrier_buffer = ReadString(stream, "compute_op.mbarrier_buffer");
+  spec.mbarrier_scope = ReadString(stream, "compute_op.mbarrier_scope");
+  spec.mbarrier_index_exprs = ReadStringVector(stream, "compute_op.mbarrier_index_exprs");
+  return spec;
+}
+
+static void WriteAccessorSpec(dmlc::Stream* stream, const AccessorSpec& spec) {
+  WriteString(stream, spec.buffer);
+  WriteUInt32(stream, spec.compile_time_arg_offset);
+  WriteUInt32(stream, spec.compile_time_arg_count);
+  WriteUInt32(stream, spec.common_runtime_arg_offset);
+  WriteUInt32(stream, spec.common_runtime_arg_count);
+  WriteUInt32(stream, spec.args_config_bits);
+  WriteUInt32(stream, spec.transport_page_size_bytes);
+  WriteString(stream, spec.layout);
+  WriteString(stream, spec.memory_space);
+  WriteInt64Vector(stream, spec.host_axis_order);
+  WriteBool(stream, spec.transpose_2d);
+}
+
+static AccessorSpec ReadAccessorSpec(dmlc::Stream* stream) {
+  AccessorSpec spec;
+  spec.buffer = ReadString(stream, "accessor.buffer");
+  spec.compile_time_arg_offset = ReadUInt32(stream, "accessor.compile_time_arg_offset");
+  spec.compile_time_arg_count = ReadUInt32(stream, "accessor.compile_time_arg_count");
+  spec.common_runtime_arg_offset = ReadUInt32(stream, "accessor.common_runtime_arg_offset");
+  spec.common_runtime_arg_count = ReadUInt32(stream, "accessor.common_runtime_arg_count");
+  spec.args_config_bits = ReadUInt32(stream, "accessor.args_config_bits");
+  spec.transport_page_size_bytes = ReadUInt32(stream, "accessor.transport_page_size_bytes");
+  spec.layout = ReadString(stream, "accessor.layout");
+  spec.memory_space = ReadString(stream, "accessor.memory_space");
+  spec.host_axis_order = ReadInt64Vector(stream, "accessor.host_axis_order");
+  spec.transpose_2d = ReadBool(stream, "accessor.transpose_2d");
+  return spec;
+}
+
+static void WriteSemaphoreBindingSpec(dmlc::Stream* stream,
+                                      const SemaphoreBindingSpec& spec) {
+  WriteString(stream, spec.name);
+  WriteUInt32(stream, spec.semaphore_id);
+  WriteString(stream, spec.arg_kind);
+}
+
+static SemaphoreBindingSpec ReadSemaphoreBindingSpec(dmlc::Stream* stream) {
+  SemaphoreBindingSpec spec;
+  spec.name = ReadString(stream, "semaphore_binding.name");
+  spec.semaphore_id = ReadUInt32(stream, "semaphore_binding.semaphore_id");
+  spec.arg_kind = ReadString(stream, "semaphore_binding.arg_kind");
+  return spec;
+}
+
+static void WriteRemoteCoreDescriptorSpec(dmlc::Stream* stream,
+                                          const RemoteCoreDescriptorSpec& spec) {
+  WriteString(stream, spec.identity);
+  WriteUInt32(stream, spec.core_x);
+  WriteUInt32(stream, spec.core_y);
+}
+
+static RemoteCoreDescriptorSpec ReadRemoteCoreDescriptorSpec(dmlc::Stream* stream) {
+  RemoteCoreDescriptorSpec spec;
+  spec.identity = ReadString(stream, "remote_core_descriptor.identity");
+  spec.core_x = ReadUInt32(stream, "remote_core_descriptor.core_x");
+  spec.core_y = ReadUInt32(stream, "remote_core_descriptor.core_y");
+  return spec;
+}
+
+static void WriteBufferMaterializationSpec(dmlc::Stream* stream,
+                                           const BufferMaterializationSpec& spec) {
+  WriteString(stream, spec.buffer);
+  WriteString(stream, spec.materialization_kind);
+  WriteString(stream, spec.layout);
+  WriteString(stream, spec.memory_space);
+  WriteUInt32(stream, spec.transport_page_size_bytes);
+  WriteInt64Vector(stream, spec.host_axis_order);
+  WriteBool(stream, spec.transpose_2d);
+  WriteString(stream, spec.live_form_kind);
+  WriteString(stream, spec.execution_topology_kind);
+  WriteUInt32(stream, spec.physical_local_extent);
+  WriteUInt32(stream, spec.logical_element_count);
+  WriteString(stream, spec.producer_kernel);
+  WriteString(stream, spec.materialization_protocol);
+  WriteString(stream, spec.publication_protocol);
+}
+
+static BufferMaterializationSpec ReadBufferMaterializationSpec(dmlc::Stream* stream) {
+  BufferMaterializationSpec spec;
+  spec.buffer = ReadString(stream, "buffer_materialization.buffer");
+  spec.materialization_kind = ReadString(stream, "buffer_materialization.materialization_kind");
+  spec.layout = ReadString(stream, "buffer_materialization.layout");
+  spec.memory_space = ReadString(stream, "buffer_materialization.memory_space");
+  spec.transport_page_size_bytes = ReadUInt32(
+      stream, "buffer_materialization.transport_page_size_bytes");
+  spec.host_axis_order = ReadInt64Vector(stream, "buffer_materialization.host_axis_order");
+  spec.transpose_2d = ReadBool(stream, "buffer_materialization.transpose_2d");
+  spec.live_form_kind = ReadString(stream, "buffer_materialization.live_form_kind");
+  spec.execution_topology_kind = ReadString(
+      stream, "buffer_materialization.execution_topology_kind");
+  spec.physical_local_extent = ReadUInt32(
+      stream, "buffer_materialization.physical_local_extent");
+  spec.logical_element_count = ReadUInt32(
+      stream, "buffer_materialization.logical_element_count");
+  spec.producer_kernel = ReadString(stream, "buffer_materialization.producer_kernel");
+  spec.materialization_protocol = ReadString(
+      stream, "buffer_materialization.materialization_protocol");
+  spec.publication_protocol = ReadString(
+      stream, "buffer_materialization.publication_protocol");
+  return spec;
+}
+
+static void WriteLiveFormPlanSpec(dmlc::Stream* stream, const LiveFormPlanSpec& spec) {
+  WriteString(stream, spec.name);
+  WriteString(stream, spec.logical_value);
+  WriteString(stream, spec.spatial_live_value);
+  WriteInt64(stream, spec.spatial_live_value_index);
+  WriteString(stream, spec.producer_kernel);
+  WriteString(stream, spec.physical_form);
+  WriteString(stream, spec.execution_topology);
+  WriteUInt32(stream, spec.physical_local_extent);
+  WriteUInt32(stream, spec.logical_element_count);
+  WriteString(stream, spec.ownership_kind);
+}
+
+static LiveFormPlanSpec ReadLiveFormPlanSpec(dmlc::Stream* stream) {
+  LiveFormPlanSpec spec;
+  spec.name = ReadString(stream, "live_form.name");
+  spec.logical_value = ReadString(stream, "live_form.logical_value");
+  spec.spatial_live_value = ReadString(stream, "live_form.spatial_live_value");
+  spec.spatial_live_value_index = ReadInt64(stream, "live_form.spatial_live_value_index");
+  spec.producer_kernel = ReadString(stream, "live_form.producer_kernel");
+  spec.physical_form = ReadString(stream, "live_form.physical_form");
+  spec.execution_topology = ReadString(stream, "live_form.execution_topology");
+  spec.physical_local_extent = ReadUInt32(stream, "live_form.physical_local_extent");
+  spec.logical_element_count = ReadUInt32(stream, "live_form.logical_element_count");
+  spec.ownership_kind = ReadString(stream, "live_form.ownership_kind");
+  return spec;
+}
+
+static void WriteMaterializationPlanSpec(dmlc::Stream* stream,
+                                         const MaterializationPlanSpec& spec) {
+  WriteString(stream, spec.name);
+  WriteString(stream, spec.source_live_form);
+  WriteString(stream, spec.materialization_boundary);
+  WriteInt64(stream, spec.materialization_boundary_index);
+  WriteString(stream, spec.target_buffer);
+  WriteString(stream, spec.host_buffer);
+  WriteString(stream, spec.target_kernel);
+  WriteString(stream, spec.bridge_kind);
+  WriteString(stream, spec.materialization_kind);
+  WriteString(stream, spec.materialization_protocol);
+  WriteString(stream, spec.publication_protocol);
+  WriteInt64Vector(stream, spec.required_cb_plan_indices);
+  WriteInt64Vector(stream, spec.required_sync_plan_indices);
+  WriteString(stream, spec.produced_live_form);
+}
+
+static MaterializationPlanSpec ReadMaterializationPlanSpec(dmlc::Stream* stream) {
+  MaterializationPlanSpec spec;
+  spec.name = ReadString(stream, "materialization_plan.name");
+  spec.source_live_form = ReadString(stream, "materialization_plan.source_live_form");
+  spec.materialization_boundary = ReadString(
+      stream, "materialization_plan.materialization_boundary");
+  spec.materialization_boundary_index = ReadInt64(
+      stream, "materialization_plan.materialization_boundary_index");
+  spec.target_buffer = ReadString(stream, "materialization_plan.target_buffer");
+  spec.host_buffer = ReadString(stream, "materialization_plan.host_buffer");
+  spec.target_kernel = ReadString(stream, "materialization_plan.target_kernel");
+  spec.bridge_kind = ReadString(stream, "materialization_plan.bridge_kind");
+  spec.materialization_kind = ReadString(stream, "materialization_plan.materialization_kind");
+  spec.materialization_protocol = ReadString(
+      stream, "materialization_plan.materialization_protocol");
+  spec.publication_protocol = ReadString(stream, "materialization_plan.publication_protocol");
+  spec.required_cb_plan_indices = ReadInt64Vector(
+      stream, "materialization_plan.required_cb_plan_indices");
+  spec.required_sync_plan_indices = ReadInt64Vector(
+      stream, "materialization_plan.required_sync_plan_indices");
+  spec.produced_live_form = ReadString(stream, "materialization_plan.produced_live_form");
+  return spec;
+}
+
+static void WriteConsumerBindingPlanSpec(dmlc::Stream* stream,
+                                         const ConsumerBindingPlanSpec& spec) {
+  WriteString(stream, spec.name);
+  WriteString(stream, spec.consumer_kernel);
+  WriteString(stream, spec.consumer_op_kind);
+  WriteString(stream, spec.source_live_form);
+  WriteString(stream, spec.live_value_edge);
+  WriteInt64(stream, spec.live_value_edge_index);
+  WriteBool(stream, spec.accepts_distributed_slice);
+  WriteBool(stream, spec.requires_full_logical_tile);
+  WriteInt64(stream, spec.abi_plan_index);
+  WriteString(stream, spec.target_buffer);
+  WriteString(stream, spec.materialization_plan);
+}
+
+static ConsumerBindingPlanSpec ReadConsumerBindingPlanSpec(dmlc::Stream* stream) {
+  ConsumerBindingPlanSpec spec;
+  spec.name = ReadString(stream, "consumer_binding.name");
+  spec.consumer_kernel = ReadString(stream, "consumer_binding.consumer_kernel");
+  spec.consumer_op_kind = ReadString(stream, "consumer_binding.consumer_op_kind");
+  spec.source_live_form = ReadString(stream, "consumer_binding.source_live_form");
+  spec.live_value_edge = ReadString(stream, "consumer_binding.live_value_edge");
+  spec.live_value_edge_index = ReadInt64(stream, "consumer_binding.live_value_edge_index");
+  spec.accepts_distributed_slice = ReadBool(
+      stream, "consumer_binding.accepts_distributed_slice");
+  spec.requires_full_logical_tile = ReadBool(
+      stream, "consumer_binding.requires_full_logical_tile");
+  spec.abi_plan_index = ReadInt64(stream, "consumer_binding.abi_plan_index");
+  spec.target_buffer = ReadString(stream, "consumer_binding.target_buffer");
+  spec.materialization_plan = ReadString(stream, "consumer_binding.materialization_plan");
+  return spec;
+}
+
+static void WriteKernelSpec(dmlc::Stream* stream, const KernelSpec& spec) {
+  WriteString(stream, spec.name);
+  WriteString(stream, spec.kind);
+  WriteString(stream, spec.core_type);
+  WriteString(stream, spec.source_code);
+  WriteUInt32Vector(stream, spec.compile_time_args);
+  WriteVectorField<KernelArgSpec>(stream, spec.runtime_args, WriteKernelArgSpec);
+  WriteVectorField<KernelArgSpec>(stream, spec.common_runtime_args, WriteKernelArgSpec);
+  WriteVectorField<CompileTimeArgSpec>(
+      stream, spec.compile_time_arg_specs, WriteCompileTimeArgSpec);
+  WriteVectorField<PerWorkArgSpec>(stream, spec.per_work_arg_specs, WritePerWorkArgSpec);
+  WriteBool(stream, spec.has_launch_spec);
+  WriteKernelLaunchSpec(stream, spec.launch_spec);
+  WriteBool(stream, spec.has_compute_config);
+  WriteKernelComputeConfigSpec(stream, spec.compute_config);
+  WriteVectorField<KernelComputeOpSpec>(stream, spec.compute_ops, WriteKernelComputeOpSpec);
+  WriteVectorField<AccessorSpec>(stream, spec.accessors, WriteAccessorSpec);
+  WriteVectorField<SemaphoreBindingSpec>(
+      stream, spec.semaphore_bindings, WriteSemaphoreBindingSpec);
+  WriteVectorField<RemoteCoreDescriptorSpec>(
+      stream, spec.remote_core_descriptors, WriteRemoteCoreDescriptorSpec);
+}
+
+static KernelSpec ReadKernelSpec(dmlc::Stream* stream) {
+  KernelSpec spec;
+  spec.name = ReadString(stream, "kernel.name");
+  spec.kind = ReadString(stream, "kernel.kind");
+  spec.core_type = ReadString(stream, "kernel.core_type");
+  spec.source_code = ReadString(stream, "kernel.source_code");
+  spec.compile_time_args = ReadUInt32Vector(stream, "kernel.compile_time_args");
+  spec.runtime_args = ReadVectorField<KernelArgSpec>(
+      stream, "kernel.runtime_args", ReadKernelArgSpec);
+  spec.common_runtime_args = ReadVectorField<KernelArgSpec>(
+      stream, "kernel.common_runtime_args", ReadKernelArgSpec);
+  spec.compile_time_arg_specs = ReadVectorField<CompileTimeArgSpec>(
+      stream, "kernel.compile_time_arg_specs", ReadCompileTimeArgSpec);
+  spec.per_work_arg_specs = ReadVectorField<PerWorkArgSpec>(
+      stream, "kernel.per_work_arg_specs", ReadPerWorkArgSpec);
+  spec.has_launch_spec = ReadBool(stream, "kernel.has_launch_spec");
+  spec.launch_spec = ReadKernelLaunchSpec(stream);
+  spec.has_compute_config = ReadBool(stream, "kernel.has_compute_config");
+  spec.compute_config = ReadKernelComputeConfigSpec(stream);
+  spec.compute_ops = ReadVectorField<KernelComputeOpSpec>(
+      stream, "kernel.compute_ops", ReadKernelComputeOpSpec);
+  spec.accessors = ReadVectorField<AccessorSpec>(
+      stream, "kernel.accessors", ReadAccessorSpec);
+  spec.semaphore_bindings = ReadVectorField<SemaphoreBindingSpec>(
+      stream, "kernel.semaphore_bindings", ReadSemaphoreBindingSpec);
+  spec.remote_core_descriptors = ReadVectorField<RemoteCoreDescriptorSpec>(
+      stream, "kernel.remote_core_descriptors", ReadRemoteCoreDescriptorSpec);
+  return spec;
+}
+
+static void WriteExecutableSpec(dmlc::Stream* stream, const ExecutableSpec& spec) {
+  WriteString(stream, spec.entry_name);
+  WriteVectorField<CBConfig>(stream, spec.cb_configs, WriteCBConfig);
+  WriteCorePlan(stream, spec.core_plan);
+  WriteVectorField<SemaphoreSpec>(stream, spec.semaphores, WriteSemaphoreSpec);
+  WriteVectorField<BufferMaterializationSpec>(
+      stream, spec.buffer_materializations, WriteBufferMaterializationSpec);
+  WriteVectorField<KernelArgSpec>(stream, spec.runtime_args, WriteKernelArgSpec);
+  WriteVectorField<KernelArgSpec>(stream, spec.common_runtime_args, WriteKernelArgSpec);
+  WriteVectorField<PerWorkArgSpec>(stream, spec.per_work_arg_specs, WritePerWorkArgSpec);
+  WriteVectorField<KernelSpec>(stream, spec.kernels, WriteKernelSpec);
+  WriteVectorField<LiveFormPlanSpec>(stream, spec.live_form_plans, WriteLiveFormPlanSpec);
+  WriteVectorField<MaterializationPlanSpec>(
+      stream, spec.materialization_plans, WriteMaterializationPlanSpec);
+  WriteVectorField<ConsumerBindingPlanSpec>(
+      stream, spec.consumer_binding_plans, WriteConsumerBindingPlanSpec);
+  WriteStringVector(stream, spec.direct_runtime_unsupported_reasons);
+  WriteStringVector(stream, spec.tvm_arg_names);
+  WriteDLDataTypeVector(stream, spec.tvm_arg_types);
+  WriteBoolVector(stream, spec.tvm_is_buffer_arg);
+}
+
+static ExecutableSpec ReadExecutableSpec(dmlc::Stream* stream) {
+  ExecutableSpec spec;
+  spec.entry_name = ReadString(stream, "executable.entry_name");
+  spec.cb_configs = ReadVectorField<CBConfig>(
+      stream, "executable.cb_configs", ReadCBConfig);
+  spec.core_plan = ReadCorePlan(stream);
+  spec.semaphores = ReadVectorField<SemaphoreSpec>(
+      stream, "executable.semaphores", ReadSemaphoreSpec);
+  spec.buffer_materializations = ReadVectorField<BufferMaterializationSpec>(
+      stream, "executable.buffer_materializations", ReadBufferMaterializationSpec);
+  spec.runtime_args = ReadVectorField<KernelArgSpec>(
+      stream, "executable.runtime_args", ReadKernelArgSpec);
+  spec.common_runtime_args = ReadVectorField<KernelArgSpec>(
+      stream, "executable.common_runtime_args", ReadKernelArgSpec);
+  spec.per_work_arg_specs = ReadVectorField<PerWorkArgSpec>(
+      stream, "executable.per_work_arg_specs", ReadPerWorkArgSpec);
+  spec.kernels = ReadVectorField<KernelSpec>(
+      stream, "executable.kernels", ReadKernelSpec);
+  spec.live_form_plans = ReadVectorField<LiveFormPlanSpec>(
+      stream, "executable.live_form_plans", ReadLiveFormPlanSpec);
+  spec.materialization_plans = ReadVectorField<MaterializationPlanSpec>(
+      stream, "executable.materialization_plans", ReadMaterializationPlanSpec);
+  spec.consumer_binding_plans = ReadVectorField<ConsumerBindingPlanSpec>(
+      stream, "executable.consumer_binding_plans", ReadConsumerBindingPlanSpec);
+  spec.direct_runtime_unsupported_reasons = ReadStringVector(
+      stream, "executable.direct_runtime_unsupported_reasons");
+  spec.tvm_arg_names = ReadStringVector(stream, "executable.tvm_arg_names");
+  spec.tvm_arg_types = ReadDLDataTypeVector(stream, "executable.tvm_arg_types");
+  spec.tvm_is_buffer_arg = ReadBoolVector(stream, "executable.tvm_is_buffer_arg");
+  return spec;
+}
+
+static void WriteExecutableSpecMap(
+    dmlc::Stream* stream,
+    const std::unordered_map<std::string, ExecutableSpec>& fmap) {
+  WriteUInt64(stream, static_cast<uint64_t>(fmap.size()));
+  for (const auto& entry : fmap) {
+    WriteString(stream, entry.first);
+    WriteExecutableSpec(stream, entry.second);
+  }
+}
+
+static std::unordered_map<std::string, ExecutableSpec> ReadExecutableSpecMap(
+    dmlc::Stream* stream) {
+  const uint64_t size = ReadUInt64(stream, "module.fmap");
+  ICHECK_LE(size, 1000000ULL)
+      << "BlackholeModule LoadFromBytes module.fmap has unreasonable size";
+  std::unordered_map<std::string, ExecutableSpec> fmap;
+  fmap.reserve(static_cast<size_t>(size));
+  for (uint64_t i = 0; i < size; ++i) {
+    std::string name = ReadString(stream, "module.fmap.name");
+    ExecutableSpec spec = ReadExecutableSpec(stream);
+    auto inserted = fmap.emplace(std::move(name), std::move(spec));
+    ICHECK(inserted.second)
+        << "BlackholeModule LoadFromBytes duplicate function " << inserted.first->first;
+  }
+  return fmap;
+}
+
 static bool BlackholeDebugIOEnabled() {
   const char* value = std::getenv("TILELANG_BLACKHOLE_DEBUG_IO");
   return value != nullptr && value[0] != '\0' && !(value[0] == '0' && value[1] == '\0');
 }
 
 static float BFloat16BitsToFloat(uint16_t bits) {
-  union {
-    uint32_t i;
-    float f;
-  } value{static_cast<uint32_t>(bits) << 16};
-  return value.f;
+  const uint32_t value = static_cast<uint32_t>(bits) << 16;
+  float result = 0.0f;
+  static_assert(sizeof(result) == sizeof(value), "float and uint32_t must have equal size");
+  std::memcpy(&result, &value, sizeof(result));
+  return result;
 }
 
 template <typename T>
@@ -121,41 +992,87 @@ class BlackholeWrappedFunc {
 };
 
 // Argument extraction helpers
+template <typename To, typename From>
+static To BitCastScalar(const From& value) {
+  static_assert(sizeof(To) == sizeof(From), "bit cast requires equal-sized types");
+  To out;
+  std::memcpy(&out, &value, sizeof(To));
+  return out;
+}
+
+static uint32_t ExtractSignedScalarAsU32(int64_t value, DLDataType dtype) {
+  ICHECK_GT(dtype.bits, 0U) << "Blackhole unsupported scalar argument: zero-width int";
+  ICHECK_LE(dtype.bits, 32U)
+      << "Blackhole unsupported scalar argument: int" << dtype.bits
+      << " cannot be passed as a uint32 runtime argument";
+  const int64_t min_value =
+      dtype.bits == 64U ? std::numeric_limits<int64_t>::min()
+                        : -(int64_t{1} << (static_cast<int64_t>(dtype.bits) - 1));
+  const int64_t max_value =
+      dtype.bits == 64U ? std::numeric_limits<int64_t>::max()
+                        : ((int64_t{1} << (static_cast<int64_t>(dtype.bits) - 1)) - 1);
+  ICHECK_GE(value, min_value)
+      << "Blackhole scalar int argument " << value << " is below int" << dtype.bits
+      << " range";
+  ICHECK_LE(value, max_value)
+      << "Blackhole scalar int argument " << value << " exceeds int" << dtype.bits
+      << " range";
+  return static_cast<uint32_t>(static_cast<int32_t>(value));
+}
+
+static uint32_t ExtractUnsignedScalarAsU32(uint64_t value, DLDataType dtype) {
+  ICHECK_GT(dtype.bits, 0U) << "Blackhole unsupported scalar argument: zero-width uint";
+  ICHECK_LE(dtype.bits, 32U)
+      << "Blackhole unsupported scalar argument: uint" << dtype.bits
+      << " cannot be passed as a uint32 runtime argument";
+  const uint64_t max_value =
+      dtype.bits == 32U ? std::numeric_limits<uint32_t>::max()
+                        : ((uint64_t{1} << static_cast<uint64_t>(dtype.bits)) - 1U);
+  ICHECK_LE(value, max_value)
+      << "Blackhole scalar uint argument " << value << " exceeds uint" << dtype.bits
+      << " range";
+  return static_cast<uint32_t>(value);
+}
+
 uint32_t ExtractScalar(const ffi::AnyView& arg, DLDataType dtype) {
   if (dtype.code == kDLInt) {
     auto opt_i32 = arg.try_cast<int32_t>();
     if (opt_i32.has_value()) {
-      return static_cast<uint32_t>(opt_i32.value());
+      return ExtractSignedScalarAsU32(opt_i32.value(), dtype);
     }
     auto opt_i64 = arg.try_cast<int64_t>();
     if (opt_i64.has_value()) {
-      return static_cast<uint32_t>(opt_i64.value());
+      return ExtractSignedScalarAsU32(opt_i64.value(), dtype);
     }
+    LOG(FATAL) << "Blackhole unsupported scalar argument: expected int" << dtype.bits;
   }
   if (dtype.code == kDLUInt) {
     auto opt_u32 = arg.try_cast<uint32_t>();
     if (opt_u32.has_value()) {
-      return opt_u32.value();
+      return ExtractUnsignedScalarAsU32(opt_u32.value(), dtype);
     }
     auto opt_u64 = arg.try_cast<uint64_t>();
     if (opt_u64.has_value()) {
-      return static_cast<uint32_t>(opt_u64.value());
+      return ExtractUnsignedScalarAsU32(opt_u64.value(), dtype);
     }
+    LOG(FATAL) << "Blackhole unsupported scalar argument: expected uint" << dtype.bits;
   }
   if (dtype.code == kDLFloat) {
-    float f = 0.0f;
+    ICHECK_EQ(dtype.bits, 32U)
+        << "Blackhole unsupported scalar argument: float" << dtype.bits
+        << " cannot be passed as a uint32 runtime argument";
     auto opt_f = arg.try_cast<float>();
     if (opt_f.has_value()) {
-      f = opt_f.value();
-    } else {
-      auto opt_d = arg.try_cast<double>();
-      if (opt_d.has_value()) {
-        f = static_cast<float>(opt_d.value());
-      }
+      return BitCastScalar<uint32_t>(opt_f.value());
     }
-    return *reinterpret_cast<uint32_t*>(&f);
+    auto opt_d = arg.try_cast<double>();
+    if (opt_d.has_value()) {
+      const float f = static_cast<float>(opt_d.value());
+      return BitCastScalar<uint32_t>(f);
+    }
+    LOG(FATAL) << "Blackhole unsupported scalar argument: expected float32";
   }
-  LOG(FATAL) << "Cannot extract scalar of type code " << dtype.code;
+  LOG(FATAL) << "Blackhole unsupported scalar argument type code " << dtype.code;
   return 0;
 }
 
@@ -357,6 +1274,14 @@ static bool HasCompactRowMajorLayout(const DLTensor* tensor) {
     expected_stride *= tensor->shape[i];
   }
   return true;
+}
+
+static void RequireCompactRowMajorLayout(const DLTensor* tensor,
+                                         const char* context,
+                                         const std::string& buffer_name) {
+  ICHECK(HasCompactRowMajorLayout(tensor))
+      << "Blackhole direct runtime " << context
+      << " requires compact row-major DLTensor layout for buffer " << buffer_name;
 }
 
 static std::vector<int64_t> GetTensorShape(const DLTensor* tensor) {
@@ -561,6 +1486,7 @@ static std::vector<uint8_t> BuildInputTransferData(const ExecutableSpec& spec,
                                                    const RuntimeTensorBinding& binding) {
   const DLTensor* tensor = binding.tensor;
   ICHECK(tensor != nullptr);
+  RequireCompactRowMajorLayout(tensor, "input transfer", binding.name);
   const size_t tensor_size = GetDataSize(*tensor);
   const auto gemm = GetPrimaryGemmCompute(spec);
 
@@ -634,6 +1560,7 @@ static void CopyOutputFromDeviceBuffer(const ExecutableSpec& spec,
                                        const RuntimeTensorBinding& binding,
                                        const std::vector<uint8_t>& output_data) {
   ICHECK(binding.tensor != nullptr);
+  RequireCompactRowMajorLayout(binding.tensor, "output transfer", binding.name);
   const size_t tensor_size = GetDataSize(*binding.tensor);
   ICHECK(output_data.size() >= tensor_size)
       << "Output data size mismatch for " << binding.name;
@@ -1799,12 +2726,17 @@ ffi::Optional<ffi::String> BlackholeModuleNode::GetFunctionMetadata(const ffi::S
 
 void BlackholeModuleNode::WriteToFile(const ffi::String& file_name,
                                       const ffi::String& format) const {
-  LOG(WARNING) << "BlackholeModule WriteToFile not yet implemented";
+  LOG(FATAL) << "BlackholeModule WriteToFile not implemented";
 }
 
 ffi::Bytes BlackholeModuleNode::SaveToBytes() const {
-  LOG(WARNING) << "BlackholeModule SaveToBytes not yet implemented";
-  return ffi::Bytes("");
+  std::string buffer;
+  dmlc::MemoryStringStream ms(&buffer);
+  dmlc::Stream* stream = &ms;
+  WriteString(stream, kBlackholeModuleSerializationMagic);
+  WriteString(stream, kernel_dir_);
+  WriteExecutableSpecMap(stream, fmap_);
+  return ffi::Bytes(buffer);
 }
 
 ffi::String BlackholeModuleNode::InspectSource(const ffi::String& format) const {
@@ -2034,14 +2966,21 @@ ffi::Module BlackholeModuleCreate(
 }
 
 ffi::Module BlackholeModuleLoadFromBytes(const ffi::Bytes& bytes) {
-  LOG(FATAL) << "BlackholeModule LoadFromBytes not yet implemented";
-  __builtin_unreachable();
+  dmlc::MemoryFixedSizeStream ms(const_cast<char*>(bytes.data()), bytes.size());
+  dmlc::Stream* stream = &ms;
+  const std::string magic = ReadString(stream, "module.magic");
+  ICHECK_EQ(magic, kBlackholeModuleSerializationMagic)
+      << "BlackholeModule LoadFromBytes magic mismatch";
+  std::string kernel_dir = ReadString(stream, "module.kernel_dir");
+  auto fmap = ReadExecutableSpecMap(stream);
+  return BlackholeModuleCreate(std::move(fmap), std::move(kernel_dir));
 }
 
 TVM_FFI_STATIC_INIT_BLOCK() {
   namespace refl = tvm::ffi::reflection;
   refl::GlobalDef()
-      .def("runtime.module.loadbinary_blackhole", BlackholeModuleLoadFromBytes);
+      .def("runtime.module.loadbinary_blackhole", BlackholeModuleLoadFromBytes)
+      .def("ffi.Module.load_from_bytes.blackhole", BlackholeModuleLoadFromBytes);
 }
 
 }  // namespace runtime

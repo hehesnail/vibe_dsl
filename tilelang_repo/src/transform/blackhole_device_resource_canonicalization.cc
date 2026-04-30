@@ -345,9 +345,10 @@ class BlackholeResourceCanonicalizer : public StmtExprMutator {
   std::unordered_map<std::string, ResourceInfo> resource_map_;
   // var remapping: old buffer_var → new buffer_var (by identity)
   std::unordered_map<const VarNode*, Var> var_remap_;
-  // name → canonical new var (for name-based fallback: fragment views share a name with
-  // the physical allocation var but are different Var objects with different scopes)
-  std::unordered_map<std::string, Var> name_to_new_var_;
+  // Resource-name aliases are used only after the Buffer itself has been
+  // classified as a Blackhole resource. Generic Var rewriting remains identity-keyed.
+  std::unordered_map<std::string, Var> canonical_var_by_resource_name_;
+  std::unordered_set<std::string> ambiguous_resource_names_;
   // buffer remapping cache: old Buffer → new Buffer (same object across all call sites)
   // Critical for PlanTTKernelABI.buffer_to_cb_ deduplication which uses Buffer pointer equality.
   std::unordered_map<const BufferNode*, Buffer> buf_remap_;
@@ -434,23 +435,32 @@ class BlackholeResourceCanonicalizer : public StmtExprMutator {
   Var GetNewVar(const Var& old_var) {
     auto it = var_remap_.find(old_var.get());
     if (it != var_remap_.end()) return it->second;
-    // Name-based fallback: handle the case where a buffer has multiple Var objects
-    // with the same logical name but different scopes (e.g. C_local "local" in
-    // alloc_buffers vs C_local "local.fragment" in gemm arg — both represent the
-    // same physical accumulator and should map to the same canonical Var).
-    std::string name = std::string(old_var->name_hint);
-    auto it2 = name_to_new_var_.find(name);
-    if (it2 != name_to_new_var_.end()) {
-      var_remap_[old_var.get()] = it2->second;  // Cache for future lookups
-      return it2->second;
-    }
     return old_var;
+  }
+
+  void RecordCanonicalResourceVar(const std::string& name, const Var& new_var) {
+    if (ambiguous_resource_names_.count(name)) {
+      return;
+    }
+    auto [it, inserted] = canonical_var_by_resource_name_.emplace(name, new_var);
+    if (!inserted && !it->second.same_as(new_var)) {
+      canonical_var_by_resource_name_.erase(name);
+      ambiguous_resource_names_.insert(name);
+    }
   }
 
   Buffer GetNewBuffer(const Buffer& buf) {
     auto it = buf_remap_.find(buf.get());
     if (it != buf_remap_.end()) return it->second;
     Var new_data = GetNewVar(buf->data);
+    if (new_data.same_as(buf->data) &&
+        GetOrInferInfo(std::string(buf->name), buf.scope()) != nullptr &&
+        !ambiguous_resource_names_.count(std::string(buf->name))) {
+      auto alias_it = canonical_var_by_resource_name_.find(std::string(buf->name));
+      if (alias_it != canonical_var_by_resource_name_.end()) {
+        new_data = alias_it->second;
+      }
+    }
     if (new_data.same_as(buf->data)) return buf;
     Buffer new_buf = RemapBufferData(buf, new_data);
     buf_remap_[buf.get()] = new_buf;
@@ -473,12 +483,12 @@ class BlackholeResourceCanonicalizer : public StmtExprMutator {
     Array<Buffer> new_alloc_buffers;
     for (const auto& buf : op->alloc_buffers) {
       std::string name = std::string(buf->name);
-      const ResourceInfo* info = GetOrInferInfo(name, buf.scope());
-      if (info != nullptr) {
-        Var new_var = RemapVarScope(buf->data, info->new_scope);
-        var_remap_[buf->data.get()] = new_var;
-        name_to_new_var_[name] = new_var;  // For name-based fallback (e.g. fragment views)
-        Buffer new_buf = RemapBufferData(buf, new_var);
+        const ResourceInfo* info = GetOrInferInfo(name, buf.scope());
+        if (info != nullptr) {
+          Var new_var = RemapVarScope(buf->data, info->new_scope);
+          var_remap_[buf->data.get()] = new_var;
+          RecordCanonicalResourceVar(name, new_var);
+          Buffer new_buf = RemapBufferData(buf, new_var);
         WrapperInfo wi;
         wi.kind = WrapperInfo::kAllocateFromBuffer;
         wi.new_var = new_var;
@@ -510,7 +520,7 @@ class BlackholeResourceCanonicalizer : public StmtExprMutator {
     if (info != nullptr) {
       Var new_var = RemapVarScope(op->buffer_var, info->new_scope);
       var_remap_[op->buffer_var.get()] = new_var;
-      name_to_new_var_[name] = new_var;  // For name-based fallback
+      RecordCanonicalResourceVar(name, new_var);
 
       if (!wrapped_) {
         // Above thread_extent: strip this node, collect for relocation
@@ -580,15 +590,6 @@ class BlackholeResourceCanonicalizer : public StmtExprMutator {
   PrimExpr VisitExpr_(const VarNode* op) final {
     auto it = var_remap_.find(op);
     if (it != var_remap_.end()) return it->second;
-    // Name-based fallback: handles fragment-view Vars that share a name_hint with
-    // the physical alloc Var but are different objects (e.g. C_local "local.fragment"
-    // in gemm arg vs C_local "local" in alloc_buffers).
-    std::string name = std::string(op->name_hint);
-    auto it2 = name_to_new_var_.find(name);
-    if (it2 != name_to_new_var_.end()) {
-      var_remap_[op] = it2->second;  // Cache for future lookups
-      return it2->second;
-    }
     return GetRef<Var>(op);
   }
 

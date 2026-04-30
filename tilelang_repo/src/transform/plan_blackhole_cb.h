@@ -23,7 +23,7 @@
  *
  * MVP Implementation (Phase 1):
  * - Read staged CB plans from TTProgram (written by SelectBlackholeTTMetalBuiltins/PlanTTCompute)
- * - Validate constraints from TTHardwareModel (default CB count <= 32, total L1 <= 1.5MB)
+ * - Validate constraints from TTHardwareModel (default CB count <= 64, total L1 <= 1.5MB)
  * - Assign CB IDs following TT-Metal convention: 0-15 input, 16-31 output
  * - Rewrite placeholder requirement indices in the IR to final CB IDs
  */
@@ -50,7 +50,7 @@ namespace tl {
 struct CBConfig {
   std::string name;        // Buffer name
   std::string role;        // input/output/intermediate
-  int cb_id;               // Assigned CB identifier (0-31 by default)
+  int cb_id;               // Assigned CB identifier (0-63 by default)
   int page_size;           // Size of each page in bytes
   int num_pages;           // Number of pages
   int initial_reserve_pages;  // Pages to reserve when compute-local storage is materialized
@@ -84,7 +84,7 @@ struct CBConfig {
  *
  * This pass analyzes CB requirements and plans CB allocation
  * respecting Blackhole constraints:
- * - Maximum 32 CBs (CB 0-31)
+   * - Maximum 64 CBs (CB 0-63)
  * - Maximum 1.5MB L1 memory per core
  *
  * CB ID allocation convention (TT-Metal compatible):
@@ -102,7 +102,7 @@ class PlanTTCBAlloc : public tvm::tir::StmtExprMutator {
 
   /*! \brief Blackhole CB constraints */
   static constexpr int kMaxL1Size = 1572864;   // 1.5MB = 1,572,864 bytes
-  static constexpr int kMaxCBCount = 32;       // CB 0-31
+  static constexpr int kMaxCBCount = 64;       // CB 0-63
 
   // CB ID allocation ranges
   static constexpr int kInputCBStart = 0;

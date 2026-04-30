@@ -194,8 +194,35 @@ TVM_REGISTER_TARGET_KIND("blackhole", kDLExtDev)
     .add_attr_option<int64_t>("num_cores", 110)  // 11x10 logical worker cores
     .add_attr_option<int64_t>("logical_worker_grid_x", 11)
     .add_attr_option<int64_t>("logical_worker_grid_y", 10)
+    .add_attr_option<int64_t>("max_cb_count", 64)
     .add_attr_option<int64_t>("num_cbs", 64)     // 64 circular buffers per core
     .set_default_keys({"blackhole"});
+
+static ffi::Map<ffi::String, ffi::Any> RequireMap(const ffi::Any& any,
+                                                  const std::string& context) {
+  auto map = any.as<ffi::Map<ffi::String, ffi::Any>>();
+  ICHECK(map.has_value() && map.value().defined() && !map.value().empty())
+      << context << " must be a non-empty map";
+  return map.value();
+}
+
+static ffi::Array<ffi::Any> RequireExecutableArrayField(const tir::PrimFunc& f,
+                                                        const char* consumer,
+                                                        const char* key) {
+  auto executable = tl::tt_program_projection::RequireBlackholeExecutableProjection(f, consumer);
+  auto value = executable.Get(String(key));
+  ICHECK(value.has_value()) << consumer << " requires executable array field " << key;
+  return Downcast<ffi::Array<ffi::Any>>(value.value());
+}
+
+static ffi::Map<ffi::String, ffi::Any> RequireExecutableMapField(const tir::PrimFunc& f,
+                                                                 const char* consumer,
+                                                                 const char* key) {
+  auto executable = tl::tt_program_projection::RequireBlackholeExecutableProjection(f, consumer);
+  auto value = executable.Get(String(key));
+  ICHECK(value.has_value()) << consumer << " requires executable map field " << key;
+  return RequireMap(value.value(), std::string(consumer) + "." + key);
+}
 
 /*!
  * \brief Extract CB configuration from PrimFunc attrs.
@@ -204,22 +231,16 @@ TVM_REGISTER_TARGET_KIND("blackhole", kDLExtDev)
  */
 static std::vector<CBConfig> ExtractCBConfig(const tir::PrimFunc& f) {
   std::vector<CBConfig> cb_configs;
-  auto executable = tl::tt_program_projection::RequireBlackholeExecutableProjection(
-      f, "Blackhole executable spec extraction");
-  auto cb_attr = executable.Get(String(tl::tt_program_projection::executable_key::kCBConfigs))
-                     ? Downcast<ffi::Array<ffi::Any>>(executable.Get(
-                           String(tl::tt_program_projection::executable_key::kCBConfigs))
-                                                           .value())
-                     : ffi::Array<ffi::Any>();
+  auto cb_attr = RequireExecutableArrayField(
+      f, "Blackhole executable spec extraction",
+      tl::tt_program_projection::executable_key::kCBConfigs);
   if (cb_attr.empty()) {
     return cb_configs;
   }
 
   for (const auto& item : cb_attr) {
     CBConfig config;
-    auto cb_info = item.as<ffi::Map<ffi::String, ffi::Any>>().value_or(
-        ffi::Map<ffi::String, ffi::Any>());
-    if (cb_info.empty()) continue;
+    auto cb_info = RequireMap(item, "Blackhole executable CB config");
 
     bool has_cb_id = false;
     bool has_num_pages = false;
@@ -279,18 +300,9 @@ static std::vector<CBConfig> ExtractCBConfig(const tir::PrimFunc& f) {
 
 static CorePlan ExtractCorePlan(const tir::PrimFunc& f) {
   CorePlan plan;
-  auto executable = tl::tt_program_projection::RequireBlackholeExecutableProjection(
-      f, "Blackhole executable spec extraction");
-  auto core_plan =
-      executable.Get(String(tl::tt_program_projection::executable_key::kCorePlan))
-          ? executable.Get(String(tl::tt_program_projection::executable_key::kCorePlan))
-                .value()
-                .as<ffi::Map<ffi::String, ffi::Any>>()
-                .value_or(ffi::Map<ffi::String, ffi::Any>())
-          : ffi::Map<ffi::String, ffi::Any>();
-  if (core_plan.empty()) {
-    return plan;
-  }
+  auto core_plan = RequireExecutableMapField(
+      f, "Blackhole executable spec extraction",
+      tl::tt_program_projection::executable_key::kCorePlan);
 
   if (auto v = core_plan.Get("logical_grid_x")) {
     plan.logical_grid_x = Downcast<Integer>(v.value()).IntValue();
@@ -308,49 +320,44 @@ static CorePlan ExtractCorePlan(const tir::PrimFunc& f) {
 
   if (auto v = core_plan.Get("physical_cores")) {
     for (const auto& item : Downcast<ffi::Array<ffi::Any>>(v.value())) {
-      auto core_info = item.as<ffi::Map<ffi::String, ffi::Any>>().value_or(
-          ffi::Map<ffi::String, ffi::Any>());
-      if (core_info.empty()) {
-        continue;
-      }
+      auto core_info = RequireMap(item, "Blackhole executable core_plan.physical_cores item");
       PhysicalCore core;
-      if (auto x = core_info.Get("core_x")) {
-        core.core_x = Downcast<Integer>(x.value()).IntValue();
-      }
-      if (auto y = core_info.Get("core_y")) {
-        core.core_y = Downcast<Integer>(y.value()).IntValue();
-      }
+      auto x = core_info.Get("core_x");
+      auto y = core_info.Get("core_y");
+      ICHECK(x.has_value() && y.has_value())
+          << "Blackhole executable core_plan.physical_cores item requires core_x/core_y";
+      core.core_x = Downcast<Integer>(x.value()).IntValue();
+      core.core_y = Downcast<Integer>(y.value()).IntValue();
       plan.physical_cores.push_back(core);
     }
   }
 
   if (auto v = core_plan.Get("work_packets")) {
     for (const auto& item : Downcast<ffi::Array<ffi::Any>>(v.value())) {
-      auto packet_info = item.as<ffi::Map<ffi::String, ffi::Any>>().value_or(
-          ffi::Map<ffi::String, ffi::Any>());
-      if (packet_info.empty()) {
-        continue;
-      }
+      auto packet_info = RequireMap(item, "Blackhole executable core_plan.work_packets item");
       WorkPacket packet;
-      if (auto x = packet_info.Get("core_x")) {
-        packet.core_x = Downcast<Integer>(x.value()).IntValue();
-      }
-      if (auto y = packet_info.Get("core_y")) {
-        packet.core_y = Downcast<Integer>(y.value()).IntValue();
-      }
-      if (auto offset = packet_info.Get("work_offset")) {
-        packet.work_offset = Downcast<Integer>(offset.value()).IntValue();
-      }
-      if (auto count = packet_info.Get("work_count")) {
-        packet.work_count = Downcast<Integer>(count.value()).IntValue();
-      }
+      auto x = packet_info.Get("core_x");
+      auto y = packet_info.Get("core_y");
+      auto offset = packet_info.Get("work_offset");
+      auto count = packet_info.Get("work_count");
+      ICHECK(x.has_value() && y.has_value())
+          << "Blackhole executable core_plan.work_packets item requires core_x/core_y";
+      ICHECK(offset.has_value())
+          << "Blackhole executable core_plan.work_packets item requires work_offset";
+      ICHECK(count.has_value())
+          << "Blackhole executable core_plan.work_packets item requires work_count";
+      packet.core_x = Downcast<Integer>(x.value()).IntValue();
+      packet.core_y = Downcast<Integer>(y.value()).IntValue();
+      packet.work_offset = Downcast<Integer>(offset.value()).IntValue();
+      packet.work_count = Downcast<Integer>(count.value()).IntValue();
       plan.work_packets.push_back(packet);
     }
   }
 
-  if (plan.physical_cores.empty()) {
-    plan.physical_cores.push_back(PhysicalCore{});
-  }
+  ICHECK(!plan.physical_cores.empty())
+      << "Blackhole executable core_plan requires physical_cores";
+  ICHECK(!plan.work_packets.empty())
+      << "Blackhole executable core_plan requires work_packets";
   return plan;
 }
 
@@ -369,11 +376,7 @@ static std::vector<SemaphoreSpec> ExtractSemaphorePlan(const tir::PrimFunc& f) {
   }
 
   for (const auto& item : semaphore_attr) {
-    auto semaphore_info = item.as<ffi::Map<ffi::String, ffi::Any>>().value_or(
-        ffi::Map<ffi::String, ffi::Any>());
-    if (semaphore_info.empty()) {
-      continue;
-    }
+    auto semaphore_info = RequireMap(item, "Blackhole executable semaphore_plan item");
 
     SemaphoreSpec spec;
     if (auto v = semaphore_info.Get("id")) {
@@ -387,19 +390,14 @@ static std::vector<SemaphoreSpec> ExtractSemaphorePlan(const tir::PrimFunc& f) {
     }
     if (auto v = semaphore_info.Get("core_ranges")) {
       for (const auto& range_any : Downcast<ffi::Array<ffi::Any>>(v.value())) {
-        auto range_info = range_any.as<ffi::Map<ffi::String, ffi::Any>>().value_or(
-            ffi::Map<ffi::String, ffi::Any>());
-        if (range_info.empty()) {
-          continue;
-        }
+        auto range_info = RequireMap(range_any, "Blackhole executable semaphore core_range");
 
         auto parse_coord = [](const ffi::Optional<ffi::Any>& coord_any) {
           PhysicalCore coord;
-          if (!coord_any.has_value()) {
-            return coord;
-          }
-          auto coord_info = coord_any.value().as<ffi::Map<ffi::String, ffi::Any>>().value_or(
-              ffi::Map<ffi::String, ffi::Any>());
+          ICHECK(coord_any.has_value())
+              << "Blackhole executable semaphore core_range requires start/end";
+          auto coord_info =
+              RequireMap(coord_any.value(), "Blackhole executable semaphore core_range coord");
           if (auto x = coord_info.Get("core_x")) {
             coord.core_x = static_cast<uint32_t>(Downcast<Integer>(x.value()).IntValue());
           }
@@ -458,11 +456,7 @@ static bool ExtractComputeConfig(const ffi::Map<ffi::String, ffi::Any>& spec_inf
   }
   if (auto v = spec_info.Get("defines")) {
     for (const auto& item : Downcast<ffi::Array<ffi::Any>>(v.value())) {
-      auto define = item.as<ffi::Map<ffi::String, ffi::Any>>().value_or(
-          ffi::Map<ffi::String, ffi::Any>());
-      if (define.empty()) {
-        continue;
-      }
+      auto define = RequireMap(item, "Blackhole executable compute_config.define item");
       KernelDefineSpec entry;
       if (auto name = define.Get("name")) {
         entry.name = Downcast<String>(name.value());
@@ -477,11 +471,7 @@ static bool ExtractComputeConfig(const ffi::Map<ffi::String, ffi::Any>& spec_inf
   }
   if (auto v = spec_info.Get("named_compile_args")) {
     for (const auto& item : Downcast<ffi::Array<ffi::Any>>(v.value())) {
-      auto arg = item.as<ffi::Map<ffi::String, ffi::Any>>().value_or(
-          ffi::Map<ffi::String, ffi::Any>());
-      if (arg.empty()) {
-        continue;
-      }
+      auto arg = RequireMap(item, "Blackhole executable compute_config.named_compile_args item");
       NamedCompileArgSpec entry;
       if (auto name = arg.Get("name")) {
         entry.name = Downcast<String>(name.value());
@@ -533,11 +523,7 @@ static bool ExtractComputeOp(const ffi::Map<ffi::String, ffi::Any>& spec_info,
   if (auto v = spec_info.Get("operand_bindings")) {
     for (const auto& binding_item : Downcast<ffi::Array<ffi::Any>>(v.value())) {
       auto binding_info =
-          binding_item.as<ffi::Map<ffi::String, ffi::Any>>().value_or(
-              ffi::Map<ffi::String, ffi::Any>());
-      if (binding_info.empty()) {
-        continue;
-      }
+          RequireMap(binding_item, "Blackhole executable compute_op.operand_bindings item");
       ComputeOperandBindingSpec binding;
       if (auto role = binding_info.Get("role")) {
         binding.role = Downcast<String>(role.value());
@@ -711,9 +697,7 @@ static ffi::Map<ffi::String, ffi::Any> EncodeKernelComputeOp(
 static std::vector<KernelArgSpec> ExtractRuntimeArgsFromArray(const ffi::Array<ffi::Any>& items) {
   std::vector<KernelArgSpec> runtime_args;
   for (const auto& item : items) {
-    auto arg_info = item.as<ffi::Map<ffi::String, ffi::Any>>().value_or(
-        ffi::Map<ffi::String, ffi::Any>());
-    if (arg_info.empty()) continue;
+    auto arg_info = RequireMap(item, "Blackhole executable runtime arg item");
 
     KernelArgSpec arg;
     if (auto v = arg_info.Get("name")) {
@@ -739,12 +723,11 @@ static std::vector<KernelArgSpec> ExtractRuntimeArgsFromArray(const ffi::Array<f
       arg.core_y = static_cast<uint32_t>(Downcast<Integer>(v.value()).IntValue());
       arg.has_core_coord = true;
     }
-    if (!arg.kind.empty()) {
-      ICHECK(!arg.identity.empty())
-          << "Blackhole runtime/common-runtime arg '" << arg.name << "' kind '" << arg.kind
-          << "' is missing explicit identity";
-      runtime_args.push_back(std::move(arg));
-    }
+    ICHECK(!arg.kind.empty()) << "Blackhole runtime/common-runtime arg requires kind";
+    ICHECK(!arg.identity.empty())
+        << "Blackhole runtime/common-runtime arg '" << arg.name << "' kind '" << arg.kind
+        << "' is missing explicit identity";
+    runtime_args.push_back(std::move(arg));
   }
   return runtime_args;
 }
@@ -752,9 +735,7 @@ static std::vector<KernelArgSpec> ExtractRuntimeArgsFromArray(const ffi::Array<f
 static std::vector<AccessorSpec> ExtractAccessorsFromArray(const ffi::Array<ffi::Any>& items) {
   std::vector<AccessorSpec> accessors;
   for (const auto& item : items) {
-    auto accessor_info = item.as<ffi::Map<ffi::String, ffi::Any>>().value_or(
-        ffi::Map<ffi::String, ffi::Any>());
-    if (accessor_info.empty()) continue;
+    auto accessor_info = RequireMap(item, "Blackhole executable accessor item");
 
     AccessorSpec accessor;
     if (auto v = accessor_info.Get("buffer")) {
@@ -839,11 +820,7 @@ static std::vector<SemaphoreBindingSpec> ExtractSemaphoreBindingsFromArray(
     const ffi::Array<ffi::Any>& items) {
   std::vector<SemaphoreBindingSpec> bindings;
   for (const auto& item : items) {
-    auto binding_info = item.as<ffi::Map<ffi::String, ffi::Any>>().value_or(
-        ffi::Map<ffi::String, ffi::Any>());
-    if (binding_info.empty()) {
-      continue;
-    }
+    auto binding_info = RequireMap(item, "Blackhole executable semaphore binding item");
 
     SemaphoreBindingSpec binding;
     if (auto v = binding_info.Get("name")) {
@@ -866,11 +843,7 @@ static std::vector<CompileTimeArgSpec> ExtractCompileTimeArgSpecsFromArray(
     const ffi::Array<ffi::Any>& items) {
   std::vector<CompileTimeArgSpec> compile_time_arg_specs;
   for (const auto& item : items) {
-    auto spec_info = item.as<ffi::Map<ffi::String, ffi::Any>>().value_or(
-        ffi::Map<ffi::String, ffi::Any>());
-    if (spec_info.empty()) {
-      continue;
-    }
+    auto spec_info = RequireMap(item, "Blackhole executable compile_time_arg_spec item");
 
     CompileTimeArgSpec spec;
     if (auto v = spec_info.Get("name")) {
@@ -936,11 +909,7 @@ static std::vector<PerWorkArgSpec> ExtractPerWorkArgSpecsFromArray(
     const ffi::Array<ffi::Any>& items) {
   std::vector<PerWorkArgSpec> per_work_arg_specs;
   for (const auto& item : items) {
-    auto spec_info = item.as<ffi::Map<ffi::String, ffi::Any>>().value_or(
-        ffi::Map<ffi::String, ffi::Any>());
-    if (spec_info.empty()) {
-      continue;
-    }
+    auto spec_info = RequireMap(item, "Blackhole executable per_work_arg_spec item");
 
     PerWorkArgSpec spec;
     if (auto v = spec_info.Get(::tvm::tl::blackhole_runtime_arg_schema::kArgKind)) {
@@ -979,11 +948,7 @@ static std::vector<KernelArgSpec> AggregateSegmentRuntimeArgs(
   std::vector<KernelArgSpec> aggregated;
   std::unordered_set<std::string> seen;
   for (const auto& item : segment_plan) {
-    auto segment = item.as<ffi::Map<ffi::String, ffi::Any>>().value_or(
-        ffi::Map<ffi::String, ffi::Any>());
-    if (segment.empty()) {
-      continue;
-    }
+    auto segment = RequireMap(item, "Blackhole executable segment_plan item");
     auto args_it = segment.Get(field_name);
     if (!args_it.has_value()) {
       continue;
@@ -1007,11 +972,7 @@ static std::vector<PerWorkArgSpec> AggregateSegmentPerWorkArgSpecs(
   std::vector<PerWorkArgSpec> aggregated;
   std::unordered_set<std::string> seen;
   for (const auto& item : segment_plan) {
-    auto segment = item.as<ffi::Map<ffi::String, ffi::Any>>().value_or(
-        ffi::Map<ffi::String, ffi::Any>());
-    if (segment.empty()) {
-      continue;
-    }
+    auto segment = RequireMap(item, "Blackhole executable segment_plan item");
     auto specs_it = segment.Get(::tvm::tl::blackhole_runtime_arg_schema::kPerWorkArgSpecs);
     if (!specs_it.has_value()) {
       continue;
@@ -1049,26 +1010,16 @@ static bool ExtractLaunchSpec(const ffi::Map<ffi::String, ffi::Any>& spec_info,
 }
 
 static std::vector<KernelArgSpec> ExtractRuntimeArgs(const tir::PrimFunc& f) {
-  auto executable = tl::tt_program_projection::RequireBlackholeExecutableProjection(
-      f, "Blackhole executable spec extraction");
-  auto segment_plan =
-      executable.Get(String(tl::tt_program_projection::executable_key::kSegmentPlan))
-          ? Downcast<ffi::Array<ffi::Any>>(
-                executable.Get(String(tl::tt_program_projection::executable_key::kSegmentPlan))
-                    .value())
-          : ffi::Array<ffi::Any>();
+  auto segment_plan = RequireExecutableArrayField(
+      f, "Blackhole executable spec extraction",
+      tl::tt_program_projection::executable_key::kSegmentPlan);
   return AggregateSegmentRuntimeArgs(segment_plan, "runtime_args");
 }
 
 static std::vector<KernelArgSpec> ExtractCommonRuntimeArgs(const tir::PrimFunc& f) {
-  auto executable = tl::tt_program_projection::RequireBlackholeExecutableProjection(
-      f, "Blackhole executable spec extraction");
-  auto segment_plan =
-      executable.Get(String(tl::tt_program_projection::executable_key::kSegmentPlan))
-          ? Downcast<ffi::Array<ffi::Any>>(
-                executable.Get(String(tl::tt_program_projection::executable_key::kSegmentPlan))
-                    .value())
-          : ffi::Array<ffi::Any>();
+  auto segment_plan = RequireExecutableArrayField(
+      f, "Blackhole executable spec extraction",
+      tl::tt_program_projection::executable_key::kSegmentPlan);
   return AggregateSegmentRuntimeArgs(segment_plan, "common_runtime_args");
 }
 
@@ -1110,11 +1061,7 @@ static std::vector<LiveFormPlanSpec> ExtractLiveFormPlans(const tir::PrimFunc& f
       f, "Blackhole executable spec extraction",
       tl::tt_program_projection::executable_key::kLiveFormPlans);
   for (const auto& item_any : items) {
-    auto item =
-        item_any.as<ffi::Map<ffi::String, ffi::Any>>().value_or(ffi::Map<ffi::String, ffi::Any>());
-    if (item.empty()) {
-      continue;
-    }
+    auto item = RequireMap(item_any, "Blackhole executable live_form_plans item");
     LiveFormPlanSpec plan;
     if (auto value = item.Get("name")) plan.name = Downcast<String>(value.value());
     if (auto value = item.Get("logical_value")) plan.logical_value = Downcast<String>(value.value());
@@ -1153,11 +1100,7 @@ static std::vector<MaterializationPlanSpec> ExtractMaterializationPlans(const ti
       f, "Blackhole executable spec extraction",
       tl::tt_program_projection::executable_key::kMaterializationPlans);
   for (const auto& item_any : items) {
-    auto item =
-        item_any.as<ffi::Map<ffi::String, ffi::Any>>().value_or(ffi::Map<ffi::String, ffi::Any>());
-    if (item.empty()) {
-      continue;
-    }
+    auto item = RequireMap(item_any, "Blackhole executable materialization_plans item");
     MaterializationPlanSpec plan;
     if (auto value = item.Get("name")) plan.name = Downcast<String>(value.value());
     if (auto value = item.Get("source_live_form")) {
@@ -1200,11 +1143,7 @@ static std::vector<ConsumerBindingPlanSpec> ExtractConsumerBindingPlans(const ti
       f, "Blackhole executable spec extraction",
       tl::tt_program_projection::executable_key::kConsumerBindingPlans);
   for (const auto& item_any : items) {
-    auto item =
-        item_any.as<ffi::Map<ffi::String, ffi::Any>>().value_or(ffi::Map<ffi::String, ffi::Any>());
-    if (item.empty()) {
-      continue;
-    }
+    auto item = RequireMap(item_any, "Blackhole executable consumer_binding_plans item");
     ConsumerBindingPlanSpec plan;
     if (auto value = item.Get("name")) plan.name = Downcast<String>(value.value());
     if (auto value = item.Get("consumer_kernel")) {
@@ -1245,14 +1184,9 @@ static std::vector<ConsumerBindingPlanSpec> ExtractConsumerBindingPlans(const ti
 }
 
 static std::vector<PerWorkArgSpec> ExtractPerWorkArgSpecs(const tir::PrimFunc& f) {
-  auto executable = tl::tt_program_projection::RequireBlackholeExecutableProjection(
-      f, "Blackhole executable spec extraction");
-  auto segment_plan =
-      executable.Get(String(tl::tt_program_projection::executable_key::kSegmentPlan))
-          ? Downcast<ffi::Array<ffi::Any>>(
-                executable.Get(String(tl::tt_program_projection::executable_key::kSegmentPlan))
-                    .value())
-          : ffi::Array<ffi::Any>();
+  auto segment_plan = RequireExecutableArrayField(
+      f, "Blackhole executable spec extraction",
+      tl::tt_program_projection::executable_key::kSegmentPlan);
   return AggregateSegmentPerWorkArgSpecs(segment_plan);
 }
 
@@ -1409,24 +1343,15 @@ static std::vector<RemoteCoreDescriptorSpec> ExtractRemoteCoreDescriptors(
 
 static std::vector<SegmentInfo> ExtractSegmentPlan(const tir::PrimFunc& f, ExecutableSpec* spec) {
   std::vector<SegmentInfo> segments_out;
-  auto executable = tl::tt_program_projection::RequireBlackholeExecutableProjection(
-      f, "Blackhole executable spec extraction");
-  auto segments =
-      executable.Get(String(tl::tt_program_projection::executable_key::kSegmentPlan))
-          ? Downcast<ffi::Array<ffi::Any>>(
-                executable.Get(String(tl::tt_program_projection::executable_key::kSegmentPlan))
-                    .value())
-          : ffi::Array<ffi::Any>();
+  auto segments = RequireExecutableArrayField(
+      f, "Blackhole executable spec extraction",
+      tl::tt_program_projection::executable_key::kSegmentPlan);
   if (segments.empty()) {
     return segments_out;
   }
 
   for (const auto& item : segments) {
-    auto segment = item.as<ffi::Map<ffi::String, ffi::Any>>().value_or(
-        ffi::Map<ffi::String, ffi::Any>());
-    if (segment.empty()) {
-      continue;
-    }
+    auto segment = RequireMap(item, "Blackhole executable segment_plan item");
 
     SegmentInfo info;
     if (auto v = segment.Get("name")) {
@@ -1462,19 +1387,16 @@ static std::vector<SegmentInfo> ExtractSegmentPlan(const tir::PrimFunc& f, Execu
           ExtractPerWorkArgSpecsFromArray(Downcast<ffi::Array<ffi::Any>>(v.value()));
     }
     if (auto v = segment.Get("launch_spec")) {
-      auto launch_spec = v.value().as<ffi::Map<ffi::String, ffi::Any>>().value_or(
-          ffi::Map<ffi::String, ffi::Any>());
+      auto launch_spec = RequireMap(v.value(), "Blackhole executable segment launch_spec");
       info.has_launch_spec = ExtractLaunchSpec(launch_spec, &info.launch_spec);
     }
     if (auto v = segment.Get("compute_config")) {
-      auto compute_config = v.value().as<ffi::Map<ffi::String, ffi::Any>>().value_or(
-          ffi::Map<ffi::String, ffi::Any>());
+      auto compute_config = RequireMap(v.value(), "Blackhole executable segment compute_config");
       info.has_compute_config = ExtractComputeConfig(compute_config, &info.compute_config);
     }
     if (auto v = segment.Get("compute_ops")) {
       for (const auto& op_item : Downcast<ffi::Array<ffi::Any>>(v.value())) {
-        auto compute_op = op_item.as<ffi::Map<ffi::String, ffi::Any>>().value_or(
-            ffi::Map<ffi::String, ffi::Any>());
+        auto compute_op = RequireMap(op_item, "Blackhole executable segment compute_op item");
         KernelComputeOpSpec op;
         if (ExtractComputeOp(compute_op, &op)) {
           info.compute_ops.push_back(std::move(op));
