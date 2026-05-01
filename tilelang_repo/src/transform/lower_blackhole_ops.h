@@ -60,6 +60,7 @@ enum class CopyDirection {
   kDramToCB,     // DRAM -> CB (Reader)
   kCBToDram,     // CB -> DRAM (Writer)
   kCBToCB,       // CB -> CB (local copy)
+  kCBToLocal,    // CB -> local/accumulator (fragment/local materialization)
   kLocalToCB,    // local/accumulator -> CB (fragment/local staging write)
   kDramToDram,   // DRAM -> DRAM (Stage 2 copy pass integration path)
   kUnknown
@@ -165,6 +166,7 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
     int num_tiles = 0;
     int64_t num_elements = 0;
     int64_t row_width = 0;
+    bool producer_live = false;
     bool borrowed_live = false;
   };
 
@@ -576,6 +578,8 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
 
   /*! \brief Generate copy builtin sequence (DRAM->CB, CB->DRAM, CB->CB) */
   tvm::tir::Stmt GenerateCopySequence(const tvm::tir::BufferStoreNode* op);
+  tvm::tir::Stmt GenerateCopySequence(const tvm::tir::BufferStoreNode* op,
+                                      const std::vector<tvm::tir::Var>& loop_vars_to_zero);
 
   /*! \brief Generate staged copy builtin sequence for a collapsed loop */
   tvm::tir::Stmt GenerateCopySequence(const tvm::tir::BufferStoreNode* op,
@@ -601,6 +605,12 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
                                  FragmentCastMatch* match) const;
   tvm::tir::Stmt LowerExplicitTileComputeCall(const tvm::tir::CallNode* op);
   void LoadTileComputeDAGLoweringPlan(const tvm::tir::PrimFunc& func);
+  void LoadDirectCopySourceBindings(const tvm::tir::PrimFunc& func);
+  void RefreshBroadcastColsSourceBuffers();
+  bool IsBroadcastColsSourceBuffer(const tvm::tir::Buffer& buffer) const;
+  bool IsBroadcastColsSourceCBId(int cb_id) const;
+  bool TryCreateBroadcastColsSourceLiveExactTiledCBValue(
+      const tvm::tir::Buffer& buffer, ExactTiledCBValue* value);
   BlackholeTileComputeCoveringDecision ConsumeTileComputeDAGLoweringDecision(
       const std::string& operation_name);
   int64_t CurrentTileComputeDAGNodeId() const;
@@ -725,6 +735,10 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   std::string copy_input_buffer_name_;
   std::string copy_output_buffer_name_;
   std::unordered_map<std::string, std::string> host_buffer_by_compute_operand_buffer_;
+  std::unordered_map<std::string, std::string> direct_copy_source_by_buffer_identity_;
+  std::unordered_map<std::string, tvm::tir::Buffer> buffer_by_identity_;
+  std::unordered_set<std::string> broadcast_cols_rhs_buffers_;
+  std::unordered_set<std::string> broadcast_cols_source_buffers_;
 
   // GEMM info populated by ExtractGemmInfo (pre-scan)
   tvm::tir::Buffer gemm_a_buffer_;
@@ -776,6 +790,7 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   std::unordered_set<std::string> thread_index_var_names_;
   std::unordered_map<const tvm::tir::VarNode*, int64_t> thread_index_var_static_extents_;
   std::unordered_map<const tvm::tir::VarNode*, int64_t> loop_var_static_extents_;
+  std::vector<tvm::tir::Var> active_serial_loop_vars_;
   std::unordered_set<const tvm::tir::VarNode*> block_index_vars_;
   std::unordered_set<std::string> block_index_var_names_;
   std::vector<AccessorDescriptor> accessor_descriptors_;
@@ -796,6 +811,7 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   std::unordered_map<std::string, tvm::PrimExpr> last_fragment_fill_value_by_buffer_identity_;
   std::unordered_map<const tvm::tir::VarNode*, tvm::PrimExpr> last_fragment_fill_value_by_data_;
   std::unordered_map<std::string, std::vector<int64_t>> logical_buffer_shapes_;
+  std::unordered_set<std::string> tile_compute_input_buffers_;
   std::unordered_map<const Object*, int> stmt_order_index_by_node_;
   int current_lowering_order_index_ = -1;
   tvm::ffi::Array<tvm::ffi::Any> segment_plan_;

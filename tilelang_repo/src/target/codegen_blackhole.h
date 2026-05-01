@@ -138,6 +138,7 @@ class CodeGenBlackhole : public CodeGenCHost {
   void PrintNOCWriteBarrier(std::ostream &os);
   void PrintReadTileToCB(const tvm::tir::CallNode *op, std::ostream &os);
   void PrintReadPageToCB(const tvm::tir::CallNode *op, std::ostream &os);
+  void PrintReadBcastColsToCB(const tvm::tir::CallNode *op, std::ostream &os);
   void PrintWriteTileFromCB(const tvm::tir::CallNode *op, std::ostream &os);
   void PrintWritePageFromCB(const tvm::tir::CallNode *op, std::ostream &os);
   void PrintGetSemaphore(const tvm::tir::CallNode *op, std::ostream &os);
@@ -162,6 +163,8 @@ class CodeGenBlackhole : public CodeGenCHost {
   void PrintCopyTileToDstInitShort(const tvm::tir::CallNode *op, std::ostream &os);
   void PrintCopyTileToDstInitShortWithDT(const tvm::tir::CallNode *op, std::ostream &os);
   void PrintCopyTile(const tvm::tir::CallNode *op, std::ostream &os);
+  void PrintBinaryOpInitCommon(const tvm::tir::CallNode *op, std::ostream &os);
+  void PrintUnaryOpInitCommon(const tvm::tir::CallNode *op, std::ostream &os);
   void PrintAddTilesInit(const tvm::tir::CallNode *op, std::ostream &os);
   void PrintAddTiles(const tvm::tir::CallNode *op, std::ostream &os);
   void PrintAddBcastRowsInitShort(const tvm::tir::CallNode *op, std::ostream &os);

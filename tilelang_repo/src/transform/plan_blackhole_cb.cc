@@ -163,7 +163,8 @@ std::vector<int> GetCBArgPositions(const std::string& op_name) {
     return {0};
   }
   if (op_name == "tl.blackhole.read_tile_to_cb" ||
-      op_name == "tl.blackhole.read_page_to_cb") {
+      op_name == "tl.blackhole.read_page_to_cb" ||
+      op_name == "tl.blackhole.read_bcast_cols_to_cb") {
     return {2};
   }
   if (op_name == "tl.blackhole.mm_init") {
@@ -194,6 +195,12 @@ std::vector<int> GetCBArgPositions(const std::string& op_name) {
       op_name == "tl.blackhole.copy_tile_to_dst_init_short_with_dt") {
     return op_name == "tl.blackhole.copy_tile_to_dst_init_short_with_dt" ? std::vector<int>{0, 1}
                                                                           : std::vector<int>{0};
+  }
+  if (op_name == "tl.blackhole.binary_op_init_common") {
+    return {0, 1, 2};
+  }
+  if (op_name == "tl.blackhole.unary_op_init_common") {
+    return {0, 1};
   }
   if (op_name == "tl.blackhole.add_tiles_init" || op_name == "tl.blackhole.add_tiles") {
     return {0, 1};

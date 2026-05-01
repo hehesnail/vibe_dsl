@@ -395,7 +395,7 @@ Stmt PlanTTKernelABI::PublishConstantToExactTiledCB(const Buffer& buffer,
 Stmt PlanTTKernelABI::PublishExactInputToTiledCB(const Buffer& src,
                                                 ExactTiledCBValue* cb_value) {
   ICHECK(cb_value != nullptr);
-  if (cb_value->borrowed_live) {
+  if (cb_value->producer_live || cb_value->borrowed_live) {
     return Stmt();
   }
   ExactTiledCBValue live_value;

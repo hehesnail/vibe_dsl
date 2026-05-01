@@ -9,18 +9,20 @@
 ## Status
 
 - Date: `2026-05-02`
-- Active task: `T2 Leaf compute / GEMM baseline`
+- Active task: `T3 Tensor/value sharding and explicit reshard`
 - Main chain:
   `Normalized Tile TIR -> SpatialPlan -> TTProgram -> ExecutableSpec`
 
 ## Active Boundary
 
-The current admitted direct-runtime surface is still T1's buffer-address ABI:
+The current admitted direct-runtime surface is T1's buffer-address ABI plus
+the completed T2 current-placement compute baseline:
 interleaved DRAM runtime buffers, staged-copy resident L1 / CB-backed views,
-and the admitted 64B page-indexed copy path.
+the admitted 64B page-indexed copy path, standalone leaf compute families
+where admitted, and current-placement GEMM direct correctness.
 
 Full tensor/value sharding is a design lane, not current implementation.
-It is now queued as the next major task after the current T2 baseline.
+It is now the active T3 task.
 Sharded GEMM/layout claims and production sharding claims must wait for the
 DSL placement surface, tensor memory-config plans, op sharding contracts,
 placement conflict handling, and explicit reshard plans.
@@ -42,28 +44,40 @@ The active non-negotiable boundaries carried into T2 are:
   shard ownership, page metadata, or buffer roles from names, suffixes,
   argument order, or layout strings.
 
-## Active Task: T2 Leaf Compute / GEMM Baseline
+## Completed Baseline: T2 Leaf Compute / GEMM Baseline
+
+T2 is complete for the current-placement surface.
+Unary, binary, broadcast-cols, reduction, fill/typecast publish, and the
+current-placement GEMM baseline now project typed leaf/source/spec contracts.
+Admitted leaf and GEMM forms run through `BlackholeModule`; simulator-limited
+standalone reduction and standalone fill/typecast publish fail closed with
+typed direct-runtime unsupported reasons.
+
+T2 does not claim tensor/value sharding, explicit reshard, sharded GEMM, or
+external sharded/page-indexed runtime accessor admission.
+
+## Active Task: T3 Tensor/Value Sharding And Explicit Reshard
 
 ### Problem
 
-The address ABI is now wired into the admitted direct-runtime path.
-The next blocker is leaf compute / GEMM coverage for current admitted
-placements:
-more leaf families and non-sharded GEMM layout variants must either run with
-direct correctness or fail closed from typed leaf / layout contracts.
+The current implementation has low-level `TTBufferDistributionPlan` address
+contracts, but it does not yet have first-class tensor/value sharding intent,
+op placement contracts, placement conflict handling, or explicit reshard
+records in the IR chain.
 
 ### Completion Standard
 
-T2 is complete only when unary / binary / broadcast / reduction / pack /
-typecast leaf families and the current-placement GEMM baseline have:
+T3 is complete only when:
 
-- explicit leaf/source/spec contracts,
-- direct-runtime correctness where admitted,
-- typed unsupported reasons where not admitted,
-- no fallback to composite source matchers, names, or payloads.
-
-T2 does not claim sharded GEMM/layout support.
-That belongs after T3 tensor/value sharding and explicit reshard.
+- TileLang exposes a concrete memory-config / sharding annotation surface,
+- user or op placement intent lowers into `SpatialPlan.TensorPlacementIntent`,
+- `TTProgram` contains `TTTensorMemoryConfigPlan` and
+  `TTOpShardingContract`,
+- producer/consumer placement conflicts either insert an explicit
+  `TTReshardPlan` or reject with typed diagnostics,
+- `ExecutableSpec` projects placement/conversion records for leaf consumers,
+- runtime/codegen consume those records or fail closed, without recovering
+  sharding from source text, names, argument order, or accessor strings.
 
 ## Required Verification
 
@@ -80,15 +94,16 @@ That belongs after T3 tensor/value sharding and explicit reshard.
 
 ## Task Queue
 
-当前 active task 是 T2。
-T3 is the tensor/value sharding task; it starts after T2 baseline is complete
-and before any sharded GEMM/layout claim.
+当前 active task 是 T3。
+T2 current-placement leaf/GEMM baseline is complete.
+T3 is the tensor/value sharding task and must complete before any sharded
+GEMM/layout claim.
 T4 owns the currently typed-but-not-admitted external accessor ABI forms.
 
 | 任务 | 目标 | 依赖 | 完成目标 |
 | --- | --- | --- | --- |
 | T1 Buffer address ABI 接入执行路径 | Make sharded L1 and page-indexed address ABI real execution contracts. | Current typed placement fields. | Complete. |
-| T2 Leaf compute / GEMM baseline | Admit non-flash leaf compute and current-placement GEMM layout baseline. | T1 complete. | Direct correctness or typed reject for each admitted leaf family / current-placement layout. |
+| T2 Leaf compute / GEMM baseline | Admit non-flash leaf compute and current-placement GEMM layout baseline. | T1 complete. | Complete. |
 | T3 Tensor/value sharding and explicit reshard | Make TTNN-style user placement intent, op placement contracts, placement conflict handling, and reshard plans first-class in the IR chain. | T2 baseline complete; design in `2026-05-02-blackhole-tensor-sharding-and-reshard.md`. | `T.MemoryConfig` / `T.annotate_memory_config` lower to `TensorPlacementIntent`; `TTTensorMemoryConfigPlan`, `TTOpShardingContract`, conflict rejects, `TTReshardPlan`, and executable projection exist with tests. |
 | T4 External accessor/runtime ABI expansion | Admit or precisely reject external `sharded_accessor_cta` and `page_indexed_accessor_cta` runtime/codegen forms. | T1 address ABI and T3 placement/conversion projection. | External sharded/page-indexed accessors have direct TT-Metal ABI records and runtime/codegen admission, or fail from explicit executable accessor records. |
 | T5 Sharded GEMM / layout variants | Admit GEMM/layout variants that depend on real tensor sharding, including explicit retile/work-coarsening when a layout changes logical work mapping. | T3 complete; T4 when external sharded/page-indexed accessors are required. | Sharded GEMM/layout correctness where admitted; typed rejects for unsupported placement/conversion/retile combinations. |
@@ -203,8 +218,9 @@ Each workload is a separate first-path checkpoint:
 
 ## Support Boundary
 
-- Admitted direct-runtime forms remain limited to the T1 surface plus current
-  GEMM A/B-separated reader and writer ranges.
+- Admitted direct-runtime forms remain limited to the T1 surface, admitted T2
+  standalone leaf cases, and current GEMM A/B-separated reader and writer
+  ranges.
 - `sharded_accessor_cta` and `page_indexed_accessor_cta` are typed but not
   admitted as external runtime accessors; T4 owns that gap.
 - Workload backlog stays ordered by the task queue: `topk`, then
@@ -213,22 +229,35 @@ Each workload is a separate first-path checkpoint:
 ## Latest Verification
 
 Latest implementation batch:
-TT-Metal sharding contract alignment audit.
+T2 leaf compute / current-placement GEMM baseline.
 
 Verified:
 
 - `cmake --build /root/dev/vibe_dsl/tilelang_repo/build -- -j32`
-- Red/green structure selectors:
-  `pytest -q testing/python/transform/test_blackhole_spatial_ir.py::test_plan_tt_abi_uses_hardware_backed_buffer_distribution testing/python/transform/test_blackhole_spatial_ir.py::test_validate_tt_program_rejects_incomplete_sharded_address_abi`
-  (failed before the fix because `shard_orientation` was `block` and
-  invalid strategy/orientation values were not rejected; passes after the
-  fix with `2 passed`)
-- TT-Sim direct-runtime selectors via `scripts/setup_tt_sim.sh`:
-  `pytest -q testing/python/target/blackhole/test_blackhole_copy_runtime.py::test_blackhole_module_direct_call_grid_indexed_copy_multicore_launch testing/python/target/blackhole/test_blackhole_copy_runtime.py::test_blackhole_module_direct_call_page_indexed_copy_consumes_address_contract`
-  (`2 passed`)
+- Structure/copy regression:
+  `pytest -q testing/python/target/blackhole/test_blackhole_leaf_compute_runtime.py::test_blackhole_standalone_leaf_compute_projects_typed_runtime_contracts`
+  `testing/python/target/blackhole/test_blackhole_copy_pipeline.py`
+  (`62 passed, 10 skipped, 1 xfailed`)
+- TT-Sim direct leaf baseline via `scripts/setup_tt_sim.sh`:
+  `pytest -q -vv -x testing/python/target/blackhole/test_blackhole_leaf_compute_runtime.py::test_blackhole_standalone_leaf_compute_bf16_direct_runtime`
+  (`6 passed, 2 skipped`; skipped cases are typed standalone
+  `reduce_tile` and standalone fill/typecast publish simulator gates)
+- TT-Sim current-placement GEMM selectors:
+  direct ABI schema, richer compute config, transpose-A, basic GEMM,
+  multicore direct call, and oversubscribed work packets
+  (`6 passed`)
+- TT-Sim typed-reject / fill-cast selectors:
+  accessor common runtime arg count, runtime CRTA bits, launch core type,
+  unknown math fidelity, mbarrier typed compute schema, and fragment fill/cast
+  layout/runtime gate
+  (`6 passed, 1 skipped`)
 
 Observed boundary:
 
-- 32B bf16 sub-tile page transport is not admitted.
-  TT-Sim rejects the NOC read/write with an address-alignment mismatch.
-  The admitted page-indexed sample remains the 64B page path.
+- Standalone `reduce_tile` and standalone compute-only fill/typecast publish
+  currently hit TT-Sim `tensix_execute_pacr` capability boundaries for the
+  bf16 direct-runtime path. They remain structure/spec-admitted but
+  direct-runtime-gated with typed reasons.
+- Broadcast-cols rank-1 RHS materialization must be reader-produced as a
+  full-tile CB page. Scalar NOC reads into first-column tile positions are
+  not an admitted runtime path.

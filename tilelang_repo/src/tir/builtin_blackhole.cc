@@ -48,6 +48,7 @@ TIR_DEFINE_BUILTIN(noc_async_read_barrier)
 TIR_DEFINE_BUILTIN(noc_async_write_barrier)
 TIR_DEFINE_BUILTIN(read_tile_to_cb)
 TIR_DEFINE_BUILTIN(read_page_to_cb)
+TIR_DEFINE_BUILTIN(read_bcast_cols_to_cb)
 TIR_DEFINE_BUILTIN(write_tile_from_cb)
 TIR_DEFINE_BUILTIN(write_page_from_cb)
 TIR_DEFINE_BUILTIN(get_semaphore)
@@ -72,6 +73,8 @@ TIR_DEFINE_BUILTIN(pack_reconfig_data_format)
 TIR_DEFINE_BUILTIN(copy_tile_to_dst_init_short)
 TIR_DEFINE_BUILTIN(copy_tile_to_dst_init_short_with_dt)
 TIR_DEFINE_BUILTIN(copy_tile)
+TIR_DEFINE_BUILTIN(binary_op_init_common)
+TIR_DEFINE_BUILTIN(unary_op_init_common)
 TIR_DEFINE_BUILTIN(add_tiles_init)
 TIR_DEFINE_BUILTIN(add_tiles)
 TIR_DEFINE_BUILTIN(add_bcast_rows_init_short)
@@ -174,6 +177,16 @@ TVM_REGISTER_OP("tl.blackhole.read_page_to_cb")
     .add_argument("page_bytes", "int", "Page size in bytes")
     .add_argument("accessor_slot", "int", "Accessor slot for later TT-Metal mapping")
     .add_argument("cb_offset_bytes", "int", "Byte offset within the current CB page");
+
+TVM_REGISTER_OP("tl.blackhole.read_bcast_cols_to_cb")
+    .set_num_inputs(6)
+    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque))
+    .add_argument("buffer", "handle", "Source backing buffer handle")
+    .add_argument("page_id", "int", "Logical page id in the source buffer")
+    .add_argument("cb_id", "int", "Destination CB ID")
+    .add_argument("page_bytes", "int", "Source page size in bytes")
+    .add_argument("accessor_slot", "int", "Accessor slot for later TT-Metal mapping")
+    .add_argument("vector_len", "int", "Number of vector elements in the broadcast column");
 
 TVM_REGISTER_OP("tl.blackhole.write_tile_from_cb")
     .set_num_inputs(5)
@@ -314,6 +327,19 @@ TVM_REGISTER_OP("tl.blackhole.copy_tile")
     .add_argument("src_cb_id", "int", "Source CB ID")
     .add_argument("src_tile_index", "int", "Source tile index in the CB front window")
     .add_argument("dst_tile_index", "int", "Destination tile index in DST");
+
+TVM_REGISTER_OP("tl.blackhole.binary_op_init_common")
+    .set_num_inputs(3)
+    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque))
+    .add_argument("lhs_cb_id", "int", "Left-hand-side CB ID")
+    .add_argument("rhs_cb_id", "int", "Right-hand-side CB ID")
+    .add_argument("out_cb_id", "int", "Output CB ID");
+
+TVM_REGISTER_OP("tl.blackhole.unary_op_init_common")
+    .set_num_inputs(2)
+    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque))
+    .add_argument("input_cb_id", "int", "Input CB ID")
+    .add_argument("out_cb_id", "int", "Output CB ID");
 
 TVM_REGISTER_OP("tl.blackhole.add_tiles_init")
     .set_num_inputs(-1)

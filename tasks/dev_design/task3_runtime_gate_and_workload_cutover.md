@@ -124,7 +124,7 @@ the executable contract must state:
 - positive `page_size_bytes`
 - `logical_index_mapping = interleaved_page_index`
 
-For admitted sharded L1 resident views,
+For admitted source-backed sharded L1 resident views,
 the executable contract must state:
 
 - `distribution_kind = sharded`
@@ -139,6 +139,12 @@ the executable contract must state:
 - `logical_index_mapping = work_packet_row_major`
 - `core_local_address_mapping = l1_shard_linear`
 - attached core-group identity and index
+
+For pure-local sharded buffers that are not materialized from an external
+source buffer, the executable contract must still state the sharding,
+memory-space, mapping, and core-local fields above, but it must not invent
+`source_buffer`, `source_region_kind`, or `source_region_shape`.
+Source-region fields are required exactly when a source binding exists.
 
 Leaf readers must validate these fields directly.
 Direct runtime admission must consume them before execution.

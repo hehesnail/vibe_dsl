@@ -53,9 +53,12 @@ struct LogicalTileLayoutInfo {
 
 struct BufferStorageInfo {
   int64_t byte_size = 0;
+  int64_t dtype_bytes = 0;
   std::string scope;
   Array<Integer> shape;
 };
+
+constexpr int64_t kBlackholeTileElements = 32 * 32;
 
 std::unordered_map<std::string, LogicalTileLayoutInfo>
 CollectLogicalTileLayoutsFromBody(const tir::Stmt &body) {
@@ -184,6 +187,7 @@ CollectBufferStorageInfo(const tir::PrimFunc &func) {
     }
     BufferStorageInfo &info = info_by_name[name];
     info.byte_size = std::max(info.byte_size, EstimateBufferByteSize(buffer));
+    info.dtype_bytes = std::max(info.dtype_bytes, DTypeStorageBytes(buffer->dtype));
     if (info.shape.empty()) {
       info.shape = ExtractStaticIntegerShape(buffer->shape);
     }
@@ -272,7 +276,8 @@ CollectSourceBufferByMaterializedTarget(const tir::PrimFunc &func,
     const auto *call = node.as<CallNode>();
     if (call == nullptr || call->args.size() < 3 ||
         (!call->op.same_as(tir::builtin::blackhole_read_tile_to_cb()) &&
-         !call->op.same_as(tir::builtin::blackhole_read_page_to_cb()))) {
+         !call->op.same_as(tir::builtin::blackhole_read_page_to_cb()) &&
+         !call->op.same_as(tir::builtin::blackhole_read_bcast_cols_to_cb()))) {
       return;
     }
     const auto *source_var = call->args[0].as<tir::VarNode>();
@@ -1131,10 +1136,23 @@ String MemorySpaceFromLayoutScope(const String &scope) {
 
 String LayoutFromLayoutScope(const String &scope) {
   const std::string value = str(scope);
+  if (value == "global") {
+    return String("interleaved");
+  }
   if (value.rfind("blackhole.cb.", 0) == 0) {
     return String("circular_buffer");
   }
   return String("local");
+}
+
+int64_t EstimateDRAMPageSizeBytes(const BufferStorageInfo &storage_info) {
+  if (storage_info.byte_size <= 0) {
+    return 0;
+  }
+  const int64_t dtype_bytes = PositiveOrDefault(storage_info.dtype_bytes, 1);
+  const int64_t tile_bytes = kBlackholeTileElements * dtype_bytes;
+  return std::max<int64_t>(
+      dtype_bytes, std::min(storage_info.byte_size, tile_bytes));
 }
 
 LogicalTileLayoutInfo
@@ -1269,9 +1287,12 @@ BuildBufferDistributionPlans(const SpatialPlan &spatial_plan,
       abi_memory_space = dst_it->second.memory_space;
     }
     auto storage_it = storage_info_by_buffer.find(buffer);
-    if (str(memory_space) == "L1" && page_size_bytes == 0 &&
-        storage_it != storage_info_by_buffer.end()) {
-      page_size_bytes = storage_it->second.byte_size;
+    if (page_size_bytes == 0 && storage_it != storage_info_by_buffer.end()) {
+      if (str(memory_space) == "L1") {
+        page_size_bytes = storage_it->second.byte_size;
+      } else if (str(memory_space) == "DRAM") {
+        page_size_bytes = EstimateDRAMPageSizeBytes(storage_it->second);
+      }
     }
     auto cb_page_it = cb_page_size_by_buffer.find(buffer);
     const bool has_cb_page = cb_page_it != cb_page_size_by_buffer.end();

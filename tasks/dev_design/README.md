@@ -58,8 +58,8 @@ Pass 名字、helper、payload、bag、bridge attr
 
 ```text
 T1 Buffer address ABI execution integration (complete)
-  -> T2 Leaf compute / GEMM baseline (active)
-  -> T3 tensor/value sharding and explicit reshard
+  -> T2 Leaf compute / GEMM baseline (complete)
+  -> T3 tensor/value sharding and explicit reshard (active)
   -> T4 external accessor / runtime ABI expansion
   -> T5 sharded GEMM / layout variants
   -> T6 topk

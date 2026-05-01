@@ -52,6 +52,7 @@ using tir::builtin::blackhole_add_bcast_cols_init_short;
 using tir::builtin::blackhole_add_tiles;
 using tir::builtin::blackhole_add_tiles_bcast_cols;
 using tir::builtin::blackhole_add_tiles_init;
+using tir::builtin::blackhole_binary_op_init_common;
 using tir::builtin::blackhole_binary_max_tile;
 using tir::builtin::blackhole_binary_max_tile_init;
 using tir::builtin::blackhole_cb_pop_front;
@@ -79,6 +80,7 @@ using tir::builtin::blackhole_tile_regs_acquire;
 using tir::builtin::blackhole_tile_regs_commit;
 using tir::builtin::blackhole_tile_regs_release;
 using tir::builtin::blackhole_tile_regs_wait;
+using tir::builtin::blackhole_unary_op_init_common;
 using tvm::Integer;
 using tvm::ffi::String;
 
@@ -205,6 +207,15 @@ class ExactTileComputeEmitter {
 
   void ReconfigDataFormat(int lhs_cb_id, int rhs_cb_id) {
     Append(blackhole_reconfig_data_format(), {IntImm32(lhs_cb_id), IntImm32(rhs_cb_id)});
+  }
+
+  void BinaryOpInitCommon(int lhs_cb_id, int rhs_cb_id, int out_cb_id) {
+    Append(blackhole_binary_op_init_common(),
+           {IntImm32(lhs_cb_id), IntImm32(rhs_cb_id), IntImm32(out_cb_id)});
+  }
+
+  void UnaryOpInitCommon(int input_cb_id, int out_cb_id) {
+    Append(blackhole_unary_op_init_common(), {IntImm32(input_cb_id), IntImm32(out_cb_id)});
   }
 
   void PackTile(int out_cb_id, int out_tile) {
@@ -336,11 +347,36 @@ bool IsTileComputeDAGOutputRoleForLowering(const std::string& role) {
 }  // namespace
 
 void PlanTTKernelABI::LoadTileComputeDAGLoweringPlan(const PrimFunc& func) {
+  std::unordered_set<std::string> seeded_tile_compute_input_buffers =
+      std::move(tile_compute_input_buffers_);
   tile_compute_dag_lowering_decisions_.clear();
   tile_compute_dag_lowering_decision_consumed_.clear();
   active_tile_compute_dag_lowering_decision_.reset();
+  tile_compute_input_buffers_.clear();
 
   const BlackholeTileComputeDAG dag = BuildBlackholeTileComputeDAG(func);
+  std::unordered_map<int64_t, std::string> dag_op_name_by_node;
+  for (const BlackholeTileComputeDAGNode& node : dag.nodes) {
+    dag_op_name_by_node[node.id] = node.op_name;
+  }
+  tile_compute_input_buffers_ = std::move(seeded_tile_compute_input_buffers);
+  if (!dag.edges.empty()) {
+    for (const BlackholeTileComputeDAGEdge& edge : dag.edges) {
+      if (IsTileComputeDAGOutputRoleForLowering(edge.value_role)) {
+        continue;
+      }
+      const std::string buffer_prefix = "buffer:";
+      if (edge.value_key.rfind(buffer_prefix, 0) == 0) {
+        const std::string buffer_name = edge.value_key.substr(buffer_prefix.size());
+        tile_compute_input_buffers_.insert(buffer_name);
+        auto node_it = dag_op_name_by_node.find(edge.consumer_node);
+        if (edge.value_role == "rhs" && node_it != dag_op_name_by_node.end() &&
+            node_it->second.find("_bcast_cols") != std::string::npos) {
+          broadcast_cols_rhs_buffers_.insert(buffer_name);
+        }
+      }
+    }
+  }
   std::unordered_map<int64_t, std::vector<const BlackholeTileComputeDAGEdge*>>
       uses_by_producer;
   for (const BlackholeTileComputeDAGEdge& edge : dag.edges) {
@@ -549,6 +585,7 @@ Stmt PlanTTKernelABI::LowerExplicitTileComputeCall(const CallNode* op) {
   ICHECK(covering.selected)
       << "TileCompute covering rejected operation " << operation
       << ": " << covering.reject_reason;
+  requires_compute_segment_ = true;
   Stmt lowered = BlackholeTileComputeSourceProjection::Emit(this, op, covering);
   active_tile_compute_dag_lowering_decision_.reset();
   return lowered;
@@ -861,8 +898,11 @@ Stmt PlanTTKernelABI::GenerateRowReductionSequence(const RowReductionMatch& matc
     emit.Wait(reduced.cb_id, reduced.num_tiles);
     emit.ReconfigDataFormat(dst_in.cb_id, reduced.cb_id);
     if (match.kind == "sum") {
+      emit.BinaryOpInitCommon(dst_in.cb_id, reduced.cb_id, out.cb_id);
       emit.Append(blackhole_add_tiles_init(),
                   {IntImm32(dst_in.cb_id), IntImm32(reduced.cb_id)});
+    } else {
+      emit.UnaryOpInitCommon(dst_in.cb_id, out.cb_id);
     }
     for (int tile = 0; tile < out.num_tiles; ++tile) {
       auto emit_accumulate_body = [&](ExactTileComputeEmitter& tile_emit) {
@@ -949,12 +989,17 @@ Stmt PlanTTKernelABI::GenerateFillTileSequence(const Buffer& dst, const PrimExpr
   if (const VarNode* data = BufferDataIdentity(dst)) {
     last_fragment_fill_value_by_data_[data] = value;
   }
+  RecordExactComputeOpPlan("unary", "fill_tile",
+                           {{"output", dst, "identity"}});
   return MaybeWrapComputeSegment(MakeBlackholeCall(
       tir::builtin::blackhole_fill_fragment(), {dst->data, num_elements, value}));
 }
 
 Stmt PlanTTKernelABI::GenerateCopyTileSequence(const Buffer& src, const Buffer& dst,
                                                const PrimExpr& num_elements) {
+  RecordExactComputeOpPlan("copy", "copy_tile",
+                           {{"input", src, "identity"},
+                            {"output", dst, "identity"}});
   ExactTiledCBValue live_value;
   if (TryCreateExactOutputLiveTiledCBValue(src, &live_value) ||
       TryCreateLiveExactTiledCBValue(src, &live_value)) {
@@ -1009,6 +1054,7 @@ Stmt PlanTTKernelABI::GenerateBinaryMaxTileSequence(const Buffer& dst, const Buf
   }
   MarkExactCBValuesOverlap({lhs_in.cb_id, rhs_in.cb_id, out.cb_id});
   ExactTileComputeEmitter emit(&stmts);
+  emit.UnaryOpInitCommon(lhs_in.cb_id, out.cb_id);
   emit.Reserve(out.cb_id, out.num_tiles);
   emit.Wait(lhs_in.cb_id, lhs_in.num_tiles);
   emit.Wait(rhs_in.cb_id, rhs_in.num_tiles);
@@ -1023,7 +1069,7 @@ Stmt PlanTTKernelABI::GenerateBinaryMaxTileSequence(const Buffer& dst, const Buf
                        {IntImm32(rhs_in.cb_id), IntImm32(tile), IntImm32(1)});
       tile_emit.Append(blackhole_binary_max_tile_init(), {});
       tile_emit.Append(blackhole_binary_max_tile(),
-                       {IntImm32(0), IntImm32(1), IntImm32(0), StringImm("C")});
+                       {IntImm32(0), IntImm32(1), IntImm32(0)});
     });
   }
   emit.PopIfOwned(lhs_in.cb_id, lhs_in.num_tiles, lhs_in.borrowed_live);
@@ -1056,6 +1102,7 @@ Stmt PlanTTKernelABI::GenerateBinaryTileSequence(const Buffer& dst,
   }
   MarkExactCBValuesOverlap({lhs_in.cb_id, rhs_in.cb_id, out.cb_id});
   ExactTileComputeEmitter emit(&stmts);
+  emit.BinaryOpInitCommon(lhs_in.cb_id, rhs_in.cb_id, out.cb_id);
   emit.Reserve(out.cb_id, out.num_tiles);
   emit.Wait(lhs_in.cb_id, lhs_in.num_tiles);
   emit.Wait(rhs_in.cb_id, rhs_in.num_tiles);
@@ -1083,8 +1130,17 @@ Stmt PlanTTKernelABI::GenerateBroadcastColsBinaryTileSequence(
   (void)num_elements;
   (void)row_width;
 
+  const std::string rhs_identity = BufferIdentityName(rhs);
+  if (!rhs_identity.empty()) {
+    broadcast_cols_rhs_buffers_.insert(rhs_identity);
+    RefreshBroadcastColsSourceBuffers();
+  }
+
   ExactTiledCBValue lhs_in = CreateExactInputCBValue(dst, operation_name + "_lhs");
-  ExactTiledCBValue rhs_in = CreateExactInputCBValue(rhs, operation_name + "_rhs");
+  ExactTiledCBValue rhs_in;
+  if (!TryCreateBroadcastColsSourceLiveExactTiledCBValue(rhs, &rhs_in)) {
+    rhs_in = CreateExactInputCBValue(rhs, operation_name + "_rhs");
+  }
   ExactTiledCBValue out = CreateEmptyExactTiledCBValue(dst, operation_name + "_out");
   const auto [logical_rows, logical_cols] = GetLogicalMatrixShape(dst);
   const int tiles_per_row =
@@ -1106,6 +1162,7 @@ Stmt PlanTTKernelABI::GenerateBroadcastColsBinaryTileSequence(
                             {"output", dst, "identity"}});
   MarkExactCBValuesOverlap({lhs_in.cb_id, rhs_in.cb_id, out.cb_id});
   ExactTileComputeEmitter emit(&stmts);
+  emit.BinaryOpInitCommon(lhs_in.cb_id, rhs_in.cb_id, out.cb_id);
   emit.Reserve(out.cb_id, out.num_tiles);
   emit.Wait(lhs_in.cb_id, lhs_in.num_tiles);
   emit.Wait(rhs_in.cb_id, rhs_in.num_tiles);
@@ -1142,6 +1199,7 @@ Stmt PlanTTKernelABI::GenerateUnaryTileSequence(
   }
   MarkExactCBValuesOverlap({input_cb.cb_id, out.cb_id});
   ExactTileComputeEmitter emit(&stmts);
+  emit.UnaryOpInitCommon(input_cb.cb_id, out.cb_id);
   emit.Reserve(out.cb_id, out.num_tiles);
   emit.Wait(input_cb.cb_id, input_cb.num_tiles);
   for (int tile = 0; tile < out.num_tiles; ++tile) {

@@ -24,6 +24,7 @@
 
 #include "blackhole_tile_compute_normalizer.h"
 
+#include "arith/ir_mutator_with_analyzer.h"
 #include "blackhole_utils.h"
 #include "../../op/region.h"
 
@@ -57,6 +58,21 @@ bool IsBlackholeComputeBuffer(const Buffer& buffer) {
 
 bool IsOneDimensionalBuffer(const Buffer& buffer) {
   return buffer.defined() && buffer->shape.size() == 1U;
+}
+
+bool IsSingleElementBuffer(const Buffer& buffer) {
+  if (!buffer.defined() || buffer->shape.empty()) {
+    return false;
+  }
+  int64_t elements = 1;
+  for (const PrimExpr& dim : buffer->shape) {
+    const auto* imm = dim.as<IntImmNode>();
+    if (!imm) {
+      return false;
+    }
+    elements *= imm->value;
+  }
+  return elements == 1;
 }
 
 bool IsLiteralScalarValue(const PrimExpr& expr) {
@@ -217,6 +233,8 @@ struct TileComputeRewriteContext {
   const BufferStoreNode* store{nullptr};
   PrimExpr linear_index;
   PrimExpr num_elements;
+  PrimExpr row_index;
+  PrimExpr row_width;
 };
 
 enum class TileComputeLeafCallKind {
@@ -270,6 +288,114 @@ struct TileComputeRewriteMatch {
                           num_elements, row_width});
   }
 };
+
+bool MatchIdentityLoad(const PrimExpr& expr,
+                       const TileComputeRewriteContext& ctx,
+                       Buffer* buffer) {
+  Buffer load_buffer;
+  PrimExpr load_index;
+  if (!MatchLoad(expr, &load_buffer, &load_index) ||
+      !ProvenEqual(load_index, ctx.linear_index)) {
+    return false;
+  }
+  if (buffer != nullptr) {
+    *buffer = load_buffer;
+  }
+  return true;
+}
+
+bool MatchBroadcastColsLoad(const PrimExpr& expr,
+                            const TileComputeRewriteContext& ctx,
+                            Buffer* buffer) {
+  Buffer load_buffer;
+  PrimExpr load_index;
+  if (!MatchLoad(expr, &load_buffer, &load_index) ||
+      SameBufferStorage(load_buffer, ctx.store->buffer)) {
+    return false;
+  }
+  if (IsSingleElementBuffer(load_buffer) && tir::is_zero(load_index)) {
+    if (buffer != nullptr) {
+      *buffer = load_buffer;
+    }
+    return true;
+  }
+  if (!ctx.row_index.defined() || !ProvenEqual(load_index, ctx.row_index)) {
+    return false;
+  }
+  if (buffer != nullptr) {
+    *buffer = load_buffer;
+  }
+  return true;
+}
+
+PrimExpr EffectiveRowWidth(const TileComputeRewriteContext& ctx) {
+  return ctx.row_width.defined() ? ctx.row_width : ctx.num_elements;
+}
+
+void AddSeededInplaceBinary(const TileComputeRewriteContext& ctx,
+                            TileComputeRewriteMatch* match,
+                            const char* operation,
+                            const Buffer& seed,
+                            const Buffer& rhs) {
+  if (!SameBufferStorage(seed, ctx.store->buffer)) {
+    match->AddUnary(blackhole_tile_compute_schema::kCopyTile, seed,
+                    ctx.store->buffer, ctx.num_elements);
+  }
+  match->AddInplaceBinary(operation, ctx.store->buffer, rhs, ctx.num_elements);
+}
+
+void AddSeededBroadcastColsBinary(const TileComputeRewriteContext& ctx,
+                                  TileComputeRewriteMatch* match,
+                                  const char* operation,
+                                  const Buffer& seed,
+                                  const Buffer& rhs) {
+  if (!SameBufferStorage(seed, ctx.store->buffer)) {
+    match->AddUnary(blackhole_tile_compute_schema::kCopyTile, seed,
+                    ctx.store->buffer, ctx.num_elements);
+  }
+  match->AddBroadcastColsBinary(operation, ctx.store->buffer, rhs,
+                                ctx.num_elements, EffectiveRowWidth(ctx));
+}
+
+bool EmitStandaloneBinaryIfMatched(const TileComputeRewriteContext& ctx,
+                                   TileComputeRewriteMatch* match,
+                                   const PrimExpr& lhs_expr,
+                                   const PrimExpr& rhs_expr,
+                                   const char* identity_operation,
+                                   const char* broadcast_cols_operation) {
+  Buffer lhs;
+  Buffer rhs;
+  const bool lhs_identity = MatchIdentityLoad(lhs_expr, ctx, &lhs);
+  const bool rhs_identity = MatchIdentityLoad(rhs_expr, ctx, &rhs);
+  if (lhs_identity && rhs_identity) {
+    if (SameBufferStorage(lhs, ctx.store->buffer)) {
+      AddSeededInplaceBinary(ctx, match, identity_operation, lhs, rhs);
+      return true;
+    }
+    if (SameBufferStorage(rhs, ctx.store->buffer)) {
+      AddSeededInplaceBinary(ctx, match, identity_operation, rhs, lhs);
+      return true;
+    }
+    AddSeededInplaceBinary(ctx, match, identity_operation, lhs, rhs);
+    return true;
+  }
+
+  Buffer bcast;
+  if (broadcast_cols_operation != nullptr && lhs_identity &&
+      MatchBroadcastColsLoad(rhs_expr, ctx, &bcast)) {
+    AddSeededBroadcastColsBinary(ctx, match, broadcast_cols_operation, lhs,
+                                 bcast);
+    return true;
+  }
+  if (broadcast_cols_operation != nullptr && rhs_identity &&
+      MatchBroadcastColsLoad(lhs_expr, ctx, &bcast)) {
+    AddSeededBroadcastColsBinary(ctx, match, broadcast_cols_operation, rhs,
+                                 bcast);
+    return true;
+  }
+
+  return false;
+}
 
 class TileComputeIRBuilder {
  public:
@@ -370,8 +496,13 @@ bool EmitBinaryMaxTileIfMatched(const TileComputeRewriteContext& ctx,
     return true;
   };
   const auto* max = ctx.store->value.as<MaxNode>();
-  return max && (match_ordered_max(max->a, max->b) ||
-                 match_ordered_max(max->b, max->a));
+  return max &&
+         (match_ordered_max(max->a, max->b) ||
+          match_ordered_max(max->b, max->a) ||
+          EmitStandaloneBinaryIfMatched(
+              ctx, match, max->a, max->b,
+              blackhole_tile_compute_schema::kBinaryMaxTile,
+              /*broadcast_cols_operation=*/nullptr));
 }
 
 bool EmitAddRootTileComputeIfMatched(const TileComputeRewriteContext& ctx,
@@ -411,8 +542,13 @@ bool EmitAddRootTileComputeIfMatched(const TileComputeRewriteContext& ctx,
     return false;
   };
   const auto* add = ctx.store->value.as<AddNode>();
-  return add && (match_ordered_fma(add->a, add->b) ||
-                 match_ordered_fma(add->b, add->a));
+  return add &&
+         (match_ordered_fma(add->a, add->b) ||
+          match_ordered_fma(add->b, add->a) ||
+          EmitStandaloneBinaryIfMatched(
+              ctx, match, add->a, add->b,
+              blackhole_tile_compute_schema::kAddTiles,
+              blackhole_tile_compute_schema::kAddTilesBcastCols));
 }
 
 bool EmitExp2RootTileComputeIfMatched(const TileComputeRewriteContext& ctx,
@@ -421,6 +557,16 @@ bool EmitExp2RootTileComputeIfMatched(const TileComputeRewriteContext& ctx,
   PrimExpr exp2_arg;
   if (!MatchExp2Call(ctx.store->value, &exp2_arg)) {
     return false;
+  }
+  Buffer direct_input;
+  if (MatchIdentityLoad(exp2_arg, ctx, &direct_input)) {
+    if (!SameBufferStorage(direct_input, ctx.store->buffer)) {
+      match->AddUnary(blackhole_tile_compute_schema::kCopyTile, direct_input,
+                      ctx.store->buffer, ctx.num_elements);
+    }
+    match->AddUnary(blackhole_tile_compute_schema::kExp2Tile,
+                    ctx.store->buffer, ctx.store->buffer, ctx.num_elements);
+    return true;
   }
   const auto* sub = exp2_arg.as<SubNode>();
   if (!sub) {
@@ -495,8 +641,13 @@ bool EmitMulRootTileComputeIfMatched(const TileComputeRewriteContext& ctx,
     return true;
   };
   const auto* mul = ctx.store->value.as<MulNode>();
-  return mul && (match_ordered_broadcast(mul->a, mul->b) ||
-                 match_ordered_broadcast(mul->b, mul->a));
+  return mul &&
+         (EmitStandaloneBinaryIfMatched(
+              ctx, match, mul->a, mul->b,
+              blackhole_tile_compute_schema::kMulTiles,
+              blackhole_tile_compute_schema::kMulTilesBcastCols) ||
+          match_ordered_broadcast(mul->a, mul->b) ||
+          match_ordered_broadcast(mul->b, mul->a));
 }
 
 bool EmitDivRootTileComputeIfMatched(const TileComputeRewriteContext& ctx,
@@ -535,14 +686,17 @@ bool EmitFillTileIfMatched(const TileComputeRewriteContext& ctx,
 Stmt NormalizeBlackholeTileComputeStore(const BufferStoreNode* store,
                                         const PrimExpr& linear_index,
                                         const PrimExpr& num_elements,
-                                        int* temp_index) {
+                                        int* temp_index,
+                                        const PrimExpr& row_index = PrimExpr(),
+                                        const PrimExpr& row_width = PrimExpr()) {
   if (!store || !IsBlackholeComputeBuffer(store->buffer) ||
       store->indices.size() != 1U ||
       !ProvenEqual(store->indices[0], linear_index)) {
     return Stmt();
   }
   TileComputeIRBuilder builder(temp_index);
-  const TileComputeRewriteContext ctx{store, linear_index, num_elements};
+  const TileComputeRewriteContext ctx{store, linear_index, num_elements,
+                                      row_index, row_width};
 
   auto render_if_matched = [&](auto emit) -> Stmt {
     TileComputeRewriteMatch match;
@@ -584,19 +738,22 @@ Stmt NormalizeBlackholeTileComputeStore(const BufferStoreNode* store,
   return Stmt();
 }
 
-class BlackholeTileComputeNormalizer : public StmtExprMutator {
+class BlackholeTileComputeNormalizer : public arith::IRMutatorWithAnalyzer {
  public:
   static PrimFunc Substitute(PrimFunc f) {
     if (!IsBlackholePrimFunc(f)) {
       return f;
     }
     PrimFuncNode* fptr = f.CopyOnWrite();
-    BlackholeTileComputeNormalizer normalizer;
+    arith::Analyzer analyzer;
+    BlackholeTileComputeNormalizer normalizer(&analyzer);
     fptr->body = normalizer.VisitStmt(f->body);
     return f;
   }
 
  private:
+  using arith::IRMutatorWithAnalyzer::IRMutatorWithAnalyzer;
+
   int temp_index_{0};
 
   Stmt VisitStmt_(const ForNode* op) final {
@@ -604,7 +761,7 @@ class BlackholeTileComputeNormalizer : public StmtExprMutator {
         normalized.defined()) {
       return normalized;
     }
-    return StmtExprMutator::VisitStmt_(op);
+    return arith::IRMutatorWithAnalyzer::VisitStmt_(op);
   }
 };
 
@@ -624,7 +781,8 @@ Stmt NormalizeBlackholeTileComputeLoop(const ForNode* op, int* temp_index) {
     arith::Analyzer analyzer;
     return NormalizeBlackholeTileComputeStore(
         inner_store, inner_store->indices[0],
-        analyzer.Simplify(op->extent * inner_loop->extent), temp_index);
+        analyzer.Simplify(op->extent * inner_loop->extent), temp_index,
+        op->loop_var, inner_loop->extent);
   }
   return Stmt();
 }

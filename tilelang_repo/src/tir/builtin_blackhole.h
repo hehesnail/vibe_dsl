@@ -111,6 +111,17 @@ TVM_DLL const Op& blackhole_read_tile_to_cb();
 TVM_DLL const Op& blackhole_read_page_to_cb();
 
 /*!
+ * \brief Read one rank-1 vector page into the first column of a tiled CB page.
+ * \param buffer Backing buffer handle
+ * \param page_id Logical page id in the source buffer
+ * \param cb_id Destination circular buffer ID
+ * \param page_bytes Source page size in bytes
+ * \param accessor_slot Compile-time accessor slot for later TT-Metal mapping
+ * \param vector_len Number of vector elements to place into the bcast tile
+ */
+TVM_DLL const Op& blackhole_read_bcast_cols_to_cb();
+
+/*!
  * \brief Write one tile from a CB/L1 staging area back to a backing buffer.
  * \param cb_id Source circular buffer ID
  * \param buffer Backing buffer handle
@@ -271,6 +282,21 @@ TVM_DLL const Op& blackhole_copy_tile_to_dst_init_short_with_dt();
  * \param dst_tile_index Destination tile index within DST registers
  */
 TVM_DLL const Op& blackhole_copy_tile();
+
+/*!
+ * \brief Initialize TT-Metal common binary-op unpack/math/pack state.
+ * \param lhs_cb_id Left-hand-side CB id
+ * \param rhs_cb_id Right-hand-side CB id
+ * \param out_cb_id Output CB id
+ */
+TVM_DLL const Op& blackhole_binary_op_init_common();
+
+/*!
+ * \brief Initialize TT-Metal common unary-op/SFPU unpack/math/pack state.
+ * \param input_cb_id Input CB id
+ * \param out_cb_id Output CB id
+ */
+TVM_DLL const Op& blackhole_unary_op_init_common();
 
 /*!
  * \brief Initialize TT-Metal elementwise add for two CB-backed tile streams.

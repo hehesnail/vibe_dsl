@@ -66,6 +66,9 @@ using tvm::ffi::String;
 
 namespace {
 
+constexpr int kBlackholeTileRows = 32;
+constexpr int kBlackholeTileCols = 32;
+
 Stmt MakeBlackholeCall(const Op& op, const std::vector<PrimExpr>& args) {
   return Evaluate(Call(DataType::Int(32), op, args));
 }
@@ -887,6 +890,244 @@ void PlanTTKernelABI::LoadBufferFlowFacts(
     }
     buffer_flow_facts_.emplace(fact.buffer, fact);
   }
+}
+
+void PlanTTKernelABI::LoadDirectCopySourceBindings(const PrimFunc& func) {
+  direct_copy_source_by_buffer_identity_.clear();
+  buffer_by_identity_.clear();
+  std::unordered_set<std::string> ambiguous_targets;
+  auto remember_buffer = [&](const Buffer& buffer) {
+    const std::string identity = BufferIdentityName(buffer);
+    if (!identity.empty() && !buffer_by_identity_.count(identity)) {
+      buffer_by_identity_.emplace(identity, buffer);
+    }
+  };
+  tir::PostOrderVisit(func->body, [&](const ObjectRef& node) {
+    const auto* store = node.as<tir::BufferStoreNode>();
+    if (store == nullptr || !IsCopyOperation(store)) {
+      return;
+    }
+    const auto* load = store->value.as<tir::BufferLoadNode>();
+    if (load == nullptr) {
+      return;
+    }
+    remember_buffer(store->buffer);
+    remember_buffer(load->buffer);
+    const std::string dst = BufferIdentityName(store->buffer);
+    const std::string src = BufferIdentityName(load->buffer);
+    if (dst.empty() || src.empty() || dst == src) {
+      return;
+    }
+    auto it = direct_copy_source_by_buffer_identity_.find(dst);
+    if (it == direct_copy_source_by_buffer_identity_.end()) {
+      direct_copy_source_by_buffer_identity_.emplace(dst, src);
+      return;
+    }
+    if (it->second != src) {
+      ambiguous_targets.insert(dst);
+    }
+  });
+  for (const std::string& target : ambiguous_targets) {
+    direct_copy_source_by_buffer_identity_.erase(target);
+  }
+}
+
+void PlanTTKernelABI::RefreshBroadcastColsSourceBuffers() {
+  broadcast_cols_source_buffers_.clear();
+  for (const std::string& rhs : broadcast_cols_rhs_buffers_) {
+    std::string current = rhs;
+    std::unordered_set<std::string> seen;
+    while (!current.empty() && seen.insert(current).second) {
+      broadcast_cols_source_buffers_.insert(current);
+      auto it = direct_copy_source_by_buffer_identity_.find(current);
+      if (it == direct_copy_source_by_buffer_identity_.end()) {
+        break;
+      }
+      current = it->second;
+    }
+  }
+}
+
+bool PlanTTKernelABI::IsBroadcastColsSourceBuffer(const Buffer& buffer) const {
+  for (const std::string& identity : CollectBufferFlowIdentities(buffer)) {
+    if (broadcast_cols_source_buffers_.count(identity) != 0U) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool PlanTTKernelABI::IsBroadcastColsSourceCBId(int cb_id) const {
+  auto is_source_requirement = [&](int requirement_index) {
+    if (requirement_index < 0 || requirement_index >= static_cast<int>(cb_requirements_.size())) {
+      return false;
+    }
+    const CBRequirement& req = cb_requirements_.at(requirement_index);
+    return broadcast_cols_source_buffers_.count(req.name) != 0U;
+  };
+  if (is_source_requirement(cb_id)) {
+    return true;
+  }
+  constexpr int kTTMetalUserCBBase = 16;
+  if (cb_id >= kTTMetalUserCBBase && is_source_requirement(cb_id - kTTMetalUserCBBase)) {
+    return true;
+  }
+  if (cb_id < 0 || cb_id >= static_cast<int>(cb_requirements_.size())) {
+    return false;
+  }
+  return false;
+}
+
+bool PlanTTKernelABI::TryCreateBroadcastColsSourceLiveExactTiledCBValue(
+    const Buffer& buffer, ExactTiledCBValue* value) {
+  ICHECK(value != nullptr);
+  std::vector<std::string> candidates = CollectBufferFlowIdentities(buffer);
+  std::unordered_set<std::string> seen(candidates.begin(), candidates.end());
+  for (size_t index = 0; index < candidates.size(); ++index) {
+    auto it = direct_copy_source_by_buffer_identity_.find(candidates[index]);
+    if (it == direct_copy_source_by_buffer_identity_.end()) {
+      continue;
+    }
+    if (seen.insert(it->second).second) {
+      candidates.push_back(it->second);
+    }
+  }
+
+  for (const std::string& identity : broadcast_cols_source_buffers_) {
+    if (seen.insert(identity).second) {
+      candidates.push_back(identity);
+    }
+  }
+  std::vector<std::string> producer_candidates;
+  std::unordered_set<std::string> producer_seen;
+  auto add_producer_candidate = [&](const std::string& identity) {
+    if (!identity.empty() && broadcast_cols_source_buffers_.count(identity) != 0U &&
+        producer_seen.insert(identity).second) {
+      producer_candidates.push_back(identity);
+    }
+  };
+  for (const std::string& root : CollectBufferFlowIdentities(buffer)) {
+    std::string current = root;
+    std::unordered_set<std::string> chain_seen;
+    bool saw_copy_source = false;
+    while (!current.empty() && chain_seen.insert(current).second) {
+      auto copy_it = direct_copy_source_by_buffer_identity_.find(current);
+      if (copy_it == direct_copy_source_by_buffer_identity_.end()) {
+        break;
+      }
+      saw_copy_source = true;
+      current = copy_it->second;
+      add_producer_candidate(current);
+    }
+    if (!saw_copy_source) {
+      add_producer_candidate(root);
+    }
+  }
+  for (const std::string& identity : candidates) {
+    add_producer_candidate(identity);
+  }
+
+  for (const std::string& identity : candidates) {
+    auto live_it = buffer_live_form_cb_by_buffer_identity_.find(identity);
+    if (live_it == buffer_live_form_cb_by_buffer_identity_.end()) {
+      continue;
+    }
+    const int cb_id = live_it->second;
+    if (cb_id < 0 || cb_id >= static_cast<int>(cb_requirements_.size())) {
+      continue;
+    }
+    const CBRequirement& req = cb_requirements_.at(cb_id);
+    if (req.page_size <
+        kBlackholeTileRows * kBlackholeTileCols * ExactTiledCBStorageDType(buffer->dtype).bytes()) {
+      continue;
+    }
+    int live_order_index = -1;
+    auto order_it = buffer_live_form_order_by_buffer_identity_.find(identity);
+    if (order_it != buffer_live_form_order_by_buffer_identity_.end()) {
+      live_order_index = order_it->second;
+    }
+    bool has_intervening_identity_write = false;
+    if (current_lowering_order_index_ >= 0 && live_order_index >= 0) {
+      auto flow_it = buffer_flow_facts_.find(identity);
+      if (flow_it != buffer_flow_facts_.end()) {
+        for (const BlackholeBufferFlowEvent& event : flow_it->second.events) {
+          if (event.kind == BlackholeBufferFlowEventKind::kWrite &&
+              event.order_index > live_order_index &&
+              event.order_index < current_lowering_order_index_) {
+            has_intervening_identity_write = true;
+            break;
+          }
+        }
+      }
+    }
+    if (has_intervening_identity_write) {
+      continue;
+    }
+    value->buffer = buffer;
+    value->cb_id = cb_id;
+    value->producer_live = true;
+    value->borrowed_live = true;
+    PopulateExactTiledCBValueShape(buffer, value);
+    return true;
+  }
+  for (const std::string& identity : producer_candidates) {
+    auto req_it = buffer_identity_to_req_index_.find(identity);
+    if (req_it == buffer_identity_to_req_index_.end()) {
+      continue;
+    }
+    const int cb_id = req_it->second;
+    if (cb_id < 0 || cb_id >= static_cast<int>(cb_requirements_.size())) {
+      continue;
+    }
+    const CBRequirement& req = cb_requirements_.at(cb_id);
+    if (req.page_size <
+        kBlackholeTileRows * kBlackholeTileCols * ExactTiledCBStorageDType(buffer->dtype).bytes()) {
+      continue;
+    }
+    value->buffer = buffer;
+    value->cb_id = cb_id;
+    value->producer_live = true;
+    value->borrowed_live = false;
+    PopulateExactTiledCBValueShape(buffer, value);
+    return true;
+  }
+  for (int cb_id = 0; cb_id < static_cast<int>(cb_requirements_.size()); ++cb_id) {
+    const CBRequirement& req = cb_requirements_.at(cb_id);
+    if (std::find(producer_candidates.begin(), producer_candidates.end(), req.name) ==
+        producer_candidates.end()) {
+      continue;
+    }
+    if (req.page_size <
+        kBlackholeTileRows * kBlackholeTileCols * ExactTiledCBStorageDType(buffer->dtype).bytes()) {
+      continue;
+    }
+    value->buffer = buffer;
+    value->cb_id = cb_id;
+    value->producer_live = true;
+    value->borrowed_live = false;
+    PopulateExactTiledCBValueShape(buffer, value);
+    return true;
+  }
+  for (const std::string& identity : producer_candidates) {
+    auto buffer_it = buffer_by_identity_.find(identity);
+    if (buffer_it == buffer_by_identity_.end() || !buffer_it->second.defined()) {
+      continue;
+    }
+    const int cb_id = AllocateRequirementIndex(buffer_it->second, CBType::kIntermediate);
+    const int tile_bytes =
+        kBlackholeTileRows * kBlackholeTileCols * ExactTiledCBStorageDType(buffer->dtype).bytes();
+    SetRequirementPageLayout(cb_id, tile_bytes, 1);
+    auto& req = cb_requirements_.at(cb_id);
+    req.publish_pages_per_event = std::max(req.publish_pages_per_event, 1);
+    req.consume_pages_per_event = std::max(req.consume_pages_per_event, 1);
+    value->buffer = buffer;
+    value->cb_id = cb_id;
+    value->producer_live = true;
+    value->borrowed_live = false;
+    PopulateExactTiledCBValueShape(buffer, value);
+    return true;
+  }
+  return false;
 }
 
 std::vector<std::string> PlanTTKernelABI::CollectBufferFlowIdentities(

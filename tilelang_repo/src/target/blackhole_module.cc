@@ -2751,6 +2751,12 @@ static bool HasPositiveShape(const std::vector<int64_t>& shape) {
          std::all_of(shape.begin(), shape.end(), [](int64_t value) { return value > 0; });
 }
 
+static bool HasShardedSourceBinding(const BufferDistributionSpec& plan) {
+  return !plan.source_buffer.empty() ||
+         (!plan.source_region_kind.empty() && plan.source_region_kind != "none") ||
+         !plan.source_region_shape.empty();
+}
+
 static std::string LowerAscii(std::string value) {
   std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
     return static_cast<char>(std::tolower(c));
@@ -2830,15 +2836,25 @@ static void ValidateExecutableSpecBufferDistributionPlans(const std::string& fun
       ICHECK(HasPositiveShape(plan.shard_grid_shape))
           << "Blackhole executable sharded buffer distribution for "
           << plan.buffer << " requires shard_grid_shape";
-      ICHECK(!plan.source_buffer.empty())
-          << "Blackhole executable sharded buffer distribution for "
-          << plan.buffer << " requires source_buffer";
-      ICHECK_EQ(plan.source_region_kind, "per_work_tile")
-          << "Blackhole executable sharded buffer distribution for "
-          << plan.buffer << " requires per_work_tile source_region_kind";
-      ICHECK(HasPositiveShape(plan.source_region_shape))
-          << "Blackhole executable sharded buffer distribution for "
-          << plan.buffer << " requires source_region_shape";
+      const bool has_source_binding = HasShardedSourceBinding(plan);
+      if (has_source_binding) {
+        ICHECK(!plan.source_buffer.empty())
+            << "Blackhole executable sharded buffer distribution for "
+            << plan.buffer << " source binding requires source_buffer";
+        ICHECK_EQ(plan.source_region_kind, "per_work_tile")
+            << "Blackhole executable sharded buffer distribution for "
+            << plan.buffer << " source binding requires per_work_tile source_region_kind";
+        ICHECK(HasPositiveShape(plan.source_region_shape))
+            << "Blackhole executable sharded buffer distribution for "
+            << plan.buffer << " source binding requires source_region_shape";
+      } else {
+        ICHECK(plan.source_region_kind.empty() || plan.source_region_kind == "none")
+            << "Blackhole executable pure-local sharded buffer distribution for "
+            << plan.buffer << " cannot carry source_region_kind without source_buffer";
+        ICHECK(plan.source_region_shape.empty())
+            << "Blackhole executable pure-local sharded buffer distribution for "
+            << plan.buffer << " cannot carry source_region_shape without source_buffer";
+      }
       ICHECK_EQ(plan.logical_index_mapping, "work_packet_row_major")
           << "Blackhole executable sharded buffer distribution for "
           << plan.buffer << " requires work_packet_row_major";

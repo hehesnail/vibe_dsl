@@ -317,6 +317,7 @@ using tir::LetStmt;
 using tir::Var;
 using tir::For;
 using tir::ForNode;
+using tir::IfThenElseNode;
 using tir::AttrStmt;
 using tir::AttrStmtNode;
 using tir::IterVar;
@@ -570,6 +571,16 @@ static void ValidateComputePipelineLegalityFromBody(const Stmt& body) {
 static bool HasComputeSegmentRequirement(const Stmt& body) {
   bool found = false;
   tir::PostOrderVisit(body, [&](const ObjectRef& node) {
+    if (const auto* attr = node.as<AttrStmtNode>()) {
+      if (attr->attr_key == "blackhole.segment_kind") {
+        if (const auto* kind = attr->value.as<StringImmNode>()) {
+          if (kind->value == "compute") {
+            found = true;
+          }
+        }
+      }
+      return;
+    }
     if (const auto* call = node.as<CallNode>()) {
       if (call->op->IsInstance<OpNode>() &&
           (Downcast<Op>(call->op)->name == "tl.tileop.gemm_py" ||
@@ -747,6 +758,10 @@ PrimFunc PlanTTKernelABI::SelectComputeBuiltins(const PrimFunc& func) {
   compute_physical_buffers_by_data_.clear();
   compute_physical_buffers_by_identity_.clear();
   host_buffer_by_compute_operand_buffer_.clear();
+  direct_copy_source_by_buffer_identity_.clear();
+  buffer_by_identity_.clear();
+  broadcast_cols_rhs_buffers_.clear();
+  broadcast_cols_source_buffers_.clear();
   selected_source_live_producer_buffers_.clear();
   seeded_cb_requirement_names_.clear();
   last_fragment_fill_value_by_buffer_identity_.clear();
@@ -757,6 +772,7 @@ PrimFunc PlanTTKernelABI::SelectComputeBuiltins(const PrimFunc& func) {
   thread_index_var_names_.clear();
   thread_index_var_static_extents_.clear();
   loop_var_static_extents_.clear();
+  active_serial_loop_vars_.clear();
   block_index_vars_.clear();
   block_index_var_names_.clear();
   requires_compute_segment_ = false;
@@ -768,6 +784,7 @@ PrimFunc PlanTTKernelABI::SelectComputeBuiltins(const PrimFunc& func) {
   tile_compute_dag_lowering_decisions_.clear();
   tile_compute_dag_lowering_decision_consumed_.clear();
   active_tile_compute_dag_lowering_decision_.reset();
+  tile_compute_input_buffers_.clear();
   select_compute_builtins_only_ = true;
 
   auto maybe_spatial_plan = func->GetAttr<SpatialPlan>(attr::kTLSpatialPlan);
@@ -783,6 +800,8 @@ PrimFunc PlanTTKernelABI::SelectComputeBuiltins(const PrimFunc& func) {
       BuildBufferMaterializationFactMap(
           lowering_support_facts.buffer_materialization_facts);
   LoadTileComputeDAGLoweringPlan(func);
+  LoadDirectCopySourceBindings(func);
+  RefreshBroadcastColsSourceBuffers();
 
   PrimFunc selected = func;
   selected.CopyOnWrite()->body = VisitStmt(func->body);
@@ -1009,6 +1028,10 @@ PrimFunc PlanTTKernelABI::Transform(const PrimFunc& func) {
   copy_input_buffer_name_.clear();
   copy_output_buffer_name_.clear();
   host_buffer_by_compute_operand_buffer_.clear();
+  direct_copy_source_by_buffer_identity_.clear();
+  buffer_by_identity_.clear();
+  broadcast_cols_rhs_buffers_.clear();
+  broadcast_cols_source_buffers_.clear();
   copy_input_shape_.clear();
   copy_output_shape_.clear();
   copy_intermediate_shape_.clear();
@@ -1016,6 +1039,7 @@ PrimFunc PlanTTKernelABI::Transform(const PrimFunc& func) {
   thread_index_var_names_.clear();
   thread_index_var_static_extents_.clear();
   loop_var_static_extents_.clear();
+  active_serial_loop_vars_.clear();
   block_index_vars_.clear();
   block_index_var_names_.clear();
   cb_consumed_compute_input_pages_by_buffer_identity_.clear();
@@ -1094,6 +1118,7 @@ PrimFunc PlanTTKernelABI::Transform(const PrimFunc& func) {
   tile_compute_dag_lowering_decisions_.clear();
   tile_compute_dag_lowering_decision_consumed_.clear();
   active_tile_compute_dag_lowering_decision_.reset();
+  tile_compute_input_buffers_.clear();
   logical_tile_layout_specs_by_buffer_.clear();
   spatial_materialization_boundaries_.clear();
   spatial_materialization_boundary_position_by_index_.clear();
@@ -1129,6 +1154,8 @@ PrimFunc PlanTTKernelABI::Transform(const PrimFunc& func) {
           lowering_support_facts.buffer_materialization_facts);
   LoadTileComputeDAGLoweringPlan(func);
   LoadBufferFlowFacts(lowering_support_facts);
+  LoadDirectCopySourceBindings(func);
+  RefreshBroadcastColsSourceBuffers();
   stmt_order_index_by_node_ = BuildExecutionOrderIndexByStmtNode(func->body);
   const std::vector<std::string> expected_unsupported_ops =
       CollectLeafUnsupportedComputeOpsFromBody(func->body);
@@ -1488,6 +1515,13 @@ static bool IsPureCopyLoopNest(const Stmt& stmt) {
   if (const auto* allocate = stmt.as<AllocateNode>()) {
     return IsPureCopyLoopNest(allocate->body);
   }
+  if (const auto* if_then_else = stmt.as<IfThenElseNode>()) {
+    if (!IsPureCopyLoopNest(if_then_else->then_case)) {
+      return false;
+    }
+    return !if_then_else->else_case.defined() ||
+           IsPureCopyLoopNest(if_then_else->else_case.value());
+  }
   if (const auto* seq = stmt.as<SeqStmtNode>()) {
     if (seq->seq.empty()) {
       return false;
@@ -1716,7 +1750,13 @@ Stmt PlanTTKernelABI::VisitStmt_(const AttrStmtNode* op) {
       block_index_vars_.insert(iv->var.get());
       block_index_var_names_.insert(iv->var->name_hint);
     }
+    if (!select_compute_builtins_only_ && zero_thread_var) {
+      active_serial_loop_vars_.push_back(iv->var);
+    }
     Stmt body = VisitStmt(op->body);
+    if (!select_compute_builtins_only_ && zero_thread_var) {
+      active_serial_loop_vars_.pop_back();
+    }
     if (zero_thread_var) {
       thread_index_vars_.erase(iv->var.get());
       thread_index_var_names_.erase(iv->var->name_hint);
@@ -2212,11 +2252,53 @@ Stmt PlanTTKernelABI::VisitStmt_(const SeqStmtNode* op) {
 Stmt PlanTTKernelABI::VisitStmt_(const ForNode* op) {
   const bool zero_loop_var = !op->thread_binding.defined();
   const Var transport_loop_var = zero_loop_var ? op->loop_var : Var();
+  if (select_compute_builtins_only_ && IsPureCopyLoopNest(op->body)) {
+    std::vector<Var> loop_stack;
+    std::vector<NestedCopyMatch> matches;
+    CollectNestedCopyStores(op->body, &loop_stack, &matches);
+    for (const NestedCopyMatch& match : matches) {
+      if (match.direction != CopyDirection::kCBToLocal || match.store == nullptr) {
+        continue;
+      }
+      const auto* load = match.store->value.as<BufferLoadNode>();
+      if (load == nullptr) {
+        continue;
+      }
+      const FutureBufferUses future_uses =
+          ClassifyFutureBufferUses(match.store->buffer, current_lowering_order_index_);
+      bool has_tile_compute_input_use = future_uses.has_compute_consume;
+      for (const std::string& identity : CollectBufferFlowIdentities(match.store->buffer)) {
+        if (tile_compute_input_buffers_.count(identity) != 0U) {
+          has_tile_compute_input_use = true;
+          break;
+        }
+      }
+      if (!has_tile_compute_input_use) {
+        continue;
+      }
+      const int src_cb_id = AllocateRequirementIndex(load->buffer, CBType::kIntermediate);
+      auto& req = cb_requirements_.at(src_cb_id);
+      req.lifetime_end = std::max(req.lifetime_end, next_requirement_index_);
+      RecordTiledCBLiveFormAliases(match.store->buffer, src_cb_id);
+    }
+  }
   if (!select_compute_builtins_only_ && IsPureCopyLoopNest(op->body)) {
     std::vector<Var> loop_stack;
     std::vector<NestedCopyMatch> matches;
     CollectNestedCopyStores(op->body, &loop_stack, &matches);
     if (!matches.empty()) {
+      if (matches.size() == 1U && matches[0].direction == CopyDirection::kDramToCB &&
+          IsBroadcastColsSourceBuffer(matches[0].store->buffer)) {
+        saw_copy_op_ = true;
+        std::vector<Var> loop_vars_to_zero;
+        if (transport_loop_var.defined()) {
+          loop_vars_to_zero.push_back(transport_loop_var);
+        }
+        loop_vars_to_zero.insert(loop_vars_to_zero.end(), matches[0].loop_vars.begin(),
+                                 matches[0].loop_vars.end());
+        return GenerateCopySequence(matches[0].store, loop_vars_to_zero);
+      }
+
       const NestedCopyMatch* dram_to_cb = nullptr;
       const NestedCopyMatch* cb_to_dram = nullptr;
       for (const auto& match : matches) {
@@ -2283,6 +2365,10 @@ Stmt PlanTTKernelABI::VisitStmt_(const ForNode* op) {
         return GenerateStagedCopyLoopSequence(nested_store, base_tile_index,
                                               loop_vars_to_zero);
       }
+      if (direction == CopyDirection::kCBToLocal) {
+        saw_copy_op_ = true;
+        return GenerateCopySequence(nested_store);
+      }
     }
     if (const auto* store = op->body.as<BufferStoreNode>()) {
       if (IsCopyOperation(store)) {
@@ -2291,6 +2377,10 @@ Stmt PlanTTKernelABI::VisitStmt_(const ForNode* op) {
           saw_copy_op_ = true;
           PrimExpr tile_index = InferCopyTileIndex(store, transport_loop_var);
           return GenerateCopySequence(store, tile_index);
+        }
+        if (direction == CopyDirection::kCBToLocal) {
+          saw_copy_op_ = true;
+          return GenerateCopySequence(store);
         }
       }
     }
@@ -2302,7 +2392,13 @@ Stmt PlanTTKernelABI::VisitStmt_(const ForNode* op) {
       return GenerateLocalToCBSliceLoopSequence(op, local_to_cb_match);
     }
   }
+  if (!select_compute_builtins_only_) {
+    active_serial_loop_vars_.push_back(op->loop_var);
+  }
   Stmt lowered = StmtExprMutator::VisitStmt_(op);
+  if (!select_compute_builtins_only_) {
+    active_serial_loop_vars_.pop_back();
+  }
   return lowered;
 }
 
@@ -2356,6 +2452,13 @@ Stmt PlanTTKernelABI::VisitStmt_(const EvaluateNode* op) {
     }
     if (call->op->IsInstance<OpNode>()) {
       const Op call_op = Downcast<Op>(call->op);
+      if (call_op.same_as(blackhole_cb_pop_front()) && call->args.size() >= 1) {
+        if (const auto* cb_id = call->args[0].as<IntImmNode>()) {
+          if (IsBroadcastColsSourceCBId(static_cast<int>(cb_id->value))) {
+            return Evaluate(IntImm32(0));
+          }
+        }
+      }
       if (call_op->name == "tl.blackhole.fill_fragment" && call->args.size() >= 3 &&
           IsFragmentFillValue(call->args[2])) {
         if (const auto* data = call->args[0].as<VarNode>()) {
@@ -2393,6 +2496,17 @@ Stmt PlanTTKernelABI::VisitStmt_(const EvaluateNode* op) {
 Stmt PlanTTKernelABI::VisitStmt_(const BufferStoreNode* op) {
   if (!select_compute_builtins_only_ && IsCopyOperation(op)) {
     saw_copy_op_ = true;
+    const CopyDirection direction = GetCopyDirection(op);
+    if (direction == CopyDirection::kDramToCB && IsBroadcastColsSourceBuffer(op->buffer) &&
+        !active_serial_loop_vars_.empty()) {
+      Stmt lowered = GenerateCopySequence(op, active_serial_loop_vars_);
+      PrimExpr condition;
+      for (const Var& loop_var : active_serial_loop_vars_) {
+        const PrimExpr is_zero = tir::EQ(loop_var, IntImm32(0));
+        condition = condition.defined() ? (condition && is_zero) : is_zero;
+      }
+      return tir::IfThenElse(condition, lowered);
+    }
     return GenerateCopySequence(op);
   }
   // Return original statement without recursion

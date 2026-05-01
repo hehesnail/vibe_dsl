@@ -865,6 +865,21 @@ void PlanTTKernelABI::LoadSeededComputeOpPlans(const PrimFunc &func) {
   }
   for (const TTComputeOpPlan &plan : staged_program.value()->compute_op_plans) {
     tt_compute_op_plans_.push_back(plan);
+    const std::string operation_name = plan->operation_name;
+    const bool is_broadcast_cols_op =
+        operation_name.find("_bcast_cols") != std::string::npos;
+    for (const TTComputeOperandBindingPlan &binding : plan->operand_bindings) {
+      const std::string role = binding->role;
+      const std::string buffer = binding->buffer;
+      if (buffer.empty() || role == "output" || role == "c") {
+        continue;
+      }
+      tile_compute_input_buffers_.insert(buffer);
+      if (is_broadcast_cols_op && role == "rhs" &&
+          static_cast<std::string>(binding->transform_kind) == "broadcast") {
+        broadcast_cols_rhs_buffers_.insert(buffer);
+      }
+    }
   }
 }
 
@@ -1000,7 +1015,8 @@ void PlanTTKernelABI::StoreAccessorDescriptors(PrimFunc &func) {
     if (page_bytes == nullptr) {
       return;
     }
-    if (op_name == "tl.blackhole.read_page_to_cb") {
+    if (op_name == "tl.blackhole.read_page_to_cb" ||
+        op_name == "tl.blackhole.read_bcast_cols_to_cb") {
       if (!copy_input_buffer_name_.empty()) {
         accessor_transport_page_sizes[copy_input_buffer_name_] =
             page_bytes->value;
@@ -1156,20 +1172,26 @@ void PlanTTKernelABI::StoreAccessorDescriptors(PrimFunc &func) {
       }
     }
     if (kind == "reader") {
+      const bool has_gemm_reader_contract =
+          !gemm_a_buffer_name_.empty() && !gemm_b_buffer_name_.empty();
       if (runtime_args_contain_kind("a_tile_start_id")) {
         upsert_spec(MakePerWorkArgSpec(
             "a_tile_start_id", runtime_arg_identity_for_kind("a_tile_start_id"),
             blackhole_runtime_arg_schema::kDescriptorTileStart,
-            blackhole_runtime_arg_schema::kValueSourceLogicalBlockY,
-            gemm_a_buffer_name_));
+            has_gemm_reader_contract
+                ? blackhole_runtime_arg_schema::kValueSourceLogicalBlockY
+                : blackhole_runtime_arg_schema::kValueSourceConstant,
+            gemm_a_buffer_name_, has_gemm_reader_contract ? 0 : 0));
       }
       if (runtime_args_contain_kind("a_tile_num_tiles")) {
         upsert_spec(MakePerWorkArgSpec(
             "a_tile_num_tiles",
             runtime_arg_identity_for_kind("a_tile_num_tiles"),
             blackhole_runtime_arg_schema::kDescriptorTileCount,
-            blackhole_runtime_arg_schema::kValueSourceComputeNumKTiles,
-            gemm_a_buffer_name_));
+            has_gemm_reader_contract
+                ? blackhole_runtime_arg_schema::kValueSourceComputeNumKTiles
+                : blackhole_runtime_arg_schema::kValueSourceConstant,
+            gemm_a_buffer_name_, has_gemm_reader_contract ? 0 : 1));
       }
       if (runtime_args_contain_kind("a_tile_stride")) {
         upsert_spec(MakePerWorkArgSpec(
@@ -1182,23 +1204,29 @@ void PlanTTKernelABI::StoreAccessorDescriptors(PrimFunc &func) {
         upsert_spec(MakePerWorkArgSpec(
             "b_tile_start_id", runtime_arg_identity_for_kind("b_tile_start_id"),
             blackhole_runtime_arg_schema::kDescriptorTileStart,
-            blackhole_runtime_arg_schema::kValueSourceLogicalBlockX,
-            gemm_b_buffer_name_));
+            has_gemm_reader_contract
+                ? blackhole_runtime_arg_schema::kValueSourceLogicalBlockX
+                : blackhole_runtime_arg_schema::kValueSourceConstant,
+            gemm_b_buffer_name_, has_gemm_reader_contract ? 0 : 0));
       }
       if (runtime_args_contain_kind("b_tile_num_tiles")) {
         upsert_spec(MakePerWorkArgSpec(
             "b_tile_num_tiles",
             runtime_arg_identity_for_kind("b_tile_num_tiles"),
             blackhole_runtime_arg_schema::kDescriptorTileCount,
-            blackhole_runtime_arg_schema::kValueSourceComputeNumKTiles,
-            gemm_b_buffer_name_));
+            has_gemm_reader_contract
+                ? blackhole_runtime_arg_schema::kValueSourceComputeNumKTiles
+                : blackhole_runtime_arg_schema::kValueSourceConstant,
+            gemm_b_buffer_name_, has_gemm_reader_contract ? 0 : 1));
       }
       if (runtime_args_contain_kind("b_tile_stride")) {
         upsert_spec(MakePerWorkArgSpec(
             "b_tile_stride", runtime_arg_identity_for_kind("b_tile_stride"),
             blackhole_runtime_arg_schema::kDescriptorTileStride,
-            blackhole_runtime_arg_schema::kValueSourceComputeLogicalNTiles,
-            gemm_b_buffer_name_));
+            has_gemm_reader_contract
+                ? blackhole_runtime_arg_schema::kValueSourceComputeLogicalNTiles
+                : blackhole_runtime_arg_schema::kValueSourceConstant,
+            gemm_b_buffer_name_, has_gemm_reader_contract ? 0 : 1));
       }
     }
     if (kind == "reader" || kind == "compute") {
@@ -1212,7 +1240,10 @@ void PlanTTKernelABI::StoreAccessorDescriptors(PrimFunc &func) {
         upsert_spec(MakePerWorkArgSpec(
             "num_k_tiles", runtime_arg_identity_for_kind("num_k_tiles"),
             blackhole_runtime_arg_schema::kDescriptorKTileCount,
-            blackhole_runtime_arg_schema::kValueSourceComputeNumKTiles));
+            !gemm_a_buffer_name_.empty()
+                ? blackhole_runtime_arg_schema::kValueSourceComputeNumKTiles
+                : blackhole_runtime_arg_schema::kValueSourceConstant,
+            "", !gemm_a_buffer_name_.empty() ? 0 : 1));
       }
     }
     if (kind == "writer") {

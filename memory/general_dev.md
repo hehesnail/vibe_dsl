@@ -1527,6 +1527,12 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   stale exact-output live-form aliases for the same logical buffer. Otherwise a
   later exact compute can wait on an old CB page that has already been popped
   after a typed materialization/republish event.
+- Broadcast-cols leaf RHS values should be reader-produced as a full-tile CB
+  page selected through the direct-copy source chain. Treat this as a
+  producer-live CB distinct from a borrowed-live CB: compute-side publish is
+  skipped because the reader already pushed the page, but the compute consumer
+  still owns the pop when the value is not borrowed from another compute
+  consumer.
 - Multi-block flash-attn direct runtime must stay gated until the online-softmax
   source-live-form and event lifetime contract is admitted. Compile/source/spec
   stability is independent from direct-runtime correctness; do not reopen the

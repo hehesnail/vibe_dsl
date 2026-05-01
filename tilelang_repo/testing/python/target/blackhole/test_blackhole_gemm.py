@@ -1911,6 +1911,8 @@ def test_blackhole_fragment_fill_cast_publish_runtime():
 
     reasons = _direct_runtime_unsupported_reasons(artifact)
     assert not any("thread-distributed cb_republish materialization" in reason for reason in reasons)
+    if reasons:
+        pytest.skip("Blackhole fragment fill/cast direct runtime gated: " + ", ".join(reasons))
     can_run, msg = check_blackhole_direct_execution_requirements()
     if not can_run:
         pytest.skip(f"Blackhole requirements not met: {msg}")

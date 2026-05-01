@@ -1056,6 +1056,18 @@ static std::vector<int64_t> ExtractIntegerVector(const ffi::Map<ffi::String, ffi
   return values;
 }
 
+static bool HasPositiveIntegerShape(const std::vector<int64_t>& shape) {
+  return !shape.empty() &&
+         std::all_of(shape.begin(), shape.end(),
+                     [](int64_t value) { return value > 0; });
+}
+
+static bool HasShardedSourceBinding(const BufferDistributionSpec& plan) {
+  return !plan.source_buffer.empty() ||
+         (!plan.source_region_kind.empty() && plan.source_region_kind != "none") ||
+         !plan.source_region_shape.empty();
+}
+
 static std::vector<BufferDistributionSpec> ExtractBufferDistributionPlans(
     const tir::PrimFunc& f) {
   std::vector<BufferDistributionSpec> plans;
@@ -1162,15 +1174,25 @@ static std::vector<BufferDistributionSpec> ExtractBufferDistributionPlans(
       ICHECK(!plan.shard_grid_shape.empty())
           << "Blackhole executable buffer_distribution_plans sharded buffer "
           << plan.buffer << " requires shard_grid_shape";
-      ICHECK(!plan.source_buffer.empty())
-          << "Blackhole executable buffer_distribution_plans sharded buffer "
-          << plan.buffer << " requires source_buffer";
-      ICHECK(!plan.source_region_kind.empty() && plan.source_region_kind != "none")
-          << "Blackhole executable buffer_distribution_plans sharded buffer "
-          << plan.buffer << " requires source_region_kind";
-      ICHECK(!plan.source_region_shape.empty())
-          << "Blackhole executable buffer_distribution_plans sharded buffer "
-          << plan.buffer << " requires source_region_shape";
+      const bool has_source_binding = HasShardedSourceBinding(plan);
+      if (has_source_binding) {
+        ICHECK(!plan.source_buffer.empty())
+            << "Blackhole executable buffer_distribution_plans sharded buffer "
+            << plan.buffer << " source binding requires source_buffer";
+        ICHECK(!plan.source_region_kind.empty() && plan.source_region_kind != "none")
+            << "Blackhole executable buffer_distribution_plans sharded buffer "
+            << plan.buffer << " source binding requires source_region_kind";
+        ICHECK(HasPositiveIntegerShape(plan.source_region_shape))
+            << "Blackhole executable buffer_distribution_plans sharded buffer "
+            << plan.buffer << " source binding requires positive source_region_shape";
+      } else {
+        ICHECK(plan.source_region_kind.empty() || plan.source_region_kind == "none")
+            << "Blackhole executable buffer_distribution_plans pure-local sharded buffer "
+            << plan.buffer << " cannot carry source_region_kind without source_buffer";
+        ICHECK(plan.source_region_shape.empty())
+            << "Blackhole executable buffer_distribution_plans pure-local sharded buffer "
+            << plan.buffer << " cannot carry source_region_shape without source_buffer";
+      }
       ICHECK(!plan.core_local_address_mapping.empty() &&
              plan.core_local_address_mapping != "none")
           << "Blackhole executable buffer_distribution_plans sharded buffer "
@@ -1716,7 +1738,8 @@ class SegmentBodyExtractor final : public tir::StmtMutator {
  private:
   static bool IsReaderAnchor(const tir::CallNode* op) {
     return op->op.same_as(tir::builtin::blackhole_read_tile_to_cb()) ||
-           op->op.same_as(tir::builtin::blackhole_read_page_to_cb());
+           op->op.same_as(tir::builtin::blackhole_read_page_to_cb()) ||
+           op->op.same_as(tir::builtin::blackhole_read_bcast_cols_to_cb());
   }
 
   static bool IsWriterAnchor(const tir::CallNode* op) {
@@ -2698,6 +2721,38 @@ static std::unordered_set<std::string> CollectRuntimeBoundBufferNames(
   return names;
 }
 
+static void EnforceStandalonePacrLeafSimulatorGate(ExecutableSpec* spec) {
+  ICHECK(spec != nullptr);
+  bool has_reduce = false;
+  bool has_fill_typecast_publish = false;
+  bool has_gemm = false;
+  for (const KernelSpec& kernel : spec->kernels) {
+    for (const KernelComputeOpSpec& compute_op : kernel.compute_ops) {
+      if (!compute_op.enabled) {
+        continue;
+      }
+      has_gemm = has_gemm || compute_op.kind == "gemm";
+      has_reduce = has_reduce || compute_op.kind == "reduce" ||
+                   compute_op.operation_name == "reduce_tile";
+      has_fill_typecast_publish =
+          has_fill_typecast_publish || compute_op.operation_name == "fill_tile" ||
+          compute_op.operation_name == "typecast_tile";
+    }
+  }
+  if (has_reduce && !has_gemm) {
+    AppendDirectRuntimeUnsupportedReason(
+        spec,
+        "standalone reduce_tile leaf direct runtime is gated: TT-Sim reports "
+        "tensix_execute_pacr unsupported for bf16 row reduction");
+  }
+  if (has_fill_typecast_publish && !has_gemm) {
+    AppendDirectRuntimeUnsupportedReason(
+        spec,
+        "standalone fill/typecast publish direct runtime is gated: TT-Sim reports "
+        "tensix_execute_pacr unsupported for compute-only pack publish");
+  }
+}
+
 static const BufferDistributionSpec* FindBufferDistributionSpec(
     const ExecutableSpec& spec, const std::string& buffer_name) {
   auto it = std::find_if(
@@ -2779,6 +2834,9 @@ static void EnforceBufferDistributionAddressContractGate(ExecutableSpec* spec) {
 
   for (const auto& plan : spec->buffer_distribution_plans) {
     if (plan.distribution_kind != "sharded") {
+      continue;
+    }
+    if (!HasShardedSourceBinding(plan)) {
       continue;
     }
     if (plan.source_buffer.empty() || plan.source_region_kind != "per_work_tile" ||
@@ -3241,6 +3299,7 @@ ffi::Module BuildTileLangBlackhole(IRModule mod, Target target) {
     EnforceExactLiveFormMultiPageRepublishGate(&spec_it->second);
     EnforceMultiBlockExactCBRepublishGate(&spec_it->second);
     EnforceExplicitBufferRoleSchemaGate(&spec_it->second);
+    EnforceStandalonePacrLeafSimulatorGate(&spec_it->second);
   }
   for (const auto& kv : host_to_device) {
     auto host_it = func_info_map.find(kv.first);
@@ -3340,6 +3399,7 @@ ffi::Module BuildTileLangBlackholeWithoutHost(IRModule mod, Target target) {
     EnforceExactLiveFormMultiPageRepublishGate(&spec_it->second);
     EnforceMultiBlockExactCBRepublishGate(&spec_it->second);
     EnforceExplicitBufferRoleSchemaGate(&spec_it->second);
+    EnforceStandalonePacrLeafSimulatorGate(&spec_it->second);
   }
   for (const auto& kv : host_to_device) {
     auto host_it = func_info_map.find(kv.first);

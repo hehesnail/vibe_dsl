@@ -1841,6 +1841,63 @@
     新 page size 必须跑 TT-Sim correctness；
     simulator fatal 不能被记录成普通 unsupported reason 后继续执行。
 
+#### broadcast-cols rank-1 RHS 不能用 scalar NOC 读散写 tile 位置
+
+- **症状**:
+  - standalone `add_tiles_bcast_cols` / `mul_tiles_bcast_cols`
+    direct runtime 若按每个 bf16 标量直接 NOC 读到 tile 第一列位置，
+    TT-Sim 会报 NOC address alignment mismatch。
+- **根因**:
+  - 当前 NOC transfer path 需要源地址和 L1 目标地址的对齐关系稳定；
+    rank-1 bf16 scalar/short page 直接散写到 tile layout 的 first-column
+    element address 不是 admitted transfer granularity。
+- **修法**:
+  - reader 先把 rank-1 RHS 作为一个对齐 page 读到目标 CB tile 尾部
+    scratch 区，再在 BRISC 本地清零 tile 并 scatter 到 first-column
+    nfaces 位置，最后清掉 scratch 区。
+- **教训**:
+  - broadcast 语义可以是列向量，但 runtime transport 仍必须选择硬件
+    transfer 合法的 page 粒度；不要把 scalar shape 直接等同于 NOC
+    transaction shape。
+
+#### broadcast-cols reader source copy 不能在 vector/thread loop 内重复 publish
+
+- **症状**:
+  - broadcast-cols standalone leaf direct runtime 在 reader 阶段挂住；
+    source copy 位于 `tx < 32` 这类 vector/thread loop 中时，
+    reader 会对同一个 RHS CB page reserve/push 多次，而 compute 只消费
+    一次。
+- **根因**:
+  - rank-1 RHS materialization 是一次 per-work tile source event，不是每个
+    vector lane / thread lane 的独立 transport event。
+- **修法**:
+  - 对 broadcast-cols source copy 使用当前 loop/thread guard，只在所有
+    active lane var 为 0 时执行 reader-side materialization。
+- **教训**:
+  - 把 scalar/vector source loop lower 成 CB publication 时，必须重新确认
+    publication event 的粒度；CB event 粒度错了会表现为 runtime hang，
+    不是数值错误。
+
+#### standalone reduce/fill/typecast publish 的 TT-Sim `pacr` 边界要 typed gate
+
+- **症状**:
+  - standalone `reduce_tile` bf16 direct runtime 命中
+    `UnimplementedFunctionality: tensix_execute_pacr: count=1`。
+  - standalone compute-only `fill_tile` / `typecast_tile` publish 也会命中
+    同类 TT-Sim pack/publish capability boundary 或输出不可靠。
+- **根因**:
+  - 这些 standalone leaf forms 已有结构/source/spec 投影，但当前 TT-Sim
+    对对应 compute-only PACR 路径未覆盖；这不是让后端恢复名字或
+    fallback source path 的理由。
+- **修法**:
+  - 保留 typed leaf records，并在 `ExecutableSpec` direct-runtime reasons
+    中对 standalone reduce 和 standalone fill/typecast publish fail closed。
+    不把 GEMM/flash-attn 内已经 admitted 的 compute chain 全局 gate 掉。
+- **教训**:
+  - simulator capability boundary 应写成 queryable typed unsupported reason；
+    不要把它伪装成 semantic unsupported，也不要为绕过它新增旧 matcher /
+    runtime guessing path。
+
 ## 3. 环境问题速查
 
 | 问题 | 解决 |
