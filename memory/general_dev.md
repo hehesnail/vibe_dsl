@@ -240,6 +240,30 @@
   `TTPlacementResolutionPlan`
   和
   `TTReshardPlan`。
+  Frontend 上不要把
+  `T.annotate_layout`、
+  `scope`
+  或
+  `T.Kernel`
+  解释成 sharding API：
+  `annotate_layout`
+  只表达 buffer index layout /
+  local transform，
+  `scope`
+  只表达 storage class，
+  `T.Kernel`
+  只表达 logical work-item grid。
+  真实用户入口应是 TTNN 对齐的
+  `T.MemoryConfig`
+  /
+  `T.ShardSpec`
+  /
+  `T.NDShardSpec`
+  和
+  `T.annotate_memory_config`
+  这类显式 memory-config intent，
+  再 lowering 到
+  `SpatialPlan.TensorPlacementIntent`。
   但 baseline correctness
   必须尊重前端形状并做 capacity gate。
   想利用更多 L1

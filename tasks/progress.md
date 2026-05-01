@@ -82,9 +82,13 @@
   gives them a direct TT-Metal accessor ABI.
 - Full tensor/value sharding is now recorded as a separate design lane in
   `tasks/dev_design/2026-05-02-blackhole-tensor-sharding-and-reshard.md`.
-  The current implementation does not yet model user/DSL sharding intent,
-  per-op sharding contracts, producer/consumer placement conflicts, or
-  explicit reshard insertion.
+  The design now includes the user-facing DSL/API surface:
+  `T.MemoryConfig`, `T.ShardSpec`, `T.NDShardSpec`,
+  `T.annotate_memory_config`, and constructor sugar that lowers to the same
+  placement intent.
+  The current implementation does not yet expose that DSL, lower it to
+  `TensorPlacementIntent`, model per-op sharding contracts, resolve
+  producer/consumer placement conflicts, or insert explicit reshard plans.
 
 ## Completed Task: T1 Buffer Address ABI 接入执行路径
 
@@ -162,6 +166,7 @@ Sharded GEMM/layout claims inside T2 and production sharding claims inside T7
 must additionally depend on the tensor/value sharding and explicit reshard
 design lane:
 
+- DSL / user placement intent capture,
 - `TTTensorMemoryConfigPlan`,
 - `TTOpShardingContract`,
 - placement conflict validation,
