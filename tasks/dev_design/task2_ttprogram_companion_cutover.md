@@ -114,7 +114,8 @@ Represents buffer distribution and placement class:
 - host visibility
 - attached core range when relevant
 
-This is the current active expansion point.
+This is the current active expansion point for low-level placement and
+address ABI.
 
 `shard_shape`
 means the per-core tensor data shape in the durable contract.
@@ -144,6 +145,12 @@ and `source_region_shape`
 are not TT-Metal `ShardSpec` fields.
 They are TileLang runtime materialization ABI fields that explain how a
 resident L1 working view is filled from a DRAM/global source.
+
+This object is a low-level buffer distribution / address ABI contract.
+It is not the complete tensor/value sharding model.
+User or op sharding intent, per-value placement resolution, and explicit
+reshard insertion are covered by
+`2026-05-02-blackhole-tensor-sharding-and-reshard.md`.
 
 GPU-style
 `alloc_shared`

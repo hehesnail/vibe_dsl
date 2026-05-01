@@ -1,0 +1,679 @@
+# Blackhole Tensor Sharding And Reshard Design
+
+## Role
+
+This document defines the task-level design for real tensor/value sharding
+and reshard support in the Blackhole backend.
+
+It is not a second overall design document.
+The overall chain remains:
+
+```text
+Normalized Tile TIR
+  -> SpatialPlan
+  -> TTProgram
+  -> ExecutableSpec
+```
+
+Current implementation status still lives in `tasks/progress.md`.
+
+## Problem
+
+The current Blackhole implementation has a `TTBufferDistributionPlan`.
+That object is useful, but it is not a complete sharding model.
+
+The current implementation mostly derives low-level buffer distribution from:
+
+- `SpatialPlan.LayoutSpec.scope`
+- local / shared / global buffer class
+- the selected `TTCoreGroup`
+- CB-backed or staged-copy address requirements
+
+That is enough for the current direct-runtime address ABI:
+
+- interleaved DRAM runtime buffers
+- staged-copy resident L1 / CB-backed views
+- page-indexed address contracts
+
+It is not enough for real tensor sharding.
+
+Real sharding must answer all of these questions:
+
+- which logical tensor or value is sharded
+- which tensor dimensions are partitioned
+- which mesh / core grid owns the shards
+- what per-shard tensor shape is used
+- what memory space and buffer type hold the shards
+- which operation requires which input and output placements
+- what happens when a producer placement conflicts with a consumer placement
+- whether an explicit reshard / layout conversion is required
+
+The current one-buffer-one-distribution plan cannot represent this whole
+problem.
+
+## TT-Metal Ground Truth
+
+The design must match TT-Metal / TTNN behavior instead of inventing a
+TileLang-only abstraction.
+
+### MemoryConfig Is The Tensor Placement Contract
+
+TTNN represents tensor memory placement through `MemoryConfig`.
+The relevant fields are:
+
+- `TensorMemoryLayout`
+- `BufferType`
+- optional `ShardSpec`
+- optional `NdShardSpec`
+
+For legacy 2D sharding, `ShardSpec` carries:
+
+- `CoreRangeSet grid`
+- per-core tensor `shape`
+- `ShardOrientation`
+
+For newer generalized sharding, `NdShardSpec` carries:
+
+- N-D `shard_shape`
+- `CoreRangeSet grid`
+- `ShardOrientation`
+- `ShardDistributionStrategy`
+
+`height`, `width`, and `block` are tensor memory-layout strategies.
+`row_major` and `col_major` are core traversal orientations.
+They are separate concepts.
+
+### Callers Set Target Sharding
+
+In TTNN, sharding is normally set by the caller, model config, or op wrapper.
+Examples:
+
+- `ttnn.create_sharded_memory_config(...)` builds a sharded `MemoryConfig`
+  from a shape, core grid, strategy, and orientation.
+- Models directly construct
+  `MemoryConfig(TensorMemoryLayout::WIDTH_SHARDED, BufferType::DRAM,
+  ShardSpec(...))`
+  for DRAM-sharded weights.
+- Raw TT-Metal examples build `ShardSpecBuffer` and pass
+  `BufferShardingArgs` into buffer creation.
+
+The convenience helper's L1 note is not a system-wide restriction.
+TTNN models and tests also construct DRAM-sharded tensors directly through
+`MemoryConfig(..., BufferType::DRAM, ShardSpec(...))`.
+
+The program factory does not recover sharding from names.
+It consumes the tensor or output tensor's already-selected memory config.
+
+### Conversion Is Explicit
+
+TTNN uses explicit conversion operations:
+
+- `to_memory_config`
+- `interleaved_to_sharded`
+- `sharded_to_interleaved`
+- `reshard`
+
+`to_memory_config` takes a target `MemoryConfig`.
+If the current tensor and target config differ, it dispatches to the needed
+conversion path.
+
+This is the key rule TileLang must adopt:
+
+> Sharding conflicts are not silently solved by runtime recovery.
+> They are explicit placement-conversion edges or typed rejects.
+
+### Program Factories Consume Sharding
+
+Program factories and kernels use the already materialized tensor/buffer
+sharding:
+
+- they read `tensor.memory_config().memory_layout()`
+- they read `tensor.shard_spec()`
+- they read buffer `ShardSpecBuffer` / distribution specs
+- they validate supported combinations
+- they select runtime args, address generators, and compute grids
+
+They do not decide the semantic tensor sharding from source text, buffer
+names, or argument order.
+
+### Repo Evidence
+
+The design above is based on these local TT-Metal / TTNN surfaces:
+
+- `ttnn/ttnn/core.py`:
+  `create_sharded_memory_config` maps caller-provided shape, grid, strategy,
+  and orientation to `MemoryConfig`.
+- `tt_metal/api/tt-metalium/experimental/tensor/spec/memory_config/memory_config.hpp`:
+  `MemoryConfig` owns memory layout, buffer type, `ShardSpec`, and
+  `NdShardSpec`.
+- `tt_metal/api/tt-metalium/buffer.hpp`:
+  `ShardSpec`, `ShardSpecBuffer`, `ShardedBufferConfig`, and
+  `BufferShardingArgs` are the low-level buffer materialization surface.
+- `tt_metal/impl/tensor/spec/layout/tensor_layout.cpp`:
+  `TensorLayout::compute_buffer_sharding_args` materializes a sharded
+  `MemoryConfig` into buffer sharding args and distribution specs.
+- `ttnn/cpp/ttnn/operations/core/to_memory_config/to_memory_config_op.hpp`:
+  `to_memory_config` dispatches explicit target-placement conversions.
+- `ttnn/cpp/ttnn/operations/data_movement/sharded/interleaved_to_sharded`
+  and `reshard`:
+  device ops validate and consume caller-provided output memory configs.
+- `ttnn/cpp/ttnn/operations/matmul/device/config/matmul_program_config.cpp`:
+  matmul derives program config from already-sharded inputs / requested
+  output placement.
+- `models/tt_transformers/tt/model_config.py`,
+  `models/tt_transformers/tt/prefetcher.py`,
+  and related tests:
+  production-style model code constructs and requires DRAM-sharded weights.
+- `tt_metal/programming_examples/vecadd_sharding/vecadd_sharding.cpp`:
+  raw TT-Metal constructs `ShardSpecBuffer` and `BufferShardingArgs`
+  explicitly.
+
+The corresponding current TileLang surfaces are:
+
+- `src/transform/common/spatial_plan.h`:
+  `LayoutSpec` carries target-independent subject / scope /
+  distribution-kind evidence, not TT sharding.
+- `src/transform/build_spatial_plan.cc`:
+  current `distribution_kind` is derived mainly from buffer scope.
+- `src/transform/common/tt_target_program.h`:
+  `TTBufferDistributionPlan` carries low-level buffer distribution and
+  address ABI fields.
+- `src/transform/build_tt_program.cc`:
+  current sharded L1 distribution is derived from `LayoutSpec`,
+  `TTCoreGroup`, CB/materialization facts, and source-buffer evidence.
+- `src/transform/validate_tt_program.cc`,
+  `src/target/blackhole_module.cc`,
+  and `src/target/rt_mod_blackhole.cc`:
+  validators and runtime admission consume the projected buffer distribution
+  address contract.
+
+## Current TileLang State
+
+### SpatialPlan
+
+`LayoutSpec` currently carries:
+
+- subject
+- scope
+- distribution kind
+- logical and local tile layout fields when recoverable
+- execution-unit association
+
+It does not carry a real tensor sharding intent.
+`distribution_kind = shared_visible` means a target-independent visibility
+class.
+It does not mean "this tensor is width-sharded" or "this operation requires a
+specific shard shape".
+
+### TTProgram
+
+`TTBufferDistributionPlan` currently carries physical buffer placement and
+address ABI fields:
+
+- distribution kind
+- layout
+- memory space
+- page size
+- shard grid shape
+- sharding strategy
+- shard orientation
+- per-core shard shape
+- source buffer / source region binding
+- logical-index mapping
+- core-local address mapping
+
+This is the right object for low-level buffer placement.
+It is not the right owner for user intent, op-level placement requirements,
+or producer/consumer sharding conflicts.
+
+The current staged-copy path should be reinterpreted as:
+
+```text
+interleaved DRAM source tensor
+  -> explicit materialization / conversion edge
+  -> resident L1 sharded working view
+```
+
+It should not be described as proof that TileLang has complete tensor
+sharding.
+
+### ExecutableSpec / Runtime
+
+`ExecutableSpec` currently projects buffer distribution fields as a runtime
+address contract.
+
+That is correct for leaf consumption.
+The runtime must continue to consume final typed placement and conversion
+records only.
+It must not become the place that infers missing sharding.
+
+## Design Goals
+
+- Represent user/model/op tensor sharding intent explicitly.
+- Keep tensor/value placement separate from low-level buffer distribution.
+- Represent per-op sharding contracts before physical source/runtime
+  emission.
+- Detect producer/consumer placement conflicts before codegen/runtime.
+- Insert explicit reshard/materialization plans when a supported conversion
+  exists.
+- Fail closed with typed diagnostics when a conversion or placement is not
+  admitted.
+- Preserve TT-Metal terminology and semantics.
+- Allow DRAM-sharded tensors and L1-sharded tensors as separate placements.
+- Keep runtime/codegen as consumers of `ExecutableSpec`, not planners.
+
+## Non-Goals
+
+- No runtime-side sharding inference.
+- No buffer-name based sharding roles.
+- No assumption that every sharded tensor is L1.
+- No assumption that one buffer has one placement for the entire program.
+- No silent retile or work coarsening to make a placement fit.
+- No claim of distributed production support before mesh / CCL / NoC plans
+  exist.
+
+## Representation Design
+
+### SpatialPlan: TensorPlacementIntent
+
+`SpatialPlan` needs a `TensorPlacementIntent` object for target-independent
+logical placement intent.
+
+Required fields:
+
+- logical subject identity
+- logical value/version identity when the placement is value-specific
+- source of intent:
+  `user`,
+  `op_contract`,
+  `derived_default`,
+  or
+  `materialization_requirement`
+- logical tensor rank and shape evidence
+- partitioned tensor dimensions
+- replicated dimensions
+- virtual mesh axes or logical device axes
+- allowed memory-space class:
+  `DRAM`,
+  `L1`,
+  or
+  `either`
+- allowed strategy class:
+  `interleaved`,
+  `height_sharded`,
+  `width_sharded`,
+  `block_sharded`,
+  or
+  `nd_sharded`
+- whether reshard is allowed at consumer boundaries
+- anchors / access-region evidence
+
+This layer must not contain TT physical core coordinates.
+It may carry validated user hints, but only after they are checked against
+current TIR shape and access evidence.
+
+Default behavior must be explicit:
+
+- external global tensors default to interleaved DRAM unless the user or op
+  contract states otherwise
+- local fragment / accumulator values default to local live forms
+- shared / CB-backed views default to a local materialization requirement,
+  not a global tensor sharding intent
+
+### TTProgram: TTTensorMemoryConfigPlan
+
+`TTProgram` needs `TTTensorMemoryConfigPlan`, a concrete plan that mirrors
+TT-Metal's `MemoryConfig` model.
+
+Required fields:
+
+- logical value or tensor identity
+- logical shape
+- dtype / layout evidence
+- memory layout:
+  `INTERLEAVED`,
+  `HEIGHT_SHARDED`,
+  `WIDTH_SHARDED`,
+  `BLOCK_SHARDED`,
+  or
+  `ND_SHARDED`
+- buffer type:
+  `DRAM`,
+  `L1`,
+  or an explicitly admitted variant
+- grid:
+  concrete `TTCoreGroup` reference or DRAM grid reference
+- shard shape
+- shard orientation
+- shard distribution strategy for N-D sharding
+- page shape / tile layout evidence when needed by buffer materialization
+- origin:
+  user intent,
+  op requirement,
+  default,
+  or
+  conversion result
+
+This object is the TileLang analogue of TTNN `MemoryConfig + ShardSpec`.
+`TTBufferDistributionPlan` should be derived from it where a concrete buffer
+must be allocated or addressed.
+
+### TTProgram: TTOpShardingContract
+
+Every TT leaf or higher-level admitted op family that cares about placement
+needs a `TTOpShardingContract`.
+
+Required contract fields:
+
+- operation identity
+- operand role
+- accepted input memory layouts
+- accepted buffer types
+- required shard-rank / strategy / orientation constraints
+- output placement policy:
+  inherit input,
+  caller-specified,
+  op-selected,
+  or
+  interleaved default
+- whether the op may request an input conversion
+- whether the output can be produced directly in the requested placement
+- typed reject reasons for unsupported combinations
+
+For example:
+
+- a simple elementwise leaf may accept matching input placements and produce
+  the same output placement
+- a matmul variant may require `input_a` and output to share a layout in some
+  sharded configurations
+- a DRAM-streaming matmul may accept DRAM-sharded weights but not arbitrary
+  L1 sharding
+- a staged shared-memory tile load may require an interleaved DRAM source and
+  produce a resident L1 sharded working view
+
+The contract belongs in planning.
+It must not be reconstructed in source hooks.
+
+### TTProgram: TTPlacementResolutionPlan
+
+Planning needs a placement-resolution pass over a value/use graph.
+Its durable output is `TTPlacementResolutionPlan`.
+
+Inputs:
+
+- `SpatialPlan.TensorPlacementIntent`
+- access-region evidence
+- live-value edges
+- `TTOpShardingContract`
+- hardware model facts
+- current live-form / materialization plans
+
+Outputs:
+
+- `TTTensorMemoryConfigPlan`
+- selected placement per logical value version and per op result
+- selected placement per consumer use when a use requires conversion
+- typed conflicts
+- required conversion edges
+
+Conflict handling must be deterministic:
+
+1. If producer and all consumers accept one placement, select it.
+2. If a user-specified placement exists and is legal, preserve it.
+3. If a consumer requires a different placement and conversion is admitted,
+   insert a conversion edge.
+4. If multiple consumers require incompatible placements, either clone through
+   explicit conversions or choose a common materialized placement only when
+   every consumer contract accepts it.
+5. If none of those are possible, emit a typed reject naming the producer,
+   consumer, source placement, target placement, and missing conversion.
+
+### TTProgram: TTReshardPlan
+
+Resharding must be represented by `TTReshardPlan`.
+It is not a side effect of buffer distribution.
+
+Required fields:
+
+- source logical value
+- target logical value or materialized view
+- source tensor-memory-config plan
+- target tensor-memory-config plan
+- conversion kind:
+  `interleaved_to_sharded`,
+  `sharded_to_interleaved`,
+  `reshard`,
+  `dram_sharded_to_l1_sharded`,
+  or
+  `unsupported`
+- source and target access regions
+- materialization protocol
+- transport plan references
+- CB / semaphore / sync requirements when required
+- whether conversion is compile-time, load-time, or runtime
+- typed admission reason if not supported
+
+The current DRAM-to-resident-L1 staged copy can become the first admitted
+conversion class.
+Later conversion classes can follow TTNN's split:
+
+- interleaved to sharded
+- sharded to interleaved
+- sharded to sharded
+- DRAM-sharded weight streaming
+
+### TTBufferDistributionPlan: Low-Level Buffer Placement
+
+`TTBufferDistributionPlan` remains useful, but its role must be narrowed:
+
+- allocate or address a concrete buffer
+- describe physical memory space and page size
+- describe core-local layout for resident buffers
+- carry source-region ABI only for materialized views
+- project into `ExecutableSpec` as a leaf address contract
+
+It must not be the owner of:
+
+- user sharding intent
+- op sharding requirements
+- placement conflict resolution
+- reshard insertion
+
+For compatibility with TT-Metal, when it represents a sharded buffer it must
+be derivable from a concrete tensor-memory-config plan:
+
+```text
+Tensor memory layout  -> sharding_strategy
+ShardSpec.grid        -> shard_grid_shape / attached grid
+ShardSpec.shape       -> shard_shape
+ShardSpec.orientation -> shard_orientation
+BufferType            -> memory_space / buffer type
+```
+
+### ExecutableSpec
+
+`ExecutableSpec` must project:
+
+- concrete tensor-memory-config records needed by leaf consumers
+- buffer distribution records
+- reshard / conversion records
+- materialization records
+- typed admission results
+
+Direct runtime can reject a projected conversion kind that it cannot execute,
+but it must reject from the explicit conversion record.
+It must not infer the conversion from source text or buffer names.
+
+## Validation Contract
+
+### SpatialPlan Validation
+
+Reject:
+
+- sharding intent without subject or logical value identity
+- partition dimensions outside tensor rank
+- shard / replicate dimensions that overlap illegally
+- user sharding hints that cannot be validated against shape/access evidence
+- target-specific physical coordinates in `SpatialPlan`
+- layout specs that imply TT-specific sharding through names or scopes
+
+### TTProgram Validation
+
+Reject:
+
+- sharded tensor-memory-config plan without grid, shard shape, strategy, and
+  orientation
+- strategy / orientation conflation
+- op placement not accepted by its sharding contract
+- producer/consumer placement conflict without an admitted conversion plan
+- conversion plan whose source and target configs are identical
+- conversion plan missing source/target value identity
+- DRAM-sharded placement routed through L1-only assumptions
+- low-level `TTBufferDistributionPlan` that cannot be traced to a resolved
+  tensor-memory-config plan or an explicitly local scratch/materialization
+  requirement
+
+### ExecutableSpec Validation
+
+Reject:
+
+- missing concrete placement records needed by kernels or accessors
+- conversion records with unsupported or incomplete source/target configs
+- buffer distributions whose sharding fields disagree with resolved tensor
+  memory configs
+- runtime-bound buffers whose distribution is not admitted by direct runtime
+- fallback source-region recovery from names, arguments, or source text
+
+## Implementation Order
+
+### S1: Document And Rename The Current Boundary
+
+Clarify in docs and tests that current `TTBufferDistributionPlan` is a
+buffer placement / address ABI object.
+It is not the full tensor sharding model.
+
+No behavior change.
+
+### S2: Add TTTensorMemoryConfigPlan
+
+Add the TTProgram-level typed object that mirrors TT-Metal
+`MemoryConfig + ShardSpec / NdShardSpec`.
+
+Initially project only the already-admitted placements:
+
+- interleaved DRAM external buffers
+- resident L1 staged-copy views
+- device-local replicated local buffers
+
+Validators should ensure existing `TTBufferDistributionPlan` records are
+consistent with these new plans.
+
+### S3: Capture User / DSL Sharding Intent
+
+Add a validated way for user-facing TileLang or target hints to express:
+
+- tensor subject
+- strategy
+- dimensions
+- memory space preference
+- grid / mesh binding
+- orientation
+- whether reshard is allowed
+
+The hint must enter `SpatialPlan` only after validation.
+
+If the current DSL cannot express the needed intent, extend the DSL or reject.
+Do not infer intent from buffer names.
+
+### S4: Add TTOpShardingContract
+
+Start with op families that are already relevant:
+
+- copy / staged load
+- leaf elementwise
+- reduction
+- matmul / GEMM variants
+
+Each contract should state accepted input placements and output policies.
+
+This is where different compute requirements become explicit.
+For example, two consumers of the same producer may require different shard
+dimensions; the planner must see that before source emission.
+
+### S5: Add TTPlacementResolutionPlan And Typed Conflict Rejects
+
+Build the value/use placement-resolution pass.
+
+First completion target:
+
+- no automatic reshard insertion yet
+- conflicts fail closed with precise producer / consumer / placement
+  diagnostics
+
+This immediately prevents silent wrong placement.
+
+### S6: Add First TTReshardPlan Conversion Paths
+
+Admit explicit conversion plans in this order:
+
+1. interleaved DRAM to resident L1 sharded view,
+   matching the existing staged-copy path
+2. sharded L1 view to interleaved DRAM output when needed by external ABI
+3. L1 sharded to L1 sharded when source and target shard shapes differ
+4. DRAM sharded to L1 sharded for weight / prefetcher-style paths
+
+Each conversion needs source/spec/direct-runtime or codegen admission.
+Unsupported conversions must be typed rejects.
+
+### S7: Extend Runtime And Codegen Consumption
+
+Runtime and codegen consume projected conversion records.
+
+They may select a concrete leaf implementation or reject unsupported
+conversion kinds.
+They may not recover missing placement from lower-level source structure.
+
+### S8: DRAM Sharded And N-D Sharding
+
+After 2D L1 conversion paths are stable, add:
+
+- DRAM sharded tensor configs
+- DRAM sharded matmul / weight streaming contracts
+- `NdShardSpec`-style N-D sharding
+- distributed mesh / CCL production variants
+
+This belongs before claiming production distributed sharding support.
+
+## Relation To Current Task Queue
+
+T2 leaf compute / GEMM work can continue for interleaved or already-admitted
+placements.
+
+Any T2 item that claims sharded GEMM/layout support must depend on:
+
+- `TTTensorMemoryConfigPlan`
+- `TTOpShardingContract`
+- placement conflict validation
+- `TTReshardPlan` or typed rejects
+
+T7 distributed production variants depend on this design before they can
+claim sharding support.
+Mesh / CCL / NoC plans are not enough by themselves if tensor sharding and
+reshard conflicts are still implicit.
+
+## Completion Criteria
+
+This design is implemented only when:
+
+- user or op sharding intent is explicit before TT planning
+- TTProgram contains `TTTensorMemoryConfigPlan`
+- `TTOpShardingContract` drives placement decisions
+- producer/consumer placement conflicts are either converted or typed
+  rejected
+- reshard/materialization is represented by `TTReshardPlan`
+- `TTBufferDistributionPlan` is derived low-level placement, not sharding
+  owner truth
+- ExecutableSpec projects placement and conversion records
+- runtime/codegen consume records or fail closed
+- tests cover at least one incompatible producer/consumer sharding case
+- tests cover at least one admitted explicit reshard/conversion case

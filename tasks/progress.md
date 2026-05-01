@@ -36,6 +36,8 @@
   interleaved DRAM,
   attached-core sharded L1 for shared / CB-backed views,
   and device-local replicated placement for ordinary per-worker local L1.
+  This is a low-level buffer placement / address ABI contract, not the full
+  tensor/value sharding and reshard model.
 - Sharded L1 placement has typed address ABI fields:
   `shard_grid_shape`,
   `sharding_strategy`,
@@ -78,6 +80,11 @@
   `sharded_accessor_cta` and `page_indexed_accessor_cta` remain fail-closed
   for external compile-time accessor materialization until a later task
   gives them a direct TT-Metal accessor ABI.
+- Full tensor/value sharding is now recorded as a separate design lane in
+  `tasks/dev_design/2026-05-02-blackhole-tensor-sharding-and-reshard.md`.
+  The current implementation does not yet model user/DSL sharding intent,
+  per-op sharding contracts, producer/consumer placement conflicts, or
+  explicit reshard insertion.
 
 ## Completed Task: T1 Buffer Address ABI 接入执行路径
 
@@ -150,6 +157,15 @@ T1 已完成。
 | T5 Grouped / ragged work packets | Represent group/ragged metadata as typed planning input. | T1 and relevant per-work descriptors. | Missing/inconsistent group metadata rejects before source/runtime emission. |
 | T6 Workload first paths | Bring up pre-grouped MoE, sparse/ragged attention, paged GQA decode, paged MLA decode, and chunk recurrence in that order. | T1-T5 as needed by each workload. | Each workload has a stated first path with correctness proof and unsupported-form rejects. |
 | T7 Distributed production variants | Add mesh/sharding/CCL/NoC/multicast/global scheduling support. | Stable first paths and typed distributed plans. | Production distributed paths have typed placement, communication, and correctness gates. |
+
+Sharded GEMM/layout claims inside T2 and production sharding claims inside T7
+must additionally depend on the tensor/value sharding and explicit reshard
+design lane:
+
+- `TTTensorMemoryConfigPlan`,
+- `TTOpShardingContract`,
+- placement conflict validation,
+- `TTReshardPlan` or typed rejects.
 
 ## Support Boundary
 

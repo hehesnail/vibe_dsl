@@ -35,6 +35,7 @@
 | `2026-04-28-blackhole-algorithmic-generalization.md` | `AccessRegion` / dependence graph / `LiveValueSSA` / TT live-form solver contract。 |
 | `2026-04-28-blackhole-tile-compute-legalizer-dag-covering.md` | `TileComputeDAG` legalizer / covering contract。 |
 | `2026-04-29-blackhole-resource-planning-roadmap.md` | Resource planning roadmap；CB/L1 admission、core placement、buffer distribution、later NoC work。 |
+| `2026-05-02-blackhole-tensor-sharding-and-reshard.md` | Tensor/value sharding and explicit reshard design；separates TTNN-style `MemoryConfig` intent from low-level `TTBufferDistributionPlan` address ABI。 |
 | `blackhole_first_principles_protocol_audit.md` | Historical fake/legacy protocol audit table。 |
 
 ## Stable Architecture Skeleton

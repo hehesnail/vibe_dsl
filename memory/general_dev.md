@@ -218,6 +218,28 @@
   的 L1 /
   CB-backed scratch shape。
   这个 shape 可能远小于 Blackhole worker L1，
+  但这不能被包装成完整 tensor sharding。
+  TT-Metal / TTNN 的真实 sharding owner 是 caller /
+  model /
+  op contract 提供的
+  `MemoryConfig + ShardSpec / NdShardSpec`；
+  program factory 和 runtime 消费这些配置。
+  TileLang 当前的
+  `TTBufferDistributionPlan`
+  只是 low-level buffer placement /
+  address ABI。
+  完整 sharding 必须另外表达 user / DSL intent、
+  op-level placement contract、
+  producer/consumer placement conflict、
+  以及 explicit reshard /
+  layout conversion plan。
+  当前设计名分别是
+  `TensorPlacementIntent`、
+  `TTTensorMemoryConfigPlan`、
+  `TTOpShardingContract`、
+  `TTPlacementResolutionPlan`
+  和
+  `TTReshardPlan`。
   但 baseline correctness
   必须尊重前端形状并做 capacity gate。
   想利用更多 L1
