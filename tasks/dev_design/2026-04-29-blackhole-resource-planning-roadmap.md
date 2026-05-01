@@ -262,20 +262,20 @@ Using more L1 requires an explicit TT-specific retile or work-coarsening plan
 that changes the logical work mapping and source-region / address mapping
 together.
 
-## Direction 5: Workload Slices Before Full Runtime Expansion
+## Direction 5: Workload Admission Before Distributed Expansion
 
 Only after typed core and buffer placement exist should the backend expand
 wider workload / runtime admission.
 
 The workload backlog is not one flat stage.
-Each family must be split into:
+Each family must name two things separately:
 
-- a first admitted single-device subset that can be proven by current
+- a first single-device path that can be proven by current
   `TTProgram` / `ExecutableSpec` contracts plus typed resource admission
-- a production distributed subset that waits for mesh, sharding, CCL,
+- a production distributed path that waits for mesh, sharding, CCL,
   NoC, multicast, or global scheduling support
 
-| Family | Repo evidence | First admitted subset | Later production requirements |
+| Family | Repo evidence | First single-device path | Later production requirements |
 | --- | --- | --- | --- |
 | Non-flash leaf compute and GEMM variants | Current Blackhole copy / GEMM tests plus TT-Metal leaf API surface | Standalone unary / binary / broadcast / reduce / pack / typecast leaf families and GEMM layout variants with direct correctness gates; existing stick / page-shaped copy tests remain baseline coverage, not a new top-level task | Sharded layouts, wider multi-core placement, and non-replicated buffer distributions |
 | `topk` / selection / indexing | `tilelang_repo/examples/topk/example_topk.py` | Single-device `reduce_max` selection with `int32` index outputs and correctness checks | Use as MoE gating input and routing metadata producer |
@@ -283,143 +283,30 @@ Each family must be split into:
 | Paged attention / paged decode / MLA decode | `tilelang_repo/examples/blocksparse_attention/example_tilelang_sparse_gqa_decode_paged.py`; `tilelang_repo/examples/deepseek_mla/example_mla_decode_paged.py`; `tt_metal_repo/models/tt_transformers/tt/attention.py` | Single-device page-table or block-table indexed KV read with `cache_seqlens`, optional fixed `num_split`, explicit partial-output / logsum combine, and exact intermediate lifetime | Paged KV cache update / fill, sharded KV cache, multi-device all-gather / all-reduce, split reduction scheduling, NoC-aware max-cores-per-head policy |
 | Grouped / ragged / sparse attention | `tilelang_repo/examples/blocksparse_attention/example_tilelang_sparse_gqa_decode_varlen_indice.py`; sparse GQA paged examples | Single-device `block_indices` / ragged `cache_seqlens` sparse read plus partial combine | Sharded sparse blocks, cross-core load balancing, distributed sparse scheduling |
 | Chunk recurrence / scan | `tilelang_repo/examples/linear_attention/example_mamba_chunk_scan.py`; `tilelang_repo/examples/gdn/example_chunk_o.py`; `tilelang_repo/examples/kda/chunk_o.py` | Single-device chunk state, loop-carried state, and local state-buffer lifetime admission | Cross-core chunk scheduling, distributed state placement, communication-aware state handoff |
-| Multi-block flash-attn / flash decode | Current flash-attn Blackhole tests; `tt_metal_repo/tech_reports/FlashAttention/FlashDecode.md` | Existing small and 32x32 bf16 direct runtime subset; next is multi-block exact-CB publish / consume correctness | Multi-core split reduction, semaphore-backed remote writes, NoC traffic control, distributed decode scaling |
+| Multi-block flash-attn / flash decode | Current flash-attn Blackhole tests; `tt_metal_repo/tech_reports/FlashAttention/FlashDecode.md` | Existing small and 32x32 bf16 direct runtime path; next is multi-block exact-CB publish / consume correctness | Multi-core split reduction, semaphore-backed remote writes, NoC traffic control, distributed decode scaling |
 
 This means P2 workload bring-up is not blocked on all of P3.
-It is blocked on the specific P3 primitives each first subset actually needs.
+It is blocked on the specific P3 primitives each first path actually needs.
 Those primitives must be pulled forward explicitly instead of hidden under a
 generic "later runtime" bucket.
 
 ## Execution Order
 
-1. Placement / resource baseline:
-   finish hardware-model-backed `TTBufferDistributionPlan`
-   beyond `unit_mesh` / `replicated`,
-   keep `TTResourceDemand` / `TTResourcePressureReport`
-   as validator-consumed admission surfaces.
-   Exit when validators reject unsupported memory space,
-   distribution kind,
-   page size,
-   shard shape,
-   and attached-core requirements before source / runtime emission.
-2. Buffer address ABI gate:
-   make interleaved,
-   sharded,
-   page-shaped,
-   and per-work indexed buffer address parameters explicit through
-   compile-time args,
-   runtime args,
-   and per-work descriptors.
-   Treat logical block grid,
-   physical worker group,
-   temporal work packets,
-   and per-work L1 / CB scratch as distinct address dimensions.
-   The ABI must map each logical work id to its DRAM / global source region
-   and reused core-local L1 / CB view before source or runtime code may index
-   the buffer.
-   Exit requires real consumers, not metadata-only projection:
-   at least one sharded L1 address path and one page-indexed address path
-   must materialize from typed plans into source/spec/direct-runtime
-   consumers and pass TT-Sim bf16 correctness.
-   After those witnesses exist, unsupported sharded,
-   page-indexed,
-   or shared runtime address-argument forms fail
-   closed with typed reasons instead of being reconstructed by source or
-   runtime readers.
-   GPU-style shared-tile shapes may remain smaller than Blackhole L1 in this
-   exit state; filling more L1 belongs to an explicit retile /
-   work-coarsening step, not to silent buffer placement expansion.
-3. Verification and admission gate:
-   keep compile,
-   source/spec projection,
-   direct runtime,
-   TT-Sim bf16 correctness,
-   and typed unsupported reasons separate.
-   This gate applies to each ABI/support subset as it is admitted; it is not
-   a later cleanup step after buffer address ABI work.
-   Exit when every new subset has tests for the strongest admitted path and
-   fail-closed tests for the paths that remain unsupported.
-4. Leaf compute / GEMM correctness pack:
-   admit non-flash standalone leaf compute workloads and GEMM layout variants
-   before structured workload families.
-   Existing interleaved stick / page-shaped copy direct-runtime tests remain
-   the layout-movement baseline.
-   Exit when unary / binary / broadcast / reduce / pack / typecast,
-   GEMM variants,
-   and any newly admitted layout movement have direct correctness gates or
-   typed admission rejects.
-5. Selection / index base:
-   bring up standalone `topk` with `int32` index outputs.
-   Exit when the backend proves value and index correctness instead of only
-   compiling the selection kernel.
-6. Exact intermediate event / materialization base:
-   repair wider exact-CB publish / consume,
-   partial-output combine,
-   and source-live-form materialization for multi-kernel intermediates.
-   Multi-block flash-attn is the closest current witness,
-   but this step is a runtime primitive gate for MoE,
-   paged,
-   and sparse workloads,
-   not a flash-only milestone.
-7. Grouped / ragged work-packet base:
-   represent group,
-   block,
-   ragged row count,
-   and per-work indexed ranges as typed planning inputs.
-   Exit when missing or inconsistent group / ragged metadata is rejected
-   before source / runtime emission.
-8. Pre-grouped MoE / `fusedmoe`:
-   admit shared expert and pre-packed routed grouped GEMM with explicit
-   grouping tensors.
-   This does not count as full MoE.
-   Exit when missing or inconsistent group metadata is a typed reject and
-   local routed output correctness is covered.
-9. Sparse / ragged attention first subset:
-   admit single-device sparse GQA style workloads with `block_indices`,
-   ragged `cache_seqlens`,
-   and explicit split combine.
-   Exit when index-driven sparse reads and partial combine have direct
-   correctness coverage.
-10. Paged GQA decode first subset:
-   admit single-device page-table or block-table indexed KV reads with
-   `cache_seqlens`,
-   fixed `num_split` first,
-   then dynamic `num_split`.
-   Exit when paged GQA decode has typed admission and direct correctness
-   coverage for the admitted shapes.
-11. Paged MLA decode first subset:
-   reuse the paged decode gate for MLA's split Q / Q_pe / KV / K_pe access
-   pattern and larger intermediate pressure.
-   Exit when paged MLA decode has typed admission and direct correctness
-   coverage for the admitted shapes.
-12. Chunk recurrence / scan first subset:
-   admit single-device chunk state and loop-carried state lifetimes.
-   Exit when state materialization and carry lifetimes are explicit in
-   typed plans and covered by correctness tests.
-13. Production distributed variants:
-   only after the first subsets above are stable,
-   expand mesh / submesh placement,
-   sharded L1 / DRAM buffers,
-   sharded buffer address materialization,
-   common runtime args,
-   remote endpoints,
-   semaphores,
-   full MoE routing,
-   token packing,
-   scatter / gather / combine,
-   all-to-all,
-   reduce-scatter,
-   all-gather,
-   sharded paged KV cache update / fill,
-   distributed sparse attention,
-   communication-weighted placement,
-   multicast,
-   NoC0 / NoC1 scoring,
-   bounded FIFO / exact-CB event sizing,
-   and list scheduling or graph partitioning.
+The active board is `tasks/progress.md`.
+This roadmap keeps the stable order and exit criteria.
 
-Adding these before typed placement exists would recreate the current
-over-complexity problem under a new name.
+| Task | Goal | Depends On | Exit Criteria |
+| --- | --- | --- | --- |
+| T1 Buffer address ABI execution integration | Make sharded L1 and page-indexed address ABI real execution contracts, not metadata-only records. | Hardware-backed buffer placement and typed sharded fields. | At least one sharded L1 execution sample and one page-indexed execution sample materialize from typed plans into source/spec/direct-runtime consumers and pass TT-Sim bf16 correctness; remaining unsupported forms fail closed from typed fields. |
+| T2 Leaf compute / GEMM variants | Admit non-flash leaf compute and GEMM layout variants. | T1. | Unary / binary / broadcast / reduce / pack / typecast, GEMM variants, and admitted layout movement have direct correctness gates or typed rejects. |
+| T3 Selection / index base | Bring up standalone `topk` with `int32` index outputs. | T1 and required leaf reductions. | Value and index correctness are proven; compile-only is not enough. |
+| T4 Exact-CB / materialization primitives | Repair wider exact-CB publish/consume, partial combine, and source-live-form materialization for multi-kernel intermediates. | T1. | Multi-kernel intermediate correctness is covered and missing materialization protocol fails before source/runtime emission. |
+| T5 Grouped / ragged work packets | Represent group, block, ragged row count, and per-work indexed ranges as typed planning inputs. | T1 and relevant per-work descriptors. | Missing or inconsistent group/ragged metadata is rejected before source/runtime emission. |
+| T6 Workload first paths | Bring up pre-grouped MoE, sparse/ragged attention, paged GQA decode, paged MLA decode, and chunk recurrence in that order. | T1-T5 as needed by each workload. | Each workload has a stated first path, correctness proof, and typed rejects for unadmitted forms. |
+| T7 Production distributed variants | Add mesh/sharding/CCL/NoC/multicast/global scheduling support. | Stable first paths and typed distributed plans. | Distributed paths have typed placement, communication, admission, and correctness gates. |
+
+Do not advance workload admission past T1 while sharded/page-indexed address
+ABI has no source/spec/direct-runtime path with TT-Sim correctness.
 
 ## Planning Order
 
@@ -428,8 +315,8 @@ over-complexity problem under a new name.
 3. Keep CB / L1 admission hardware-backed.
 4. Keep core groups hardware-model-backed and replace unit buffer placement
    with explicit buffer distribution.
-5. Follow the execution order above for first-subset workload admission.
-6. Pull forward only the P3 primitives required by the current first subset.
+5. Follow the execution order above for first-path workload admission.
+6. Pull forward only the P3 primitives required by the current first path.
 7. Defer production distributed variants until mesh / sharding / CCL /
    NoC / multicast / global scheduling plans are typed and validated.
 
@@ -445,7 +332,7 @@ This roadmap is implemented only when:
   and validators reject out-of-grid physical cores
 - buffer distribution can express the placement choices needed by admitted
   workloads
-- workload admission records distinguish first single-device subsets from
-  production distributed subsets
+- workload admission records distinguish first single-device paths from
+  production distributed paths
 - no resource truth is carried by bags, payloads, source hooks, or runtime
   fallback

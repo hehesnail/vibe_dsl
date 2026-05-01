@@ -1,21 +1,25 @@
 # TileLang Blackhole Backend Progress
 
-> 当前 HEAD 看板只放状态、blocker、下一步和最近验证摘要。
-> 长期设计合同看 `tasks/dev_design/` 下的入口文档。
+> 这是当前 checkout 的执行看板。
+> 长期合同看 `tasks/dev_design/`。
+> 本文件只回答：当前什么是真的、现在做哪一项、下一项被什么挡住、
+> 最近跑过什么验证。
 
 ## Status
 
 - Date: `2026-05-01`
-- Active lane: `Buffer address ABI gate`
+- Active task: `T1 Buffer address ABI 接入执行路径`
 - Main chain:
   `Normalized Tile TIR -> SpatialPlan -> TTProgram -> ExecutableSpec`
 
 ## Current HEAD
 
-- Blackhole 正式执行路径是进程内 `BlackholeModule` direct host path；
-  `execution_backend="tvm_ffi"` 的 wrapper/export path 可用。
-- Legacy external runner / `build_blackhole/` 已删除。
-- Broad legacy protocols 已退出 active chain：
+当前代码状态：
+
+- `BlackholeModule` in-process direct host path is the formal execution path.
+  The `execution_backend="tvm_ffi"` wrapper/export path is available.
+- Legacy external runner / `build_blackhole/` is gone.
+- Legacy protocol families are out of the active chain:
   `compute_contract`,
   `gemm_contract`,
   `multi_*_contracts`,
@@ -23,224 +27,126 @@
   bridge attrs,
   lowering facts contract maps,
   compute-op seed maps,
-  leaf name/default fallbacks。
-- Tile compute truth 保持 TT-Metal leaf API 粒度。
-  Composite pseudo-leaf payload 已清理；
-  `TileComputeDAG`
-  只作为 pass-local explicit-leaf legalization /
-  covering input。
-- 非 flash-attn 计算面没有删除：
-  typed leaf compute surface 仍覆盖
-  matmul / copy / unary / binary / broadcast /
-  reduce / pack / typecast 等 TT-Metal leaf families。
-  Runtime admitted subset 比 typed compute surface 窄，
-  以本文件的 support boundary 为准。
-- Algorithmic foundation 已存在并有 active consumers：
-  `AccessRegion`,
-  graph-backed `SpatialPlan` dependence,
-  `LiveValueSSA`,
-  TT live-form solver。
-  它们不是 compute expression lowerer 或全局 resource allocator。
-- `TTResourceDemand`
-  /
-  `TTResourcePressureReport`
-  已进入 `TTProgram`，
-  并由 `ValidateTTProgram`
-  消费。
-- CB / L1 admission 已使用
-  `TTHardwareModel`
-  的 CB count、
-  worker L1 budget
-  和 alignment facts。
-- Core groups 已开始消费
-  `TTHardwareModel`
-  的 worker grid /
-  functional worker count；
-  validators 会拒绝 out-of-grid core、
-  duplicate core
-  和非法 work packet。
-- `TTBufferDistributionPlan`
-  已从假
-  `unit_mesh` /
-  `replicated`
-  baseline 扩到硬件模型约束的 placement：
-  DRAM ABI layout 产出 interleaved placement；
-  shared / CB-backed L1 产出 attached-core sharded placement；
-  普通 per-worker local L1 保持 device-local replicated placement。
-  Page size 来自 ABI layout、TIR buffer storage 和 CB plan，
-  projection 会携带 attached core group/index。
-- L1 sharded placement 的 coarse marker 已拆成 typed buffer address
-  ABI fields：
-  `shard_grid_shape` 表达 resident physical core grid，
-  `sharding_strategy` / `shard_shape` 表达 per-core data shard，
-  `source_buffer` / `source_region_kind` / `source_region_shape`
-  表达可 materialize 的 DRAM/global source region，
-  `logical_index_mapping` 和 `core_local_address_mapping`
-  表达 logical work id 到 worker-local address 的映射。
-  Pure local sharded L1 scratch 不伪造 source-region binding。
-- `ValidateTTProgram`
-  已消费 buffer distribution placement：
-  unsupported memory space / distribution kind、
-  invalid page size、
-  shard shape、
-  shard grid / sharding strategy / address mapping、
-  attached-core reference/index、
-  DRAM view size
-  和 L1 worker budget
-  会在 source / runtime emission 前 fail closed。
-- Accessor compile-time ABI kind 已按 typed accessor layout / memory space
-  分成 `interleaved_accessor_cta`、
-  `sharded_accessor_cta`
-  和 `page_indexed_accessor_cta`。
-  Direct runtime 仍只 admission interleaved DRAM；
-  sharded / page-indexed 形态必须 typed fail closed。
-- Blackhole C++ audit 第一批已收口：
-  scalar bitcast、
-  DLTensor compact-layout gate、
-  leaf-reader fail-closed、
-  resource Var alias、
-  module bytes serialization/export-load
-  均有回归覆盖。
+  and leaf name/default fallbacks.
+- `TTResourceDemand` and `TTResourcePressureReport` are in `TTProgram` and
+  are consumed by `ValidateTTProgram`.
+- Core groups consume `TTHardwareModel` worker-grid facts; validators reject
+  out-of-grid cores, duplicate cores, and invalid work packets.
+- `TTBufferDistributionPlan` can represent hardware-backed placement:
+  interleaved DRAM,
+  attached-core sharded L1 for shared / CB-backed views,
+  and device-local replicated placement for ordinary per-worker local L1.
+- Sharded L1 placement has typed address ABI fields:
+  `shard_grid_shape`,
+  `sharding_strategy`,
+  real per-core `shard_shape`,
+  `source_buffer`,
+  `source_region_kind`,
+  `source_region_shape`,
+  `logical_index_mapping`,
+  and `core_local_address_mapping`.
+  Pure local sharded scratch does not fabricate source-region binding.
+- Accessor compile-time ABI kinds are typed:
+  `interleaved_accessor_cta`,
+  `sharded_accessor_cta`,
+  and `page_indexed_accessor_cta`.
+- Direct runtime still admits only interleaved DRAM accessor execution.
+  Sharded and page-indexed forms are represented, but they are not yet wired
+  into real direct-runtime execution.
 
-## Current Blocker
+## Active Task: T1 Buffer Address ABI 接入执行路径
 
-Buffer placement split 已进入 typed `TTProgram` / projection / validator，
-但 source / runtime emission 还没有完整消费 typed
-sharded、
-page-indexed
-和 per-work buffer address ABI。
+### Problem
 
-下一步 blocker 是把这些 typed fields 下沉到 source/spec/direct-runtime
-admission：
-supported interleaved forms 继续 materialize；
-sharded 和 page-indexed 不能继续全部停在 typed reject。
-本 lane 的下一次收口必须至少让
-sharded L1 address ABI
-和 page-indexed address ABI
-各有一个代表路径被 source/spec/direct-runtime 真实消费，
-并通过 TT-Sim bf16 correctness。
-其余尚未 admitted 的 sharded / page-indexed / shared runtime
-address-argument forms
-必须从
-`TTBufferDistributionPlan`
-/
-`TTAccessorSpec`
-/
-per-work descriptors
-推出 typed reject，
-不能在 emission / runtime reader 里从名字、
-布局字符串
-或旧 runtime args 重新猜。
+typed ABI 字段已经存在，但 sharded 和 page-indexed address 形态还没有接入
+source/spec/direct-runtime 的真实执行路径。
 
-Buffer address ABI 还必须把 TileLang/GPU 风格的逻辑 work grid
-和 Blackhole 物理 worker grid 分开：
-`T.Kernel(grid_x, grid_y)` 是 logical work item 域，
-`TTCoreGroup.physical_cores` 是实际常驻 worker，
-`work_packets` 是 logical work id 到 worker 的 temporal 映射。
-当 logical block 数超过 physical core 数时，
-每个 worker 在自己的 packet 上循环执行，
-并复用同一份 per-worker L1 / CB scratch。
-source / runtime reader 不能按 logical block 数复制 L1 / CB allocation，
-也不能在 reader 里重新猜每个 work id 对应的 DRAM source region。
+这一项不能靠“所有 non-interleaved 形态都 typed reject”收口。
+它必须证明新的 address ABI 被真实 consumer 使用。
 
-GPU-style
-`alloc_shared((tile_m, tile_n))`
-目前应被解释为 per-worker、per-work-item 的 L1 / CB scratch shape。
-这个 shape 对 Blackhole L1 来说可能偏小，
-但 baseline correctness 必须尊重前端形状并做 capacity/admission 检查。
-填满更多 L1 是显式 TT retile / work-coarsening 任务，
-不能由 buffer placement 或 address ABI 静默改大。
+### Completion Standard
 
-## Next Task Order
+T1 只有在下面四个交付项全部完成后才算完成。
 
-1. Finish buffer address ABI consumption:
-   source/spec/direct-runtime readers must consume typed interleaved /
-   sharded / page-indexed buffer address parameters,
-   compile-time args,
-   runtime args,
-   per-work descriptors,
-   and typed rejects.
-   This task cannot close by rejecting every non-interleaved form:
-   at least one sharded L1 path and one page-indexed path must materialize
-   from typed plans into real source/spec/direct-runtime consumers and pass
-   TT-Sim bf16 correctness.
-   Preserve the separation between logical work grid,
-   physical core group,
-   temporal work packets,
-   and per-worker L1 / CB scratch reuse.
-   For sharded placement, consume the typed split between resident core grid,
-   real per-core shard data shape/strategy,
-   optional DRAM/global source region,
-   logical index mapping,
-   and core-local address mapping before emitting addresses.
-   Do not silently retile GPU-style shared buffers to fill Blackhole L1;
-   report underutilization or add an explicit retile/work-coarsening plan
-   before changing those shapes.
-2. Keep admission levels separate for every new subset:
-   compile,
-   source/spec,
-   direct runtime,
-   TT-Sim bf16 correctness,
-   and typed unsupported reason.
-   This is a per-subset gate that runs with task 1 and every later workload;
-   it is not a cleanup task after ABI consumption.
-3. Admit first-subset workloads in this order:
-   non-flash leaf compute / GEMM variants,
-   standalone `topk`,
-   exact-CB / materialization / partial-combine primitive
-   via multi-block flash-attn,
-   grouped / ragged work packets,
-   pre-grouped MoE / `fusedmoe`,
-   sparse / ragged attention,
-   paged GQA decode,
-   paged MLA decode,
-   then chunk recurrence / scan.
-4. Pull forward only the P3 primitives required by the current first subset.
-5. Do not advance workload admission past task 1 while sharded/page-indexed
-   address ABI has no real consumer-backed correctness witness.
-6. Defer production distributed variants until mesh / sharding / CCL /
-   NoC / multicast / global scheduling plans are typed and validated.
-   Full MoE and full paged decode are not admitted by their first subsets.
+| 交付项 | 目标 | 做法 | 完成标准 |
+| --- | --- | --- | --- |
+| T1.1 Executable address contract | `ExecutableSpec` / leaf reader carries the address ABI needed by runtime. | Project the relevant `TTBufferDistributionPlan`, `TTAccessorSpec`, and per-work descriptor fields into the executable schema. Remove any source/runtime fallback that reconstructs this from names or layout strings. | Projection tests show the executable schema contains the typed address contract and rejects missing fields. |
+| T1.2 Sharded L1 execution sample | At least one sharded L1 path actually runs. | Use a small staged-copy style program with DRAM/global source, resident per-worker L1 shard, work-packet mapping, and core-local address mapping. Generate source/spec/direct-runtime args from typed plans. | TT-Sim bf16 correctness passes for that sharded L1 path. |
+| T1.3 Page-indexed execution sample | At least one page-indexed path actually runs. | Use a minimal page-indexed read/copy path with explicit page metadata and per-work address descriptor. Generate source/spec/direct-runtime args from typed plans. | TT-Sim bf16 correctness passes for that page-indexed path. |
+| T1.4 Unsupported-form rejects | Remaining unsupported forms fail for the right reason. | For sharded/page-indexed/shared forms outside the admitted execution samples, inspect typed ABI fields and produce precise unsupported reasons. | Negative tests fail closed before source/runtime guessing. |
+
+### Implementation Order
+
+1. Write failing tests for T1.1 projection and missing-field rejects.
+2. Implement executable address contract projection and validation.
+3. Write failing TT-Sim or direct-runtime tests for the sharded L1 execution sample.
+4. Implement sharded L1 source/spec/direct-runtime consumption.
+5. Write failing TT-Sim or direct-runtime tests for the page-indexed execution sample.
+6. Implement page-indexed source/spec/direct-runtime consumption.
+7. Add negative tests for unsupported non-interleaved forms.
+8. Run the verification set listed under "Required Verification".
+9. Update this file, relevant design docs, and `memory/`.
+10. Commit and push.
+
+### Non-Negotiable Boundaries
+
+- Do not silently retile GPU-style `alloc_shared((tile_m, tile_n))` to fill
+  Blackhole L1. Treat it as per-worker, per-work-item scratch unless an
+  explicit retile/work-coarsening plan changes the logical work mapping and
+  source-region mapping together.
+- Keep TileLang logical work grid, physical worker group, temporal work
+  packets, and per-worker L1 / CB scratch reuse separate.
+- Runtime must execute typed contracts. It must not infer source regions,
+  shard ownership, page metadata, or buffer roles from names, suffixes,
+  argument order, or layout strings.
+
+## Required Verification
+
+每个 active implementation task 都使用这张验收表。
+
+| 层级 | 要求 |
+| --- | --- |
+| Compile | C++ build succeeds with `cmake --build build -j32`. |
+| Structure | TIR / `TTProgram` / executable projection tests prove the typed fields exist and old fallbacks are absent. |
+| Source/spec | Materialized executable schema contains the real address contract used by the source/runtime path. |
+| Direct runtime | The admitted path runs through `BlackholeModule`, not an external runner. |
+| TT-Sim correctness | Runtime correctness uses the repository TT-Sim setup and bf16 baseline. |
+| Unsupported reason | Unsupported forms fail closed with typed diagnostics before source/runtime guessing. |
+
+## Task Queue
+
+当前只有 T1 是 active task。
+在 sharded 和 page-indexed 都有通过 source/spec/direct-runtime 与 TT-Sim
+correctness 的执行样例之前，不推进后续任务。
+
+| 任务 | 目标 | 依赖 | 完成目标 |
+| --- | --- | --- | --- |
+| T1 Buffer address ABI 接入执行路径 | Make sharded L1 and page-indexed address ABI real execution contracts. | Current typed placement fields. | T1.1-T1.4 all complete. |
+| T2 Leaf compute / GEMM variants | Admit non-flash leaf compute and GEMM layout variants. | T1. | Direct correctness or typed reject for each admitted leaf family / layout. |
+| T3 `topk` | Admit standalone value/index selection. | T1 and required leaf reductions. | Value and `int32` index correctness, not compile-only. |
+| T4 Exact-CB / materialization primitives | Repair wider publish/consume, partial combine, and source-live-form materialization. | T1. | Multi-kernel intermediate correctness and typed materialization rejects. |
+| T5 Grouped / ragged work packets | Represent group/ragged metadata as typed planning input. | T1 and relevant per-work descriptors. | Missing/inconsistent group metadata rejects before source/runtime emission. |
+| T6 Workload first paths | Bring up pre-grouped MoE, sparse/ragged attention, paged GQA decode, paged MLA decode, and chunk recurrence in that order. | T1-T5 as needed by each workload. | Each workload has a stated first path with correctness proof and unsupported-form rejects. |
+| T7 Distributed production variants | Add mesh/sharding/CCL/NoC/multicast/global scheduling support. | Stable first paths and typed distributed plans. | Production distributed paths have typed placement, communication, and correctness gates. |
 
 ## Support Boundary
 
-- Direct runtime admitted subset:
-  copy equal source/dest range with stride 1;
-  selected interleaved stick / page-shaped copy cases with explicit
-  alignment gates;
-  GEMM A/B-separated reader range plus writer output range;
-  interleaved DRAM buffer address schema with no common runtime args
-  (`common_runtime_arg_count = 0`);
-  non-oversubscribed explicit semaphore / remote-endpoint subset;
-  admitted bf16 live-form paths.
-- Typed compute surface broader than direct runtime:
-  matmul / copy / unary / binary / broadcast /
-  reduce / pack / typecast leaf families must get
-  workload-specific admission and correctness gates
-  before being counted as runtime support.
-- Workload backlog broader than flash-attn:
-  `topk`, MoE / `fusedmoe`, paged attention /
-  paged decode / MLA decode paged,
+- Current direct-runtime admitted execution:
+  interleaved DRAM buffer address schema with no common runtime args,
+  copy equal source/destination range with stride 1,
+  selected interleaved stick/page-shaped copy cases,
+  GEMM A/B-separated reader range plus writer output range,
+  non-oversubscribed explicit semaphore / remote-endpoint path,
+  and admitted bf16 live-form paths.
+- Current typed-but-not-yet-executed address forms:
+  sharded L1 and page-indexed accessors.
+  These are the active T1 target.
+- Current workload backlog:
+  `topk`,
+  MoE / `fusedmoe`,
+  paged attention / paged decode / MLA decode,
   grouped / ragged / sparse attention,
-  and chunk recurrence / scan are not admitted yet;
-  they require explicit subset definitions and regressions
-  before being counted as supported.
-- Workload dependency split:
-  first single-device subsets are allowed to proceed after typed placement
-  and subset-specific admission proof;
-  full MoE, full paged attention / decode,
-  distributed sparse attention,
-  and production flash decode require later P3 runtime features.
-  The detailed matrix lives in
-  `tasks/dev_design/2026-04-29-blackhole-resource-planning-roadmap.md`.
-- Flash-attn admitted direct-runtime subset:
-  small single-work-item and 32x32 MHA / GQA bf16.
-- Flash-attn compile/source/spec stable but runtime-gated subset:
-  seq64 / multi-K-step MHA and GQA.
-- Not admitted:
-  multi-block flash-attn direct-runtime correctness,
-  larger multi-page exact-CB publish/consume events,
-  full multi-device / sharded / fabric collective runtime.
+  and chunk recurrence / scan.
 
 ## Latest Verification
 
@@ -260,5 +166,5 @@ Verified:
   `pytest -q testing/python/target/blackhole/test_blackhole_copy_runtime.py testing/python/target/blackhole/test_blackhole_tvm_ffi_export.py`
   (`16 passed`)
 - TT-Sim env via `scripts/setup_tt_sim.sh`,
-  then copy-pipeline direct-runtime ABI subset
+  then copy-pipeline direct-runtime ABI path
   (`9 passed`)

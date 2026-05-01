@@ -56,13 +56,18 @@ Pass 名字、helper、payload、bag、bridge attr
 当前主线：
 
 ```text
-Hardware-model-backed buffer placement
-  -> buffer address ABI gate
-  -> admission-level verification gate
-  -> first-subset workload admission
-  -> pull-forward P3 primitives required by those subsets
-  -> production distributed workload/runtime admission
+T1 Buffer address ABI execution integration
+  -> T2 Leaf compute / GEMM variants
+  -> T3 topk
+  -> T4 exact-CB / materialization primitives
+  -> T5 grouped / ragged work packets
+  -> T6 workload first paths
+  -> T7 production distributed variants
 ```
+
+Admission levels
+compile / source-spec / direct runtime / TT-Sim correctness / typed reject
+are per-task acceptance gates, not a separate cleanup lane.
 
 ## Maintenance Rules
 
