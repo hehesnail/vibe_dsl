@@ -252,6 +252,25 @@
   后再让 leaf reader
   猜它到底是 grid
   还是 data shard。
+  TT-Metal `ShardSpec`
+  的核心拆分是
+  `grid`
+  /
+  per-core `shape`
+  /
+  `orientation`；
+  `orientation`
+  只能是
+  `row_major`
+  /
+  `col_major`。
+  `block`
+  /
+  `height`
+  /
+  `width`
+  属于 sharded memory-layout strategy，
+  不能写进 `shard_orientation`。
   source-region binding 是 all-or-none：
   只有确实从 DRAM/global buffer
   materialize 的 L1 view

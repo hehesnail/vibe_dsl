@@ -135,6 +135,7 @@ void ValidateBufferDistributionPlan(
       << "TTBufferDistributionPlan requires distribution_kind";
   const std::string distribution_kind = plan->distribution_kind;
   const std::string sharding_strategy = plan->sharding_strategy;
+  const std::string shard_orientation = plan->shard_orientation;
   const std::string source_region_kind = plan->source_region_kind;
   const std::string logical_index_mapping = plan->logical_index_mapping;
   const std::string core_local_address_mapping =
@@ -171,6 +172,13 @@ void ValidateBufferDistributionPlan(
     ICHECK(!sharding_strategy.empty() && sharding_strategy != "none")
         << "TTBufferDistributionPlan sharded L1 placement requires "
            "sharding_strategy";
+    ICHECK(sharding_strategy == "height" || sharding_strategy == "width" ||
+           sharding_strategy == "block")
+        << "TTBufferDistributionPlan sharded L1 placement requires "
+           "sharding_strategy to be height, width, or block";
+    ICHECK(shard_orientation == "row_major" || shard_orientation == "col_major")
+        << "TTBufferDistributionPlan sharded L1 placement requires "
+           "shard_orientation to be row_major or col_major";
     ICHECK_GT(plan->page_size_bytes, 0)
         << "TTBufferDistributionPlan sharded L1 placement requires "
            "page_size_bytes";

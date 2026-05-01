@@ -129,6 +129,8 @@ the executable contract must state:
 
 - `distribution_kind = sharded`
 - `memory_space = L1`
+- `sharding_strategy = height | width | block`
+- `shard_orientation = row_major | col_major`
 - positive `shard_grid_shape`
 - positive per-core `shard_shape`
 - `source_buffer`
@@ -143,6 +145,13 @@ Direct runtime admission must consume them before execution.
 It may reject unsupported distribution kinds, but it must not recover source
 regions, page metadata, or core-local mapping from names, source text, or
 argument order.
+
+The executable sharded fields intentionally mirror TT-Metal's split between
+memory-layout strategy and `ShardSpec` orientation:
+`height/width/block` are layout strategies, while `row_major/col_major`
+describe core traversal.
+`source_buffer` and source-region fields are TileLang materialization ABI
+fields for DRAM-to-resident-L1 views, not TT-Metal `ShardSpec` fields.
 
 ### Backend Admission
 

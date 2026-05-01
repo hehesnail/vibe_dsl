@@ -421,6 +421,8 @@ def test_blackhole_module_direct_call_grid_indexed_copy_multicore_launch():
     sharded_l1 = distribution_by_buffer["A_shared"]
     assert str(sharded_l1["distribution_kind"]) == "sharded"
     assert str(sharded_l1["memory_space"]) == "L1"
+    assert str(sharded_l1["sharding_strategy"]) == "block"
+    assert str(sharded_l1["shard_orientation"]) == "row_major"
     assert str(sharded_l1["source_buffer"]) == "A"
     assert str(sharded_l1["source_region_kind"]) == "per_work_tile"
     assert tuple(int(dim) for dim in sharded_l1["source_region_shape"]) == (32, 32)

@@ -227,6 +227,8 @@ The first typed form of that split is:
   L1 view.
 - `sharding_strategy`: height / width / block strategy for assigning the
   logical shard to that grid.
+- `shard_orientation`: row-major / column-major traversal of the shard grid,
+  matching TT-Metal `ShardOrientation`.
 - `shard_shape`: the real per-core tensor data shape of the resident L1 view.
 - `source_buffer`: the DRAM / global buffer that materializes the L1 view when
   the view is copied from global memory.
@@ -241,6 +243,14 @@ The first typed form of that split is:
 
 Validators must reject sharded L1 plans that omit placement and address
 mapping fields.
+Validators must also reject strategy / orientation conflation:
+`block`,
+`height`,
+and `width`
+are sharding strategies, while
+`row_major`
+and `col_major`
+are shard orientations.
 Source-region binding fields are all-or-none:
 if a sharded L1 view is materialized from a DRAM / global source, it must carry
 `source_buffer`,

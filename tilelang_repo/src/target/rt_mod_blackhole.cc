@@ -1145,6 +1145,17 @@ static std::vector<BufferDistributionSpec> ExtractBufferDistributionPlans(
       ICHECK(plan.memory_space == "L1")
           << "Blackhole executable buffer_distribution_plans sharded buffer "
           << plan.buffer << " must be in L1";
+      ICHECK(plan.sharding_strategy == "height" ||
+             plan.sharding_strategy == "width" ||
+             plan.sharding_strategy == "block")
+          << "Blackhole executable buffer_distribution_plans sharded buffer "
+          << plan.buffer
+          << " requires sharding_strategy height, width, or block";
+      ICHECK(plan.shard_orientation == "row_major" ||
+             plan.shard_orientation == "col_major")
+          << "Blackhole executable buffer_distribution_plans sharded buffer "
+          << plan.buffer
+          << " requires shard_orientation row_major or col_major";
       ICHECK(!plan.shard_shape.empty())
           << "Blackhole executable buffer_distribution_plans sharded buffer "
           << plan.buffer << " requires shard_shape";

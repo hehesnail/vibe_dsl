@@ -120,6 +120,30 @@ This is the current active expansion point.
 means the per-core tensor data shape in the durable contract.
 It must not be used as a synonym for the physical or logical core-grid shape.
 Core-grid attachment belongs to the attached core group and shard-grid fields.
+`sharding_strategy` follows TT-Metal memory-layout strategy semantics:
+`height`, `width`, or `block`.
+`shard_orientation` follows TT-Metal `ShardOrientation` semantics:
+`row_major` or `col_major`.
+These two fields must not be conflated.
+
+For TT-Metal compatibility,
+the canonical sharded-memory shape is:
+
+- tensor memory layout:
+  height / width / block sharded
+- shard spec:
+  core grid,
+  per-core shard shape,
+  row-major or column-major core traversal
+- buffer type:
+  usually L1 for current admitted direct-runtime forms
+
+`source_buffer`,
+`source_region_kind`,
+and `source_region_shape`
+are not TT-Metal `ShardSpec` fields.
+They are TileLang runtime materialization ABI fields that explain how a
+resident L1 working view is filled from a DRAM/global source.
 
 GPU-style
 `alloc_shared`

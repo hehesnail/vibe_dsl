@@ -2813,6 +2813,17 @@ static void ValidateExecutableSpecBufferDistributionPlans(const std::string& fun
       ICHECK_EQ(memory_space, "l1")
           << "Blackhole executable sharded buffer distribution for "
           << plan.buffer << " requires L1 memory_space";
+      ICHECK(plan.sharding_strategy == "height" ||
+             plan.sharding_strategy == "width" ||
+             plan.sharding_strategy == "block")
+          << "Blackhole executable sharded buffer distribution for "
+          << plan.buffer
+          << " requires sharding_strategy height, width, or block";
+      ICHECK(plan.shard_orientation == "row_major" ||
+             plan.shard_orientation == "col_major")
+          << "Blackhole executable sharded buffer distribution for "
+          << plan.buffer
+          << " requires shard_orientation row_major or col_major";
       ICHECK(HasPositiveShape(plan.shard_shape))
           << "Blackhole executable sharded buffer distribution for "
           << plan.buffer << " requires shard_shape";

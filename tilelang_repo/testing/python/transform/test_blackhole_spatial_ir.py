@@ -2458,7 +2458,7 @@ def test_plan_tt_abi_uses_hardware_backed_buffer_distribution():
     assert str(l1_plan.sharding_strategy) == "block"
     assert tuple(int(dim) for dim in l1_plan.shard_shape) == (32, 32)
     assert tuple(int(dim) for dim in l1_plan.source_region_shape) == (32, 32)
-    assert str(l1_plan.shard_orientation) == "block"
+    assert str(l1_plan.shard_orientation) == "row_major"
     assert str(l1_plan.source_buffer) == "A"
     assert str(l1_plan.source_region_kind) == "per_work_tile"
     assert str(l1_plan.logical_index_mapping) == "work_packet_row_major"
@@ -2487,6 +2487,8 @@ def test_plan_tt_abi_uses_hardware_backed_buffer_distribution():
     assert str(executable_distributions["A_shared"]["distribution_kind"]) == "sharded"
     assert tuple(int(dim) for dim in executable_distributions["A_shared"]["shard_grid_shape"]) == (2, 2)
     assert tuple(int(dim) for dim in executable_distributions["A_shared"]["shard_shape"]) == (32, 32)
+    assert str(executable_distributions["A_shared"]["sharding_strategy"]) == "block"
+    assert str(executable_distributions["A_shared"]["shard_orientation"]) == "row_major"
     assert str(executable_distributions["A_shared"]["source_buffer"]) == "A"
     assert str(executable_distributions["A_shared"]["source_region_kind"]) == "per_work_tile"
     assert str(executable_distributions["A_shared"]["attached_core_group"]) == "main_core_group"
@@ -2570,6 +2572,46 @@ def test_validate_tt_program_rejects_incomplete_sharded_address_abi():
     )
     with pytest.raises(Exception, match="source_buffer"):
         tilelang.transform.ValidateTTProgram()(invalid_source)
+
+    distributions_with_bad_strategy = list(distributions)
+    distributions_with_bad_strategy[l1_index] = _rebuild_tt_buffer_distribution_plan(
+        distributions_with_bad_strategy[l1_index],
+        sharding_strategy="row_major",
+    )
+    invalid_strategy = tvm.IRModule(
+        {
+            "main": main.with_attr(
+                "tl.tt_program",
+                _rebuild_tt_program(
+                    tt_program,
+                    buffer_distribution_plans=distributions_with_bad_strategy,
+                ),
+            )
+        },
+        global_infos=mod.global_infos,
+    )
+    with pytest.raises(Exception, match="sharding_strategy"):
+        tilelang.transform.ValidateTTProgram()(invalid_strategy)
+
+    distributions_with_bad_orientation = list(distributions)
+    distributions_with_bad_orientation[l1_index] = _rebuild_tt_buffer_distribution_plan(
+        distributions_with_bad_orientation[l1_index],
+        shard_orientation="block",
+    )
+    invalid_orientation = tvm.IRModule(
+        {
+            "main": main.with_attr(
+                "tl.tt_program",
+                _rebuild_tt_program(
+                    tt_program,
+                    buffer_distribution_plans=distributions_with_bad_orientation,
+                ),
+            )
+        },
+        global_infos=mod.global_infos,
+    )
+    with pytest.raises(Exception, match="shard_orientation"):
+        tilelang.transform.ValidateTTProgram()(invalid_orientation)
 
 
 def test_validate_tt_program_rejects_dram_buffer_distribution_over_hardware_view():

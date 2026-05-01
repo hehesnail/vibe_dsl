@@ -7,7 +7,7 @@
 
 ## Status
 
-- Date: `2026-05-01`
+- Date: `2026-05-02`
 - Active task: `T2 Leaf compute / GEMM variants`
 - Main chain:
   `Normalized Tile TIR -> SpatialPlan -> TTProgram -> ExecutableSpec`
@@ -40,12 +40,18 @@
   `shard_grid_shape`,
   `sharding_strategy`,
   real per-core `shard_shape`,
+  `shard_orientation`,
   `source_buffer`,
   `source_region_kind`,
   `source_region_shape`,
   `logical_index_mapping`,
   and `core_local_address_mapping`.
   Pure local sharded scratch does not fabricate source-region binding.
+- `TTBufferDistributionPlan` now follows TT-Metal sharding terminology:
+  `sharding_strategy` is `height` / `width` / `block`,
+  while `shard_orientation` is `row_major` / `col_major`.
+  Validators reject strategy/orientation conflation before executable
+  construction or runtime admission.
 - `TTBufferDistributionPlan` is now projected into `ExecutableSpec` as the
   runtime-visible buffer address contract.
   `BlackholeModule` metadata / serialization preserves it, leaf readers
@@ -170,21 +176,19 @@ T1 已完成。
 ## Latest Verification
 
 Latest implementation batch:
-T1 buffer address ABI execution integration.
+TT-Metal sharding contract alignment audit.
 
 Verified:
 
 - `cmake --build /root/dev/vibe_dsl/tilelang_repo/build -- -j32`
-- TT-Sim env via `scripts/setup_tt_sim.sh`,
-  then
-  `pytest -q testing/python/target/blackhole/test_blackhole_copy_pipeline.py testing/python/target/blackhole/test_blackhole_copy_runtime.py testing/python/transform/test_blackhole_spatial_ir.py`
-  (`171 passed, 1 skipped, 1 xfailed, 4 warnings`)
-- Targeted red/green T1 selectors:
-  missing executable sharded source-buffer reject,
-  unadmitted buffer-distribution typed reject,
-  sharded L1 bf16 direct runtime,
-  and page-indexed 64B direct runtime
-  (`4 passed`)
+- Red/green structure selectors:
+  `pytest -q testing/python/transform/test_blackhole_spatial_ir.py::test_plan_tt_abi_uses_hardware_backed_buffer_distribution testing/python/transform/test_blackhole_spatial_ir.py::test_validate_tt_program_rejects_incomplete_sharded_address_abi`
+  (failed before the fix because `shard_orientation` was `block` and
+  invalid strategy/orientation values were not rejected; passes after the
+  fix with `2 passed`)
+- TT-Sim direct-runtime selectors via `scripts/setup_tt_sim.sh`:
+  `pytest -q testing/python/target/blackhole/test_blackhole_copy_runtime.py::test_blackhole_module_direct_call_grid_indexed_copy_multicore_launch testing/python/target/blackhole/test_blackhole_copy_runtime.py::test_blackhole_module_direct_call_page_indexed_copy_consumes_address_contract`
+  (`2 passed`)
 
 Observed boundary:
 

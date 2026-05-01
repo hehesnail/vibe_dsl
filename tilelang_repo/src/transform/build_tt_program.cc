@@ -1149,7 +1149,7 @@ LogicalTileLayoutInfoFromLayoutSpec(const LayoutSpec &layout_spec) {
   return info;
 }
 
-String ShardOrientationForCoreGroup(const TTCoreGroup &core_group) {
+String ShardingStrategyForCoreGroup(const TTCoreGroup &core_group) {
   if (core_group->logical_grid_x > 1 && core_group->logical_grid_y > 1) {
     return String("block");
   }
@@ -1160,6 +1160,14 @@ String ShardOrientationForCoreGroup(const TTCoreGroup &core_group) {
     return String("height");
   }
   return String("block");
+}
+
+String ShardOrientationForCoreGroup(const TTCoreGroup &core_group) {
+  const std::string linearization = str(core_group->linearization);
+  if (linearization == "col_major") {
+    return String("col_major");
+  }
+  return String("row_major");
 }
 
 Array<Integer> ShardGridShapeForCoreGroup(const TTCoreGroup &core_group) {
@@ -1303,8 +1311,8 @@ BuildBufferDistributionPlans(const SpatialPlan &spatial_plan,
       shard_grid_shape = ShardGridShapeForCoreGroup(core_group);
       shard_shape =
           ShardDataShapeForBuffer(layout_info, storage_info_by_buffer, buffer);
-      sharding_strategy = ShardOrientationForCoreGroup(core_group);
-      shard_orientation = sharding_strategy;
+      sharding_strategy = ShardingStrategyForCoreGroup(core_group);
+      shard_orientation = ShardOrientationForCoreGroup(core_group);
       auto source_it = source_buffer_by_target.find(buffer);
       if (source_it != source_buffer_by_target.end()) {
         source_buffer = String(source_it->second);
