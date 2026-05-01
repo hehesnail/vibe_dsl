@@ -91,7 +91,7 @@
 3. `tasks/dev_design/task1_spatial_plan_companion.md` — `SpatialPlan` 主设计合同
 4. `tasks/dev_design/task2_ttprogram_companion_cutover.md` — `TTProgram` 主设计合同
 5. `tasks/dev_design/task3_runtime_gate_and_workload_cutover.md` — `ExecutableSpec / leaf reader` 主设计合同
-6. `tasks/progress.md` — 当前 repo HEAD 状态与下一步
+6. `tasks/progress.md` — 当前执行看板、active task、blocker、下一步
 7. `tasks/dev_design/README.md` — 当前活动设计文档索引
 8. `tasks/dev_design/README.md` 里列出的 current lane docs
 9. 如果涉及构建/调试/历史问题，再读 `memory/general_dev.md` 和 `memory/bugs.md`

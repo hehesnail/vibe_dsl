@@ -958,10 +958,18 @@ This belongs before claiming production distributed sharding support.
 
 ## Relation To Current Task Queue
 
-T2 leaf compute / GEMM work can continue for interleaved or already-admitted
-placements.
+T2 leaf compute / GEMM baseline work can continue for interleaved or
+already-admitted placements.
 
-Any T2 item that claims sharded GEMM/layout support must depend on:
+This design is queued as T3.
+It starts after the T2 current-placement baseline and before any sharded
+GEMM/layout claim.
+The external `sharded_accessor_cta` / `page_indexed_accessor_cta` runtime
+ABI gap is queued as T4 after this design, because those accessors must
+consume projected placement / conversion records rather than infer sharding
+or page metadata.
+
+Any task that claims sharded GEMM/layout support must depend on:
 
 - DSL / user placement intent capture
 - `TTTensorMemoryConfigPlan`
@@ -969,7 +977,7 @@ Any T2 item that claims sharded GEMM/layout support must depend on:
 - placement conflict validation
 - `TTReshardPlan` or typed rejects
 
-T7 distributed production variants depend on this design before they can
+T10 distributed production variants depend on this design before they can
 claim sharding support.
 Mesh / CCL / NoC plans are not enough by themselves if tensor sharding and
 reshard conflicts are still implicit.
@@ -980,14 +988,20 @@ The ordering relationship is:
 T2 interleaved / current admitted placements
   can proceed now
 
-T2 sharded GEMM / layout claims
+T3 tensor/value sharding and explicit reshard
+  starts after T2 baseline
+
+T4 external accessor / runtime ABI expansion
+  consumes the projected placement and conversion records
+
+T5 sharded GEMM / layout variants
   require S2-S8 of this design
 
-T6 workload first paths that rely on sharded weights or activations
+T9 workload first paths that rely on sharded weights or activations
   require DSL intent, memory-config plans, op contracts, and conflict rejects;
   admitted correctness requires the matching reshard path
 
-T7 production distributed variants
+T10 production distributed variants
   require the whole sharding / reshard lane plus mesh / CCL / NoC plans
 ```
 

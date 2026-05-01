@@ -58,12 +58,15 @@ Pass 名字、helper、payload、bag、bridge attr
 
 ```text
 T1 Buffer address ABI execution integration (complete)
-  -> T2 Leaf compute / GEMM variants (active)
-  -> T3 topk
-  -> T4 exact-CB / materialization primitives
-  -> T5 grouped / ragged work packets
-  -> T6 workload first paths
-  -> T7 production distributed variants
+  -> T2 Leaf compute / GEMM baseline (active)
+  -> T3 tensor/value sharding and explicit reshard
+  -> T4 external accessor / runtime ABI expansion
+  -> T5 sharded GEMM / layout variants
+  -> T6 topk
+  -> T7 exact-CB / materialization primitives
+  -> T8 grouped / ragged work packets
+  -> T9 workload first paths
+  -> T10 production distributed variants
 ```
 
 Admission levels

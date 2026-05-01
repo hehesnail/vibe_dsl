@@ -287,7 +287,8 @@ Each family must name two things separately:
 
 | Family | Repo evidence | First single-device path | Later production requirements |
 | --- | --- | --- | --- |
-| Non-flash leaf compute and GEMM variants | Current Blackhole copy / GEMM tests plus TT-Metal leaf API surface | Standalone unary / binary / broadcast / reduce / pack / typecast leaf families and GEMM layout variants with direct correctness gates; existing stick / page-shaped copy tests remain baseline coverage, not a new top-level task | Sharded layouts, wider multi-core placement, and non-replicated buffer distributions |
+| Non-flash leaf compute and GEMM baseline | Current Blackhole copy / GEMM tests plus TT-Metal leaf API surface | Standalone unary / binary / broadcast / reduce / pack / typecast leaf families and current-placement GEMM layout variants with direct correctness gates; existing stick / page-shaped copy tests remain baseline coverage, not a new top-level task | Sharded layouts, wider multi-core placement, and non-replicated buffer distributions |
+| External accessor / runtime ABI | Existing executable accessor kinds `sharded_accessor_cta` and `page_indexed_accessor_cta` | Admit or precisely reject external sharded/page-indexed runtime/codegen accessors from executable records | Wider direct runtime coverage for sharded tensors, paged tensors, and page-table driven workloads |
 | `topk` / selection / indexing | `tilelang_repo/examples/topk/example_topk.py` | Single-device `reduce_max` selection with `int32` index outputs and correctness checks | Use as MoE gating input and routing metadata producer |
 | MoE / `fusedmoe` | `tilelang_repo/examples/fusedmoe/example_fusedmoe_tilelang.py`; `tt_metal_repo/models/demos/deepseek_v3/tt/moe.py`; `tt_metal_repo/models/demos/deepseek_v3/tt/experts.py` | Shared expert plus pre-packed routed grouped GEMM where `group_sizes`, `group_offsets`, `group_padded_offsets`, `group_idx_for_bx`, routed weights, and token grouping are explicit inputs; no claim of full MoE until gating and combine are admitted | In-pipeline topk, token packing, scatter / gather / combine, expert sharding, all-to-all dispatch / combine, reduce-scatter, all-gather, mesh memory placement |
 | Paged attention / paged decode / MLA decode | `tilelang_repo/examples/blocksparse_attention/example_tilelang_sparse_gqa_decode_paged.py`; `tilelang_repo/examples/deepseek_mla/example_mla_decode_paged.py`; `tt_metal_repo/models/tt_transformers/tt/attention.py` | Single-device page-table or block-table indexed KV read with `cache_seqlens`, optional fixed `num_split`, explicit partial-output / logsum combine, and exact intermediate lifetime | Paged KV cache update / fill, sharded KV cache, multi-device all-gather / all-reduce, split reduction scheduling, NoC-aware max-cores-per-head policy |
@@ -295,8 +296,10 @@ Each family must name two things separately:
 | Chunk recurrence / scan | `tilelang_repo/examples/linear_attention/example_mamba_chunk_scan.py`; `tilelang_repo/examples/gdn/example_chunk_o.py`; `tilelang_repo/examples/kda/chunk_o.py` | Single-device chunk state, loop-carried state, and local state-buffer lifetime admission | Cross-core chunk scheduling, distributed state placement, communication-aware state handoff |
 | Multi-block flash-attn / flash decode | Current flash-attn Blackhole tests; `tt_metal_repo/tech_reports/FlashAttention/FlashDecode.md` | Existing small and 32x32 bf16 direct runtime path; next is multi-block exact-CB publish / consume correctness | Multi-core split reduction, semaphore-backed remote writes, NoC traffic control, distributed decode scaling |
 
-This means P2 workload bring-up is not blocked on all of P3.
-It is blocked on the specific P3 primitives each first path actually needs.
+This means T9 workload bring-up is not blocked on all of T10.
+It is blocked on the specific earlier primitives each first path actually
+needs, such as T3 sharding / reshard, T4 external accessors, T7
+materialization, or T8 grouped / ragged metadata.
 Those primitives must be pulled forward explicitly instead of hidden under a
 generic "later runtime" bucket.
 
@@ -308,15 +311,19 @@ This roadmap keeps the stable order and exit criteria.
 | Task | Goal | Depends On | Exit Criteria |
 | --- | --- | --- | --- |
 | T1 Buffer address ABI execution integration | Make sharded L1 and page-indexed address ABI real execution contracts, not metadata-only records. | Hardware-backed buffer placement and typed sharded fields. | Complete: sharded L1 staged-copy path materializes from typed plans into source/spec/direct-runtime and passes TT-Sim bf16 correctness; page-indexed 64B page path materializes from typed page metadata and passes direct-runtime correctness; non-admitted 32B bf16 sub-tile page transport and external sharded/page-indexed accessor kinds fail closed from typed fields. |
-| T2 Leaf compute / GEMM variants | Admit non-flash leaf compute and GEMM layout variants. | T1. | Unary / binary / broadcast / reduce / pack / typecast, GEMM variants, and admitted layout movement have direct correctness gates or typed rejects. |
-| T3 Selection / index base | Bring up standalone `topk` with `int32` index outputs. | T1 and required leaf reductions. | Value and index correctness are proven; compile-only is not enough. |
-| T4 Exact-CB / materialization primitives | Repair wider exact-CB publish/consume, partial combine, and source-live-form materialization for multi-kernel intermediates. | T1. | Multi-kernel intermediate correctness is covered and missing materialization protocol fails before source/runtime emission. |
-| T5 Grouped / ragged work packets | Represent group, block, ragged row count, and per-work indexed ranges as typed planning inputs. | T1 and relevant per-work descriptors. | Missing or inconsistent group/ragged metadata is rejected before source/runtime emission. |
-| T6 Workload first paths | Bring up pre-grouped MoE, sparse/ragged attention, paged GQA decode, paged MLA decode, and chunk recurrence in that order. | T1-T5 as needed by each workload. | Each workload has a stated first path, correctness proof, and typed rejects for unadmitted forms. |
-| T7 Production distributed variants | Add mesh/sharding/CCL/NoC/multicast/global scheduling support. | Stable first paths and typed distributed plans. | Distributed paths have typed placement, communication, admission, and correctness gates. |
+| T2 Leaf compute / GEMM baseline | Admit non-flash leaf compute and current-placement GEMM layout baseline. | T1. | Unary / binary / broadcast / reduce / pack / typecast, current-placement GEMM variants, and admitted layout movement have direct correctness gates or typed rejects. |
+| T3 Tensor/value sharding and explicit reshard | Make TTNN-style user placement intent, op placement contracts, placement conflict handling, and reshard plans first-class in the IR chain. | T2 baseline. | DSL placement intent, tensor memory-config plans, op contracts, conflict rejects, reshard plans, and executable projection are typed and tested. |
+| T4 External accessor / runtime ABI expansion | Admit or precisely reject external `sharded_accessor_cta` and `page_indexed_accessor_cta` runtime/codegen forms. | T1 address ABI and T3 placement/conversion projection. | External sharded/page-indexed accessors have direct TT-Metal ABI records and runtime/codegen admission, or fail from explicit executable accessor records. |
+| T5 Sharded GEMM / layout variants | Admit GEMM/layout variants that depend on real tensor sharding, including explicit retile/work-coarsening when a layout changes logical work mapping. | T3, and T4 when external sharded/page-indexed accessors are required. | Sharded GEMM/layout correctness where admitted; typed rejects for unsupported placement/conversion/retile combinations. |
+| T6 Selection / index base | Bring up standalone `topk` with `int32` index outputs. | T2 leaf reductions. | Value and index correctness are proven; compile-only is not enough. |
+| T7 Exact-CB / materialization primitives | Repair wider exact-CB publish/consume, partial combine, source-live-form materialization, and multi-block flash-attn / flash-decode exact-CB correctness. | T1 and relevant T3 materialization rules when sharded values are involved. | Multi-kernel intermediate correctness is covered and missing materialization protocol fails before source/runtime emission. |
+| T8 Grouped / ragged work packets | Represent group, block, ragged row count, and per-work indexed ranges as typed planning inputs. | T1 and relevant per-work descriptors. | Missing or inconsistent group/ragged metadata is rejected before source/runtime emission. |
+| T9 Workload first paths | Bring up pre-grouped MoE, sparse/ragged attention, paged GQA decode, paged MLA decode, chunk recurrence, and multi-block flash decode first paths. | Prior tasks as needed by each workload. | Each workload has a stated first path, correctness proof, and typed rejects for unadmitted forms. |
+| T10 Production distributed variants | Add mesh/sharding/CCL/NoC/multicast/global scheduling support. | Stable first paths and typed distributed plans, including T3 sharding/reshard. | Distributed paths have typed placement, communication, admission, and correctness gates. |
 
-Do not advance workload admission past T1 while sharded/page-indexed address
-ABI has no source/spec/direct-runtime path with TT-Sim correctness.
+Do not advance workload admission that depends on external sharded or
+page-indexed accessors past T4 until those accessor forms have
+source/spec/direct-runtime admission or precise typed rejects.
 
 ## Planning Order
 
@@ -325,8 +332,8 @@ ABI has no source/spec/direct-runtime path with TT-Sim correctness.
 3. Keep CB / L1 admission hardware-backed.
 4. Keep core groups hardware-model-backed and replace unit buffer placement
    with explicit buffer distribution.
-5. Follow the execution order above for first-path workload admission.
-6. Pull forward only the P3 primitives required by the current first path.
+5. Follow `tasks/progress.md` for first-path workload admission order.
+6. Pull forward only the typed primitives required by the current first path.
 7. Defer production distributed variants until mesh / sharding / CCL /
    NoC / multicast / global scheduling plans are typed and validated.
 

@@ -17,7 +17,7 @@
   不把 pass 名、helper、bag、payload、bridge attr
   写成长期协议
 - task 文档定义目标合同和完成判据；
-  `progress.md` 只记录 repo HEAD 状态与下一步；
+  `progress.md` 只记录当前执行看板、active task、blocker、下一步；
   `tasks/dev_design/archive/layered_ir_references.md`
   只做研究输入，不充当活动设计入口
 
@@ -281,7 +281,7 @@
   是绑定到 core group
   的 working view /
   materialization。
-  repo HEAD 的
+  当前实现里的
   `TTBufferDistributionPlan`
   已拆开
   `shard_grid_shape`、
@@ -901,7 +901,7 @@
   不要跳过
   `BuildSpatialPlan`，
   也不要恢复 bridge attr。
-  repo HEAD 的做法是：
+  当前有效做法是：
   在 pre-opt 阶段保留 typed
   `SpatialPlan.LayoutSpec`
   作为 merge source，
@@ -1646,7 +1646,7 @@ cd <当前 checkout 或 worktree>/tilelang_repo
 - 2026-04-28 早先记录的 Blackhole 任务顺序
   后来又被 2026-04-29 hardware-codegen usefulness gate 修正；
   该记录只说明当时路线为何调整，
-  不代表 repo HEAD 的当前 active lane：
+  不代表当前 active lane：
   `AccessRegion` /
   graph-backed `SpatialPlan` dependence /
   `LiveValueSSA` /
@@ -1759,7 +1759,7 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   来决定 consumer full-tile vs distributed-slice requirement。
   后续 Phase E 已删除 subject 到 latest live value 的 wider owner truth；
   该记录保留的是 cutover 前的 migration checkpoint，
-  不再代表 repo HEAD 状态。
+  不再代表当前 active 状态。
 - 2026-04-28 记录 Algorithmic generalization anti-overdesign
   pay-rent rule：
   新的算法对象 / 字段 / solver 状态 / DAG pattern
@@ -1812,7 +1812,7 @@ cd <当前 checkout 或 worktree>/tilelang_repo
 - 2026-04-28 状态文件边界：
   `tasks/progress.md`
   is a status board, not a changelog.
-  Keep only repo HEAD status,
+  Keep only current execution status,
   blocker,
   support boundary,
   open debt,

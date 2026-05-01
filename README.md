@@ -6,7 +6,7 @@
 
 - Overall design:
   `tasks/dev_design/final_blackhole_backend_redesign.md`
-- Current status / blocker / next task:
+- Current execution status / blocker / next task:
   `tasks/progress.md`
 - Active design index:
   `tasks/dev_design/README.md`
@@ -25,7 +25,7 @@ as current design input.
 
 ## Status Policy
 
-Current implementation state is intentionally not duplicated here.
+Current execution state is intentionally not duplicated here.
 Read `tasks/progress.md`.
 
 The durable architecture is:

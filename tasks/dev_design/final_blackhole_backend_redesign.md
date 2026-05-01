@@ -5,7 +5,7 @@
 This is the only overall design document for the Blackhole backend.
 It defines durable architecture contracts, not repo-history logs.
 
-Current implementation status, blockers, and latest verification live in
+Current execution status, blockers, and latest verification live in
 `tasks/progress.md`.
 Task-level details live in the task design documents listed by
 `tasks/dev_design/README.md`.
@@ -375,6 +375,6 @@ A task is complete only when:
 - source/runtime no longer recover missing planner truth
 - validators reject inconsistent or missing evidence
 - tests or compile/runtime checks match the task risk
-- docs and `tasks/progress.md` reflect current HEAD without duplicating
-  history
+- docs and `tasks/progress.md` reflect the current execution boundary without
+  duplicating history
 - any stable lesson belongs in `memory/`, not in this overall design
