@@ -16,6 +16,7 @@ from .common import (
     extract_blackhole_total_l1_bytes,
     extract_blackhole_work_per_core,
     grid_indexed_staged_copy_kernel,
+    rebuild_tt_buffer_distribution_plan,
     rebuild_tt_abi_plan,
     rebuild_tt_kernel,
     rebuild_tt_core_group,
@@ -153,6 +154,23 @@ def _rebuild_direct_runtime_module_with_core_plan(artifact, core_plan):
         return rebuild_tt_program(tt_program, core_groups=core_groups)
 
     return _rebuild_direct_runtime_module_with_tt_program(artifact, tt_program_mutator=mutate)
+
+
+def _rebuild_direct_runtime_module_with_executable_mutator(artifact, executable_mutator):
+    rewritten = {}
+    for gvar, func in artifact.device_mod.functions.items():
+        if func.attrs and "tl.blackhole_executable" in func.attrs:
+            executable = {
+                str(key): value for key, value in func.attrs["tl.blackhole_executable"].items()
+            }
+            func = func.with_attr("tl.blackhole_executable", executable_mutator(executable))
+        rewritten[gvar] = func
+    device_mod = tvm.IRModule(rewritten, global_infos=artifact.device_mod.global_infos)
+    build_mod = merge_ir_modules(artifact.host_mod, device_mod)
+    target = Target("blackhole")
+    return tvm.ffi.get_global_func("target.build.tilelang_blackhole_without_host")(
+        build_mod, target
+    )
 
 
 def _extract_tt_program_core_plan(device_main):
@@ -396,6 +414,18 @@ def test_blackhole_module_direct_call_grid_indexed_copy_multicore_launch():
     assert int(core_plan["logical_grid_y"]) == grid_y
     assert len(core_plan["physical_cores"]) == 6
     assert len(core_plan["work_packets"]) == 6
+    distribution_by_buffer = {
+        str(plan["buffer"]): plan
+        for plan in executable_spec["buffer_distribution_plans"]
+    }
+    sharded_l1 = distribution_by_buffer["A_shared"]
+    assert str(sharded_l1["distribution_kind"]) == "sharded"
+    assert str(sharded_l1["memory_space"]) == "L1"
+    assert str(sharded_l1["source_buffer"]) == "A"
+    assert str(sharded_l1["source_region_kind"]) == "per_work_tile"
+    assert tuple(int(dim) for dim in sharded_l1["source_region_shape"]) == (32, 32)
+    assert str(sharded_l1["logical_index_mapping"]) == "work_packet_row_major"
+    assert str(sharded_l1["core_local_address_mapping"]) == "l1_shard_linear"
     per_work_arg_specs = {
         (spec["buffer"], spec["descriptor_kind"]): spec["value_source"]
         for spec in executable_spec["per_work_arg_specs"]
@@ -415,6 +445,54 @@ def test_blackhole_module_direct_call_grid_indexed_copy_multicore_launch():
         atol=1e-3,
         rtol=1e-3,
         failure_message="Grid-indexed direct-call output mismatch",
+    )
+
+
+def test_blackhole_module_direct_call_page_indexed_copy_consumes_address_contract():
+    can_run, msg = check_blackhole_direct_execution_requirements()
+    if not can_run:
+        pytest.skip(f"Blackhole requirements not met: {msg}")
+
+    m, n = 32, 32
+    torch.manual_seed(42)
+    a_torch = torch.randn(m, n, dtype=torch.float32)
+    b_output = torch.zeros_like(a_torch)
+    b_ref = torch.zeros_like(a_torch)
+    b_ref[:, 0:16] = a_torch[:, 0:16]
+
+    target = Target("blackhole")
+    kernel = staged_stick_copy_kernel(
+        tile_m=32,
+        tile_n=16,
+        global_n=32,
+        dtype="float32",
+        src_col=0,
+        dst_col=0,
+    )
+    with target:
+        artifact = lower(kernel, target=target)
+
+    executable_spec = _extract_blackhole_executable_spec(artifact)
+    kernel_spec = executable_spec["kernels"][0]
+    accessors = {str(accessor["buffer"]): accessor for accessor in kernel_spec["accessors"]}
+    assert int(accessors["A"]["transport_page_size"]) == 64
+    assert int(accessors["B"]["transport_page_size"]) == 64
+    distribution_by_buffer = {
+        str(plan["buffer"]): plan
+        for plan in executable_spec["buffer_distribution_plans"]
+    }
+    assert str(distribution_by_buffer["A"]["logical_index_mapping"]) == "interleaved_page_index"
+    assert str(distribution_by_buffer["B"]["logical_index_mapping"]) == "interleaved_page_index"
+    assert int(distribution_by_buffer["A"]["page_size_bytes"]) == 64
+    assert int(distribution_by_buffer["B"]["page_size_bytes"]) == 64
+
+    artifact.codegen_mod["main"](a_torch, b_output)
+    assert_tensors_close_or_dump(
+        b_output,
+        b_ref,
+        atol=1e-5,
+        rtol=1e-5,
+        failure_message="Page-indexed copy direct-call output mismatch",
     )
 
 
@@ -585,6 +663,70 @@ def test_blackhole_module_direct_call_rejects_empty_work_packets_at_build_time()
         match="core_plan.work_packets|planner/runtime|TTCoreGroup requires work_packets",
     ):
         _rebuild_direct_runtime_module_with_core_plan(artifact, core_plan)
+
+
+def test_blackhole_build_rejects_incomplete_executable_buffer_distribution_contract():
+    target = Target("blackhole")
+    kernel = grid_indexed_staged_copy_kernel(grid_x=2, grid_y=2)
+
+    with target:
+        artifact = lower(kernel, target=target)
+
+    def drop_sharded_source_buffer(executable):
+        plans = []
+        for item in executable["buffer_distribution_plans"]:
+            plan = {str(key): value for key, value in item.items()}
+            if str(plan.get("distribution_kind", "")) == "sharded":
+                plan.pop("source_buffer", None)
+            plans.append(plan)
+        executable["buffer_distribution_plans"] = plans
+        return executable
+
+    with pytest.raises(
+        tvm.error.InternalError,
+        match="buffer_distribution_plans|source_buffer",
+    ):
+        _rebuild_direct_runtime_module_with_executable_mutator(
+            artifact, drop_sharded_source_buffer
+        )
+
+
+def test_blackhole_direct_runtime_rejects_unadmitted_buffer_distribution_kind():
+    can_run, msg = check_blackhole_direct_execution_requirements()
+    if not can_run:
+        pytest.skip(f"Blackhole requirements not met: {msg}")
+
+    target = Target("blackhole")
+    kernel = staged_copy_kernel(tile_rows=1, tile_cols=1)
+    with target:
+        artifact = lower(kernel, target=target)
+
+    def mutate(tt_program):
+        distributions = []
+        for plan in tt_program.buffer_distribution_plans:
+            if str(plan.buffer) == "A":
+                distributions.append(
+                    rebuild_tt_buffer_distribution_plan(
+                        plan,
+                        distribution_kind="replicated",
+                        logical_index_mapping="none",
+                    )
+                )
+            else:
+                distributions.append(plan)
+        return rebuild_tt_program(tt_program, buffer_distribution_plans=distributions)
+
+    mutated_mod = _rebuild_direct_runtime_module_with_tt_program(
+        artifact, tt_program_mutator=mutate
+    )
+
+    a_torch = torch.randn(32, 32, dtype=torch.bfloat16)
+    b_output = torch.zeros_like(a_torch)
+    with pytest.raises(
+        tvm.error.InternalError,
+        match="buffer distribution|replicated",
+    ):
+        mutated_mod["main"](a_torch, b_output)
 
 
 def test_blackhole_copy_direct_runtime_rejects_noncompact_input_tensor_layout():

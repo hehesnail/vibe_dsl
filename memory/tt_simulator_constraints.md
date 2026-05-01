@@ -220,6 +220,10 @@
    - `noc_cmd_ctrl`
    - 若干 `sfp* / semaphore / tile io`
    存在 simulator-side hard gate。
+   本轮额外确认：
+   32B bf16 staged stick page transport 会在 `noc_cmd_ctrl`
+   命中 read alignment mismatch fatal，
+   当前 direct-runtime page transport 仍按 64B page alignment admission。
 4. 当 direct runtime 首次命中这三类 taxonomy 时，
    应先把它和 target contract 回归分开判断。
 

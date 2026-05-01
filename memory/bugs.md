@@ -1818,6 +1818,29 @@
     先查测试 helper / schema drift，
     不要误判成 codegen 或 direct runtime 行为失败
 
+#### Blackhole 32B bf16 page transport 会命中 TT-Sim NOC 对齐 fatal
+
+- **症状**:
+  - 将 staged stick copy 的 page transport 放宽到
+    32B bf16 stick page 后，
+    TT-Sim direct runtime 在执行 `noc_async_read`
+    时 fatal：
+    `noc_cmd_ctrl: read: alignment of src_addr=0x40 and dst_addr=... does not match`
+- **根因**:
+  - 当前 page transport 的 single NOC read/write
+    需要 source / destination alignment 兼容。
+    32B bf16 sub-tile stick page 会让 DRAM source 和 CB L1 destination
+    alignment 不匹配。
+- **修法**:
+  - 保留 64B-aligned page transport admission。
+  - bf16 sub-tile page transport 不作为当前 direct-runtime admitted path；
+    要支持它必须重新设计 source/destination packing 或 NOC transfer
+    granularity，而不是简单放宽 validator。
+- **教训**:
+  - page-indexed ABI 的 typed metadata 通过不等于硬件 transfer 合法。
+    新 page size 必须跑 TT-Sim correctness；
+    simulator fatal 不能被记录成普通 unsupported reason 后继续执行。
+
 ## 3. 环境问题速查
 
 | 问题 | 解决 |

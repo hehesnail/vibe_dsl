@@ -282,11 +282,17 @@ CollectSourceBufferByMaterializedTarget(const tir::PrimFunc &func,
     }
     auto source_it = buffer_by_data.find(source_var);
     auto targets_it = cb_targets.find(cb_id->value);
-    if (source_it == buffer_by_data.end() || targets_it == cb_targets.end()) {
+    if (targets_it == cb_targets.end()) {
+      return;
+    }
+    const std::string source_name = source_it != buffer_by_data.end()
+                                        ? source_it->second
+                                        : std::string(source_var->name_hint);
+    if (source_name.empty()) {
       return;
     }
     for (const std::string &target : targets_it->second) {
-      bind_source(target, source_it->second);
+      bind_source(target, source_name);
     }
   });
   for (const std::string &target : ambiguous_targets) {

@@ -8,7 +8,7 @@
 ## Status
 
 - Date: `2026-05-01`
-- Active task: `T1 Buffer address ABI 接入执行路径`
+- Active task: `T2 Leaf compute / GEMM variants`
 - Main chain:
   `Normalized Tile TIR -> SpatialPlan -> TTProgram -> ExecutableSpec`
 
@@ -46,47 +46,45 @@
   `logical_index_mapping`,
   and `core_local_address_mapping`.
   Pure local sharded scratch does not fabricate source-region binding.
+- `TTBufferDistributionPlan` is now projected into `ExecutableSpec` as the
+  runtime-visible buffer address contract.
+  `BlackholeModule` metadata / serialization preserves it, leaf readers
+  validate it, and direct-runtime admission consumes it before execution.
+- Sharded L1 is admitted for the staged-copy resident L1 / CB-backed path:
+  the executable carries DRAM `source_buffer`,
+  `per_work_tile` source region,
+  `work_packet_row_major` logical mapping,
+  and `l1_shard_linear` core-local mapping;
+  TT-Sim bf16 correctness passes.
+- Page-indexed 64B stick/page copy is admitted through typed
+  `transport_page_size`,
+  executable `page_size_bytes`,
+  and `interleaved_page_index` mapping;
+  direct runtime correctness passes.
+  32B bf16 sub-tile page transport remains outside the admitted boundary
+  because TT-Sim rejects the NOC read/write alignment.
 - Accessor compile-time ABI kinds are typed:
   `interleaved_accessor_cta`,
   `sharded_accessor_cta`,
   and `page_indexed_accessor_cta`.
-- Direct runtime still admits only interleaved DRAM accessor execution.
-  Sharded and page-indexed forms are represented, but they are not yet wired
-  into real direct-runtime execution.
+- Direct runtime still admits external runtime buffers as interleaved DRAM
+  accessor execution.
+  `sharded_accessor_cta` and `page_indexed_accessor_cta` remain fail-closed
+  for external compile-time accessor materialization until a later task
+  gives them a direct TT-Metal accessor ABI.
 
-## Active Task: T1 Buffer Address ABI 接入执行路径
+## Completed Task: T1 Buffer Address ABI 接入执行路径
 
-### Problem
+### Result
 
-typed ABI 字段已经存在，但 sharded 和 page-indexed address 形态还没有接入
-source/spec/direct-runtime 的真实执行路径。
+T1 is complete for the current admitted direct-runtime surface.
 
-这一项不能靠“所有 non-interleaved 形态都 typed reject”收口。
-它必须证明新的 address ABI 被真实 consumer 使用。
-
-### Completion Standard
-
-T1 只有在下面四个交付项全部完成后才算完成。
-
-| 交付项 | 目标 | 做法 | 完成标准 |
-| --- | --- | --- | --- |
-| T1.1 Executable address contract | `ExecutableSpec` / leaf reader carries the address ABI needed by runtime. | Project the relevant `TTBufferDistributionPlan`, `TTAccessorSpec`, and per-work descriptor fields into the executable schema. Remove any source/runtime fallback that reconstructs this from names or layout strings. | Projection tests show the executable schema contains the typed address contract and rejects missing fields. |
-| T1.2 Sharded L1 execution sample | At least one sharded L1 path actually runs. | Use a small staged-copy style program with DRAM/global source, resident per-worker L1 shard, work-packet mapping, and core-local address mapping. Generate source/spec/direct-runtime args from typed plans. | TT-Sim bf16 correctness passes for that sharded L1 path. |
-| T1.3 Page-indexed execution sample | At least one page-indexed path actually runs. | Use a minimal page-indexed read/copy path with explicit page metadata and per-work address descriptor. Generate source/spec/direct-runtime args from typed plans. | TT-Sim bf16 correctness passes for that page-indexed path. |
-| T1.4 Unsupported-form rejects | Remaining unsupported forms fail for the right reason. | For sharded/page-indexed/shared forms outside the admitted execution samples, inspect typed ABI fields and produce precise unsupported reasons. | Negative tests fail closed before source/runtime guessing. |
-
-### Implementation Order
-
-1. Write failing tests for T1.1 projection and missing-field rejects.
-2. Implement executable address contract projection and validation.
-3. Write failing TT-Sim or direct-runtime tests for the sharded L1 execution sample.
-4. Implement sharded L1 source/spec/direct-runtime consumption.
-5. Write failing TT-Sim or direct-runtime tests for the page-indexed execution sample.
-6. Implement page-indexed source/spec/direct-runtime consumption.
-7. Add negative tests for unsupported non-interleaved forms.
-8. Run the verification set listed under "Required Verification".
-9. Update this file, relevant design docs, and `memory/`.
-10. Commit and push.
+| 交付项 | 状态 |
+| --- | --- |
+| T1.1 Executable address contract | Done. `ExecutableSpec` carries `buffer_distribution_plans`; metadata, serialization, and leaf validation preserve required address fields. Missing sharded `source_buffer` rejects during build. |
+| T1.2 Sharded L1 execution sample | Done. Grid-indexed staged copy uses DRAM source -> resident per-worker L1 / CB-backed `A_shared`; direct runtime consumes the typed sharded distribution and passes TT-Sim bf16 correctness. |
+| T1.3 Page-indexed execution sample | Done for admitted 64B page transport. Stick/page copy uses explicit `transport_page_size`, executable `page_size_bytes`, and `interleaved_page_index`; direct runtime correctness passes. 32B bf16 sub-tile page transport is a recorded alignment boundary, not silently admitted. |
+| T1.4 Unsupported-form rejects | Done. Runtime-bound buffers with non-interleaved / replicated distribution fail from typed distribution fields; non-admitted compile-time accessor kinds remain typed rejects. |
 
 ### Non-Negotiable Boundaries
 
@@ -99,6 +97,25 @@ T1 只有在下面四个交付项全部完成后才算完成。
 - Runtime must execute typed contracts. It must not infer source regions,
   shard ownership, page metadata, or buffer roles from names, suffixes,
   argument order, or layout strings.
+
+## Active Task: T2 Leaf Compute / GEMM variants
+
+### Problem
+
+The address ABI is now wired into the admitted direct-runtime path.
+The next blocker is leaf compute / GEMM coverage:
+more leaf families and GEMM layout variants must either run with direct
+correctness or fail closed from typed leaf / layout contracts.
+
+### Completion Standard
+
+T2 is complete only when unary / binary / broadcast / reduction / pack /
+typecast leaf families and the required GEMM layout variants have:
+
+- explicit leaf/source/spec contracts,
+- direct-runtime correctness where admitted,
+- typed unsupported reasons where not admitted,
+- no fallback to composite source matchers, names, or payloads.
 
 ## Required Verification
 
@@ -115,14 +132,13 @@ T1 只有在下面四个交付项全部完成后才算完成。
 
 ## Task Queue
 
-当前只有 T1 是 active task。
-在 sharded 和 page-indexed 都有通过 source/spec/direct-runtime 与 TT-Sim
-correctness 的执行样例之前，不推进后续任务。
+T1 已完成。
+当前 active task 是 T2。
 
 | 任务 | 目标 | 依赖 | 完成目标 |
 | --- | --- | --- | --- |
-| T1 Buffer address ABI 接入执行路径 | Make sharded L1 and page-indexed address ABI real execution contracts. | Current typed placement fields. | T1.1-T1.4 all complete. |
-| T2 Leaf compute / GEMM variants | Admit non-flash leaf compute and GEMM layout variants. | T1. | Direct correctness or typed reject for each admitted leaf family / layout. |
+| T1 Buffer address ABI 接入执行路径 | Make sharded L1 and page-indexed address ABI real execution contracts. | Current typed placement fields. | Complete. |
+| T2 Leaf compute / GEMM variants | Admit non-flash leaf compute and GEMM layout variants. | T1 complete. | Direct correctness or typed reject for each admitted leaf family / layout. |
 | T3 `topk` | Admit standalone value/index selection. | T1 and required leaf reductions. | Value and `int32` index correctness, not compile-only. |
 | T4 Exact-CB / materialization primitives | Repair wider publish/consume, partial combine, and source-live-form materialization. | T1. | Multi-kernel intermediate correctness and typed materialization rejects. |
 | T5 Grouped / ragged work packets | Represent group/ragged metadata as typed planning input. | T1 and relevant per-work descriptors. | Missing/inconsistent group metadata rejects before source/runtime emission. |
@@ -135,12 +151,15 @@ correctness 的执行样例之前，不推进后续任务。
   interleaved DRAM buffer address schema with no common runtime args,
   copy equal source/destination range with stride 1,
   selected interleaved stick/page-shaped copy cases,
+  staged-copy sharded L1 / CB-backed resident view with typed source region,
   GEMM A/B-separated reader range plus writer output range,
   non-oversubscribed explicit semaphore / remote-endpoint path,
   and admitted bf16 live-form paths.
-- Current typed-but-not-yet-executed address forms:
-  sharded L1 and page-indexed accessors.
-  These are the active T1 target.
+- Current typed-but-not-yet-executed external accessor forms:
+  `sharded_accessor_cta` and `page_indexed_accessor_cta`.
+  They are not T1 blockers because the admitted sharded/page-indexed address
+  contracts now execute through buffer distribution + interleaved external
+  DRAM accessors.
 - Current workload backlog:
   `topk`,
   MoE / `fusedmoe`,
@@ -151,20 +170,24 @@ correctness 的执行样例之前，不推进后续任务。
 ## Latest Verification
 
 Latest implementation batch:
-typed sharded L1 buffer address ABI split and fail-closed validator/projection
-gates.
+T1 buffer address ABI execution integration.
 
 Verified:
 
-- `cmake --build build -j32`
-- `pytest -q tilelang_repo/testing/python/transform/test_blackhole_spatial_ir.py`
-  (`90 passed`)
-- `pytest -q tilelang_repo/testing/python/target/blackhole/test_blackhole_copy_pipeline.py tilelang_repo/testing/python/target/blackhole/test_blackhole_flash_attention_pipeline.py tilelang_repo/testing/python/target/blackhole/test_blackhole_gemm.py`
-  (`165 passed, 25 skipped, 1 xfailed, 4 warnings`)
+- `cmake --build /root/dev/vibe_dsl/tilelang_repo/build -- -j32`
 - TT-Sim env via `scripts/setup_tt_sim.sh`,
   then
-  `pytest -q testing/python/target/blackhole/test_blackhole_copy_runtime.py testing/python/target/blackhole/test_blackhole_tvm_ffi_export.py`
-  (`16 passed`)
-- TT-Sim env via `scripts/setup_tt_sim.sh`,
-  then copy-pipeline direct-runtime ABI path
-  (`9 passed`)
+  `pytest -q testing/python/target/blackhole/test_blackhole_copy_pipeline.py testing/python/target/blackhole/test_blackhole_copy_runtime.py testing/python/transform/test_blackhole_spatial_ir.py`
+  (`171 passed, 1 skipped, 1 xfailed, 4 warnings`)
+- Targeted red/green T1 selectors:
+  missing executable sharded source-buffer reject,
+  unadmitted buffer-distribution typed reject,
+  sharded L1 bf16 direct runtime,
+  and page-indexed 64B direct runtime
+  (`4 passed`)
+
+Observed boundary:
+
+- 32B bf16 sub-tile page transport is not admitted.
+  TT-Sim rejects the NOC read/write with an address-alignment mismatch.
+  The admitted page-indexed sample remains the 64B page path.

@@ -564,6 +564,67 @@ struct BufferMaterializationSpec {
   }
 };
 
+struct BufferDistributionSpec {
+  std::string name;
+  std::string buffer;
+  std::string mesh_plan;
+  int64_t mesh_plan_index = -1;
+  std::string distribution_kind;
+  std::string layout;
+  std::string memory_space;
+  uint32_t page_size_bytes = 0;
+  std::vector<int64_t> shard_shape;
+  std::vector<int64_t> shard_grid_shape;
+  std::string sharding_strategy;
+  std::string shard_orientation;
+  std::string source_buffer;
+  std::string source_region_kind;
+  std::vector<int64_t> source_region_shape;
+  std::string logical_index_mapping;
+  std::string core_local_address_mapping;
+  std::string host_visibility;
+  std::string attached_core_group;
+  int64_t attached_core_group_index = -1;
+
+  void Save(dmlc::JSONWriter* writer) const {
+    writer->BeginObject();
+    writer->WriteObjectKeyValue("name", name);
+    writer->WriteObjectKeyValue("buffer", buffer);
+    writer->WriteObjectKeyValue("mesh_plan", mesh_plan);
+    writer->WriteObjectKeyValue("mesh_plan_index", mesh_plan_index);
+    writer->WriteObjectKeyValue("distribution_kind", distribution_kind);
+    writer->WriteObjectKeyValue("layout", layout);
+    writer->WriteObjectKeyValue("memory_space", memory_space);
+    writer->WriteObjectKeyValue("page_size_bytes",
+                                static_cast<int64_t>(page_size_bytes));
+    if (!shard_shape.empty()) {
+      writer->WriteObjectKeyValue("shard_shape", shard_shape);
+    }
+    if (!shard_grid_shape.empty()) {
+      writer->WriteObjectKeyValue("shard_grid_shape", shard_grid_shape);
+    }
+    writer->WriteObjectKeyValue("sharding_strategy", sharding_strategy);
+    writer->WriteObjectKeyValue("shard_orientation", shard_orientation);
+    if (!source_buffer.empty()) {
+      writer->WriteObjectKeyValue("source_buffer", source_buffer);
+    }
+    writer->WriteObjectKeyValue("source_region_kind", source_region_kind);
+    if (!source_region_shape.empty()) {
+      writer->WriteObjectKeyValue("source_region_shape", source_region_shape);
+    }
+    writer->WriteObjectKeyValue("logical_index_mapping", logical_index_mapping);
+    writer->WriteObjectKeyValue("core_local_address_mapping",
+                                core_local_address_mapping);
+    writer->WriteObjectKeyValue("host_visibility", host_visibility);
+    if (!attached_core_group.empty()) {
+      writer->WriteObjectKeyValue("attached_core_group", attached_core_group);
+      writer->WriteObjectKeyValue("attached_core_group_index",
+                                  attached_core_group_index);
+    }
+    writer->EndObject();
+  }
+};
+
 struct LiveFormPlanSpec {
   std::string name;
   std::string logical_value;
@@ -751,6 +812,7 @@ struct ExecutableSpec {
   std::vector<CBConfig> cb_configs;
   CorePlan core_plan;
   std::vector<SemaphoreSpec> semaphores;
+  std::vector<BufferDistributionSpec> buffer_distribution_plans;
   std::vector<BufferMaterializationSpec> buffer_materializations;
   std::vector<KernelArgSpec> runtime_args;
   std::vector<KernelArgSpec> common_runtime_args;
@@ -775,6 +837,10 @@ struct ExecutableSpec {
     writer->WriteObjectKeyValue("core_plan", core_plan);
     if (!semaphores.empty()) {
       writer->WriteObjectKeyValue("semaphores", semaphores);
+    }
+    if (!buffer_distribution_plans.empty()) {
+      writer->WriteObjectKeyValue("buffer_distribution_plans",
+                                  buffer_distribution_plans);
     }
     if (!buffer_materializations.empty()) {
       writer->WriteObjectKeyValue("buffer_materializations", buffer_materializations);

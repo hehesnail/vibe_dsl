@@ -99,6 +99,51 @@ Leaf readers must not infer buffer roles from:
 - work-linear IDs
 - source text
 
+### Buffer Address Contract
+
+`ExecutableSpec`
+must carry the runtime-visible buffer address contract projected from
+validated `TTProgram` placement.
+
+Required buffer distribution fields:
+
+- buffer identity
+- mesh identity / index
+- distribution kind
+- layout and memory space
+- page size
+- host visibility
+- logical index mapping
+
+For interleaved DRAM runtime buffers,
+the executable contract must state:
+
+- `distribution_kind = interleaved`
+- `layout = interleaved`
+- `memory_space = DRAM`
+- positive `page_size_bytes`
+- `logical_index_mapping = interleaved_page_index`
+
+For admitted sharded L1 resident views,
+the executable contract must state:
+
+- `distribution_kind = sharded`
+- `memory_space = L1`
+- positive `shard_grid_shape`
+- positive per-core `shard_shape`
+- `source_buffer`
+- `source_region_kind = per_work_tile`
+- positive `source_region_shape`
+- `logical_index_mapping = work_packet_row_major`
+- `core_local_address_mapping = l1_shard_linear`
+- attached core-group identity and index
+
+Leaf readers must validate these fields directly.
+Direct runtime admission must consume them before execution.
+It may reject unsupported distribution kinds, but it must not recover source
+regions, page metadata, or core-local mapping from names, source text, or
+argument order.
+
 ### Backend Admission
 
 Admission reasons must be typed and queryable:

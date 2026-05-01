@@ -56,8 +56,8 @@ Pass 名字、helper、payload、bag、bridge attr
 当前主线：
 
 ```text
-T1 Buffer address ABI execution integration
-  -> T2 Leaf compute / GEMM variants
+T1 Buffer address ABI execution integration (complete)
+  -> T2 Leaf compute / GEMM variants (active)
   -> T3 topk
   -> T4 exact-CB / materialization primitives
   -> T5 grouped / ragged work packets

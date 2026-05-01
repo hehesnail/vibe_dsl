@@ -32,6 +32,7 @@
 #include <tvm/tir/stmt_functor.h>
 
 #include <algorithm>
+#include <cctype>
 #include <cstring>
 #include <functional>
 #include <memory>
@@ -1055,6 +1056,126 @@ static std::vector<int64_t> ExtractIntegerVector(const ffi::Map<ffi::String, ffi
   return values;
 }
 
+static std::vector<BufferDistributionSpec> ExtractBufferDistributionPlans(
+    const tir::PrimFunc& f) {
+  std::vector<BufferDistributionSpec> plans;
+  auto items = tl::tt_program_projection::GetExecutableArrayField(
+      f, "Blackhole executable spec extraction",
+      tl::tt_program_projection::executable_key::kBufferDistributionPlans);
+  for (const auto& item_any : items) {
+    auto item = RequireMap(item_any, "Blackhole executable buffer_distribution_plans item");
+    BufferDistributionSpec plan;
+    if (auto value = item.Get("name")) plan.name = Downcast<String>(value.value());
+    if (auto value = item.Get("buffer")) plan.buffer = Downcast<String>(value.value());
+    if (auto value = item.Get("mesh_plan")) plan.mesh_plan = Downcast<String>(value.value());
+    if (auto value = item.Get("mesh_plan_index")) {
+      plan.mesh_plan_index = Downcast<Integer>(value.value())->value;
+    }
+    if (auto value = item.Get("distribution_kind")) {
+      plan.distribution_kind = Downcast<String>(value.value());
+    }
+    if (auto value = item.Get("layout")) plan.layout = Downcast<String>(value.value());
+    if (auto value = item.Get("memory_space")) {
+      plan.memory_space = Downcast<String>(value.value());
+    }
+    bool has_page_size_bytes = false;
+    if (auto value = item.Get("page_size_bytes")) {
+      plan.page_size_bytes = static_cast<uint32_t>(Downcast<Integer>(value.value())->value);
+      has_page_size_bytes = true;
+    }
+    plan.shard_shape = ExtractIntegerVector(item, "shard_shape");
+    plan.shard_grid_shape = ExtractIntegerVector(item, "shard_grid_shape");
+    if (auto value = item.Get("sharding_strategy")) {
+      plan.sharding_strategy = Downcast<String>(value.value());
+    }
+    if (auto value = item.Get("shard_orientation")) {
+      plan.shard_orientation = Downcast<String>(value.value());
+    }
+    if (auto value = item.Get("source_buffer")) {
+      plan.source_buffer = Downcast<String>(value.value());
+    }
+    if (auto value = item.Get("source_region_kind")) {
+      plan.source_region_kind = Downcast<String>(value.value());
+    }
+    plan.source_region_shape = ExtractIntegerVector(item, "source_region_shape");
+    if (auto value = item.Get("logical_index_mapping")) {
+      plan.logical_index_mapping = Downcast<String>(value.value());
+    }
+    if (auto value = item.Get("core_local_address_mapping")) {
+      plan.core_local_address_mapping = Downcast<String>(value.value());
+    }
+    if (auto value = item.Get("host_visibility")) {
+      plan.host_visibility = Downcast<String>(value.value());
+    }
+    if (auto value = item.Get("attached_core_group")) {
+      plan.attached_core_group = Downcast<String>(value.value());
+    }
+    if (auto value = item.Get("attached_core_group_index")) {
+      plan.attached_core_group_index = Downcast<Integer>(value.value())->value;
+    }
+
+    ICHECK(!plan.name.empty())
+        << "Blackhole executable buffer_distribution_plans item requires name";
+    ICHECK(!plan.buffer.empty())
+        << "Blackhole executable buffer_distribution_plans item requires buffer";
+    ICHECK(!plan.mesh_plan.empty())
+        << "Blackhole executable buffer_distribution_plans item requires mesh_plan";
+    ICHECK_GE(plan.mesh_plan_index, 0)
+        << "Blackhole executable buffer_distribution_plans item requires mesh_plan_index";
+    ICHECK(!plan.distribution_kind.empty())
+        << "Blackhole executable buffer_distribution_plans item requires distribution_kind";
+    ICHECK(plan.distribution_kind == "interleaved" || plan.distribution_kind == "sharded" ||
+           plan.distribution_kind == "replicated")
+        << "Blackhole executable buffer_distribution_plans item for " << plan.buffer
+        << " has unsupported distribution_kind " << plan.distribution_kind;
+    ICHECK(!plan.layout.empty())
+        << "Blackhole executable buffer_distribution_plans item requires layout";
+    ICHECK(!plan.memory_space.empty())
+        << "Blackhole executable buffer_distribution_plans item requires memory_space";
+    ICHECK(has_page_size_bytes && plan.page_size_bytes > 0)
+        << "Blackhole executable buffer_distribution_plans item for " << plan.buffer
+        << " requires positive page_size_bytes";
+    ICHECK(!plan.logical_index_mapping.empty())
+        << "Blackhole executable buffer_distribution_plans item for " << plan.buffer
+        << " requires logical_index_mapping";
+    ICHECK(!plan.host_visibility.empty())
+        << "Blackhole executable buffer_distribution_plans item for " << plan.buffer
+        << " requires host_visibility";
+    if (plan.distribution_kind == "sharded") {
+      ICHECK(plan.memory_space == "L1")
+          << "Blackhole executable buffer_distribution_plans sharded buffer "
+          << plan.buffer << " must be in L1";
+      ICHECK(!plan.shard_shape.empty())
+          << "Blackhole executable buffer_distribution_plans sharded buffer "
+          << plan.buffer << " requires shard_shape";
+      ICHECK(!plan.shard_grid_shape.empty())
+          << "Blackhole executable buffer_distribution_plans sharded buffer "
+          << plan.buffer << " requires shard_grid_shape";
+      ICHECK(!plan.source_buffer.empty())
+          << "Blackhole executable buffer_distribution_plans sharded buffer "
+          << plan.buffer << " requires source_buffer";
+      ICHECK(!plan.source_region_kind.empty() && plan.source_region_kind != "none")
+          << "Blackhole executable buffer_distribution_plans sharded buffer "
+          << plan.buffer << " requires source_region_kind";
+      ICHECK(!plan.source_region_shape.empty())
+          << "Blackhole executable buffer_distribution_plans sharded buffer "
+          << plan.buffer << " requires source_region_shape";
+      ICHECK(!plan.core_local_address_mapping.empty() &&
+             plan.core_local_address_mapping != "none")
+          << "Blackhole executable buffer_distribution_plans sharded buffer "
+          << plan.buffer << " requires core_local_address_mapping";
+      ICHECK(!plan.attached_core_group.empty())
+          << "Blackhole executable buffer_distribution_plans sharded buffer "
+          << plan.buffer << " requires attached_core_group";
+      ICHECK_GE(plan.attached_core_group_index, 0)
+          << "Blackhole executable buffer_distribution_plans sharded buffer "
+          << plan.buffer << " requires attached_core_group_index";
+    }
+    plans.push_back(std::move(plan));
+  }
+  return plans;
+}
+
 static std::vector<LiveFormPlanSpec> ExtractLiveFormPlans(const tir::PrimFunc& f) {
   std::vector<LiveFormPlanSpec> plans;
   auto items = tl::tt_program_projection::GetExecutableArrayField(
@@ -1471,6 +1592,7 @@ static ExecutableSpec ExtractExecutableSpecFromDeviceFunc(const tir::PrimFunc& f
   spec.core_plan = ExtractCorePlan(f);
   ValidateExtractedCorePlan(spec.core_plan, entry_name);
   spec.semaphores = ExtractSemaphorePlan(f);
+  spec.buffer_distribution_plans = ExtractBufferDistributionPlans(f);
   spec.runtime_args = ExtractRuntimeArgs(f);
   spec.common_runtime_args = ExtractCommonRuntimeArgs(f);
   spec.per_work_arg_specs = ExtractPerWorkArgSpecs(f);
@@ -2545,6 +2667,132 @@ static void EnforceExplicitBufferRoleSchemaGate(ExecutableSpec* spec) {
   }
 }
 
+static std::unordered_set<std::string> CollectRuntimeBoundBufferNames(
+    const ExecutableSpec& spec) {
+  std::unordered_set<std::string> names;
+  auto record_args = [&](const std::vector<KernelArgSpec>& args) {
+    for (const auto& arg : args) {
+      if ((IsInputBufferArgKind(arg.kind) || IsOutputBufferArgKind(arg.kind)) &&
+          !arg.buffer.empty()) {
+        names.insert(arg.buffer);
+      }
+    }
+  };
+  record_args(spec.runtime_args);
+  record_args(spec.common_runtime_args);
+  for (const auto& kernel : spec.kernels) {
+    record_args(kernel.runtime_args);
+    record_args(kernel.common_runtime_args);
+  }
+  return names;
+}
+
+static const BufferDistributionSpec* FindBufferDistributionSpec(
+    const ExecutableSpec& spec, const std::string& buffer_name) {
+  auto it = std::find_if(
+      spec.buffer_distribution_plans.begin(), spec.buffer_distribution_plans.end(),
+      [&](const BufferDistributionSpec& plan) { return plan.buffer == buffer_name; });
+  return it == spec.buffer_distribution_plans.end() ? nullptr : &(*it);
+}
+
+static std::string NormalizeMemorySpace(std::string value) {
+  std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
+    return static_cast<char>(std::tolower(c));
+  });
+  return value;
+}
+
+static void EnforceBufferDistributionAddressContractGate(ExecutableSpec* spec) {
+  ICHECK(spec != nullptr);
+  const std::unordered_set<std::string> runtime_buffers =
+      CollectRuntimeBoundBufferNames(*spec);
+  if (runtime_buffers.empty()) {
+    return;
+  }
+  if (spec->buffer_distribution_plans.empty()) {
+    AppendDirectRuntimeUnsupportedReason(
+        spec,
+        "missing buffer distribution address contract; direct runtime requires "
+        "ExecutableSpec.buffer_distribution_plans for runtime buffer address materialization");
+    return;
+  }
+
+  for (const auto& buffer_name : runtime_buffers) {
+    const BufferDistributionSpec* distribution =
+        FindBufferDistributionSpec(*spec, buffer_name);
+    if (distribution == nullptr) {
+      AppendDirectRuntimeUnsupportedReason(
+          spec,
+          "missing buffer distribution address contract for runtime buffer " +
+              buffer_name);
+      return;
+    }
+    const std::string memory_space = NormalizeMemorySpace(distribution->memory_space);
+    if (distribution->distribution_kind != "interleaved" ||
+        distribution->layout != "interleaved" || memory_space != "dram") {
+      AppendDirectRuntimeUnsupportedReason(
+          spec,
+          "buffer distribution for runtime buffer " + buffer_name +
+              " is " + distribution->distribution_kind +
+              "; direct runtime admits only interleaved DRAM runtime buffers");
+      return;
+    }
+    if (distribution->logical_index_mapping != "interleaved_page_index") {
+      AppendDirectRuntimeUnsupportedReason(
+          spec,
+          "buffer distribution for runtime buffer " + buffer_name +
+              " lacks interleaved_page_index address mapping");
+      return;
+    }
+    if (distribution->page_size_bytes == 0) {
+      AppendDirectRuntimeUnsupportedReason(
+          spec,
+          "buffer distribution for runtime buffer " + buffer_name +
+              " requires positive page_size_bytes");
+      return;
+    }
+    auto materialization_it = std::find_if(
+        spec->buffer_materializations.begin(), spec->buffer_materializations.end(),
+        [&](const BufferMaterializationSpec& materialization) {
+          return materialization.buffer == buffer_name;
+        });
+    if (materialization_it != spec->buffer_materializations.end() &&
+        materialization_it->transport_page_size_bytes != distribution->page_size_bytes) {
+      AppendDirectRuntimeUnsupportedReason(
+          spec,
+          "buffer distribution for runtime buffer " + buffer_name +
+              " has page_size_bytes inconsistent with buffer materialization transport_page_size");
+      return;
+    }
+  }
+
+  for (const auto& plan : spec->buffer_distribution_plans) {
+    if (plan.distribution_kind != "sharded") {
+      continue;
+    }
+    if (plan.source_buffer.empty() || plan.source_region_kind != "per_work_tile" ||
+        plan.source_region_shape.empty() ||
+        plan.logical_index_mapping != "work_packet_row_major" ||
+        plan.core_local_address_mapping != "l1_shard_linear" ||
+        plan.attached_core_group.empty() || plan.attached_core_group_index < 0) {
+      AppendDirectRuntimeUnsupportedReason(
+          spec,
+          "sharded L1 buffer distribution for " + plan.buffer +
+              " is not admitted by direct runtime; expected source_buffer, "
+              "per_work_tile source_region_shape, work_packet_row_major, and "
+              "l1_shard_linear typed address mapping");
+      return;
+    }
+    if (FindBufferDistributionSpec(*spec, plan.source_buffer) == nullptr) {
+      AppendDirectRuntimeUnsupportedReason(
+          spec,
+          "sharded L1 buffer distribution for " + plan.buffer +
+              " references missing source_buffer distribution " + plan.source_buffer);
+      return;
+    }
+  }
+}
+
 static bool BufferMaterializationRequiresExplicitHostAxisOrder(
     const BufferMaterializationSpec& materialization) {
   return materialization.layout == "interleaved" && materialization.memory_space == "dram" &&
@@ -2976,6 +3224,7 @@ ffi::Module BuildTileLangBlackhole(IRModule mod, Target target) {
     const auto buffer_info =
         CollectStaticBufferInfo(kv.second, CollectMaterializedBufferNames(spec_it->second));
     PopulateBufferMaterializationSpecs(buffer_info, &spec_it->second);
+    EnforceBufferDistributionAddressContractGate(&spec_it->second);
     EnforceExplicitPerWorkAccessDescriptorGate(buffer_info, &spec_it->second);
     EnforceTypedDstCbAccumulationGate(&spec_it->second);
     EnforceExactLiveFormMultiPageRepublishGate(&spec_it->second);
@@ -2987,6 +3236,8 @@ ffi::Module BuildTileLangBlackhole(IRModule mod, Target target) {
     auto device_it = func_info_map.find(kv.second);
     if (host_it != func_info_map.end() && device_it != func_info_map.end()) {
       host_it->second.kernels = device_it->second.kernels;
+      host_it->second.buffer_distribution_plans =
+          device_it->second.buffer_distribution_plans;
       host_it->second.buffer_materializations = device_it->second.buffer_materializations;
       host_it->second.live_form_plans = device_it->second.live_form_plans;
       host_it->second.materialization_plans = device_it->second.materialization_plans;
@@ -3072,6 +3323,7 @@ ffi::Module BuildTileLangBlackholeWithoutHost(IRModule mod, Target target) {
     const auto buffer_info =
         CollectStaticBufferInfo(kv.second, CollectMaterializedBufferNames(spec_it->second));
     PopulateBufferMaterializationSpecs(buffer_info, &spec_it->second);
+    EnforceBufferDistributionAddressContractGate(&spec_it->second);
     EnforceExplicitPerWorkAccessDescriptorGate(buffer_info, &spec_it->second);
     EnforceTypedDstCbAccumulationGate(&spec_it->second);
     EnforceExactLiveFormMultiPageRepublishGate(&spec_it->second);
@@ -3083,6 +3335,8 @@ ffi::Module BuildTileLangBlackholeWithoutHost(IRModule mod, Target target) {
     auto device_it = func_info_map.find(kv.second);
     if (host_it != func_info_map.end() && device_it != func_info_map.end()) {
       host_it->second.kernels = device_it->second.kernels;
+      host_it->second.buffer_distribution_plans =
+          device_it->second.buffer_distribution_plans;
       host_it->second.buffer_materializations = device_it->second.buffer_materializations;
       host_it->second.live_form_plans = device_it->second.live_form_plans;
       host_it->second.materialization_plans = device_it->second.materialization_plans;

@@ -857,6 +857,80 @@ def rebuild_tt_abi_plan(
     )
 
 
+def rebuild_tt_buffer_distribution_plan(
+    plan,
+    *,
+    distribution_kind=None,
+    layout=None,
+    memory_space=None,
+    page_size_bytes=None,
+    shard_shape=None,
+    shard_grid_shape=None,
+    sharding_strategy=None,
+    shard_orientation=None,
+    source_buffer=None,
+    source_region_kind=None,
+    source_region_shape=None,
+    logical_index_mapping=None,
+    core_local_address_mapping=None,
+    host_visibility=None,
+    attached_core_group=None,
+    attached_core_group_index=None,
+):
+    """Rebuild a TTBufferDistributionPlan with optional field overrides."""
+    make_plan = tilelang.tvm.get_global_func("tl.TTBufferDistributionPlan")
+    return make_plan(
+        str(plan.name),
+        str(plan.buffer),
+        str(plan.mesh_plan),
+        int(plan.mesh_plan_index),
+        str(plan.distribution_kind)
+        if distribution_kind is None
+        else distribution_kind,
+        str(plan.layout) if layout is None else layout,
+        str(plan.memory_space) if memory_space is None else memory_space,
+        int(plan.page_size_bytes) if page_size_bytes is None else page_size_bytes,
+        list(plan.shard_shape) if shard_shape is None else shard_shape,
+        list(plan.shard_grid_shape)
+        if shard_grid_shape is None
+        else shard_grid_shape,
+        str(plan.sharding_strategy)
+        if sharding_strategy is None
+        else sharding_strategy,
+        str(plan.shard_orientation) if shard_orientation is None else shard_orientation,
+        str(plan.source_buffer) if source_buffer is None else source_buffer,
+        str(plan.source_region_kind)
+        if source_region_kind is None
+        else source_region_kind,
+        list(plan.source_region_shape)
+        if source_region_shape is None
+        else source_region_shape,
+        str(plan.logical_index_mapping)
+        if logical_index_mapping is None
+        else logical_index_mapping,
+        str(plan.core_local_address_mapping)
+        if core_local_address_mapping is None
+        else core_local_address_mapping,
+        str(plan.host_visibility) if host_visibility is None else host_visibility,
+        str(plan.attached_core_group)
+        if attached_core_group is None
+        else attached_core_group,
+        int(plan.attached_core_group_index)
+        if attached_core_group_index is None
+        else attached_core_group_index,
+        list(plan.logical_shape),
+        list(plan.local_shape),
+        plan.thread_extent,
+        plan.replicate_extent,
+        list(plan.inverse_logical_index_vars),
+        list(plan.inverse_logical_index_exprs),
+        str(plan.spatial_layout),
+        str(plan.spatial_distribution_kind),
+        str(plan.abi_layout),
+        str(plan.abi_memory_space),
+    )
+
+
 def rebuild_tt_program(
     program,
     *,

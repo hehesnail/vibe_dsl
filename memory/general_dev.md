@@ -2004,3 +2004,14 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   Keep exact verification commands in final reports, commits, or short
   progress summaries; do not let active design entry files become
   chronological notebooks.
+- 2026-05-01 Blackhole executable address contract:
+  `TTBufferDistributionPlan` must be projected into `ExecutableSpec` before
+  direct-runtime admission.
+  Runtime-bound external buffers still need explicit accessor /
+  compile-time `transport_page_size`; buffer distribution may validate
+  consistency, but must not become a fallback that hides missing accessor ABI.
+  For CB-backed L1 resident views, source binding should come from the
+  explicit `read_*_to_cb(source_var, ..., cb_id, ...)` builtin argument and
+  the typed CB requirement names.  Do not depend only on `buffer_map`, because
+  after lowering / packing the source Var may remain explicit in the builtin
+  body while `buffer_map` is no longer a complete identity table.

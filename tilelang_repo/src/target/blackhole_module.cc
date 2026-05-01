@@ -15,6 +15,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <fstream>
 #include <sstream>
 #include <iostream>
@@ -692,6 +693,59 @@ static BufferMaterializationSpec ReadBufferMaterializationSpec(dmlc::Stream* str
   return spec;
 }
 
+static void WriteBufferDistributionSpec(dmlc::Stream* stream,
+                                        const BufferDistributionSpec& spec) {
+  WriteString(stream, spec.name);
+  WriteString(stream, spec.buffer);
+  WriteString(stream, spec.mesh_plan);
+  WriteInt64(stream, spec.mesh_plan_index);
+  WriteString(stream, spec.distribution_kind);
+  WriteString(stream, spec.layout);
+  WriteString(stream, spec.memory_space);
+  WriteUInt32(stream, spec.page_size_bytes);
+  WriteInt64Vector(stream, spec.shard_shape);
+  WriteInt64Vector(stream, spec.shard_grid_shape);
+  WriteString(stream, spec.sharding_strategy);
+  WriteString(stream, spec.shard_orientation);
+  WriteString(stream, spec.source_buffer);
+  WriteString(stream, spec.source_region_kind);
+  WriteInt64Vector(stream, spec.source_region_shape);
+  WriteString(stream, spec.logical_index_mapping);
+  WriteString(stream, spec.core_local_address_mapping);
+  WriteString(stream, spec.host_visibility);
+  WriteString(stream, spec.attached_core_group);
+  WriteInt64(stream, spec.attached_core_group_index);
+}
+
+static BufferDistributionSpec ReadBufferDistributionSpec(dmlc::Stream* stream) {
+  BufferDistributionSpec spec;
+  spec.name = ReadString(stream, "buffer_distribution.name");
+  spec.buffer = ReadString(stream, "buffer_distribution.buffer");
+  spec.mesh_plan = ReadString(stream, "buffer_distribution.mesh_plan");
+  spec.mesh_plan_index = ReadInt64(stream, "buffer_distribution.mesh_plan_index");
+  spec.distribution_kind = ReadString(stream, "buffer_distribution.distribution_kind");
+  spec.layout = ReadString(stream, "buffer_distribution.layout");
+  spec.memory_space = ReadString(stream, "buffer_distribution.memory_space");
+  spec.page_size_bytes = ReadUInt32(stream, "buffer_distribution.page_size_bytes");
+  spec.shard_shape = ReadInt64Vector(stream, "buffer_distribution.shard_shape");
+  spec.shard_grid_shape = ReadInt64Vector(stream, "buffer_distribution.shard_grid_shape");
+  spec.sharding_strategy = ReadString(stream, "buffer_distribution.sharding_strategy");
+  spec.shard_orientation = ReadString(stream, "buffer_distribution.shard_orientation");
+  spec.source_buffer = ReadString(stream, "buffer_distribution.source_buffer");
+  spec.source_region_kind = ReadString(stream, "buffer_distribution.source_region_kind");
+  spec.source_region_shape =
+      ReadInt64Vector(stream, "buffer_distribution.source_region_shape");
+  spec.logical_index_mapping =
+      ReadString(stream, "buffer_distribution.logical_index_mapping");
+  spec.core_local_address_mapping =
+      ReadString(stream, "buffer_distribution.core_local_address_mapping");
+  spec.host_visibility = ReadString(stream, "buffer_distribution.host_visibility");
+  spec.attached_core_group = ReadString(stream, "buffer_distribution.attached_core_group");
+  spec.attached_core_group_index =
+      ReadInt64(stream, "buffer_distribution.attached_core_group_index");
+  return spec;
+}
+
 static void WriteLiveFormPlanSpec(dmlc::Stream* stream, const LiveFormPlanSpec& spec) {
   WriteString(stream, spec.name);
   WriteString(stream, spec.logical_value);
@@ -853,6 +907,8 @@ static void WriteExecutableSpec(dmlc::Stream* stream, const ExecutableSpec& spec
   WriteVectorField<CBConfig>(stream, spec.cb_configs, WriteCBConfig);
   WriteCorePlan(stream, spec.core_plan);
   WriteVectorField<SemaphoreSpec>(stream, spec.semaphores, WriteSemaphoreSpec);
+  WriteVectorField<BufferDistributionSpec>(
+      stream, spec.buffer_distribution_plans, WriteBufferDistributionSpec);
   WriteVectorField<BufferMaterializationSpec>(
       stream, spec.buffer_materializations, WriteBufferMaterializationSpec);
   WriteVectorField<KernelArgSpec>(stream, spec.runtime_args, WriteKernelArgSpec);
@@ -878,6 +934,8 @@ static ExecutableSpec ReadExecutableSpec(dmlc::Stream* stream) {
   spec.core_plan = ReadCorePlan(stream);
   spec.semaphores = ReadVectorField<SemaphoreSpec>(
       stream, "executable.semaphores", ReadSemaphoreSpec);
+  spec.buffer_distribution_plans = ReadVectorField<BufferDistributionSpec>(
+      stream, "executable.buffer_distribution_plans", ReadBufferDistributionSpec);
   spec.buffer_materializations = ReadVectorField<BufferMaterializationSpec>(
       stream, "executable.buffer_materializations", ReadBufferMaterializationSpec);
   spec.runtime_args = ReadVectorField<KernelArgSpec>(
@@ -2688,6 +2746,104 @@ static void ValidateExecutableSpecCorePlan(const std::string& func_name,
       << func_name;
 }
 
+static bool HasPositiveShape(const std::vector<int64_t>& shape) {
+  return !shape.empty() &&
+         std::all_of(shape.begin(), shape.end(), [](int64_t value) { return value > 0; });
+}
+
+static std::string LowerAscii(std::string value) {
+  std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
+    return static_cast<char>(std::tolower(c));
+  });
+  return value;
+}
+
+static void ValidateExecutableSpecBufferDistributionPlans(const std::string& func_name,
+                                                          const ExecutableSpec& spec) {
+  std::unordered_set<std::string> buffers;
+  for (const auto& plan : spec.buffer_distribution_plans) {
+    ICHECK(!plan.name.empty())
+        << "Blackhole executable buffer distribution requires name for " << func_name;
+    ICHECK(!plan.buffer.empty())
+        << "Blackhole executable buffer distribution requires buffer for " << func_name;
+    ICHECK(buffers.insert(plan.buffer).second)
+        << "Blackhole executable buffer distribution has duplicate buffer "
+        << plan.buffer << " for " << func_name;
+    ICHECK(!plan.mesh_plan.empty())
+        << "Blackhole executable buffer distribution for " << plan.buffer
+        << " requires mesh_plan";
+    ICHECK_GE(plan.mesh_plan_index, 0)
+        << "Blackhole executable buffer distribution for " << plan.buffer
+        << " requires mesh_plan_index";
+    ICHECK(!plan.distribution_kind.empty())
+        << "Blackhole executable buffer distribution for " << plan.buffer
+        << " requires distribution_kind";
+    ICHECK(plan.distribution_kind == "interleaved" || plan.distribution_kind == "sharded" ||
+           plan.distribution_kind == "replicated")
+        << "Blackhole executable buffer distribution for " << plan.buffer
+        << " has unsupported distribution_kind " << plan.distribution_kind;
+    ICHECK(!plan.layout.empty())
+        << "Blackhole executable buffer distribution for " << plan.buffer
+        << " requires layout";
+    ICHECK(!plan.memory_space.empty())
+        << "Blackhole executable buffer distribution for " << plan.buffer
+        << " requires memory_space";
+    ICHECK_GT(plan.page_size_bytes, 0U)
+        << "Blackhole executable buffer distribution for " << plan.buffer
+        << " requires page_size_bytes";
+    ICHECK(!plan.host_visibility.empty())
+        << "Blackhole executable buffer distribution for " << plan.buffer
+        << " requires host_visibility";
+
+    const std::string memory_space = LowerAscii(plan.memory_space);
+    if (plan.distribution_kind == "interleaved") {
+      ICHECK_EQ(plan.layout, "interleaved")
+          << "Blackhole executable interleaved buffer distribution for "
+          << plan.buffer << " requires interleaved layout";
+      ICHECK_EQ(memory_space, "dram")
+          << "Blackhole executable interleaved buffer distribution for "
+          << plan.buffer << " requires DRAM memory_space";
+      ICHECK(plan.shard_shape.empty() && plan.shard_grid_shape.empty())
+          << "Blackhole executable interleaved buffer distribution for "
+          << plan.buffer << " cannot carry shard shape";
+      ICHECK_EQ(plan.logical_index_mapping, "interleaved_page_index")
+          << "Blackhole executable interleaved buffer distribution for "
+          << plan.buffer << " requires interleaved_page_index";
+    } else if (plan.distribution_kind == "sharded") {
+      ICHECK_EQ(memory_space, "l1")
+          << "Blackhole executable sharded buffer distribution for "
+          << plan.buffer << " requires L1 memory_space";
+      ICHECK(HasPositiveShape(plan.shard_shape))
+          << "Blackhole executable sharded buffer distribution for "
+          << plan.buffer << " requires shard_shape";
+      ICHECK(HasPositiveShape(plan.shard_grid_shape))
+          << "Blackhole executable sharded buffer distribution for "
+          << plan.buffer << " requires shard_grid_shape";
+      ICHECK(!plan.source_buffer.empty())
+          << "Blackhole executable sharded buffer distribution for "
+          << plan.buffer << " requires source_buffer";
+      ICHECK_EQ(plan.source_region_kind, "per_work_tile")
+          << "Blackhole executable sharded buffer distribution for "
+          << plan.buffer << " requires per_work_tile source_region_kind";
+      ICHECK(HasPositiveShape(plan.source_region_shape))
+          << "Blackhole executable sharded buffer distribution for "
+          << plan.buffer << " requires source_region_shape";
+      ICHECK_EQ(plan.logical_index_mapping, "work_packet_row_major")
+          << "Blackhole executable sharded buffer distribution for "
+          << plan.buffer << " requires work_packet_row_major";
+      ICHECK_EQ(plan.core_local_address_mapping, "l1_shard_linear")
+          << "Blackhole executable sharded buffer distribution for "
+          << plan.buffer << " requires l1_shard_linear";
+      ICHECK(!plan.attached_core_group.empty())
+          << "Blackhole executable sharded buffer distribution for "
+          << plan.buffer << " requires attached_core_group";
+      ICHECK_GE(plan.attached_core_group_index, 0)
+          << "Blackhole executable sharded buffer distribution for "
+          << plan.buffer << " requires attached_core_group_index";
+    }
+  }
+}
+
 BlackholeModuleNode::BlackholeModuleNode(
     std::unordered_map<std::string, ExecutableSpec> fmap,
     std::string kernel_dir)
@@ -2695,6 +2851,7 @@ BlackholeModuleNode::BlackholeModuleNode(
       kernel_dir_(std::move(kernel_dir)) {
   for (const auto& entry : fmap_) {
     ValidateExecutableSpecCorePlan(entry.first, entry.second);
+    ValidateExecutableSpecBufferDistributionPlans(entry.first, entry.second);
     ValidateExecutableSpecSynchronizationSchema(entry.first, entry.second);
   }
 }
