@@ -317,8 +317,11 @@ generic "later runtime" bucket.
    The ABI must map each logical work id to its DRAM / global source region
    and reused core-local L1 / CB view before source or runtime code may index
    the buffer.
-   Exit when supported forms materialize from typed plans,
-   and unsupported sharded,
+   Exit requires real consumers, not metadata-only projection:
+   at least one sharded L1 address path and one page-indexed address path
+   must materialize from typed plans into source/spec/direct-runtime
+   consumers and pass TT-Sim bf16 correctness.
+   After those witnesses exist, unsupported sharded,
    page-indexed,
    or shared runtime address-argument forms fail
    closed with typed reasons instead of being reconstructed by source or
@@ -332,6 +335,8 @@ generic "later runtime" bucket.
    direct runtime,
    TT-Sim bf16 correctness,
    and typed unsupported reasons separate.
+   This gate applies to each ABI/support subset as it is admitted; it is not
+   a later cleanup step after buffer address ABI work.
    Exit when every new subset has tests for the strongest admitted path and
    fail-closed tests for the paths that remain unsupported.
 4. Leaf compute / GEMM correctness pack:

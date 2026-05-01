@@ -113,7 +113,14 @@ page-indexed
 下一步 blocker 是把这些 typed fields 下沉到 source/spec/direct-runtime
 admission：
 supported interleaved forms 继续 materialize；
-unsupported sharded / page-indexed / shared runtime address-argument forms
+sharded 和 page-indexed 不能继续全部停在 typed reject。
+本 lane 的下一次收口必须至少让
+sharded L1 address ABI
+和 page-indexed address ABI
+各有一个代表路径被 source/spec/direct-runtime 真实消费，
+并通过 TT-Sim bf16 correctness。
+其余尚未 admitted 的 sharded / page-indexed / shared runtime
+address-argument forms
 必须从
 `TTBufferDistributionPlan`
 /
@@ -153,6 +160,10 @@ GPU-style
    runtime args,
    per-work descriptors,
    and typed rejects.
+   This task cannot close by rejecting every non-interleaved form:
+   at least one sharded L1 path and one page-indexed path must materialize
+   from typed plans into real source/spec/direct-runtime consumers and pass
+   TT-Sim bf16 correctness.
    Preserve the separation between logical work grid,
    physical core group,
    temporal work packets,
@@ -171,6 +182,8 @@ GPU-style
    direct runtime,
    TT-Sim bf16 correctness,
    and typed unsupported reason.
+   This is a per-subset gate that runs with task 1 and every later workload;
+   it is not a cleanup task after ABI consumption.
 3. Admit first-subset workloads in this order:
    non-flash leaf compute / GEMM variants,
    standalone `topk`,
@@ -183,7 +196,9 @@ GPU-style
    paged MLA decode,
    then chunk recurrence / scan.
 4. Pull forward only the P3 primitives required by the current first subset.
-5. Defer production distributed variants until mesh / sharding / CCL /
+5. Do not advance workload admission past task 1 while sharded/page-indexed
+   address ABI has no real consumer-backed correctness witness.
+6. Defer production distributed variants until mesh / sharding / CCL /
    NoC / multicast / global scheduling plans are typed and validated.
    Full MoE and full paged decode are not admitted by their first subsets.
 
