@@ -931,6 +931,38 @@ def rebuild_tt_buffer_distribution_plan(
     )
 
 
+def rebuild_tt_reshard_plan(
+    plan,
+    *,
+    conversion_kind=None,
+    admission_status=None,
+    unsupported_reason=None,
+):
+    """Rebuild a TTReshardPlan with optional field overrides."""
+    make_plan = tilelang.tvm.get_global_func("tl.TTReshardPlan")
+    return make_plan(
+        str(plan.name),
+        str(plan.source_value),
+        str(plan.target_value),
+        str(plan.source_memory_config_plan),
+        int(plan.source_memory_config_plan_index),
+        str(plan.target_memory_config_plan),
+        int(plan.target_memory_config_plan_index),
+        str(plan.conversion_kind) if conversion_kind is None else conversion_kind,
+        str(plan.source_region_kind),
+        list(plan.source_region_shape),
+        str(plan.materialization_plan),
+        int(plan.materialization_plan_index),
+        str(plan.materialization_protocol),
+        list(plan.required_cb_plan_indices),
+        list(plan.required_sync_plan_indices),
+        str(plan.scheduling_kind),
+        str(plan.inserted_by),
+        str(plan.admission_status) if admission_status is None else admission_status,
+        str(plan.unsupported_reason) if unsupported_reason is None else unsupported_reason,
+    )
+
+
 def rebuild_tt_program(
     program,
     *,
@@ -938,6 +970,10 @@ def rebuild_tt_program(
     member_func=None,
     mesh_plans=None,
     buffer_distribution_plans=None,
+    tensor_memory_config_plans=None,
+    op_sharding_contracts=None,
+    placement_resolution_plans=None,
+    reshard_plans=None,
     compute_op_plans=None,
     block_plans=None,
     kernel_plans=None,
@@ -977,6 +1013,16 @@ def rebuild_tt_program(
         list(program.buffer_distribution_plans)
         if buffer_distribution_plans is None
         else buffer_distribution_plans,
+        list(program.tensor_memory_config_plans)
+        if tensor_memory_config_plans is None
+        else tensor_memory_config_plans,
+        list(program.op_sharding_contracts)
+        if op_sharding_contracts is None
+        else op_sharding_contracts,
+        list(program.placement_resolution_plans)
+        if placement_resolution_plans is None
+        else placement_resolution_plans,
+        list(program.reshard_plans) if reshard_plans is None else reshard_plans,
         list(program.block_plans) if block_plans is None else block_plans,
         list(program.kernel_plans) if kernel_plans is None else kernel_plans,
         list(program.compute_op_plans) if compute_op_plans is None else compute_op_plans,

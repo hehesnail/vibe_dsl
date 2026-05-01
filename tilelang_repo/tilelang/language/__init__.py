@@ -107,8 +107,16 @@ from .utils import index_to_coordinates  # noqa: F401
 
 from .symbolics import dynamic, symbolic  # noqa: F401
 from .annotations import (  # noqa: F401
+    CoreGrid,
+    ShardSpec,
+    NDShardSpec,
+    MemoryConfig,
+    interleaved_dram,
+    sharded_dram,
+    sharded_l1,
     use_swizzle,
     annotate_layout,
+    annotate_memory_config,
     annotate_safe_value,
     annotate_l2_hit_ratio,
     annotate_restrict_buffers,

@@ -2086,3 +2086,20 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   the typed CB requirement names.  Do not depend only on `buffer_map`, because
   after lowering / packing the source Var may remain explicit in the builtin
   body while `buffer_map` is no longer a complete identity table.
+- 2026-05-02 Blackhole tensor placement / reshard projection:
+  tensor placement intent should enter `SpatialPlan.TensorPlacementIntent`,
+  resolve to `TTTensorMemoryConfigPlan` / `TTOpShardingContract` /
+  `TTPlacementResolutionPlan` / `TTReshardPlan`, and only then project to
+  `ExecutableSpec`.
+  Direct runtime may admit or reject reshard kinds from projected
+  `TTReshardPlan` records, but must not infer conversions from
+  `TTBufferDistributionPlan.source_buffer`, source text, names, or accessor
+  strings.
+  `TTOpShardingContract` coverage is for operands with a matching
+  `TTTensorMemoryConfigPlan.subject`; scalar or constant exact-CB operands
+  such as a reduce scaler do not own tensor placement and should not be
+  forced into a memory-config contract.
+  `tile_compute_dag_node_id` is local evidence for the DAG/lowering plan that
+  produced it; seeded and final compute plans can share numeric node ids.
+  Tests and validators should not treat that id as a cross-stage global
+  identity unless a separate DAG identity/version is represented explicitly.

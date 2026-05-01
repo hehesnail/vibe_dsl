@@ -1,11 +1,8 @@
 /*
- * Hoist tl.non_restrict_params block annotation(s) to PrimFunc attribute.
+ * Hoist selected root/user block annotations to PrimFunc attributes.
  *
- * Previously, we only looked at the root block. This version recursively
- * scans all blocks, unions any tl.non_restrict_params entries it finds,
- * merges with any existing PrimFunc-level attribute, then writes the
- * deduplicated result back to the PrimFunc attrs. This makes annotation
- * placement within the function body flexible for frontends.
+ * `LowerOpaqueBlock` drops non-pragma block annotations. Frontend annotations
+ * that are durable planning inputs must be captured before that point.
  */
 #include <tvm/ffi/container/array.h>
 #include <tvm/ffi/reflection/registry.h>
@@ -20,6 +17,10 @@
 namespace tvm {
 namespace tl {
 using namespace tvm::tir;
+
+namespace {
+constexpr const char *kMemoryConfigMap = "tl.memory_config_map";
+}
 
 class NonRestrictCollector : public StmtVisitor {
 public:
@@ -76,6 +77,28 @@ private:
   std::unordered_set<std::string> seen_name_;
 };
 
+class MemoryConfigMapCollector : public StmtVisitor {
+public:
+  void Collect(const Stmt &stmt) { VisitStmt(stmt); }
+
+  Map<Var, ffi::Any> Result() const { return collected_; }
+
+private:
+  void VisitStmt_(const BlockNode *op) final {
+    auto it = op->annotations.find(kMemoryConfigMap);
+    if (it != op->annotations.end()) {
+      Map<Var, ffi::Any> memory_config_map =
+          tvm::Downcast<Map<Var, ffi::Any>>((*it).second);
+      for (const auto &kv : memory_config_map) {
+        collected_.Set(kv.first, kv.second);
+      }
+    }
+    StmtVisitor::VisitStmt_(op);
+  }
+
+  Map<Var, ffi::Any> collected_;
+};
+
 static PrimFunc HoistNonRestrictParams(PrimFunc f) {
   if (!f.defined())
     return f;
@@ -103,11 +126,25 @@ static PrimFunc HoistNonRestrictParams(PrimFunc f) {
     }
   }
 
-  if (from_blocks.empty())
-    return f;
+  MemoryConfigMapCollector memory_config_collector;
+  memory_config_collector.Collect(f->body);
+  Map<Var, ffi::Any> memory_config_map = memory_config_collector.Result();
+  if (auto existing = f->GetAttr<Map<Var, ffi::Any>>(kMemoryConfigMap)) {
+    for (const auto &kv : existing.value()) {
+      memory_config_map.Set(kv.first, kv.second);
+    }
+  }
 
-  return WithAttr(std::move(f), attr::kNonRestrictParams,
-                  std::move(from_blocks));
+  PrimFunc updated = std::move(f);
+  if (!from_blocks.empty()) {
+    updated = WithAttr(std::move(updated), attr::kNonRestrictParams,
+                       std::move(from_blocks));
+  }
+  if (!memory_config_map.empty()) {
+    updated = WithAttr(std::move(updated), kMemoryConfigMap,
+                       std::move(memory_config_map));
+  }
+  return updated;
 }
 
 namespace transform {

@@ -14,6 +14,7 @@
 #include "../transform/common/companion_base.h"
 #include "../transform/common/tt_target_program.h"
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 
 namespace tvm {
@@ -33,6 +34,12 @@ constexpr const char *kEntryName = "entry_name";
 constexpr const char *kMemberFunc = "member_func";
 constexpr const char *kMeshPlans = "mesh_plans";
 constexpr const char *kBufferDistributionPlans = "buffer_distribution_plans";
+constexpr const char *kTensorMemoryConfigPlans =
+    "tensor_memory_config_plans";
+constexpr const char *kOpShardingContracts = "op_sharding_contracts";
+constexpr const char *kPlacementResolutionPlans =
+    "placement_resolution_plans";
+constexpr const char *kReshardPlans = "reshard_plans";
 constexpr const char *kComputeOpPlans = "compute_op_plans";
 constexpr const char *kSegmentPlan = "segment_plan";
 constexpr const char *kCBConfigs = "cb_configs";
@@ -180,6 +187,167 @@ inline Array<Any> EncodeBufferDistributionPlans(
     if (!plan->abi_memory_space.empty()) {
       item.Set("abi_memory_space", plan->abi_memory_space);
     }
+    encoded.push_back(item);
+  }
+  return encoded;
+}
+
+inline Array<Any> EncodeTensorMemoryConfigPlans(
+    const Array<TTTensorMemoryConfigPlan> &tensor_memory_config_plans) {
+  Array<Any> encoded;
+  for (const TTTensorMemoryConfigPlan &plan : tensor_memory_config_plans) {
+    Map<String, Any> item;
+    item.Set("name", plan->name);
+    item.Set("subject", plan->subject);
+    if (!plan->value_identity.empty()) {
+      item.Set("value_identity", plan->value_identity);
+    }
+    if (!plan->logical_shape.empty()) {
+      item.Set("logical_shape", plan->logical_shape);
+    }
+    if (!plan->dtype.empty()) {
+      item.Set("dtype", plan->dtype);
+    }
+    item.Set("memory_layout", plan->memory_layout);
+    item.Set("buffer_type", plan->buffer_type);
+    if (!plan->grid_ref.empty()) {
+      item.Set("grid_ref", plan->grid_ref);
+    }
+    if (!plan->shard_grid_shape.empty()) {
+      item.Set("shard_grid_shape", plan->shard_grid_shape);
+    }
+    if (!plan->shard_shape.empty()) {
+      item.Set("shard_shape", plan->shard_shape);
+    }
+    item.Set("shard_orientation", plan->shard_orientation);
+    item.Set("shard_distribution_strategy",
+             plan->shard_distribution_strategy);
+    if (!plan->page_shape.empty()) {
+      item.Set("page_shape", plan->page_shape);
+    }
+    item.Set("origin", plan->origin);
+    if (!plan->source_buffer.empty()) {
+      item.Set("source_buffer", plan->source_buffer);
+    }
+    item.Set("buffer_distribution_plan", plan->buffer_distribution_plan);
+    item.Set("buffer_distribution_plan_index",
+             Integer(plan->buffer_distribution_plan_index));
+    item.Set("has_runtime_accessor", Bool(plan->has_runtime_accessor));
+    item.Set("requires_materialization",
+             Bool(plan->requires_materialization));
+    encoded.push_back(item);
+  }
+  return encoded;
+}
+
+inline Array<Any> EncodeOpShardingContracts(
+    const Array<TTOpShardingContract> &op_sharding_contracts) {
+  Array<Any> encoded;
+  for (const TTOpShardingContract &contract : op_sharding_contracts) {
+    Map<String, Any> item;
+    item.Set("name", contract->name);
+    item.Set("compute_op_plan", contract->compute_op_plan);
+    item.Set("compute_op_plan_index",
+             Integer(contract->compute_op_plan_index));
+    item.Set("operation_name", contract->operation_name);
+    item.Set("op_kind", contract->op_kind);
+    item.Set("operand_role", contract->operand_role);
+    item.Set("operand_buffer", contract->operand_buffer);
+    if (!contract->operand_host_buffer.empty()) {
+      item.Set("operand_host_buffer", contract->operand_host_buffer);
+    }
+    item.Set("memory_config_plan", contract->memory_config_plan);
+    item.Set("memory_config_plan_index",
+             Integer(contract->memory_config_plan_index));
+    item.Set("accepted_memory_layouts", contract->accepted_memory_layouts);
+    item.Set("accepted_buffer_types", contract->accepted_buffer_types);
+    item.Set("accepted_sharding_strategies",
+             contract->accepted_sharding_strategies);
+    item.Set("required_shard_orientation",
+             contract->required_shard_orientation);
+    item.Set("output_policy", contract->output_policy);
+    item.Set("may_request_input_conversion",
+             Bool(contract->may_request_input_conversion));
+    item.Set("can_produce_output_placement",
+             Bool(contract->can_produce_output_placement));
+    item.Set("direct_external_write_allowed",
+             Bool(contract->direct_external_write_allowed));
+    if (!contract->reject_reason.empty()) {
+      item.Set("reject_reason", contract->reject_reason);
+    }
+    encoded.push_back(item);
+  }
+  return encoded;
+}
+
+inline Array<Any> EncodePlacementResolutionPlans(
+    const Array<TTPlacementResolutionPlan> &placement_resolution_plans) {
+  Array<Any> encoded;
+  for (const TTPlacementResolutionPlan &plan : placement_resolution_plans) {
+    Map<String, Any> item;
+    item.Set("name", plan->name);
+    item.Set("op_sharding_contract", plan->op_sharding_contract);
+    item.Set("op_sharding_contract_index",
+             Integer(plan->op_sharding_contract_index));
+    item.Set("consumer_op_plan", plan->consumer_op_plan);
+    item.Set("consumer_op_plan_index",
+             Integer(plan->consumer_op_plan_index));
+    item.Set("consumer_operand_role", plan->consumer_operand_role);
+    item.Set("selected_memory_config_plan",
+             plan->selected_memory_config_plan);
+    item.Set("selected_memory_config_plan_index",
+             Integer(plan->selected_memory_config_plan_index));
+    item.Set("selected_memory_layout", plan->selected_memory_layout);
+    item.Set("selected_buffer_type", plan->selected_buffer_type);
+    item.Set("resolution_kind", plan->resolution_kind);
+    item.Set("conversion_required", Bool(plan->conversion_required));
+    if (!plan->conversion_plan.empty()) {
+      item.Set("conversion_plan", plan->conversion_plan);
+    }
+    if (!plan->conflict_reason.empty()) {
+      item.Set("conflict_reason", plan->conflict_reason);
+    }
+    encoded.push_back(item);
+  }
+  return encoded;
+}
+
+inline Array<Any>
+EncodeReshardPlans(const Array<TTReshardPlan> &reshard_plans) {
+  Array<Any> encoded;
+  for (const TTReshardPlan &plan : reshard_plans) {
+    Map<String, Any> item;
+    item.Set("name", plan->name);
+    item.Set("source_value", plan->source_value);
+    item.Set("target_value", plan->target_value);
+    item.Set("source_memory_config_plan",
+             plan->source_memory_config_plan);
+    item.Set("source_memory_config_plan_index",
+             Integer(plan->source_memory_config_plan_index));
+    item.Set("target_memory_config_plan",
+             plan->target_memory_config_plan);
+    item.Set("target_memory_config_plan_index",
+             Integer(plan->target_memory_config_plan_index));
+    item.Set("conversion_kind", plan->conversion_kind);
+    item.Set("source_region_kind", plan->source_region_kind);
+    if (!plan->source_region_shape.empty()) {
+      item.Set("source_region_shape", plan->source_region_shape);
+    }
+    if (!plan->materialization_plan.empty()) {
+      item.Set("materialization_plan", plan->materialization_plan);
+    }
+    item.Set("materialization_plan_index",
+             Integer(plan->materialization_plan_index));
+    item.Set("materialization_protocol", plan->materialization_protocol);
+    item.Set("required_cb_plan_indices", plan->required_cb_plan_indices);
+    if (!plan->required_sync_plan_indices.empty()) {
+      item.Set("required_sync_plan_indices",
+               plan->required_sync_plan_indices);
+    }
+    item.Set("scheduling_kind", plan->scheduling_kind);
+    item.Set("inserted_by", plan->inserted_by);
+    item.Set("admission_status", plan->admission_status);
+    item.Set("unsupported_reason", plan->unsupported_reason);
     encoded.push_back(item);
   }
   return encoded;
@@ -850,9 +1018,194 @@ inline void ValidateLiveProjectionEvidence(const TTProgram &program) {
   }
 }
 
+inline bool HasPositiveIntegerShape(const Array<Integer> &shape) {
+  if (shape.empty()) {
+    return false;
+  }
+  for (const Integer &value : shape) {
+    if (value->value <= 0) {
+      return false;
+    }
+  }
+  return true;
+}
+
+inline bool IsShardedMemoryLayout(const String &memory_layout) {
+  const std::string layout = memory_layout;
+  return layout == "HEIGHT_SHARDED" || layout == "WIDTH_SHARDED" ||
+         layout == "BLOCK_SHARDED" || layout == "ND_SHARDED";
+}
+
+inline void ValidatePlacementProjectionEvidence(const TTProgram &program) {
+  std::unordered_map<std::string, int64_t> memory_config_index_by_name;
+  std::unordered_map<std::string, int64_t> memory_config_index_by_subject;
+  for (int64_t index = 0;
+       index < static_cast<int64_t>(program->tensor_memory_config_plans.size());
+       ++index) {
+    const TTTensorMemoryConfigPlan &plan =
+        program->tensor_memory_config_plans[static_cast<size_t>(index)];
+    ICHECK(!plan->name.empty())
+        << "executable projection requires TTTensorMemoryConfigPlan name";
+    ICHECK(!plan->subject.empty())
+        << "executable projection requires TTTensorMemoryConfigPlan subject";
+    ICHECK(!plan->memory_layout.empty())
+        << "executable projection requires TTTensorMemoryConfigPlan "
+           "memory_layout";
+    ICHECK(!plan->buffer_type.empty())
+        << "executable projection requires TTTensorMemoryConfigPlan "
+           "buffer_type";
+    ICHECK(!plan->origin.empty())
+        << "executable projection requires TTTensorMemoryConfigPlan origin";
+    ICHECK(memory_config_index_by_name
+               .emplace(static_cast<std::string>(plan->name), index)
+               .second)
+        << "executable projection has duplicate TTTensorMemoryConfigPlan name "
+        << plan->name;
+    ICHECK(
+        memory_config_index_by_subject
+            .emplace(static_cast<std::string>(plan->subject), index)
+            .second)
+        << "executable projection has duplicate TTTensorMemoryConfigPlan "
+           "subject "
+        << plan->subject;
+    if (IsShardedMemoryLayout(plan->memory_layout)) {
+      ICHECK(!plan->grid_ref.empty())
+          << "executable projection sharded TTTensorMemoryConfigPlan "
+          << plan->name << " requires grid_ref";
+      ICHECK(HasPositiveIntegerShape(plan->shard_grid_shape))
+          << "executable projection sharded TTTensorMemoryConfigPlan "
+          << plan->name << " requires shard_grid_shape";
+      ICHECK(HasPositiveIntegerShape(plan->shard_shape))
+          << "executable projection sharded TTTensorMemoryConfigPlan "
+          << plan->name << " requires shard_shape";
+      ICHECK(plan->shard_orientation == "row_major" ||
+             plan->shard_orientation == "col_major")
+          << "executable projection sharded TTTensorMemoryConfigPlan "
+          << plan->name << " requires row_major or col_major orientation";
+      ICHECK(plan->shard_distribution_strategy == "height" ||
+             plan->shard_distribution_strategy == "width" ||
+             plan->shard_distribution_strategy == "block" ||
+             plan->shard_distribution_strategy == "nd")
+          << "executable projection sharded TTTensorMemoryConfigPlan "
+          << plan->name << " requires sharding strategy";
+    }
+  }
+
+  std::unordered_set<std::string> materialization_names;
+  for (const TTMaterializationPlan &plan : program->materialization_plans) {
+    if (!plan->name.empty()) {
+      materialization_names.insert(static_cast<std::string>(plan->name));
+    }
+  }
+
+  for (const TTReshardPlan &plan : program->reshard_plans) {
+    ICHECK(!plan->name.empty())
+        << "executable projection requires TTReshardPlan name";
+    ICHECK(!plan->source_value.empty())
+        << "executable projection requires TTReshardPlan source_value";
+    ICHECK(!plan->target_value.empty())
+        << "executable projection requires TTReshardPlan target_value";
+    ICHECK_NE(plan->source_value, plan->target_value)
+        << "executable projection TTReshardPlan source_value and "
+           "target_value must differ";
+    ICHECK_GE(plan->source_memory_config_plan_index, 0)
+        << "executable projection TTReshardPlan requires "
+           "source_memory_config_plan_index";
+    ICHECK_LT(plan->source_memory_config_plan_index,
+              static_cast<int64_t>(
+                  program->tensor_memory_config_plans.size()))
+        << "executable projection TTReshardPlan "
+           "source_memory_config_plan_index out of bounds";
+    ICHECK_GE(plan->target_memory_config_plan_index, 0)
+        << "executable projection TTReshardPlan requires "
+           "target_memory_config_plan_index";
+    ICHECK_LT(plan->target_memory_config_plan_index,
+              static_cast<int64_t>(
+                  program->tensor_memory_config_plans.size()))
+        << "executable projection TTReshardPlan "
+           "target_memory_config_plan_index out of bounds";
+    const TTTensorMemoryConfigPlan &source_config =
+        program->tensor_memory_config_plans[static_cast<size_t>(
+            plan->source_memory_config_plan_index)];
+    const TTTensorMemoryConfigPlan &target_config =
+        program->tensor_memory_config_plans[static_cast<size_t>(
+            plan->target_memory_config_plan_index)];
+    ICHECK_EQ(plan->source_memory_config_plan, source_config->name)
+        << "executable projection TTReshardPlan "
+           "source_memory_config_plan must match indexed "
+           "TTTensorMemoryConfigPlan";
+    ICHECK_EQ(plan->target_memory_config_plan, target_config->name)
+        << "executable projection TTReshardPlan "
+           "target_memory_config_plan must match indexed "
+           "TTTensorMemoryConfigPlan";
+    ICHECK_EQ(plan->source_value, source_config->subject)
+        << "executable projection TTReshardPlan source_value must match "
+           "source memory config subject";
+    ICHECK_EQ(plan->target_value, target_config->subject)
+        << "executable projection TTReshardPlan target_value must match "
+           "target memory config subject";
+    const std::string conversion_kind = plan->conversion_kind;
+    ICHECK(conversion_kind == "interleaved_to_sharded" ||
+           conversion_kind == "sharded_to_interleaved" ||
+           conversion_kind == "reshard" || conversion_kind == "unsupported")
+        << "executable projection TTReshardPlan unsupported conversion_kind "
+        << plan->conversion_kind;
+    if (conversion_kind == "interleaved_to_sharded") {
+      ICHECK_EQ(source_config->memory_layout, "INTERLEAVED")
+          << "executable projection TTReshardPlan "
+             "interleaved_to_sharded requires interleaved source";
+      ICHECK_NE(target_config->memory_layout, "INTERLEAVED")
+          << "executable projection TTReshardPlan "
+             "interleaved_to_sharded requires sharded target";
+      ICHECK(!plan->materialization_protocol.empty())
+          << "executable projection TTReshardPlan "
+             "interleaved_to_sharded requires materialization_protocol";
+      ICHECK(!plan->source_region_kind.empty() &&
+             plan->source_region_kind != "none")
+          << "executable projection TTReshardPlan "
+             "interleaved_to_sharded requires source_region_kind";
+      ICHECK(HasPositiveIntegerShape(plan->source_region_shape))
+          << "executable projection TTReshardPlan "
+             "interleaved_to_sharded requires source_region_shape";
+    }
+    if (plan->materialization_plan_index >= 0) {
+      ICHECK_LT(plan->materialization_plan_index,
+                static_cast<int64_t>(program->materialization_plans.size()))
+          << "executable projection TTReshardPlan "
+             "materialization_plan_index out of bounds";
+      ICHECK(materialization_names.count(
+          static_cast<std::string>(plan->materialization_plan)))
+          << "executable projection TTReshardPlan materialization_plan must "
+             "reference a TTMaterializationPlan";
+    }
+    ICHECK(plan->scheduling_kind == "runtime" ||
+           plan->scheduling_kind == "load_time" ||
+           plan->scheduling_kind == "compile_time")
+        << "executable projection TTReshardPlan unsupported scheduling_kind "
+        << plan->scheduling_kind;
+    ICHECK(plan->inserted_by == "planner" || plan->inserted_by == "user")
+        << "executable projection TTReshardPlan unsupported inserted_by "
+        << plan->inserted_by;
+    ICHECK(plan->admission_status == "admitted" ||
+           plan->admission_status == "unsupported")
+        << "executable projection TTReshardPlan unsupported admission_status "
+        << plan->admission_status;
+    if (plan->admission_status == "admitted") {
+      ICHECK(plan->unsupported_reason.empty())
+          << "executable projection TTReshardPlan admitted conversion cannot "
+             "carry unsupported_reason";
+    } else {
+      ICHECK(!plan->unsupported_reason.empty())
+          << "executable projection TTReshardPlan unsupported conversion "
+             "requires unsupported_reason";
+    }
+  }
+}
+
 inline Map<String, Any>
 MaterializeBlackholeExecutableProjection(const TTProgram &program) {
   ValidateLiveProjectionEvidence(program);
+  ValidatePlacementProjectionEvidence(program);
 
   Map<String, Any> executable;
   executable.Set(String(executable_key::kSchemaVersion), Integer(1));
@@ -872,6 +1225,32 @@ MaterializeBlackholeExecutableProjection(const TTProgram &program) {
   if (!buffer_distribution_plans.empty()) {
     executable.Set(String(executable_key::kBufferDistributionPlans),
                    buffer_distribution_plans);
+  }
+
+  Array<Any> tensor_memory_config_plans =
+      EncodeTensorMemoryConfigPlans(program->tensor_memory_config_plans);
+  if (!tensor_memory_config_plans.empty()) {
+    executable.Set(String(executable_key::kTensorMemoryConfigPlans),
+                   tensor_memory_config_plans);
+  }
+
+  Array<Any> op_sharding_contracts =
+      EncodeOpShardingContracts(program->op_sharding_contracts);
+  if (!op_sharding_contracts.empty()) {
+    executable.Set(String(executable_key::kOpShardingContracts),
+                   op_sharding_contracts);
+  }
+
+  Array<Any> placement_resolution_plans =
+      EncodePlacementResolutionPlans(program->placement_resolution_plans);
+  if (!placement_resolution_plans.empty()) {
+    executable.Set(String(executable_key::kPlacementResolutionPlans),
+                   placement_resolution_plans);
+  }
+
+  Array<Any> reshard_plans = EncodeReshardPlans(program->reshard_plans);
+  if (!reshard_plans.empty()) {
+    executable.Set(String(executable_key::kReshardPlans), reshard_plans);
   }
 
   Array<Any> compute_op_plans = EncodeComputeOpPlans(program->compute_op_plans);

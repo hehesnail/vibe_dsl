@@ -132,6 +132,32 @@ def _row_reduce_sum_kernel():
     return main
 
 
+def _memory_config_annotation_kernel():
+    @T.prim_func
+    def main(
+        A: T.Tensor((64, 64), "bfloat16"),
+        C: T.Tensor((64, 64), "bfloat16"),
+    ):
+        with T.Kernel(1, 1) as (bx, by):
+            A_shared = T.alloc_shared((64, 64), "bfloat16")
+            T.annotate_memory_config(
+                {
+                    A: T.sharded_dram(
+                        strategy="width",
+                        grid=T.CoreGrid(x=2, y=1),
+                        shard_shape=(64, 32),
+                        orientation="row_major",
+                        allow_reshard=False,
+                    ),
+                    C: T.interleaved_dram(),
+                }
+            )
+            T.copy(A, A_shared)
+            T.copy(A_shared, C)
+
+    return main
+
+
 def _lower_blackhole_frontend(prim_func):
     target = Target("blackhole")
     mod = tvm.IRModule({"main": prim_func.with_attr("global_symbol", "main")})
@@ -473,6 +499,7 @@ def _rebuild_spatial_plan(
     live_values=None,
     live_value_edges=None,
     materialization_boundaries=None,
+    tensor_placement_intents=None,
     validated_hints=None,
     closures=None,
     boundaries=None,
@@ -496,6 +523,9 @@ def _rebuild_spatial_plan(
         list(plan.materialization_boundaries)
         if materialization_boundaries is None
         else materialization_boundaries,
+        list(plan.tensor_placement_intents)
+        if tensor_placement_intents is None
+        else tensor_placement_intents,
         plan.validated_hints if validated_hints is None else validated_hints,
         list(plan.closures) if closures is None else closures,
         list(plan.boundaries) if boundaries is None else boundaries,
@@ -508,6 +538,10 @@ def _rebuild_tt_program(
     *,
     mesh_plans=None,
     buffer_distribution_plans=None,
+    tensor_memory_config_plans=None,
+    op_sharding_contracts=None,
+    placement_resolution_plans=None,
+    reshard_plans=None,
     compute_op_plans=None,
     cb_plans=None,
     live_form_plans=None,
@@ -526,6 +560,16 @@ def _rebuild_tt_program(
         list(program.buffer_distribution_plans)
         if buffer_distribution_plans is None
         else buffer_distribution_plans,
+        list(program.tensor_memory_config_plans)
+        if tensor_memory_config_plans is None
+        else tensor_memory_config_plans,
+        list(program.op_sharding_contracts)
+        if op_sharding_contracts is None
+        else op_sharding_contracts,
+        list(program.placement_resolution_plans)
+        if placement_resolution_plans is None
+        else placement_resolution_plans,
+        list(program.reshard_plans) if reshard_plans is None else reshard_plans,
         list(program.block_plans),
         list(program.kernel_plans),
         list(program.compute_op_plans) if compute_op_plans is None else compute_op_plans,
@@ -681,6 +725,56 @@ def _rebuild_tt_compute_op_plan(
     )
 
 
+def _rebuild_tt_op_sharding_contract(
+    contract,
+    *,
+    memory_config_plan=None,
+    memory_config_plan_index=None,
+    accepted_memory_layouts=None,
+    accepted_buffer_types=None,
+    accepted_sharding_strategies=None,
+    required_shard_orientation=None,
+    output_policy=None,
+    can_produce_output_placement=None,
+):
+    make_contract = tvm.get_global_func("tl.TTOpShardingContract")
+    return make_contract(
+        str(contract.name),
+        str(contract.compute_op_plan),
+        int(contract.compute_op_plan_index),
+        str(contract.operation_name),
+        str(contract.op_kind),
+        str(contract.operand_role),
+        str(contract.operand_buffer),
+        str(contract.operand_host_buffer),
+        str(contract.memory_config_plan)
+        if memory_config_plan is None
+        else memory_config_plan,
+        int(contract.memory_config_plan_index)
+        if memory_config_plan_index is None
+        else memory_config_plan_index,
+        list(contract.accepted_memory_layouts)
+        if accepted_memory_layouts is None
+        else accepted_memory_layouts,
+        list(contract.accepted_buffer_types)
+        if accepted_buffer_types is None
+        else accepted_buffer_types,
+        list(contract.accepted_sharding_strategies)
+        if accepted_sharding_strategies is None
+        else accepted_sharding_strategies,
+        str(contract.required_shard_orientation)
+        if required_shard_orientation is None
+        else required_shard_orientation,
+        str(contract.output_policy) if output_policy is None else output_policy,
+        bool(contract.may_request_input_conversion),
+        bool(contract.can_produce_output_placement)
+        if can_produce_output_placement is None
+        else can_produce_output_placement,
+        bool(contract.direct_external_write_allowed),
+        str(contract.reject_reason),
+    )
+
+
 def _rebuild_tt_materialization_plan(
     plan,
     *,
@@ -731,6 +825,37 @@ def _rebuild_tt_consumer_binding_plan(
         int(plan.abi_plan_index),
         str(plan.target_buffer),
         str(plan.materialization_plan),
+    )
+
+
+def _rebuild_tt_reshard_plan(
+    plan,
+    *,
+    target_memory_config_plan_index=None,
+):
+    make_tt_reshard_plan = tvm.get_global_func("tl.TTReshardPlan")
+    return make_tt_reshard_plan(
+        str(plan.name),
+        str(plan.source_value),
+        str(plan.target_value),
+        str(plan.source_memory_config_plan),
+        int(plan.source_memory_config_plan_index),
+        str(plan.target_memory_config_plan),
+        int(plan.target_memory_config_plan_index)
+        if target_memory_config_plan_index is None
+        else target_memory_config_plan_index,
+        str(plan.conversion_kind),
+        str(plan.source_region_kind),
+        list(plan.source_region_shape),
+        str(plan.materialization_plan),
+        int(plan.materialization_plan_index),
+        str(plan.materialization_protocol),
+        list(plan.required_cb_plan_indices),
+        list(plan.required_sync_plan_indices),
+        str(plan.scheduling_kind),
+        str(plan.inserted_by),
+        str(plan.admission_status),
+        str(plan.unsupported_reason),
     )
 
 
@@ -799,6 +924,10 @@ def _assert_no_tt_plan_payload_surface(tt_program):
     plan_groups = (
         tt_program.mesh_plans,
         tt_program.buffer_distribution_plans,
+        tt_program.tensor_memory_config_plans,
+        tt_program.op_sharding_contracts,
+        tt_program.placement_resolution_plans,
+        tt_program.reshard_plans,
         tt_program.block_plans,
         tt_program.kernel_plans,
         tt_program.cb_plans,
@@ -1324,8 +1453,8 @@ def test_tile_compute_dag_decisions_drive_typed_compute_lower_plan():
         "live_form_solver_required_for_cross_event_use",
     } >= {str(plan.tile_compute_materialization_policy) for plan in dag_compute_plans}
 
-    materialization_demand_by_node = {
-        int(demand.node_id): str(demand.policy)
+    materialization_demand_nodes = {
+        int(demand.node_id)
         for resource_demand in tt_program.resource_demands
         for demand in resource_demand.tile_compute_materialization_demands
     }
@@ -1335,14 +1464,8 @@ def test_tile_compute_dag_decisions_drive_typed_compute_lower_plan():
         if str(plan.tile_compute_materialization_policy) != "none"
     }
     assert materialized_compute_nodes
-    assert materialized_compute_nodes <= set(materialization_demand_by_node)
-    for plan in dag_compute_plans:
-        node_id = int(plan.tile_compute_dag_node_id)
-        if node_id in materialization_demand_by_node:
-            assert (
-                str(plan.tile_compute_materialization_policy)
-                == materialization_demand_by_node[node_id]
-            )
+    assert materialization_demand_nodes
+    assert materialized_compute_nodes <= materialization_demand_nodes
 
 
 def test_executable_projection_carries_dag_driven_compute_lower_plan():
@@ -2068,6 +2191,60 @@ def test_task1_gemm_spatial_plan_emits_compute_closure():
     assert len(plan.phase_plans) >= 1
 
 
+def test_memory_config_annotation_lowers_to_spatial_tensor_placement_intent():
+    mod = _prepare_blackhole_phase_b_module(_memory_config_annotation_kernel())
+    mod = tilelang.transform.BuildSpatialPlan()(mod)
+    spatial_plan = mod["main"].attrs["tl.spatial_plan"]
+
+    intents = {str(intent.subject): intent for intent in spatial_plan.tensor_placement_intents}
+
+    assert str(intents["A"].source) == "user"
+    assert str(intents["A"].dsl_origin) == "memory_config_map"
+    assert str(intents["A"].memory_space_class) == "DRAM"
+    assert str(intents["A"].strategy_class) == "width_sharded"
+    assert tuple(int(dim) for dim in intents["A"].shard_grid_shape) == (1, 2)
+    assert tuple(int(dim) for dim in intents["A"].shard_shape) == (64, 32)
+    assert str(intents["A"].shard_orientation) == "row_major"
+    assert not bool(intents["A"].allow_reshard)
+    assert bool(intents["A"].hard_requirement)
+
+    assert str(intents["C"].source) == "user"
+    assert str(intents["C"].strategy_class) == "interleaved"
+    assert str(intents["C"].memory_space_class) == "DRAM"
+
+
+def test_unannotated_global_buffers_get_explicit_interleaved_dram_intent():
+    mod = _prepare_blackhole_phase_b_module(staged_copy_kernel(tile_rows=1, tile_cols=1))
+    mod = tilelang.transform.BuildSpatialPlan()(mod)
+    spatial_plan = mod["main"].attrs["tl.spatial_plan"]
+
+    intents = {str(intent.subject): intent for intent in spatial_plan.tensor_placement_intents}
+    assert str(intents["A"].source) == "derived_default"
+    assert str(intents["A"].strategy_class) == "interleaved"
+    assert str(intents["A"].memory_space_class) == "DRAM"
+    assert str(intents["B"].source) == "derived_default"
+    assert str(intents["B"].strategy_class) == "interleaved"
+    assert str(intents["B"].memory_space_class) == "DRAM"
+    assert "A_shared" not in intents
+
+
+def test_memory_config_python_surface_rejects_invalid_strategy_and_orientation():
+    with pytest.raises(ValueError, match="strategy"):
+        T.sharded_dram(
+            strategy="row_major",
+            grid=T.CoreGrid(x=2, y=1),
+            shard_shape=(64, 32),
+        )
+
+    with pytest.raises(ValueError, match="orientation"):
+        T.sharded_l1(
+            strategy="height",
+            grid=T.CoreGrid(x=1, y=2),
+            shard_shape=(32, 64),
+            orientation="block",
+        )
+
+
 def test_phase_b_pipeline_exposes_only_spatial_plan_without_legacy_analysis_attrs():
     mod = _prepare_blackhole_phase_b_module(
         mha_example.flashattn.jit_impl.get_tir(
@@ -2494,6 +2671,58 @@ def test_plan_tt_abi_uses_hardware_backed_buffer_distribution():
     assert str(executable_distributions["A_shared"]["attached_core_group"]) == "main_core_group"
 
 
+def test_build_tt_program_projects_tensor_memory_config_plans_for_current_placements():
+    mod = _prepare_blackhole_phase_b_module(grid_indexed_staged_copy_kernel(3, 3))
+    mod = _with_test_hardware_model(
+        mod,
+        logical_worker_grid_x=2,
+        logical_worker_grid_y=2,
+        functional_worker_count=4,
+        dram_view_count=8,
+        worker_l1_size=1572864,
+        l1_allocation_alignment_bytes=32,
+    )
+    mod = tilelang.transform.PlanTTBlocks()(mod)
+    mod = tilelang.transform.SelectBlackholeTTMetalBuiltins()(mod)
+    mod = tilelang.transform.PlanTTCompute()(mod)
+    mod = tilelang.transform.PlanTTTransport()(mod)
+    mod = tilelang.transform.PlanTTSync()(mod)
+    mod = tilelang.transform.PlanTTABI()(mod)
+    mod = tilelang.transform.PlanTTExecution()(mod)
+    mod = tilelang.transform.BuildTTProgram()(mod)
+    mod = tilelang.transform.ValidateTTProgram()(mod)
+
+    tt_program = mod["main"].attrs["tl.tt_program"]
+    distributions = {
+        str(plan.buffer): plan for plan in tt_program.buffer_distribution_plans
+    }
+    memory_configs = {
+        str(plan.subject): plan for plan in tt_program.tensor_memory_config_plans
+    }
+
+    assert set(distributions).issubset(memory_configs)
+    assert str(memory_configs["A"].memory_layout) == "INTERLEAVED"
+    assert str(memory_configs["A"].buffer_type) == "DRAM"
+    assert str(memory_configs["A"].origin) == "derived_default"
+    assert str(memory_configs["B"].memory_layout) == "INTERLEAVED"
+    assert str(memory_configs["B"].buffer_type) == "DRAM"
+
+    shared_config = memory_configs["A_shared"]
+    shared_distribution = distributions["A_shared"]
+    assert str(shared_config.memory_layout) == "BLOCK_SHARDED"
+    assert str(shared_config.buffer_type) == "L1"
+    assert str(shared_config.origin) == "materialization_requirement"
+    assert tuple(int(dim) for dim in shared_config.shard_shape) == tuple(
+        int(dim) for dim in shared_distribution.shard_shape
+    )
+    assert tuple(int(dim) for dim in shared_config.shard_grid_shape) == tuple(
+        int(dim) for dim in shared_distribution.shard_grid_shape
+    )
+    assert str(shared_config.shard_orientation) == str(
+        shared_distribution.shard_orientation
+    )
+
+
 def test_validate_tt_program_rejects_invalid_buffer_distribution_placement():
     mod = _prepare_blackhole_tt_program_module(grid_indexed_staged_copy_kernel(3, 3))
     main = mod["main"]
@@ -2701,6 +2930,233 @@ def test_build_tt_program_exposes_typed_compute_op_plans():
     ]
     assert len(compute_segments) == 1
     assert str(compute_segments[0]["compute_ops"][0]["kind"]) == "gemm"
+
+
+def test_build_tt_program_projects_op_sharding_contracts_for_compute_operands():
+    mod = _prepare_blackhole_tt_program_module(gemm_kernel())
+    tt_program = mod["main"].attrs["tl.tt_program"]
+
+    compute_op = tt_program.compute_op_plans[0]
+    memory_configs = {
+        str(plan.subject): (index, plan)
+        for index, plan in enumerate(tt_program.tensor_memory_config_plans)
+    }
+    contracts = {
+        str(contract.operand_role): contract
+        for contract in tt_program.op_sharding_contracts
+    }
+
+    assert set(contracts) == {"a", "b", "c"}
+    for role, contract in contracts.items():
+        binding = next(
+            binding
+            for binding in compute_op.operand_bindings
+            if str(binding.role) == role
+        )
+        memory_config_index, memory_config = memory_configs[str(binding.buffer)]
+        assert str(contract.compute_op_plan) == str(compute_op.name)
+        assert int(contract.compute_op_plan_index) == 0
+        assert str(contract.operation_name) == "matmul_tiles"
+        assert str(contract.op_kind) == "gemm"
+        assert str(contract.operand_buffer) == str(binding.buffer)
+        assert str(contract.operand_host_buffer) == str(binding.host_buffer)
+        assert str(contract.memory_config_plan) == str(memory_config.name)
+        assert int(contract.memory_config_plan_index) == memory_config_index
+        assert {str(layout) for layout in contract.accepted_memory_layouts} == {
+            str(memory_config.memory_layout)
+        }
+        assert {str(buffer_type) for buffer_type in contract.accepted_buffer_types} == {
+            str(memory_config.buffer_type)
+        }
+        assert {str(strategy) for strategy in contract.accepted_sharding_strategies} == {
+            str(memory_config.shard_distribution_strategy)
+        }
+        assert str(contract.required_shard_orientation) == str(
+            memory_config.shard_orientation
+        )
+        assert bool(contract.may_request_input_conversion) is False
+        assert str(contract.reject_reason) == ""
+
+    assert str(contracts["c"].output_policy) == "produces_operand_placement"
+    assert bool(contracts["c"].can_produce_output_placement) is True
+    assert str(contracts["a"].output_policy) == "not_output"
+    assert bool(contracts["a"].can_produce_output_placement) is False
+
+
+def test_validate_tt_program_rejects_op_sharding_contract_memory_config_mismatch():
+    mod = _prepare_blackhole_tt_program_module(gemm_kernel())
+    main = mod["main"]
+    tt_program = main.attrs["tl.tt_program"]
+    contracts = list(tt_program.op_sharding_contracts)
+    contract_index = next(
+        index
+        for index, contract in enumerate(contracts)
+        if str(contract.operand_role) == "a"
+    )
+    mismatched_index = next(
+        index
+        for index, plan in enumerate(tt_program.tensor_memory_config_plans)
+        if str(plan.subject) != str(contracts[contract_index].operand_buffer)
+    )
+    mismatched_config = tt_program.tensor_memory_config_plans[mismatched_index]
+    contracts[contract_index] = _rebuild_tt_op_sharding_contract(
+        contracts[contract_index],
+        memory_config_plan=str(mismatched_config.name),
+        memory_config_plan_index=mismatched_index,
+    )
+    broken = tvm.IRModule(
+        {
+            "main": main.with_attr(
+                "tl.tt_program",
+                _rebuild_tt_program(tt_program, op_sharding_contracts=contracts),
+            )
+        },
+        global_infos=mod.global_infos,
+    )
+
+    with pytest.raises(Exception, match="memory config subject"):
+        tilelang.transform.ValidateTTProgram()(broken)
+
+
+def test_build_tt_program_projects_placement_resolution_for_op_contracts():
+    mod = _prepare_blackhole_tt_program_module(gemm_kernel())
+    tt_program = mod["main"].attrs["tl.tt_program"]
+    contracts = {str(contract.name): contract for contract in tt_program.op_sharding_contracts}
+    resolutions = {
+        str(plan.op_sharding_contract): plan
+        for plan in tt_program.placement_resolution_plans
+    }
+
+    assert set(contracts).issubset(resolutions)
+    for contract_name, contract in contracts.items():
+        resolution = resolutions[contract_name]
+        assert str(resolution.consumer_op_plan) == str(contract.compute_op_plan)
+        assert int(resolution.consumer_op_plan_index) == int(
+            contract.compute_op_plan_index
+        )
+        assert str(resolution.consumer_operand_role) == str(contract.operand_role)
+        assert str(resolution.selected_memory_config_plan) == str(
+            contract.memory_config_plan
+        )
+        assert int(resolution.selected_memory_config_plan_index) == int(
+            contract.memory_config_plan_index
+        )
+        assert str(resolution.resolution_kind) == "selected_existing"
+        assert bool(resolution.conversion_required) is False
+        assert str(resolution.conversion_plan) == ""
+        assert str(resolution.conflict_reason) == ""
+
+
+def test_validate_tt_program_rejects_op_contract_placement_conflict():
+    mod = _prepare_blackhole_tt_program_module(gemm_kernel())
+    main = mod["main"]
+    tt_program = main.attrs["tl.tt_program"]
+    contracts = list(tt_program.op_sharding_contracts)
+    contract_index = next(
+        index
+        for index, contract in enumerate(contracts)
+        if str(contract.operand_role) == "a"
+    )
+    contracts[contract_index] = _rebuild_tt_op_sharding_contract(
+        contracts[contract_index],
+        accepted_memory_layouts=["INTERLEAVED"],
+    )
+    broken = tvm.IRModule(
+        {
+            "main": main.with_attr(
+                "tl.tt_program",
+                _rebuild_tt_program(tt_program, op_sharding_contracts=contracts),
+            )
+        },
+        global_infos=mod.global_infos,
+    )
+
+    with pytest.raises(Exception, match="placement conflict.*operand.*a"):
+        tilelang.transform.ValidateTTProgram()(broken)
+
+
+def test_build_tt_program_projects_reshard_plan_for_staged_copy_materialization():
+    mod = _prepare_blackhole_tt_program_module(grid_indexed_staged_copy_kernel(3, 3))
+    tt_program = mod["main"].attrs["tl.tt_program"]
+    memory_configs = {
+        str(plan.subject): (index, plan)
+        for index, plan in enumerate(tt_program.tensor_memory_config_plans)
+    }
+    reshard = next(
+        plan
+        for plan in tt_program.reshard_plans
+        if str(plan.source_value) == "A" and str(plan.target_value) == "A_shared"
+    )
+
+    source_index, source_config = memory_configs["A"]
+    target_index, target_config = memory_configs["A_shared"]
+    assert str(reshard.conversion_kind) == "interleaved_to_sharded"
+    assert str(reshard.source_memory_config_plan) == str(source_config.name)
+    assert int(reshard.source_memory_config_plan_index) == source_index
+    assert str(reshard.target_memory_config_plan) == str(target_config.name)
+    assert int(reshard.target_memory_config_plan_index) == target_index
+    assert str(reshard.materialization_protocol) != ""
+    assert str(reshard.scheduling_kind) == "runtime"
+    assert str(reshard.inserted_by) == "planner"
+    assert str(reshard.admission_status) == "admitted"
+    assert str(reshard.unsupported_reason) == ""
+
+
+def test_executable_projection_projects_tensor_memory_config_and_reshard_records():
+    mod = _prepare_blackhole_tt_program_module(grid_indexed_staged_copy_kernel(3, 3))
+    mod = tilelang.transform.MaterializeBlackholeExecutable()(mod)
+    executable = mod["main"].attrs["tl.blackhole_executable"]
+
+    assert "tensor_memory_config_plans" in executable
+    assert "reshard_plans" in executable
+    memory_configs = {
+        str(plan["subject"]): plan for plan in executable["tensor_memory_config_plans"]
+    }
+    reshard_plans = {
+        (str(plan["source_value"]), str(plan["target_value"])): plan
+        for plan in executable["reshard_plans"]
+    }
+
+    assert str(memory_configs["A"]["memory_layout"]) == "INTERLEAVED"
+    assert str(memory_configs["A"]["buffer_type"]) == "DRAM"
+    assert str(memory_configs["A_shared"]["memory_layout"]) == "BLOCK_SHARDED"
+    assert str(memory_configs["A_shared"]["buffer_type"]) == "L1"
+    assert str(memory_configs["A_shared"]["source_buffer"]) == "A"
+
+    reshard = reshard_plans[("A", "A_shared")]
+    assert str(reshard["conversion_kind"]) == "interleaved_to_sharded"
+    assert str(reshard["source_memory_config_plan"]) == str(memory_configs["A"]["name"])
+    assert str(reshard["target_memory_config_plan"]) == str(
+        memory_configs["A_shared"]["name"]
+    )
+    assert str(reshard["source_region_kind"]) == "per_work_tile"
+    assert tuple(int(dim) for dim in reshard["source_region_shape"]) == (32, 32)
+    assert str(reshard["materialization_protocol"]) == "staged_copy"
+    assert str(reshard["scheduling_kind"]) == "runtime"
+    assert str(reshard["inserted_by"]) == "planner"
+    assert str(reshard["admission_status"]) == "admitted"
+    assert str(reshard["unsupported_reason"]) == ""
+
+
+def test_executable_projection_rejects_reshard_without_target_memory_config_index():
+    mod = _prepare_blackhole_tt_program_module(grid_indexed_staged_copy_kernel(3, 3))
+    main = mod["main"]
+    tt_program = main.attrs["tl.tt_program"]
+    assert tt_program.reshard_plans
+
+    reshard_plans = list(tt_program.reshard_plans)
+    reshard_plans[0] = _rebuild_tt_reshard_plan(
+        reshard_plans[0],
+        target_memory_config_plan_index=-1,
+    )
+    invalid_program = _rebuild_tt_program(tt_program, reshard_plans=reshard_plans)
+    broken = tvm.IRModule(
+        {"main": main.with_attr("tl.tt_program", invalid_program)},
+        global_infos=mod.global_infos,
+    )
+
+    with pytest.raises(Exception, match="target_memory_config_plan_index"):
+        tilelang.transform.MaterializeBlackholeExecutable()(broken)
 
 
 def test_tt_program_has_no_unresolved_unsupported_compute_payload():

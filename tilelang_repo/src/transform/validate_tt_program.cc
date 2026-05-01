@@ -347,6 +347,88 @@ void ValidateCoreGroup(
   }
 }
 
+std::string ExpectedTensorMemoryLayout(const TTBufferDistributionPlan &distribution) {
+  const std::string kind = distribution->distribution_kind;
+  if (kind == "interleaved" || kind == "replicated") {
+    return "INTERLEAVED";
+  }
+  if (kind == "sharded") {
+    const std::string strategy = distribution->sharding_strategy;
+    if (strategy == "height") {
+      return "HEIGHT_SHARDED";
+    }
+    if (strategy == "width") {
+      return "WIDTH_SHARDED";
+    }
+    if (strategy == "block") {
+      return "BLOCK_SHARDED";
+    }
+  }
+  return "UNSUPPORTED";
+}
+
+void ValidateTensorMemoryConfigPlan(
+    const TTTensorMemoryConfigPlan &plan,
+    const std::unordered_map<std::string, int64_t> &distribution_index_by_name,
+    const std::unordered_map<std::string, TTBufferDistributionPlan>
+        &distribution_by_buffer) {
+  ICHECK(!plan->name.empty()) << "TTTensorMemoryConfigPlan requires name";
+  ICHECK(!plan->subject.empty())
+      << "TTTensorMemoryConfigPlan " << plan->name << " requires subject";
+  ICHECK(!plan->memory_layout.empty())
+      << "TTTensorMemoryConfigPlan " << plan->name << " requires memory_layout";
+  ICHECK(!plan->buffer_type.empty())
+      << "TTTensorMemoryConfigPlan " << plan->name << " requires buffer_type";
+  const std::string memory_layout = plan->memory_layout;
+  ICHECK(memory_layout == "INTERLEAVED" || memory_layout == "HEIGHT_SHARDED" ||
+         memory_layout == "WIDTH_SHARDED" || memory_layout == "BLOCK_SHARDED" ||
+         memory_layout == "ND_SHARDED")
+      << "TTTensorMemoryConfigPlan " << plan->name
+      << " has invalid memory_layout " << plan->memory_layout;
+  const std::string buffer_type = plan->buffer_type;
+  ICHECK(buffer_type == "DRAM" || buffer_type == "L1")
+      << "TTTensorMemoryConfigPlan " << plan->name
+      << " has invalid buffer_type " << plan->buffer_type;
+  ICHECK(!plan->origin.empty())
+      << "TTTensorMemoryConfigPlan " << plan->name << " requires origin";
+  auto distribution_it = distribution_by_buffer.find(str(plan->subject));
+  ICHECK(distribution_it != distribution_by_buffer.end())
+      << "TTTensorMemoryConfigPlan " << plan->name
+      << " subject requires matching TTBufferDistributionPlan";
+  const TTBufferDistributionPlan &distribution = distribution_it->second;
+  ICHECK_EQ(str(plan->memory_layout), ExpectedTensorMemoryLayout(distribution))
+      << "TTTensorMemoryConfigPlan " << plan->name
+      << " memory_layout must match TTBufferDistributionPlan";
+  ICHECK_EQ(str(plan->buffer_type), str(distribution->memory_space))
+      << "TTTensorMemoryConfigPlan " << plan->name
+      << " buffer_type must match TTBufferDistributionPlan memory_space";
+  ICHECK_EQ(str(plan->buffer_distribution_plan), str(distribution->name))
+      << "TTTensorMemoryConfigPlan " << plan->name
+      << " must reference its TTBufferDistributionPlan";
+  auto distribution_index_it =
+      distribution_index_by_name.find(str(plan->buffer_distribution_plan));
+  ICHECK(distribution_index_it != distribution_index_by_name.end())
+      << "TTTensorMemoryConfigPlan " << plan->name
+      << " references unknown TTBufferDistributionPlan";
+  ICHECK_EQ(plan->buffer_distribution_plan_index, distribution_index_it->second)
+      << "TTTensorMemoryConfigPlan " << plan->name
+      << " buffer_distribution_plan_index mismatch";
+  if (memory_layout != "INTERLEAVED") {
+    ValidatePositiveIntegerArray(plan->shard_shape,
+                                 "TTTensorMemoryConfigPlan shard_shape");
+    ValidatePositiveIntegerArray(plan->shard_grid_shape,
+                                 "TTTensorMemoryConfigPlan shard_grid_shape");
+    ICHECK_EQ(plan->shard_shape.size(), distribution->shard_shape.size())
+        << "TTTensorMemoryConfigPlan shard_shape must match distribution";
+    ICHECK_EQ(plan->shard_grid_shape.size(), distribution->shard_grid_shape.size())
+        << "TTTensorMemoryConfigPlan shard_grid_shape must match distribution";
+    ICHECK(str(plan->shard_orientation) == "row_major" ||
+           str(plan->shard_orientation) == "col_major")
+        << "TTTensorMemoryConfigPlan " << plan->name
+        << " has invalid shard_orientation";
+  }
+}
+
 void ValidateBlockPlan(const TTBlockPlan &block_plan) {
   ICHECK(!block_plan->name.empty()) << "TTBlockPlan requires name";
   ICHECK(!block_plan->placement_kind.empty())
@@ -510,6 +592,269 @@ void ValidateComputeOpPlan(
           << "DAG-driven TTComputeOpPlan unsupported fanout policy "
           << plan->tile_compute_fanout_policy;
     }
+  }
+}
+
+bool ArrayContainsString(const Array<String> &values, const String &needle) {
+  for (const String &value : values) {
+    if (value == needle) {
+      return true;
+    }
+  }
+  return false;
+}
+
+void ValidateOpShardingContract(
+    const TTOpShardingContract &contract,
+    const Array<TTComputeOpPlan> &compute_op_plans,
+    const Array<TTTensorMemoryConfigPlan> &tensor_memory_config_plans) {
+  ICHECK(!contract->name.empty()) << "TTOpShardingContract requires name";
+  ICHECK(!contract->compute_op_plan.empty())
+      << "TTOpShardingContract requires compute_op_plan";
+  ICHECK_GE(contract->compute_op_plan_index, 0)
+      << "TTOpShardingContract requires compute_op_plan_index";
+  ICHECK_LT(contract->compute_op_plan_index,
+            static_cast<int64_t>(compute_op_plans.size()))
+      << "TTOpShardingContract compute_op_plan_index out of bounds";
+  const TTComputeOpPlan &compute_op =
+      compute_op_plans[static_cast<size_t>(contract->compute_op_plan_index)];
+  ICHECK_EQ(contract->compute_op_plan, compute_op->name)
+      << "TTOpShardingContract compute_op_plan must match indexed "
+         "TTComputeOpPlan";
+  ICHECK_EQ(contract->operation_name, compute_op->operation_name)
+      << "TTOpShardingContract operation_name must match TTComputeOpPlan";
+  ICHECK_EQ(contract->op_kind, compute_op->kind)
+      << "TTOpShardingContract op_kind must match TTComputeOpPlan";
+  ICHECK(!contract->operand_role.empty())
+      << "TTOpShardingContract requires operand_role";
+  ICHECK(!contract->operand_buffer.empty())
+      << "TTOpShardingContract requires operand_buffer";
+  bool found_operand = false;
+  for (const TTComputeOperandBindingPlan &binding :
+       compute_op->operand_bindings) {
+    if (binding->role != contract->operand_role) {
+      continue;
+    }
+    found_operand = true;
+    ICHECK_EQ(contract->operand_buffer, binding->buffer)
+        << "TTOpShardingContract operand_buffer must match compute operand";
+    ICHECK_EQ(contract->operand_host_buffer, binding->host_buffer)
+        << "TTOpShardingContract operand_host_buffer must match compute operand";
+    break;
+  }
+  ICHECK(found_operand) << "TTOpShardingContract references unknown operand role "
+                        << contract->operand_role;
+
+  ICHECK(!contract->memory_config_plan.empty())
+      << "TTOpShardingContract requires memory_config_plan";
+  ICHECK_GE(contract->memory_config_plan_index, 0)
+      << "TTOpShardingContract requires memory_config_plan_index";
+  ICHECK_LT(contract->memory_config_plan_index,
+            static_cast<int64_t>(tensor_memory_config_plans.size()))
+      << "TTOpShardingContract memory_config_plan_index out of bounds";
+  const TTTensorMemoryConfigPlan &memory_config =
+      tensor_memory_config_plans[static_cast<size_t>(
+          contract->memory_config_plan_index)];
+  ICHECK_EQ(contract->memory_config_plan, memory_config->name)
+      << "TTOpShardingContract memory_config_plan must match indexed "
+         "TTTensorMemoryConfigPlan";
+  ICHECK_EQ(contract->operand_buffer, memory_config->subject)
+      << "TTOpShardingContract memory config subject must match operand_buffer";
+  ICHECK(!contract->accepted_memory_layouts.empty())
+      << "TTOpShardingContract requires accepted_memory_layouts";
+  ICHECK(ArrayContainsString(contract->accepted_memory_layouts,
+                             memory_config->memory_layout))
+      << "placement conflict: consumer " << contract->compute_op_plan
+      << " operand " << contract->operand_role << " selected_memory_layout "
+      << memory_config->memory_layout << " is not accepted by op contract";
+  ICHECK(!contract->accepted_buffer_types.empty())
+      << "TTOpShardingContract requires accepted_buffer_types";
+  ICHECK(ArrayContainsString(contract->accepted_buffer_types,
+                             memory_config->buffer_type))
+      << "placement conflict: consumer " << contract->compute_op_plan
+      << " operand " << contract->operand_role << " selected_buffer_type "
+      << memory_config->buffer_type << " is not accepted by op contract";
+  const String selected_strategy =
+      memory_config->shard_distribution_strategy.empty()
+          ? String("none")
+          : memory_config->shard_distribution_strategy;
+  ICHECK(!contract->accepted_sharding_strategies.empty())
+      << "TTOpShardingContract requires accepted_sharding_strategies";
+  ICHECK(ArrayContainsString(contract->accepted_sharding_strategies,
+                             selected_strategy))
+      << "placement conflict: consumer " << contract->compute_op_plan
+      << " operand " << contract->operand_role << " selected_strategy "
+      << selected_strategy << " is not accepted by op contract";
+  const std::string orientation = contract->required_shard_orientation;
+  ICHECK(orientation == "row_major" || orientation == "col_major")
+      << "TTOpShardingContract required_shard_orientation must be row_major or "
+         "col_major";
+  ICHECK_EQ(contract->required_shard_orientation,
+            memory_config->shard_orientation)
+      << "TTOpShardingContract required_shard_orientation must match selected "
+         "memory config";
+  const std::string output_policy = contract->output_policy;
+  ICHECK(output_policy == "not_output" ||
+         output_policy == "produces_operand_placement" ||
+         output_policy == "inherit_input" || output_policy == "caller_specified" ||
+         output_policy == "op_selected" ||
+         output_policy == "interleaved_default")
+      << "TTOpShardingContract unsupported output_policy "
+      << contract->output_policy;
+  if (output_policy == "not_output") {
+    ICHECK(!contract->can_produce_output_placement)
+        << "TTOpShardingContract not_output cannot produce output placement";
+  } else {
+    ICHECK(contract->can_produce_output_placement)
+        << "TTOpShardingContract output policy requires "
+           "can_produce_output_placement";
+  }
+}
+
+void ValidatePlacementResolutionPlan(
+    const TTPlacementResolutionPlan &resolution,
+    const Array<TTOpShardingContract> &op_sharding_contracts,
+    const Array<TTTensorMemoryConfigPlan> &tensor_memory_config_plans) {
+  ICHECK(!resolution->name.empty())
+      << "TTPlacementResolutionPlan requires name";
+  ICHECK(!resolution->op_sharding_contract.empty())
+      << "TTPlacementResolutionPlan requires op_sharding_contract";
+  ICHECK_GE(resolution->op_sharding_contract_index, 0)
+      << "TTPlacementResolutionPlan requires op_sharding_contract_index";
+  ICHECK_LT(resolution->op_sharding_contract_index,
+            static_cast<int64_t>(op_sharding_contracts.size()))
+      << "TTPlacementResolutionPlan op_sharding_contract_index out of bounds";
+  const TTOpShardingContract &contract =
+      op_sharding_contracts[static_cast<size_t>(
+          resolution->op_sharding_contract_index)];
+  ICHECK_EQ(resolution->op_sharding_contract, contract->name)
+      << "TTPlacementResolutionPlan op_sharding_contract must match indexed "
+         "TTOpShardingContract";
+  ICHECK_EQ(resolution->consumer_op_plan, contract->compute_op_plan)
+      << "TTPlacementResolutionPlan consumer_op_plan must match contract";
+  ICHECK_EQ(resolution->consumer_op_plan_index,
+            contract->compute_op_plan_index)
+      << "TTPlacementResolutionPlan consumer_op_plan_index must match contract";
+  ICHECK_EQ(resolution->consumer_operand_role, contract->operand_role)
+      << "TTPlacementResolutionPlan consumer_operand_role must match contract";
+  ICHECK_GE(resolution->selected_memory_config_plan_index, 0)
+      << "TTPlacementResolutionPlan requires selected_memory_config_plan_index";
+  ICHECK_LT(resolution->selected_memory_config_plan_index,
+            static_cast<int64_t>(tensor_memory_config_plans.size()))
+      << "TTPlacementResolutionPlan selected_memory_config_plan_index out of "
+         "bounds";
+  const TTTensorMemoryConfigPlan &memory_config =
+      tensor_memory_config_plans[static_cast<size_t>(
+          resolution->selected_memory_config_plan_index)];
+  ICHECK_EQ(resolution->selected_memory_config_plan, memory_config->name)
+      << "TTPlacementResolutionPlan selected_memory_config_plan must match "
+         "indexed TTTensorMemoryConfigPlan";
+  ICHECK_EQ(resolution->selected_memory_config_plan,
+            contract->memory_config_plan)
+      << "TTPlacementResolutionPlan selected memory config must match "
+         "TTOpShardingContract";
+  ICHECK_EQ(resolution->selected_memory_layout, memory_config->memory_layout)
+      << "TTPlacementResolutionPlan selected_memory_layout must match selected "
+         "memory config";
+  ICHECK_EQ(resolution->selected_buffer_type, memory_config->buffer_type)
+      << "TTPlacementResolutionPlan selected_buffer_type must match selected "
+         "memory config";
+  ICHECK(resolution->resolution_kind == "selected_existing")
+      << "TTPlacementResolutionPlan unsupported resolution_kind "
+      << resolution->resolution_kind;
+  ICHECK(!resolution->conversion_required)
+      << "TTPlacementResolutionPlan conversion_required requires TTReshardPlan";
+  ICHECK(resolution->conversion_plan.empty())
+      << "TTPlacementResolutionPlan conversion_plan requires "
+         "conversion_required";
+  ICHECK(resolution->conflict_reason.empty())
+      << "TTPlacementResolutionPlan conflict_reason must fail validation before "
+         "source emission";
+}
+
+void ValidateReshardPlan(
+    const TTReshardPlan &plan,
+    const Array<TTTensorMemoryConfigPlan> &tensor_memory_config_plans,
+    const Array<TTMaterializationPlan> &materialization_plans) {
+  ICHECK(!plan->name.empty()) << "TTReshardPlan requires name";
+  ICHECK(!plan->source_value.empty()) << "TTReshardPlan requires source_value";
+  ICHECK(!plan->target_value.empty()) << "TTReshardPlan requires target_value";
+  ICHECK_NE(plan->source_value, plan->target_value)
+      << "TTReshardPlan source_value and target_value must differ";
+  ICHECK_GE(plan->source_memory_config_plan_index, 0)
+      << "TTReshardPlan requires source_memory_config_plan_index";
+  ICHECK_LT(plan->source_memory_config_plan_index,
+            static_cast<int64_t>(tensor_memory_config_plans.size()))
+      << "TTReshardPlan source_memory_config_plan_index out of bounds";
+  ICHECK_GE(plan->target_memory_config_plan_index, 0)
+      << "TTReshardPlan requires target_memory_config_plan_index";
+  ICHECK_LT(plan->target_memory_config_plan_index,
+            static_cast<int64_t>(tensor_memory_config_plans.size()))
+      << "TTReshardPlan target_memory_config_plan_index out of bounds";
+  const TTTensorMemoryConfigPlan &source_config =
+      tensor_memory_config_plans[static_cast<size_t>(
+          plan->source_memory_config_plan_index)];
+  const TTTensorMemoryConfigPlan &target_config =
+      tensor_memory_config_plans[static_cast<size_t>(
+          plan->target_memory_config_plan_index)];
+  ICHECK_EQ(plan->source_memory_config_plan, source_config->name)
+      << "TTReshardPlan source_memory_config_plan must match indexed "
+         "TTTensorMemoryConfigPlan";
+  ICHECK_EQ(plan->target_memory_config_plan, target_config->name)
+      << "TTReshardPlan target_memory_config_plan must match indexed "
+         "TTTensorMemoryConfigPlan";
+  ICHECK_EQ(plan->source_value, source_config->subject)
+      << "TTReshardPlan source_value must match source memory config subject";
+  ICHECK_EQ(plan->target_value, target_config->subject)
+      << "TTReshardPlan target_value must match target memory config subject";
+  const std::string conversion_kind = plan->conversion_kind;
+  ICHECK(conversion_kind == "interleaved_to_sharded" ||
+         conversion_kind == "sharded_to_interleaved" ||
+         conversion_kind == "reshard" || conversion_kind == "unsupported")
+      << "TTReshardPlan unsupported conversion_kind " << plan->conversion_kind;
+  if (conversion_kind == "interleaved_to_sharded") {
+    ICHECK_EQ(source_config->memory_layout, "INTERLEAVED")
+        << "TTReshardPlan interleaved_to_sharded requires interleaved source";
+    ICHECK_NE(target_config->memory_layout, "INTERLEAVED")
+        << "TTReshardPlan interleaved_to_sharded requires sharded target";
+    ICHECK(!plan->materialization_protocol.empty())
+        << "TTReshardPlan interleaved_to_sharded requires "
+           "materialization_protocol";
+    ICHECK(!plan->source_region_kind.empty() &&
+           plan->source_region_kind != "none")
+        << "TTReshardPlan interleaved_to_sharded requires source_region_kind";
+    ICHECK(!plan->source_region_shape.empty())
+        << "TTReshardPlan interleaved_to_sharded requires source_region_shape";
+  }
+  if (plan->materialization_plan_index >= 0) {
+    ICHECK_LT(plan->materialization_plan_index,
+              static_cast<int64_t>(materialization_plans.size()))
+        << "TTReshardPlan materialization_plan_index out of bounds";
+    const TTMaterializationPlan &materialization =
+        materialization_plans[static_cast<size_t>(
+            plan->materialization_plan_index)];
+    ICHECK_EQ(plan->materialization_plan, materialization->name)
+        << "TTReshardPlan materialization_plan must match indexed "
+           "TTMaterializationPlan";
+    ICHECK_EQ(plan->target_value, materialization->target_buffer)
+        << "TTReshardPlan materialization target_buffer must match target_value";
+  }
+  ICHECK(plan->scheduling_kind == "runtime" ||
+         plan->scheduling_kind == "load_time" ||
+         plan->scheduling_kind == "compile_time")
+      << "TTReshardPlan unsupported scheduling_kind " << plan->scheduling_kind;
+  ICHECK(plan->inserted_by == "planner" || plan->inserted_by == "user")
+      << "TTReshardPlan unsupported inserted_by " << plan->inserted_by;
+  ICHECK(plan->admission_status == "admitted" ||
+         plan->admission_status == "unsupported")
+      << "TTReshardPlan unsupported admission_status "
+      << plan->admission_status;
+  if (plan->admission_status == "admitted") {
+    ICHECK(plan->unsupported_reason.empty())
+        << "TTReshardPlan admitted conversion cannot carry unsupported_reason";
+  } else {
+    ICHECK(!plan->unsupported_reason.empty())
+        << "TTReshardPlan unsupported conversion requires unsupported_reason";
   }
 }
 
@@ -979,6 +1324,8 @@ void CheckTTProgram(
       << "TTProgram requires at least one TTMeshPlan";
   ICHECK(!program->buffer_distribution_plans.empty())
       << "TTProgram requires at least one TTBufferDistributionPlan";
+  ICHECK(!program->tensor_memory_config_plans.empty())
+      << "TTProgram requires at least one TTTensorMemoryConfigPlan";
   ICHECK(!program->block_plans.empty())
       << "TTProgram requires at least one TTBlockPlan";
   ICHECK(!program->kernel_plans.empty())
@@ -1027,6 +1374,9 @@ void CheckTTProgram(
         << "duplicate TTCoreGroup name " << core_group->name;
   }
   std::unordered_set<std::string> distributed_buffers;
+  std::unordered_set<std::string> required_reshard_edges;
+  std::unordered_map<std::string, TTBufferDistributionPlan> distribution_by_buffer;
+  std::unordered_map<std::string, int64_t> distribution_index_by_name;
   for (const TTBufferDistributionPlan &distribution :
        program->buffer_distribution_plans) {
     ValidateBufferDistributionPlan(distribution, mesh_index_by_name,
@@ -1036,11 +1386,36 @@ void CheckTTProgram(
                .insert(static_cast<std::string>(distribution->buffer))
                .second)
         << "duplicate TTBufferDistributionPlan buffer " << distribution->buffer;
+    distribution_by_buffer.emplace(str(distribution->buffer), distribution);
+    if (!distribution->source_buffer.empty()) {
+      required_reshard_edges.insert(str(distribution->source_buffer) + "|" +
+                                    str(distribution->buffer));
+    }
+    distribution_index_by_name.emplace(str(distribution->name),
+                                       static_cast<int64_t>(distribution_index_by_name.size()));
     ICHECK(spatial_layout_subjects.count(
         static_cast<std::string>(distribution->buffer)))
         << "TTBufferDistributionPlan buffer must match SpatialPlan LayoutSpec "
            "subject "
         << distribution->buffer;
+  }
+
+  std::unordered_set<std::string> memory_config_subjects;
+  std::unordered_set<std::string> memory_config_names;
+  for (const TTTensorMemoryConfigPlan &memory_config :
+       program->tensor_memory_config_plans) {
+    ValidateTensorMemoryConfigPlan(memory_config, distribution_index_by_name,
+                                   distribution_by_buffer);
+    ICHECK(memory_config_names.insert(str(memory_config->name)).second)
+        << "duplicate TTTensorMemoryConfigPlan name " << memory_config->name;
+    ICHECK(memory_config_subjects.insert(str(memory_config->subject)).second)
+        << "duplicate TTTensorMemoryConfigPlan subject "
+        << memory_config->subject;
+  }
+  for (const std::string &buffer : distributed_buffers) {
+    ICHECK(memory_config_subjects.count(buffer) != 0U)
+        << "TTBufferDistributionPlan buffer " << buffer
+        << " requires TTTensorMemoryConfigPlan";
   }
 
   for (const TTBlockPlan &block_plan : program->block_plans) {
@@ -1072,7 +1447,19 @@ void CheckTTProgram(
         << kernel_plan->name;
   }
   std::unordered_set<std::string> compute_op_names;
-  for (const TTComputeOpPlan &compute_op_plan : program->compute_op_plans) {
+  std::unordered_set<std::string> expected_op_contract_keys;
+  std::unordered_set<std::string> tensor_memory_config_subjects;
+  for (const TTTensorMemoryConfigPlan &memory_config :
+       program->tensor_memory_config_plans) {
+    if (!memory_config->subject.empty()) {
+      tensor_memory_config_subjects.insert(str(memory_config->subject));
+    }
+  }
+  for (int64_t compute_op_index = 0;
+       compute_op_index < static_cast<int64_t>(program->compute_op_plans.size());
+       ++compute_op_index) {
+    const TTComputeOpPlan &compute_op_plan =
+        program->compute_op_plans[static_cast<size_t>(compute_op_index)];
     ValidateComputeOpPlan(compute_op_plan,
                           static_cast<int64_t>(program->kernel_plans.size()),
                           kernel_names);
@@ -1080,6 +1467,49 @@ void CheckTTProgram(
         compute_op_names.insert(static_cast<std::string>(compute_op_plan->name))
             .second)
         << "duplicate TTComputeOpPlan name " << compute_op_plan->name;
+    for (const TTComputeOperandBindingPlan &binding :
+         compute_op_plan->operand_bindings) {
+      if (!tensor_memory_config_subjects.count(str(binding->buffer))) {
+        continue;
+      }
+      expected_op_contract_keys.insert(str(compute_op_plan->name) + "|" +
+                                       str(binding->role));
+    }
+  }
+  std::unordered_set<std::string> op_contract_names;
+  std::unordered_set<std::string> op_contract_keys;
+  for (const TTOpShardingContract &contract : program->op_sharding_contracts) {
+    ValidateOpShardingContract(contract, program->compute_op_plans,
+                               program->tensor_memory_config_plans);
+    ICHECK(op_contract_names.insert(str(contract->name)).second)
+        << "duplicate TTOpShardingContract name " << contract->name;
+    op_contract_keys.insert(str(contract->compute_op_plan) + "|" +
+                            str(contract->operand_role));
+  }
+  for (const std::string &key : expected_op_contract_keys) {
+    ICHECK(op_contract_keys.count(key))
+        << "TTComputeOpPlan operand requires TTOpShardingContract " << key;
+  }
+  std::unordered_set<std::string> placement_resolution_names;
+  std::unordered_set<int64_t> resolved_contract_indices;
+  for (const TTPlacementResolutionPlan &resolution :
+       program->placement_resolution_plans) {
+    ValidatePlacementResolutionPlan(resolution, program->op_sharding_contracts,
+                                    program->tensor_memory_config_plans);
+    ICHECK(placement_resolution_names.insert(str(resolution->name)).second)
+        << "duplicate TTPlacementResolutionPlan name " << resolution->name;
+    ICHECK(resolved_contract_indices
+               .insert(resolution->op_sharding_contract_index)
+               .second)
+        << "duplicate TTPlacementResolutionPlan for op contract "
+        << resolution->op_sharding_contract;
+  }
+  for (int64_t index = 0;
+       index < static_cast<int64_t>(program->op_sharding_contracts.size());
+       ++index) {
+    ICHECK(resolved_contract_indices.count(index))
+        << "TTOpShardingContract requires TTPlacementResolutionPlan index "
+        << index;
   }
 
   std::unordered_map<std::string, const TTResourcePressureReportNode *>
@@ -1136,6 +1566,25 @@ void CheckTTProgram(
   ValidateLiveFormPlans(program, &live_form_names);
   ValidateMaterializationPlans(program, live_form_names,
                                static_cast<int64_t>(program->cb_plans.size()));
+  std::unordered_set<std::string> reshard_names;
+  std::unordered_set<std::string> reshard_edges;
+  for (const TTReshardPlan &reshard : program->reshard_plans) {
+    ValidateReshardPlan(reshard, program->tensor_memory_config_plans,
+                        program->materialization_plans);
+    ICHECK(reshard_names.insert(str(reshard->name)).second)
+        << "duplicate TTReshardPlan name " << reshard->name;
+    ICHECK(reshard_edges
+               .insert(str(reshard->source_value) + "|" +
+                       str(reshard->target_value))
+               .second)
+        << "duplicate TTReshardPlan edge " << reshard->source_value << " -> "
+        << reshard->target_value;
+  }
+  for (const std::string &edge : required_reshard_edges) {
+    ICHECK(reshard_edges.count(edge))
+        << "TTBufferDistributionPlan source_buffer edge requires TTReshardPlan "
+        << edge;
+  }
 
   std::unordered_set<std::string> abi_kernel_names;
   for (const TTABIPlan &abi : program->abi_plans) {

@@ -746,6 +746,118 @@ static BufferDistributionSpec ReadBufferDistributionSpec(dmlc::Stream* stream) {
   return spec;
 }
 
+static void WriteTensorMemoryConfigSpec(dmlc::Stream* stream,
+                                        const TensorMemoryConfigSpec& spec) {
+  WriteString(stream, spec.name);
+  WriteString(stream, spec.subject);
+  WriteString(stream, spec.value_identity);
+  WriteInt64Vector(stream, spec.logical_shape);
+  WriteString(stream, spec.dtype);
+  WriteString(stream, spec.memory_layout);
+  WriteString(stream, spec.buffer_type);
+  WriteString(stream, spec.grid_ref);
+  WriteInt64Vector(stream, spec.shard_grid_shape);
+  WriteInt64Vector(stream, spec.shard_shape);
+  WriteString(stream, spec.shard_orientation);
+  WriteString(stream, spec.shard_distribution_strategy);
+  WriteInt64Vector(stream, spec.page_shape);
+  WriteString(stream, spec.origin);
+  WriteString(stream, spec.source_buffer);
+  WriteString(stream, spec.buffer_distribution_plan);
+  WriteInt64(stream, spec.buffer_distribution_plan_index);
+  WriteBool(stream, spec.has_runtime_accessor);
+  WriteBool(stream, spec.requires_materialization);
+}
+
+static TensorMemoryConfigSpec ReadTensorMemoryConfigSpec(dmlc::Stream* stream) {
+  TensorMemoryConfigSpec spec;
+  spec.name = ReadString(stream, "tensor_memory_config.name");
+  spec.subject = ReadString(stream, "tensor_memory_config.subject");
+  spec.value_identity = ReadString(stream, "tensor_memory_config.value_identity");
+  spec.logical_shape =
+      ReadInt64Vector(stream, "tensor_memory_config.logical_shape");
+  spec.dtype = ReadString(stream, "tensor_memory_config.dtype");
+  spec.memory_layout = ReadString(stream, "tensor_memory_config.memory_layout");
+  spec.buffer_type = ReadString(stream, "tensor_memory_config.buffer_type");
+  spec.grid_ref = ReadString(stream, "tensor_memory_config.grid_ref");
+  spec.shard_grid_shape =
+      ReadInt64Vector(stream, "tensor_memory_config.shard_grid_shape");
+  spec.shard_shape = ReadInt64Vector(stream, "tensor_memory_config.shard_shape");
+  spec.shard_orientation =
+      ReadString(stream, "tensor_memory_config.shard_orientation");
+  spec.shard_distribution_strategy =
+      ReadString(stream, "tensor_memory_config.shard_distribution_strategy");
+  spec.page_shape = ReadInt64Vector(stream, "tensor_memory_config.page_shape");
+  spec.origin = ReadString(stream, "tensor_memory_config.origin");
+  spec.source_buffer = ReadString(stream, "tensor_memory_config.source_buffer");
+  spec.buffer_distribution_plan =
+      ReadString(stream, "tensor_memory_config.buffer_distribution_plan");
+  spec.buffer_distribution_plan_index =
+      ReadInt64(stream, "tensor_memory_config.buffer_distribution_plan_index");
+  spec.has_runtime_accessor =
+      ReadBool(stream, "tensor_memory_config.has_runtime_accessor");
+  spec.requires_materialization =
+      ReadBool(stream, "tensor_memory_config.requires_materialization");
+  return spec;
+}
+
+static void WriteReshardPlanSpec(dmlc::Stream* stream,
+                                 const ReshardPlanSpec& spec) {
+  WriteString(stream, spec.name);
+  WriteString(stream, spec.source_value);
+  WriteString(stream, spec.target_value);
+  WriteString(stream, spec.source_memory_config_plan);
+  WriteInt64(stream, spec.source_memory_config_plan_index);
+  WriteString(stream, spec.target_memory_config_plan);
+  WriteInt64(stream, spec.target_memory_config_plan_index);
+  WriteString(stream, spec.conversion_kind);
+  WriteString(stream, spec.source_region_kind);
+  WriteInt64Vector(stream, spec.source_region_shape);
+  WriteString(stream, spec.materialization_plan);
+  WriteInt64(stream, spec.materialization_plan_index);
+  WriteString(stream, spec.materialization_protocol);
+  WriteInt64Vector(stream, spec.required_cb_plan_indices);
+  WriteInt64Vector(stream, spec.required_sync_plan_indices);
+  WriteString(stream, spec.scheduling_kind);
+  WriteString(stream, spec.inserted_by);
+  WriteString(stream, spec.admission_status);
+  WriteString(stream, spec.unsupported_reason);
+}
+
+static ReshardPlanSpec ReadReshardPlanSpec(dmlc::Stream* stream) {
+  ReshardPlanSpec spec;
+  spec.name = ReadString(stream, "reshard_plan.name");
+  spec.source_value = ReadString(stream, "reshard_plan.source_value");
+  spec.target_value = ReadString(stream, "reshard_plan.target_value");
+  spec.source_memory_config_plan =
+      ReadString(stream, "reshard_plan.source_memory_config_plan");
+  spec.source_memory_config_plan_index =
+      ReadInt64(stream, "reshard_plan.source_memory_config_plan_index");
+  spec.target_memory_config_plan =
+      ReadString(stream, "reshard_plan.target_memory_config_plan");
+  spec.target_memory_config_plan_index =
+      ReadInt64(stream, "reshard_plan.target_memory_config_plan_index");
+  spec.conversion_kind = ReadString(stream, "reshard_plan.conversion_kind");
+  spec.source_region_kind = ReadString(stream, "reshard_plan.source_region_kind");
+  spec.source_region_shape =
+      ReadInt64Vector(stream, "reshard_plan.source_region_shape");
+  spec.materialization_plan =
+      ReadString(stream, "reshard_plan.materialization_plan");
+  spec.materialization_plan_index =
+      ReadInt64(stream, "reshard_plan.materialization_plan_index");
+  spec.materialization_protocol =
+      ReadString(stream, "reshard_plan.materialization_protocol");
+  spec.required_cb_plan_indices =
+      ReadInt64Vector(stream, "reshard_plan.required_cb_plan_indices");
+  spec.required_sync_plan_indices =
+      ReadInt64Vector(stream, "reshard_plan.required_sync_plan_indices");
+  spec.scheduling_kind = ReadString(stream, "reshard_plan.scheduling_kind");
+  spec.inserted_by = ReadString(stream, "reshard_plan.inserted_by");
+  spec.admission_status = ReadString(stream, "reshard_plan.admission_status");
+  spec.unsupported_reason = ReadString(stream, "reshard_plan.unsupported_reason");
+  return spec;
+}
+
 static void WriteLiveFormPlanSpec(dmlc::Stream* stream, const LiveFormPlanSpec& spec) {
   WriteString(stream, spec.name);
   WriteString(stream, spec.logical_value);
@@ -909,6 +1021,10 @@ static void WriteExecutableSpec(dmlc::Stream* stream, const ExecutableSpec& spec
   WriteVectorField<SemaphoreSpec>(stream, spec.semaphores, WriteSemaphoreSpec);
   WriteVectorField<BufferDistributionSpec>(
       stream, spec.buffer_distribution_plans, WriteBufferDistributionSpec);
+  WriteVectorField<TensorMemoryConfigSpec>(
+      stream, spec.tensor_memory_config_plans, WriteTensorMemoryConfigSpec);
+  WriteVectorField<ReshardPlanSpec>(
+      stream, spec.reshard_plans, WriteReshardPlanSpec);
   WriteVectorField<BufferMaterializationSpec>(
       stream, spec.buffer_materializations, WriteBufferMaterializationSpec);
   WriteVectorField<KernelArgSpec>(stream, spec.runtime_args, WriteKernelArgSpec);
@@ -936,6 +1052,10 @@ static ExecutableSpec ReadExecutableSpec(dmlc::Stream* stream) {
       stream, "executable.semaphores", ReadSemaphoreSpec);
   spec.buffer_distribution_plans = ReadVectorField<BufferDistributionSpec>(
       stream, "executable.buffer_distribution_plans", ReadBufferDistributionSpec);
+  spec.tensor_memory_config_plans = ReadVectorField<TensorMemoryConfigSpec>(
+      stream, "executable.tensor_memory_config_plans", ReadTensorMemoryConfigSpec);
+  spec.reshard_plans = ReadVectorField<ReshardPlanSpec>(
+      stream, "executable.reshard_plans", ReadReshardPlanSpec);
   spec.buffer_materializations = ReadVectorField<BufferMaterializationSpec>(
       stream, "executable.buffer_materializations", ReadBufferMaterializationSpec);
   spec.runtime_args = ReadVectorField<KernelArgSpec>(
@@ -2871,6 +2991,127 @@ static void ValidateExecutableSpecBufferDistributionPlans(const std::string& fun
   }
 }
 
+static bool IsShardedTensorMemoryLayout(const std::string& layout) {
+  return layout == "HEIGHT_SHARDED" || layout == "WIDTH_SHARDED" ||
+         layout == "BLOCK_SHARDED" || layout == "ND_SHARDED";
+}
+
+static void ValidateExecutableSpecPlacementRecords(const std::string& func_name,
+                                                   const ExecutableSpec& spec) {
+  std::unordered_map<std::string, const TensorMemoryConfigSpec*> memory_by_name;
+  std::unordered_map<std::string, const TensorMemoryConfigSpec*> memory_by_subject;
+  for (const auto& plan : spec.tensor_memory_config_plans) {
+    ICHECK(!plan.name.empty())
+        << "Blackhole executable tensor memory config requires name for " << func_name;
+    ICHECK(!plan.subject.empty())
+        << "Blackhole executable tensor memory config requires subject for " << func_name;
+    ICHECK(!plan.memory_layout.empty())
+        << "Blackhole executable tensor memory config " << plan.name
+        << " requires memory_layout";
+    ICHECK(!plan.buffer_type.empty())
+        << "Blackhole executable tensor memory config " << plan.name
+        << " requires buffer_type";
+    ICHECK(!plan.origin.empty())
+        << "Blackhole executable tensor memory config " << plan.name << " requires origin";
+    ICHECK(memory_by_name.emplace(plan.name, &plan).second)
+        << "Blackhole executable has duplicate tensor memory config name " << plan.name
+        << " for " << func_name;
+    ICHECK(memory_by_subject.emplace(plan.subject, &plan).second)
+        << "Blackhole executable has duplicate tensor memory config subject "
+        << plan.subject << " for " << func_name;
+    if (IsShardedTensorMemoryLayout(plan.memory_layout)) {
+      ICHECK(!plan.grid_ref.empty())
+          << "Blackhole executable sharded tensor memory config " << plan.name
+          << " requires grid_ref";
+      ICHECK(HasPositiveShape(plan.shard_grid_shape))
+          << "Blackhole executable sharded tensor memory config " << plan.name
+          << " requires shard_grid_shape";
+      ICHECK(HasPositiveShape(plan.shard_shape))
+          << "Blackhole executable sharded tensor memory config " << plan.name
+          << " requires shard_shape";
+      ICHECK(plan.shard_orientation == "row_major" ||
+             plan.shard_orientation == "col_major")
+          << "Blackhole executable sharded tensor memory config " << plan.name
+          << " requires row_major or col_major shard_orientation";
+      ICHECK(plan.shard_distribution_strategy == "height" ||
+             plan.shard_distribution_strategy == "width" ||
+             plan.shard_distribution_strategy == "block" ||
+             plan.shard_distribution_strategy == "nd")
+          << "Blackhole executable sharded tensor memory config " << plan.name
+          << " requires sharding strategy";
+    }
+  }
+
+  for (const auto& plan : spec.reshard_plans) {
+    ICHECK(!plan.name.empty())
+        << "Blackhole executable reshard plan requires name for " << func_name;
+    ICHECK(!plan.source_value.empty())
+        << "Blackhole executable reshard plan " << plan.name << " requires source_value";
+    ICHECK(!plan.target_value.empty())
+        << "Blackhole executable reshard plan " << plan.name << " requires target_value";
+    ICHECK_NE(plan.source_value, plan.target_value)
+        << "Blackhole executable reshard plan " << plan.name
+        << " source_value and target_value must differ";
+    ICHECK_GE(plan.source_memory_config_plan_index, 0)
+        << "Blackhole executable reshard plan " << plan.name
+        << " requires source_memory_config_plan_index";
+    ICHECK_GE(plan.target_memory_config_plan_index, 0)
+        << "Blackhole executable reshard plan " << plan.name
+        << " requires target_memory_config_plan_index";
+    ICHECK_LT(plan.source_memory_config_plan_index,
+              static_cast<int64_t>(spec.tensor_memory_config_plans.size()))
+        << "Blackhole executable reshard plan " << plan.name
+        << " source_memory_config_plan_index out of bounds";
+    ICHECK_LT(plan.target_memory_config_plan_index,
+              static_cast<int64_t>(spec.tensor_memory_config_plans.size()))
+        << "Blackhole executable reshard plan " << plan.name
+        << " target_memory_config_plan_index out of bounds";
+    const auto* source_config =
+        spec.tensor_memory_config_plans.empty()
+            ? nullptr
+            : &spec.tensor_memory_config_plans[static_cast<size_t>(
+                  plan.source_memory_config_plan_index)];
+    const auto* target_config =
+        spec.tensor_memory_config_plans.empty()
+            ? nullptr
+            : &spec.tensor_memory_config_plans[static_cast<size_t>(
+                  plan.target_memory_config_plan_index)];
+    ICHECK(source_config != nullptr && target_config != nullptr)
+        << "Blackhole executable reshard plan " << plan.name
+        << " requires tensor memory config records";
+    ICHECK_EQ(plan.source_memory_config_plan, source_config->name)
+        << "Blackhole executable reshard plan " << plan.name
+        << " source_memory_config_plan must match indexed config";
+    ICHECK_EQ(plan.target_memory_config_plan, target_config->name)
+        << "Blackhole executable reshard plan " << plan.name
+        << " target_memory_config_plan must match indexed config";
+    ICHECK_EQ(plan.source_value, source_config->subject)
+        << "Blackhole executable reshard plan " << plan.name
+        << " source_value must match source config subject";
+    ICHECK_EQ(plan.target_value, target_config->subject)
+        << "Blackhole executable reshard plan " << plan.name
+        << " target_value must match target config subject";
+    ICHECK(plan.conversion_kind == "interleaved_to_sharded" ||
+           plan.conversion_kind == "sharded_to_interleaved" ||
+           plan.conversion_kind == "reshard" || plan.conversion_kind == "unsupported")
+        << "Blackhole executable reshard plan " << plan.name
+        << " has unsupported conversion_kind " << plan.conversion_kind;
+    ICHECK(plan.admission_status == "admitted" ||
+           plan.admission_status == "unsupported")
+        << "Blackhole executable reshard plan " << plan.name
+        << " has unsupported admission_status " << plan.admission_status;
+    if (plan.admission_status == "admitted") {
+      ICHECK(plan.unsupported_reason.empty())
+          << "Blackhole executable reshard plan " << plan.name
+          << " admitted conversion cannot carry unsupported_reason";
+    } else {
+      ICHECK(!plan.unsupported_reason.empty())
+          << "Blackhole executable reshard plan " << plan.name
+          << " unsupported conversion requires unsupported_reason";
+    }
+  }
+}
+
 BlackholeModuleNode::BlackholeModuleNode(
     std::unordered_map<std::string, ExecutableSpec> fmap,
     std::string kernel_dir)
@@ -2879,6 +3120,7 @@ BlackholeModuleNode::BlackholeModuleNode(
   for (const auto& entry : fmap_) {
     ValidateExecutableSpecCorePlan(entry.first, entry.second);
     ValidateExecutableSpecBufferDistributionPlans(entry.first, entry.second);
+    ValidateExecutableSpecPlacementRecords(entry.first, entry.second);
     ValidateExecutableSpecSynchronizationSchema(entry.first, entry.second);
   }
 }

@@ -259,6 +259,38 @@ MaterializationBoundary::MaterializationBoundary(
   data_ = std::move(n);
 }
 
+TensorPlacementIntent::TensorPlacementIntent(
+    ffi::String name, ffi::String subject, ffi::String value_identity,
+    ffi::String source, ffi::String dsl_origin, ffi::String config_identity,
+    int64_t logical_rank, ffi::Array<PrimExpr> logical_shape,
+    ffi::Array<Integer> partitioned_dims, ffi::Array<Integer> replicated_dims,
+    ffi::Array<ffi::String> virtual_device_axes, ffi::String memory_space_class,
+    ffi::String strategy_class, ffi::Array<Integer> shard_grid_shape,
+    ffi::Array<Integer> shard_shape, ffi::String shard_orientation,
+    bool allow_reshard, bool hard_requirement, ffi::Array<TIRAnchor> anchors) {
+  auto n = ffi::make_object<TensorPlacementIntentNode>();
+  n->name = std::move(name);
+  n->subject = std::move(subject);
+  n->value_identity = std::move(value_identity);
+  n->source = std::move(source);
+  n->dsl_origin = std::move(dsl_origin);
+  n->config_identity = std::move(config_identity);
+  n->logical_rank = logical_rank;
+  n->logical_shape = std::move(logical_shape);
+  n->partitioned_dims = std::move(partitioned_dims);
+  n->replicated_dims = std::move(replicated_dims);
+  n->virtual_device_axes = std::move(virtual_device_axes);
+  n->memory_space_class = std::move(memory_space_class);
+  n->strategy_class = std::move(strategy_class);
+  n->shard_grid_shape = std::move(shard_grid_shape);
+  n->shard_shape = std::move(shard_shape);
+  n->shard_orientation = std::move(shard_orientation);
+  n->allow_reshard = allow_reshard;
+  n->hard_requirement = hard_requirement;
+  n->anchors = std::move(anchors);
+  data_ = std::move(n);
+}
+
 SpatialPlan::SpatialPlan(ffi::String member_func, ffi::Array<ExecutionUnit> execution_units,
                          ffi::Array<AccessRegion> access_regions,
                          ffi::Array<DataflowEdge> dataflow_edges,
@@ -267,6 +299,7 @@ SpatialPlan::SpatialPlan(ffi::String member_func, ffi::Array<ExecutionUnit> exec
                          ffi::Array<LiveValue> live_values,
                          ffi::Array<LiveValueEdge> live_value_edges,
                          ffi::Array<MaterializationBoundary> materialization_boundaries,
+                         ffi::Array<TensorPlacementIntent> tensor_placement_intents,
                          ValidatedHintSet validated_hints, ffi::Array<ExecutionClosure> closures,
                          ffi::Array<ClosureBoundary> boundaries, ffi::Array<TIRAnchor> anchors) {
   auto n = ffi::make_object<SpatialPlanNode>();
@@ -280,6 +313,7 @@ SpatialPlan::SpatialPlan(ffi::String member_func, ffi::Array<ExecutionUnit> exec
   n->live_values = std::move(live_values);
   n->live_value_edges = std::move(live_value_edges);
   n->materialization_boundaries = std::move(materialization_boundaries);
+  n->tensor_placement_intents = std::move(tensor_placement_intents);
   n->closures = std::move(closures);
   n->boundaries = std::move(boundaries);
   n->validated_hints = std::move(validated_hints);
@@ -308,6 +342,7 @@ TVM_FFI_STATIC_INIT_BLOCK() {
   LiveValueNode::RegisterReflection();
   LiveValueEdgeNode::RegisterReflection();
   MaterializationBoundaryNode::RegisterReflection();
+  TensorPlacementIntentNode::RegisterReflection();
   SpatialPlanNode::RegisterReflection();
   TLDeviceProgramInfoNode::RegisterReflection();
 }
@@ -465,6 +500,26 @@ TVM_FFI_STATIC_INIT_BLOCK() {
             std::move(anchors));
       });
   refl::GlobalDef().def(
+      "tl.TensorPlacementIntent",
+      [](ffi::String name, ffi::String subject, ffi::String value_identity,
+         ffi::String source, ffi::String dsl_origin, ffi::String config_identity,
+         int64_t logical_rank, ffi::Array<PrimExpr> logical_shape,
+         ffi::Array<Integer> partitioned_dims, ffi::Array<Integer> replicated_dims,
+         ffi::Array<ffi::String> virtual_device_axes, ffi::String memory_space_class,
+         ffi::String strategy_class, ffi::Array<Integer> shard_grid_shape,
+         ffi::Array<Integer> shard_shape, ffi::String shard_orientation,
+         bool allow_reshard, bool hard_requirement, ffi::Array<TIRAnchor> anchors) {
+        return TensorPlacementIntent(
+            std::move(name), std::move(subject), std::move(value_identity),
+            std::move(source), std::move(dsl_origin), std::move(config_identity),
+            logical_rank, std::move(logical_shape), std::move(partitioned_dims),
+            std::move(replicated_dims), std::move(virtual_device_axes),
+            std::move(memory_space_class), std::move(strategy_class),
+            std::move(shard_grid_shape), std::move(shard_shape),
+            std::move(shard_orientation), allow_reshard, hard_requirement,
+            std::move(anchors));
+      });
+  refl::GlobalDef().def(
       "tl.SpatialPlan",
       [](ffi::String member_func, ffi::Array<ExecutionUnit> execution_units,
          ffi::Array<AccessRegion> access_regions, ffi::Array<DataflowEdge> dataflow_edges,
@@ -473,6 +528,7 @@ TVM_FFI_STATIC_INIT_BLOCK() {
          ffi::Array<LiveValue> live_values,
          ffi::Array<LiveValueEdge> live_value_edges,
          ffi::Array<MaterializationBoundary> materialization_boundaries,
+         ffi::Array<TensorPlacementIntent> tensor_placement_intents,
          ValidatedHintSet validated_hints, ffi::Array<ExecutionClosure> closures,
          ffi::Array<ClosureBoundary> boundaries, ffi::Array<TIRAnchor> anchors) {
         return SpatialPlan(std::move(member_func), std::move(execution_units),
@@ -480,8 +536,8 @@ TVM_FFI_STATIC_INIT_BLOCK() {
                            std::move(dependence_components), std::move(layout_specs),
                            std::move(phase_plans), std::move(live_values),
                            std::move(live_value_edges), std::move(materialization_boundaries),
-                           std::move(validated_hints), std::move(closures), std::move(boundaries),
-                           std::move(anchors));
+                           std::move(tensor_placement_intents), std::move(validated_hints),
+                           std::move(closures), std::move(boundaries), std::move(anchors));
       });
   refl::GlobalDef().def(
       "tl.TLDeviceProgramInfo", [](ffi::String root_symbol, ffi::Array<ffi::String> member_funcs) {

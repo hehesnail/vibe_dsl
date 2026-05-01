@@ -397,6 +397,10 @@ struct TTProgramSlices {
   String member_func;
   Array<TTMeshPlan> mesh_plans;
   Array<TTBufferDistributionPlan> buffer_distribution_plans;
+  Array<TTTensorMemoryConfigPlan> tensor_memory_config_plans;
+  Array<TTOpShardingContract> op_sharding_contracts;
+  Array<TTPlacementResolutionPlan> placement_resolution_plans;
+  Array<TTReshardPlan> reshard_plans;
   Array<TTBlockPlan> block_plans;
   Array<TTKernelPlan> kernel_plans;
   Array<TTComputeOpPlan> compute_op_plans;
@@ -423,6 +427,10 @@ TTProgramSlices UnpackTTProgram(const TTProgram &program) {
   slices.member_func = program->member_func;
   slices.mesh_plans = program->mesh_plans;
   slices.buffer_distribution_plans = program->buffer_distribution_plans;
+  slices.tensor_memory_config_plans = program->tensor_memory_config_plans;
+  slices.op_sharding_contracts = program->op_sharding_contracts;
+  slices.placement_resolution_plans = program->placement_resolution_plans;
+  slices.reshard_plans = program->reshard_plans;
   slices.block_plans = program->block_plans;
   slices.kernel_plans = program->kernel_plans;
   slices.compute_op_plans = program->compute_op_plans;
@@ -448,6 +456,10 @@ TTProgram PackTTProgram(TTProgramSlices slices) {
   return TTProgram(
       std::move(slices.entry_name), std::move(slices.member_func),
       std::move(slices.mesh_plans), std::move(slices.buffer_distribution_plans),
+      std::move(slices.tensor_memory_config_plans),
+      std::move(slices.op_sharding_contracts),
+      std::move(slices.placement_resolution_plans),
+      std::move(slices.reshard_plans),
       std::move(slices.block_plans), std::move(slices.kernel_plans),
       std::move(slices.compute_op_plans), std::move(slices.transport_plans),
       std::move(slices.sync_plans), std::move(slices.abi_plans),
@@ -1362,6 +1374,274 @@ BuildBufferDistributionPlans(const SpatialPlan &spatial_plan,
   return distribution_plans;
 }
 
+std::string TTMemoryLayoutFromDistribution(const TTBufferDistributionPlan &plan) {
+  const std::string distribution_kind = str(plan->distribution_kind);
+  if (distribution_kind == "interleaved" || distribution_kind == "replicated") {
+    return "INTERLEAVED";
+  }
+  if (distribution_kind == "sharded") {
+    const std::string strategy = str(plan->sharding_strategy);
+    if (strategy == "height") {
+      return "HEIGHT_SHARDED";
+    }
+    if (strategy == "width") {
+      return "WIDTH_SHARDED";
+    }
+    if (strategy == "block") {
+      return "BLOCK_SHARDED";
+    }
+  }
+  return "UNSUPPORTED";
+}
+
+std::string TensorMemoryConfigOrigin(
+    const TTBufferDistributionPlan &distribution,
+    const std::unordered_map<std::string, TensorPlacementIntent> &intent_by_subject) {
+  if (!distribution->source_buffer.empty() ||
+      (str(distribution->source_region_kind) != "" &&
+       str(distribution->source_region_kind) != "none")) {
+    return "materialization_requirement";
+  }
+  auto intent_it = intent_by_subject.find(str(distribution->buffer));
+  if (intent_it != intent_by_subject.end()) {
+    return str(intent_it->second->source);
+  }
+  return "derived_default";
+}
+
+std::string TensorMemoryConfigGridRef(const TTBufferDistributionPlan &distribution) {
+  if (!distribution->attached_core_group.empty()) {
+    return str(distribution->attached_core_group);
+  }
+  if (!distribution->mesh_plan.empty()) {
+    return str(distribution->mesh_plan);
+  }
+  return "";
+}
+
+Array<TTTensorMemoryConfigPlan> BuildTensorMemoryConfigPlans(
+    const SpatialPlan &spatial_plan,
+    const Array<TTBufferDistributionPlan> &buffer_distribution_plans) {
+  std::unordered_map<std::string, TensorPlacementIntent> intent_by_subject;
+  for (const TensorPlacementIntent &intent : spatial_plan->tensor_placement_intents) {
+    intent_by_subject.emplace(str(intent->subject), intent);
+  }
+  Array<TTTensorMemoryConfigPlan> plans;
+  for (int64_t index = 0;
+       index < static_cast<int64_t>(buffer_distribution_plans.size()); ++index) {
+    const TTBufferDistributionPlan &distribution = buffer_distribution_plans[index];
+    const std::string buffer = str(distribution->buffer);
+    auto intent_it = intent_by_subject.find(buffer);
+    Array<PrimExpr> logical_shape = distribution->logical_shape;
+    String dtype;
+    if (intent_it != intent_by_subject.end() && !intent_it->second->logical_shape.empty()) {
+      logical_shape = intent_it->second->logical_shape;
+    }
+    plans.push_back(TTTensorMemoryConfigPlan(
+        String("tensor_memory_config_" + buffer), String(buffer), String(""),
+        logical_shape, dtype, String(TTMemoryLayoutFromDistribution(distribution)),
+        String(str(distribution->memory_space) == "DRAM" ? "DRAM" : "L1"),
+        String(TensorMemoryConfigGridRef(distribution)),
+        distribution->shard_grid_shape, distribution->shard_shape,
+        distribution->shard_orientation, distribution->sharding_strategy,
+        Array<Integer>{}, String(TensorMemoryConfigOrigin(distribution, intent_by_subject)),
+        distribution->source_buffer, distribution->name, index,
+        str(distribution->memory_space) == "DRAM",
+        !distribution->source_buffer.empty()));
+  }
+  return plans;
+}
+
+bool IsOutputOperandRole(const TTComputeOpPlan &compute_op,
+                         const TTComputeOperandBindingPlan &binding) {
+  const std::string kind = str(compute_op->kind);
+  const std::string role = str(binding->role);
+  if (kind == "gemm" && role == "c") {
+    return true;
+  }
+  return role == "dst" || role == "out" || role == "output" ||
+         role == "result";
+}
+
+Array<TTOpShardingContract> BuildOpShardingContracts(
+    const Array<TTComputeOpPlan> &compute_op_plans,
+    const Array<TTTensorMemoryConfigPlan> &tensor_memory_config_plans) {
+  std::unordered_map<std::string, int64_t> memory_config_index_by_subject;
+  for (int64_t index = 0;
+       index < static_cast<int64_t>(tensor_memory_config_plans.size()); ++index) {
+    const TTTensorMemoryConfigPlan &memory_config =
+        tensor_memory_config_plans[index];
+    memory_config_index_by_subject.emplace(str(memory_config->subject), index);
+  }
+
+  Array<TTOpShardingContract> contracts;
+  for (int64_t compute_index = 0;
+       compute_index < static_cast<int64_t>(compute_op_plans.size());
+       ++compute_index) {
+    const TTComputeOpPlan &compute_op = compute_op_plans[compute_index];
+    for (const TTComputeOperandBindingPlan &binding :
+         compute_op->operand_bindings) {
+      const std::string operand_buffer = str(binding->buffer);
+      auto memory_config_it =
+          memory_config_index_by_subject.find(operand_buffer);
+      if (memory_config_it == memory_config_index_by_subject.end()) {
+        continue;
+      }
+      const int64_t memory_config_index = memory_config_it->second;
+      const TTTensorMemoryConfigPlan &memory_config =
+          tensor_memory_config_plans[static_cast<size_t>(memory_config_index)];
+      const bool is_output = IsOutputOperandRole(compute_op, binding);
+      Array<String> accepted_memory_layouts;
+      accepted_memory_layouts.push_back(memory_config->memory_layout);
+      Array<String> accepted_buffer_types;
+      accepted_buffer_types.push_back(memory_config->buffer_type);
+      Array<String> accepted_sharding_strategies;
+      accepted_sharding_strategies.push_back(
+          memory_config->shard_distribution_strategy.empty()
+              ? String("none")
+              : memory_config->shard_distribution_strategy);
+      contracts.push_back(TTOpShardingContract(
+          String("op_sharding_contract_" + str(compute_op->name) + "_" +
+                 str(binding->role)),
+          compute_op->name, compute_index, compute_op->operation_name,
+          compute_op->kind, binding->role, binding->buffer,
+          binding->host_buffer, memory_config->name, memory_config_index,
+          accepted_memory_layouts, accepted_buffer_types,
+          accepted_sharding_strategies, memory_config->shard_orientation,
+          is_output ? String("produces_operand_placement")
+                    : String("not_output"),
+          /*may_request_input_conversion=*/false,
+          /*can_produce_output_placement=*/is_output,
+          /*direct_external_write_allowed=*/
+          is_output && memory_config->buffer_type == "DRAM" &&
+              !binding->host_buffer.empty(),
+          String("")));
+    }
+  }
+  return contracts;
+}
+
+Array<TTPlacementResolutionPlan> BuildPlacementResolutionPlans(
+    const Array<TTOpShardingContract> &op_sharding_contracts,
+    const Array<TTTensorMemoryConfigPlan> &tensor_memory_config_plans) {
+  Array<TTPlacementResolutionPlan> resolutions;
+  for (int64_t index = 0;
+       index < static_cast<int64_t>(op_sharding_contracts.size()); ++index) {
+    const TTOpShardingContract &contract = op_sharding_contracts[index];
+    const int64_t memory_config_index = contract->memory_config_plan_index;
+    ICHECK_GE(memory_config_index, 0)
+        << "BuildPlacementResolutionPlans requires resolved memory config "
+           "index";
+    ICHECK_LT(memory_config_index,
+              static_cast<int64_t>(tensor_memory_config_plans.size()))
+        << "BuildPlacementResolutionPlans memory config index out of bounds";
+    const TTTensorMemoryConfigPlan &memory_config =
+        tensor_memory_config_plans[static_cast<size_t>(memory_config_index)];
+    resolutions.push_back(TTPlacementResolutionPlan(
+        String("placement_resolution_" + str(contract->name)),
+        contract->name, index, contract->compute_op_plan,
+        contract->compute_op_plan_index, contract->operand_role,
+        memory_config->name, memory_config_index, memory_config->memory_layout,
+        memory_config->buffer_type, String("selected_existing"),
+        /*conversion_required=*/false, String(""), String("")));
+  }
+  return resolutions;
+}
+
+std::string ReshardConversionKind(const TTTensorMemoryConfigPlan &source,
+                                  const TTTensorMemoryConfigPlan &target) {
+  const std::string source_layout = str(source->memory_layout);
+  const std::string target_layout = str(target->memory_layout);
+  if (source_layout == "INTERLEAVED" && target_layout != "INTERLEAVED") {
+    return "interleaved_to_sharded";
+  }
+  if (source_layout != "INTERLEAVED" && target_layout == "INTERLEAVED") {
+    return "sharded_to_interleaved";
+  }
+  if (source_layout != target_layout ||
+      str(source->shard_distribution_strategy) !=
+          str(target->shard_distribution_strategy) ||
+      str(source->shard_orientation) != str(target->shard_orientation)) {
+    return "reshard";
+  }
+  return "unsupported";
+}
+
+Array<TTReshardPlan> BuildReshardPlans(
+    const Array<TTBufferDistributionPlan> &buffer_distribution_plans,
+    const Array<TTTensorMemoryConfigPlan> &tensor_memory_config_plans,
+    const Array<TTMaterializationPlan> &materialization_plans) {
+  std::unordered_map<std::string, int64_t> memory_config_index_by_subject;
+  for (int64_t index = 0;
+       index < static_cast<int64_t>(tensor_memory_config_plans.size()); ++index) {
+    const TTTensorMemoryConfigPlan &memory_config =
+        tensor_memory_config_plans[index];
+    memory_config_index_by_subject.emplace(str(memory_config->subject), index);
+  }
+  std::unordered_map<std::string, int64_t> materialization_index_by_target;
+  for (int64_t index = 0;
+       index < static_cast<int64_t>(materialization_plans.size()); ++index) {
+    const TTMaterializationPlan &materialization = materialization_plans[index];
+    if (!materialization->target_buffer.empty()) {
+      materialization_index_by_target.emplace(str(materialization->target_buffer),
+                                              index);
+    }
+  }
+
+  Array<TTReshardPlan> reshard_plans;
+  for (const TTBufferDistributionPlan &distribution :
+       buffer_distribution_plans) {
+    if (distribution->source_buffer.empty()) {
+      continue;
+    }
+    const std::string source = str(distribution->source_buffer);
+    const std::string target = str(distribution->buffer);
+    auto source_it = memory_config_index_by_subject.find(source);
+    auto target_it = memory_config_index_by_subject.find(target);
+    if (source_it == memory_config_index_by_subject.end() ||
+        target_it == memory_config_index_by_subject.end()) {
+      continue;
+    }
+    const int64_t source_index = source_it->second;
+    const int64_t target_index = target_it->second;
+    const TTTensorMemoryConfigPlan &source_config =
+        tensor_memory_config_plans[static_cast<size_t>(source_index)];
+    const TTTensorMemoryConfigPlan &target_config =
+        tensor_memory_config_plans[static_cast<size_t>(target_index)];
+    const std::string conversion_kind =
+        ReshardConversionKind(source_config, target_config);
+    auto materialization_it = materialization_index_by_target.find(target);
+    String materialization_name;
+    int64_t materialization_index = -1;
+    String materialization_protocol;
+    Array<Integer> required_cb_plan_indices;
+    Array<Integer> required_sync_plan_indices;
+    if (materialization_it != materialization_index_by_target.end()) {
+      materialization_index = materialization_it->second;
+      const TTMaterializationPlan &materialization =
+          materialization_plans[static_cast<size_t>(materialization_index)];
+      materialization_name = materialization->name;
+      materialization_protocol = materialization->materialization_protocol;
+      required_cb_plan_indices = materialization->required_cb_plan_indices;
+      required_sync_plan_indices = materialization->required_sync_plan_indices;
+    }
+    const bool admitted = conversion_kind == "interleaved_to_sharded";
+    if (admitted && materialization_protocol.empty()) {
+      materialization_protocol = String("staged_copy");
+    }
+    reshard_plans.push_back(TTReshardPlan(
+        String("reshard_" + source + "_to_" + target), String(source),
+        String(target), source_config->name, source_index, target_config->name,
+        target_index, String(conversion_kind), distribution->source_region_kind,
+        distribution->source_region_shape, materialization_name,
+        materialization_index, materialization_protocol,
+        required_cb_plan_indices, required_sync_plan_indices, String("runtime"),
+        String("planner"), admitted ? String("admitted") : String("unsupported"),
+        admitted ? String("") : String("unsupported conversion kind")));
+  }
+  return reshard_plans;
+}
+
 Array<TTMaterializationPlan> RemapMaterializationCBRequirementIndices(
     const Array<TTMaterializationPlan> &materialization_plans,
     const Array<TTCBPlan> &cb_plans) {
@@ -1581,6 +1861,16 @@ tvm::transform::Pass PlanTTABI() {
       slices.dst_layout_plans = BuildDstLayoutPlans(slices.abi_plans);
       slices.buffer_distribution_plans =
           BuildBufferDistributionPlans(spatial_plan, slices, func.value());
+      slices.tensor_memory_config_plans =
+          BuildTensorMemoryConfigPlans(spatial_plan, slices.buffer_distribution_plans);
+      slices.op_sharding_contracts = BuildOpShardingContracts(
+          slices.compute_op_plans, slices.tensor_memory_config_plans);
+      slices.placement_resolution_plans = BuildPlacementResolutionPlans(
+          slices.op_sharding_contracts, slices.tensor_memory_config_plans);
+      slices.reshard_plans =
+          BuildReshardPlans(slices.buffer_distribution_plans,
+                            slices.tensor_memory_config_plans,
+                            slices.materialization_plans);
       RefreshResourcePlanningSlices(&slices, maybe_hardware_model);
       tir::PrimFunc planned =
           WithTTProgramAttr(func.value(), PackTTProgram(std::move(slices)));
@@ -1642,6 +1932,14 @@ tvm::transform::Pass BuildTTProgram() {
           << "BuildTTProgram requires TTMeshPlan owner truth";
       ICHECK(!slices.buffer_distribution_plans.empty())
           << "BuildTTProgram requires TTBufferDistributionPlan owner truth";
+      ICHECK(!slices.tensor_memory_config_plans.empty())
+          << "BuildTTProgram requires TTTensorMemoryConfigPlan owner truth";
+      if (!slices.compute_op_plans.empty()) {
+        ICHECK(!slices.op_sharding_contracts.empty())
+            << "BuildTTProgram requires TTOpShardingContract owner truth";
+        ICHECK(!slices.placement_resolution_plans.empty())
+            << "BuildTTProgram requires TTPlacementResolutionPlan owner truth";
+      }
       ICHECK(!slices.block_plans.empty())
           << "BuildTTProgram requires TTBlockPlan owner truth";
       ICHECK(!slices.kernel_plans.empty())

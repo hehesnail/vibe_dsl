@@ -99,6 +99,179 @@ public:
                                              TTBufferDistributionPlanNode);
 };
 
+class TTTensorMemoryConfigPlanNode : public Object {
+public:
+  ffi::String name;
+  ffi::String subject;
+  ffi::String value_identity;
+  ffi::Array<PrimExpr> logical_shape;
+  ffi::String dtype;
+  ffi::String memory_layout;
+  ffi::String buffer_type;
+  ffi::String grid_ref;
+  ffi::Array<Integer> shard_grid_shape;
+  ffi::Array<Integer> shard_shape;
+  ffi::String shard_orientation;
+  ffi::String shard_distribution_strategy;
+  ffi::Array<Integer> page_shape;
+  ffi::String origin;
+  ffi::String source_buffer;
+  ffi::String buffer_distribution_plan;
+  int64_t buffer_distribution_plan_index = -1;
+  bool has_runtime_accessor = false;
+  bool requires_materialization = false;
+
+  static void RegisterReflection();
+  TVM_FFI_DECLARE_OBJECT_INFO_FINAL("tl.TTTensorMemoryConfigPlan",
+                                    TTTensorMemoryConfigPlanNode, Object);
+};
+
+class TTTensorMemoryConfigPlan : public ObjectRef {
+public:
+  TVM_DLL TTTensorMemoryConfigPlan(
+      ffi::String name, ffi::String subject, ffi::String value_identity,
+      ffi::Array<PrimExpr> logical_shape, ffi::String dtype,
+      ffi::String memory_layout, ffi::String buffer_type, ffi::String grid_ref,
+      ffi::Array<Integer> shard_grid_shape, ffi::Array<Integer> shard_shape,
+      ffi::String shard_orientation, ffi::String shard_distribution_strategy,
+      ffi::Array<Integer> page_shape, ffi::String origin,
+      ffi::String source_buffer, ffi::String buffer_distribution_plan,
+      int64_t buffer_distribution_plan_index, bool has_runtime_accessor,
+      bool requires_materialization);
+  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(TTTensorMemoryConfigPlan,
+                                             ObjectRef,
+                                             TTTensorMemoryConfigPlanNode);
+};
+
+class TTOpShardingContractNode : public Object {
+public:
+  ffi::String name;
+  ffi::String compute_op_plan;
+  int64_t compute_op_plan_index = -1;
+  ffi::String operation_name;
+  ffi::String op_kind;
+  ffi::String operand_role;
+  ffi::String operand_buffer;
+  ffi::String operand_host_buffer;
+  ffi::String memory_config_plan;
+  int64_t memory_config_plan_index = -1;
+  ffi::Array<ffi::String> accepted_memory_layouts;
+  ffi::Array<ffi::String> accepted_buffer_types;
+  ffi::Array<ffi::String> accepted_sharding_strategies;
+  ffi::String required_shard_orientation;
+  ffi::String output_policy;
+  bool may_request_input_conversion = false;
+  bool can_produce_output_placement = false;
+  bool direct_external_write_allowed = false;
+  ffi::String reject_reason;
+
+  static void RegisterReflection();
+  TVM_FFI_DECLARE_OBJECT_INFO_FINAL("tl.TTOpShardingContract",
+                                    TTOpShardingContractNode, Object);
+};
+
+class TTOpShardingContract : public ObjectRef {
+public:
+  TVM_DLL TTOpShardingContract(
+      ffi::String name, ffi::String compute_op_plan,
+      int64_t compute_op_plan_index, ffi::String operation_name,
+      ffi::String op_kind, ffi::String operand_role, ffi::String operand_buffer,
+      ffi::String operand_host_buffer, ffi::String memory_config_plan,
+      int64_t memory_config_plan_index,
+      ffi::Array<ffi::String> accepted_memory_layouts,
+      ffi::Array<ffi::String> accepted_buffer_types,
+      ffi::Array<ffi::String> accepted_sharding_strategies,
+      ffi::String required_shard_orientation, ffi::String output_policy,
+      bool may_request_input_conversion, bool can_produce_output_placement,
+      bool direct_external_write_allowed, ffi::String reject_reason);
+  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(TTOpShardingContract, ObjectRef,
+                                             TTOpShardingContractNode);
+};
+
+class TTPlacementResolutionPlanNode : public Object {
+public:
+  ffi::String name;
+  ffi::String op_sharding_contract;
+  int64_t op_sharding_contract_index = -1;
+  ffi::String consumer_op_plan;
+  int64_t consumer_op_plan_index = -1;
+  ffi::String consumer_operand_role;
+  ffi::String selected_memory_config_plan;
+  int64_t selected_memory_config_plan_index = -1;
+  ffi::String selected_memory_layout;
+  ffi::String selected_buffer_type;
+  ffi::String resolution_kind;
+  bool conversion_required = false;
+  ffi::String conversion_plan;
+  ffi::String conflict_reason;
+
+  static void RegisterReflection();
+  TVM_FFI_DECLARE_OBJECT_INFO_FINAL("tl.TTPlacementResolutionPlan",
+                                    TTPlacementResolutionPlanNode, Object);
+};
+
+class TTPlacementResolutionPlan : public ObjectRef {
+public:
+  TVM_DLL TTPlacementResolutionPlan(
+      ffi::String name, ffi::String op_sharding_contract,
+      int64_t op_sharding_contract_index, ffi::String consumer_op_plan,
+      int64_t consumer_op_plan_index, ffi::String consumer_operand_role,
+      ffi::String selected_memory_config_plan,
+      int64_t selected_memory_config_plan_index,
+      ffi::String selected_memory_layout, ffi::String selected_buffer_type,
+      ffi::String resolution_kind, bool conversion_required,
+      ffi::String conversion_plan, ffi::String conflict_reason);
+  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(TTPlacementResolutionPlan,
+                                             ObjectRef,
+                                             TTPlacementResolutionPlanNode);
+};
+
+class TTReshardPlanNode : public Object {
+public:
+  ffi::String name;
+  ffi::String source_value;
+  ffi::String target_value;
+  ffi::String source_memory_config_plan;
+  int64_t source_memory_config_plan_index = -1;
+  ffi::String target_memory_config_plan;
+  int64_t target_memory_config_plan_index = -1;
+  ffi::String conversion_kind;
+  ffi::String source_region_kind;
+  ffi::Array<Integer> source_region_shape;
+  ffi::String materialization_plan;
+  int64_t materialization_plan_index = -1;
+  ffi::String materialization_protocol;
+  ffi::Array<Integer> required_cb_plan_indices;
+  ffi::Array<Integer> required_sync_plan_indices;
+  ffi::String scheduling_kind;
+  ffi::String inserted_by;
+  ffi::String admission_status;
+  ffi::String unsupported_reason;
+
+  static void RegisterReflection();
+  TVM_FFI_DECLARE_OBJECT_INFO_FINAL("tl.TTReshardPlan", TTReshardPlanNode,
+                                    Object);
+};
+
+class TTReshardPlan : public ObjectRef {
+public:
+  TVM_DLL TTReshardPlan(
+      ffi::String name, ffi::String source_value, ffi::String target_value,
+      ffi::String source_memory_config_plan,
+      int64_t source_memory_config_plan_index,
+      ffi::String target_memory_config_plan,
+      int64_t target_memory_config_plan_index, ffi::String conversion_kind,
+      ffi::String source_region_kind, ffi::Array<Integer> source_region_shape,
+      ffi::String materialization_plan, int64_t materialization_plan_index,
+      ffi::String materialization_protocol,
+      ffi::Array<Integer> required_cb_plan_indices,
+      ffi::Array<Integer> required_sync_plan_indices,
+      ffi::String scheduling_kind, ffi::String inserted_by,
+      ffi::String admission_status, ffi::String unsupported_reason);
+  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(TTReshardPlan, ObjectRef,
+                                             TTReshardPlanNode);
+};
+
 class TTComputeOperandBindingPlanNode : public Object {
 public:
   ffi::String role;
@@ -930,6 +1103,10 @@ public:
   ffi::String member_func;
   ffi::Array<TTMeshPlan> mesh_plans;
   ffi::Array<TTBufferDistributionPlan> buffer_distribution_plans;
+  ffi::Array<TTTensorMemoryConfigPlan> tensor_memory_config_plans;
+  ffi::Array<TTOpShardingContract> op_sharding_contracts;
+  ffi::Array<TTPlacementResolutionPlan> placement_resolution_plans;
+  ffi::Array<TTReshardPlan> reshard_plans;
   ffi::Array<TTBlockPlan> block_plans;
   ffi::Array<TTKernelPlan> kernel_plans;
   ffi::Array<TTComputeOpPlan> compute_op_plans;
@@ -959,6 +1136,10 @@ public:
   TTProgram(ffi::String entry_name, ffi::String member_func,
             ffi::Array<TTMeshPlan> mesh_plans,
             ffi::Array<TTBufferDistributionPlan> buffer_distribution_plans,
+            ffi::Array<TTTensorMemoryConfigPlan> tensor_memory_config_plans,
+            ffi::Array<TTOpShardingContract> op_sharding_contracts,
+            ffi::Array<TTPlacementResolutionPlan> placement_resolution_plans,
+            ffi::Array<TTReshardPlan> reshard_plans,
             ffi::Array<TTBlockPlan> block_plans,
             ffi::Array<TTKernelPlan> kernel_plans,
             ffi::Array<TTComputeOpPlan> compute_op_plans,

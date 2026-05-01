@@ -142,6 +142,267 @@ TTBufferDistributionPlan::TTBufferDistributionPlan(
   data_ = std::move(n);
 }
 
+void TTTensorMemoryConfigPlanNode::RegisterReflection() {
+  namespace refl = tvm::ffi::reflection;
+  refl::ObjectDef<TTTensorMemoryConfigPlanNode>()
+      .def_ro("name", &TTTensorMemoryConfigPlanNode::name)
+      .def_ro("subject", &TTTensorMemoryConfigPlanNode::subject)
+      .def_ro("value_identity", &TTTensorMemoryConfigPlanNode::value_identity)
+      .def_ro("logical_shape", &TTTensorMemoryConfigPlanNode::logical_shape)
+      .def_ro("dtype", &TTTensorMemoryConfigPlanNode::dtype)
+      .def_ro("memory_layout", &TTTensorMemoryConfigPlanNode::memory_layout)
+      .def_ro("buffer_type", &TTTensorMemoryConfigPlanNode::buffer_type)
+      .def_ro("grid_ref", &TTTensorMemoryConfigPlanNode::grid_ref)
+      .def_ro("shard_grid_shape",
+              &TTTensorMemoryConfigPlanNode::shard_grid_shape)
+      .def_ro("shard_shape", &TTTensorMemoryConfigPlanNode::shard_shape)
+      .def_ro("shard_orientation",
+              &TTTensorMemoryConfigPlanNode::shard_orientation)
+      .def_ro("shard_distribution_strategy",
+              &TTTensorMemoryConfigPlanNode::shard_distribution_strategy)
+      .def_ro("page_shape", &TTTensorMemoryConfigPlanNode::page_shape)
+      .def_ro("origin", &TTTensorMemoryConfigPlanNode::origin)
+      .def_ro("source_buffer", &TTTensorMemoryConfigPlanNode::source_buffer)
+      .def_ro("buffer_distribution_plan",
+              &TTTensorMemoryConfigPlanNode::buffer_distribution_plan)
+      .def_ro("buffer_distribution_plan_index",
+              &TTTensorMemoryConfigPlanNode::buffer_distribution_plan_index)
+      .def_ro("has_runtime_accessor",
+              &TTTensorMemoryConfigPlanNode::has_runtime_accessor)
+      .def_ro("requires_materialization",
+              &TTTensorMemoryConfigPlanNode::requires_materialization);
+}
+
+TTTensorMemoryConfigPlan::TTTensorMemoryConfigPlan(
+    ffi::String name, ffi::String subject, ffi::String value_identity,
+    ffi::Array<PrimExpr> logical_shape, ffi::String dtype,
+    ffi::String memory_layout, ffi::String buffer_type, ffi::String grid_ref,
+    ffi::Array<Integer> shard_grid_shape, ffi::Array<Integer> shard_shape,
+    ffi::String shard_orientation, ffi::String shard_distribution_strategy,
+    ffi::Array<Integer> page_shape, ffi::String origin,
+    ffi::String source_buffer, ffi::String buffer_distribution_plan,
+    int64_t buffer_distribution_plan_index, bool has_runtime_accessor,
+    bool requires_materialization) {
+  auto n = ffi::make_object<TTTensorMemoryConfigPlanNode>();
+  n->name = std::move(name);
+  n->subject = std::move(subject);
+  n->value_identity = std::move(value_identity);
+  n->logical_shape = std::move(logical_shape);
+  n->dtype = std::move(dtype);
+  n->memory_layout = std::move(memory_layout);
+  n->buffer_type = std::move(buffer_type);
+  n->grid_ref = std::move(grid_ref);
+  n->shard_grid_shape = std::move(shard_grid_shape);
+  n->shard_shape = std::move(shard_shape);
+  n->shard_orientation = std::move(shard_orientation);
+  n->shard_distribution_strategy = std::move(shard_distribution_strategy);
+  n->page_shape = std::move(page_shape);
+  n->origin = std::move(origin);
+  n->source_buffer = std::move(source_buffer);
+  n->buffer_distribution_plan = std::move(buffer_distribution_plan);
+  n->buffer_distribution_plan_index = buffer_distribution_plan_index;
+  n->has_runtime_accessor = has_runtime_accessor;
+  n->requires_materialization = requires_materialization;
+  data_ = std::move(n);
+}
+
+void TTOpShardingContractNode::RegisterReflection() {
+  namespace refl = tvm::ffi::reflection;
+  refl::ObjectDef<TTOpShardingContractNode>()
+      .def_ro("name", &TTOpShardingContractNode::name)
+      .def_ro("compute_op_plan", &TTOpShardingContractNode::compute_op_plan)
+      .def_ro("compute_op_plan_index",
+              &TTOpShardingContractNode::compute_op_plan_index)
+      .def_ro("operation_name", &TTOpShardingContractNode::operation_name)
+      .def_ro("op_kind", &TTOpShardingContractNode::op_kind)
+      .def_ro("operand_role", &TTOpShardingContractNode::operand_role)
+      .def_ro("operand_buffer", &TTOpShardingContractNode::operand_buffer)
+      .def_ro("operand_host_buffer",
+              &TTOpShardingContractNode::operand_host_buffer)
+      .def_ro("memory_config_plan",
+              &TTOpShardingContractNode::memory_config_plan)
+      .def_ro("memory_config_plan_index",
+              &TTOpShardingContractNode::memory_config_plan_index)
+      .def_ro("accepted_memory_layouts",
+              &TTOpShardingContractNode::accepted_memory_layouts)
+      .def_ro("accepted_buffer_types",
+              &TTOpShardingContractNode::accepted_buffer_types)
+      .def_ro("accepted_sharding_strategies",
+              &TTOpShardingContractNode::accepted_sharding_strategies)
+      .def_ro("required_shard_orientation",
+              &TTOpShardingContractNode::required_shard_orientation)
+      .def_ro("output_policy", &TTOpShardingContractNode::output_policy)
+      .def_ro("may_request_input_conversion",
+              &TTOpShardingContractNode::may_request_input_conversion)
+      .def_ro("can_produce_output_placement",
+              &TTOpShardingContractNode::can_produce_output_placement)
+      .def_ro("direct_external_write_allowed",
+              &TTOpShardingContractNode::direct_external_write_allowed)
+      .def_ro("reject_reason", &TTOpShardingContractNode::reject_reason);
+}
+
+TTOpShardingContract::TTOpShardingContract(
+    ffi::String name, ffi::String compute_op_plan, int64_t compute_op_plan_index,
+    ffi::String operation_name, ffi::String op_kind, ffi::String operand_role,
+    ffi::String operand_buffer, ffi::String operand_host_buffer,
+    ffi::String memory_config_plan, int64_t memory_config_plan_index,
+    ffi::Array<ffi::String> accepted_memory_layouts,
+    ffi::Array<ffi::String> accepted_buffer_types,
+    ffi::Array<ffi::String> accepted_sharding_strategies,
+    ffi::String required_shard_orientation, ffi::String output_policy,
+    bool may_request_input_conversion, bool can_produce_output_placement,
+    bool direct_external_write_allowed, ffi::String reject_reason) {
+  auto n = ffi::make_object<TTOpShardingContractNode>();
+  n->name = std::move(name);
+  n->compute_op_plan = std::move(compute_op_plan);
+  n->compute_op_plan_index = compute_op_plan_index;
+  n->operation_name = std::move(operation_name);
+  n->op_kind = std::move(op_kind);
+  n->operand_role = std::move(operand_role);
+  n->operand_buffer = std::move(operand_buffer);
+  n->operand_host_buffer = std::move(operand_host_buffer);
+  n->memory_config_plan = std::move(memory_config_plan);
+  n->memory_config_plan_index = memory_config_plan_index;
+  n->accepted_memory_layouts = std::move(accepted_memory_layouts);
+  n->accepted_buffer_types = std::move(accepted_buffer_types);
+  n->accepted_sharding_strategies = std::move(accepted_sharding_strategies);
+  n->required_shard_orientation = std::move(required_shard_orientation);
+  n->output_policy = std::move(output_policy);
+  n->may_request_input_conversion = may_request_input_conversion;
+  n->can_produce_output_placement = can_produce_output_placement;
+  n->direct_external_write_allowed = direct_external_write_allowed;
+  n->reject_reason = std::move(reject_reason);
+  data_ = std::move(n);
+}
+
+void TTPlacementResolutionPlanNode::RegisterReflection() {
+  namespace refl = tvm::ffi::reflection;
+  refl::ObjectDef<TTPlacementResolutionPlanNode>()
+      .def_ro("name", &TTPlacementResolutionPlanNode::name)
+      .def_ro("op_sharding_contract",
+              &TTPlacementResolutionPlanNode::op_sharding_contract)
+      .def_ro("op_sharding_contract_index",
+              &TTPlacementResolutionPlanNode::op_sharding_contract_index)
+      .def_ro("consumer_op_plan",
+              &TTPlacementResolutionPlanNode::consumer_op_plan)
+      .def_ro("consumer_op_plan_index",
+              &TTPlacementResolutionPlanNode::consumer_op_plan_index)
+      .def_ro("consumer_operand_role",
+              &TTPlacementResolutionPlanNode::consumer_operand_role)
+      .def_ro("selected_memory_config_plan",
+              &TTPlacementResolutionPlanNode::selected_memory_config_plan)
+      .def_ro("selected_memory_config_plan_index",
+              &TTPlacementResolutionPlanNode::selected_memory_config_plan_index)
+      .def_ro("selected_memory_layout",
+              &TTPlacementResolutionPlanNode::selected_memory_layout)
+      .def_ro("selected_buffer_type",
+              &TTPlacementResolutionPlanNode::selected_buffer_type)
+      .def_ro("resolution_kind",
+              &TTPlacementResolutionPlanNode::resolution_kind)
+      .def_ro("conversion_required",
+              &TTPlacementResolutionPlanNode::conversion_required)
+      .def_ro("conversion_plan",
+              &TTPlacementResolutionPlanNode::conversion_plan)
+      .def_ro("conflict_reason",
+              &TTPlacementResolutionPlanNode::conflict_reason);
+}
+
+TTPlacementResolutionPlan::TTPlacementResolutionPlan(
+    ffi::String name, ffi::String op_sharding_contract,
+    int64_t op_sharding_contract_index, ffi::String consumer_op_plan,
+    int64_t consumer_op_plan_index, ffi::String consumer_operand_role,
+    ffi::String selected_memory_config_plan,
+    int64_t selected_memory_config_plan_index,
+    ffi::String selected_memory_layout, ffi::String selected_buffer_type,
+    ffi::String resolution_kind, bool conversion_required,
+    ffi::String conversion_plan, ffi::String conflict_reason) {
+  auto n = ffi::make_object<TTPlacementResolutionPlanNode>();
+  n->name = std::move(name);
+  n->op_sharding_contract = std::move(op_sharding_contract);
+  n->op_sharding_contract_index = op_sharding_contract_index;
+  n->consumer_op_plan = std::move(consumer_op_plan);
+  n->consumer_op_plan_index = consumer_op_plan_index;
+  n->consumer_operand_role = std::move(consumer_operand_role);
+  n->selected_memory_config_plan = std::move(selected_memory_config_plan);
+  n->selected_memory_config_plan_index = selected_memory_config_plan_index;
+  n->selected_memory_layout = std::move(selected_memory_layout);
+  n->selected_buffer_type = std::move(selected_buffer_type);
+  n->resolution_kind = std::move(resolution_kind);
+  n->conversion_required = conversion_required;
+  n->conversion_plan = std::move(conversion_plan);
+  n->conflict_reason = std::move(conflict_reason);
+  data_ = std::move(n);
+}
+
+void TTReshardPlanNode::RegisterReflection() {
+  namespace refl = tvm::ffi::reflection;
+  refl::ObjectDef<TTReshardPlanNode>()
+      .def_ro("name", &TTReshardPlanNode::name)
+      .def_ro("source_value", &TTReshardPlanNode::source_value)
+      .def_ro("target_value", &TTReshardPlanNode::target_value)
+      .def_ro("source_memory_config_plan",
+              &TTReshardPlanNode::source_memory_config_plan)
+      .def_ro("source_memory_config_plan_index",
+              &TTReshardPlanNode::source_memory_config_plan_index)
+      .def_ro("target_memory_config_plan",
+              &TTReshardPlanNode::target_memory_config_plan)
+      .def_ro("target_memory_config_plan_index",
+              &TTReshardPlanNode::target_memory_config_plan_index)
+      .def_ro("conversion_kind", &TTReshardPlanNode::conversion_kind)
+      .def_ro("source_region_kind", &TTReshardPlanNode::source_region_kind)
+      .def_ro("source_region_shape", &TTReshardPlanNode::source_region_shape)
+      .def_ro("materialization_plan",
+              &TTReshardPlanNode::materialization_plan)
+      .def_ro("materialization_plan_index",
+              &TTReshardPlanNode::materialization_plan_index)
+      .def_ro("materialization_protocol",
+              &TTReshardPlanNode::materialization_protocol)
+      .def_ro("required_cb_plan_indices",
+              &TTReshardPlanNode::required_cb_plan_indices)
+      .def_ro("required_sync_plan_indices",
+              &TTReshardPlanNode::required_sync_plan_indices)
+      .def_ro("scheduling_kind", &TTReshardPlanNode::scheduling_kind)
+      .def_ro("inserted_by", &TTReshardPlanNode::inserted_by)
+      .def_ro("admission_status", &TTReshardPlanNode::admission_status)
+      .def_ro("unsupported_reason", &TTReshardPlanNode::unsupported_reason);
+}
+
+TTReshardPlan::TTReshardPlan(
+    ffi::String name, ffi::String source_value, ffi::String target_value,
+    ffi::String source_memory_config_plan,
+    int64_t source_memory_config_plan_index,
+    ffi::String target_memory_config_plan,
+    int64_t target_memory_config_plan_index, ffi::String conversion_kind,
+    ffi::String source_region_kind, ffi::Array<Integer> source_region_shape,
+    ffi::String materialization_plan, int64_t materialization_plan_index,
+    ffi::String materialization_protocol,
+    ffi::Array<Integer> required_cb_plan_indices,
+    ffi::Array<Integer> required_sync_plan_indices,
+    ffi::String scheduling_kind, ffi::String inserted_by,
+    ffi::String admission_status, ffi::String unsupported_reason) {
+  auto n = ffi::make_object<TTReshardPlanNode>();
+  n->name = std::move(name);
+  n->source_value = std::move(source_value);
+  n->target_value = std::move(target_value);
+  n->source_memory_config_plan = std::move(source_memory_config_plan);
+  n->source_memory_config_plan_index = source_memory_config_plan_index;
+  n->target_memory_config_plan = std::move(target_memory_config_plan);
+  n->target_memory_config_plan_index = target_memory_config_plan_index;
+  n->conversion_kind = std::move(conversion_kind);
+  n->source_region_kind = std::move(source_region_kind);
+  n->source_region_shape = std::move(source_region_shape);
+  n->materialization_plan = std::move(materialization_plan);
+  n->materialization_plan_index = materialization_plan_index;
+  n->materialization_protocol = std::move(materialization_protocol);
+  n->required_cb_plan_indices = std::move(required_cb_plan_indices);
+  n->required_sync_plan_indices = std::move(required_sync_plan_indices);
+  n->scheduling_kind = std::move(scheduling_kind);
+  n->inserted_by = std::move(inserted_by);
+  n->admission_status = std::move(admission_status);
+  n->unsupported_reason = std::move(unsupported_reason);
+  data_ = std::move(n);
+}
+
 void TTComputeOperandBindingPlanNode::RegisterReflection() {
   namespace refl = tvm::ffi::reflection;
   refl::ObjectDef<TTComputeOperandBindingPlanNode>()
@@ -1131,6 +1392,13 @@ void TTProgramNode::RegisterReflection() {
       .def_ro("mesh_plans", &TTProgramNode::mesh_plans)
       .def_ro("buffer_distribution_plans",
               &TTProgramNode::buffer_distribution_plans)
+      .def_ro("tensor_memory_config_plans",
+              &TTProgramNode::tensor_memory_config_plans)
+      .def_ro("op_sharding_contracts",
+              &TTProgramNode::op_sharding_contracts)
+      .def_ro("placement_resolution_plans",
+              &TTProgramNode::placement_resolution_plans)
+      .def_ro("reshard_plans", &TTProgramNode::reshard_plans)
       .def_ro("block_plans", &TTProgramNode::block_plans)
       .def_ro("kernel_plans", &TTProgramNode::kernel_plans)
       .def_ro("compute_op_plans", &TTProgramNode::compute_op_plans)
@@ -1156,6 +1424,10 @@ TTProgram::TTProgram(
     ffi::String entry_name, ffi::String member_func,
     ffi::Array<TTMeshPlan> mesh_plans,
     ffi::Array<TTBufferDistributionPlan> buffer_distribution_plans,
+    ffi::Array<TTTensorMemoryConfigPlan> tensor_memory_config_plans,
+    ffi::Array<TTOpShardingContract> op_sharding_contracts,
+    ffi::Array<TTPlacementResolutionPlan> placement_resolution_plans,
+    ffi::Array<TTReshardPlan> reshard_plans,
     ffi::Array<TTBlockPlan> block_plans, ffi::Array<TTKernelPlan> kernel_plans,
     ffi::Array<TTComputeOpPlan> compute_op_plans,
     ffi::Array<TTTransportPlan> transport_plans,
@@ -1175,6 +1447,10 @@ TTProgram::TTProgram(
   n->member_func = std::move(member_func);
   n->mesh_plans = std::move(mesh_plans);
   n->buffer_distribution_plans = std::move(buffer_distribution_plans);
+  n->tensor_memory_config_plans = std::move(tensor_memory_config_plans);
+  n->op_sharding_contracts = std::move(op_sharding_contracts);
+  n->placement_resolution_plans = std::move(placement_resolution_plans);
+  n->reshard_plans = std::move(reshard_plans);
   n->block_plans = std::move(block_plans);
   n->kernel_plans = std::move(kernel_plans);
   n->compute_op_plans = std::move(compute_op_plans);
@@ -1199,6 +1475,10 @@ TTProgram::TTProgram(
 TVM_FFI_STATIC_INIT_BLOCK() {
   RegisterNodeReflection<TTMeshPlanNode>();
   RegisterNodeReflection<TTBufferDistributionPlanNode>();
+  RegisterNodeReflection<TTTensorMemoryConfigPlanNode>();
+  RegisterNodeReflection<TTOpShardingContractNode>();
+  RegisterNodeReflection<TTPlacementResolutionPlanNode>();
+  RegisterNodeReflection<TTReshardPlanNode>();
   RegisterNodeReflection<TTComputeOperandBindingPlanNode>();
   RegisterNodeReflection<TTComputeOpPlanNode>();
   RegisterNodeReflection<TTTileComputeFanoutDemandNode>();
@@ -1279,7 +1559,102 @@ TVM_FFI_STATIC_INIT_BLOCK() {
             std::move(spatial_distribution_kind), std::move(abi_layout),
             std::move(abi_memory_space));
       });
-  refl::GlobalDef().def("tl.TTComputeOperandBindingPlan",
+	  refl::GlobalDef().def(
+	      "tl.TTTensorMemoryConfigPlan",
+      [](ffi::String name, ffi::String subject, ffi::String value_identity,
+         ffi::Array<PrimExpr> logical_shape, ffi::String dtype,
+         ffi::String memory_layout, ffi::String buffer_type,
+         ffi::String grid_ref, ffi::Array<Integer> shard_grid_shape,
+         ffi::Array<Integer> shard_shape, ffi::String shard_orientation,
+         ffi::String shard_distribution_strategy,
+         ffi::Array<Integer> page_shape, ffi::String origin,
+         ffi::String source_buffer, ffi::String buffer_distribution_plan,
+         int64_t buffer_distribution_plan_index, bool has_runtime_accessor,
+         bool requires_materialization) {
+        return TTTensorMemoryConfigPlan(
+            std::move(name), std::move(subject), std::move(value_identity),
+            std::move(logical_shape), std::move(dtype),
+            std::move(memory_layout), std::move(buffer_type),
+            std::move(grid_ref), std::move(shard_grid_shape),
+            std::move(shard_shape), std::move(shard_orientation),
+            std::move(shard_distribution_strategy), std::move(page_shape),
+            std::move(origin), std::move(source_buffer),
+            std::move(buffer_distribution_plan), buffer_distribution_plan_index,
+	            has_runtime_accessor, requires_materialization);
+	      });
+  refl::GlobalDef().def(
+      "tl.TTOpShardingContract",
+      [](ffi::String name, ffi::String compute_op_plan,
+         int64_t compute_op_plan_index, ffi::String operation_name,
+         ffi::String op_kind, ffi::String operand_role,
+         ffi::String operand_buffer, ffi::String operand_host_buffer,
+         ffi::String memory_config_plan, int64_t memory_config_plan_index,
+         ffi::Array<ffi::String> accepted_memory_layouts,
+         ffi::Array<ffi::String> accepted_buffer_types,
+         ffi::Array<ffi::String> accepted_sharding_strategies,
+         ffi::String required_shard_orientation, ffi::String output_policy,
+         bool may_request_input_conversion, bool can_produce_output_placement,
+         bool direct_external_write_allowed, ffi::String reject_reason) {
+        return TTOpShardingContract(
+            std::move(name), std::move(compute_op_plan), compute_op_plan_index,
+            std::move(operation_name), std::move(op_kind),
+            std::move(operand_role), std::move(operand_buffer),
+            std::move(operand_host_buffer), std::move(memory_config_plan),
+            memory_config_plan_index, std::move(accepted_memory_layouts),
+            std::move(accepted_buffer_types),
+            std::move(accepted_sharding_strategies),
+            std::move(required_shard_orientation), std::move(output_policy),
+            may_request_input_conversion, can_produce_output_placement,
+            direct_external_write_allowed, std::move(reject_reason));
+      });
+  refl::GlobalDef().def(
+      "tl.TTPlacementResolutionPlan",
+      [](ffi::String name, ffi::String op_sharding_contract,
+         int64_t op_sharding_contract_index, ffi::String consumer_op_plan,
+         int64_t consumer_op_plan_index, ffi::String consumer_operand_role,
+         ffi::String selected_memory_config_plan,
+         int64_t selected_memory_config_plan_index,
+         ffi::String selected_memory_layout, ffi::String selected_buffer_type,
+         ffi::String resolution_kind, bool conversion_required,
+         ffi::String conversion_plan, ffi::String conflict_reason) {
+        return TTPlacementResolutionPlan(
+            std::move(name), std::move(op_sharding_contract),
+            op_sharding_contract_index, std::move(consumer_op_plan),
+            consumer_op_plan_index, std::move(consumer_operand_role),
+            std::move(selected_memory_config_plan),
+            selected_memory_config_plan_index,
+            std::move(selected_memory_layout), std::move(selected_buffer_type),
+            std::move(resolution_kind), conversion_required,
+            std::move(conversion_plan), std::move(conflict_reason));
+      });
+  refl::GlobalDef().def(
+      "tl.TTReshardPlan",
+      [](ffi::String name, ffi::String source_value, ffi::String target_value,
+         ffi::String source_memory_config_plan,
+         int64_t source_memory_config_plan_index,
+         ffi::String target_memory_config_plan,
+         int64_t target_memory_config_plan_index, ffi::String conversion_kind,
+         ffi::String source_region_kind,
+         ffi::Array<Integer> source_region_shape,
+         ffi::String materialization_plan, int64_t materialization_plan_index,
+         ffi::String materialization_protocol,
+         ffi::Array<Integer> required_cb_plan_indices,
+         ffi::Array<Integer> required_sync_plan_indices,
+         ffi::String scheduling_kind, ffi::String inserted_by,
+         ffi::String admission_status, ffi::String unsupported_reason) {
+        return TTReshardPlan(
+            std::move(name), std::move(source_value), std::move(target_value),
+            std::move(source_memory_config_plan), source_memory_config_plan_index,
+            std::move(target_memory_config_plan), target_memory_config_plan_index,
+            std::move(conversion_kind), std::move(source_region_kind),
+            std::move(source_region_shape), std::move(materialization_plan),
+            materialization_plan_index, std::move(materialization_protocol),
+            std::move(required_cb_plan_indices),
+            std::move(required_sync_plan_indices), std::move(scheduling_kind),
+            std::move(inserted_by), std::move(admission_status),
+            std::move(unsupported_reason));
+      });
+	  refl::GlobalDef().def("tl.TTComputeOperandBindingPlan",
                         [](ffi::String role, ffi::String buffer,
                            ffi::String host_buffer, ffi::String tensor_dtype,
                            ffi::String cb_dtype, ffi::String transform_kind) {
@@ -1634,11 +2009,15 @@ TVM_FFI_STATIC_INIT_BLOCK() {
                                std::move(phase_indices));
       });
   refl::GlobalDef().def(
-      "tl.TTProgram",
-      [](ffi::String entry_name, ffi::String member_func,
-         ffi::Array<TTMeshPlan> mesh_plans,
-         ffi::Array<TTBufferDistributionPlan> buffer_distribution_plans,
-         ffi::Array<TTBlockPlan> block_plans,
+	      "tl.TTProgram",
+	      [](ffi::String entry_name, ffi::String member_func,
+	         ffi::Array<TTMeshPlan> mesh_plans,
+	         ffi::Array<TTBufferDistributionPlan> buffer_distribution_plans,
+	         ffi::Array<TTTensorMemoryConfigPlan> tensor_memory_config_plans,
+	         ffi::Array<TTOpShardingContract> op_sharding_contracts,
+	         ffi::Array<TTPlacementResolutionPlan> placement_resolution_plans,
+	         ffi::Array<TTReshardPlan> reshard_plans,
+	         ffi::Array<TTBlockPlan> block_plans,
          ffi::Array<TTKernelPlan> kernel_plans,
          ffi::Array<TTComputeOpPlan> compute_op_plans,
          ffi::Array<TTTransportPlan> transport_plans,
@@ -1654,10 +2033,14 @@ TVM_FFI_STATIC_INIT_BLOCK() {
          ffi::Array<TTConsumerBindingPlan> consumer_binding_plans,
          ffi::Array<TTResourceDemand> resource_demands,
          ffi::Array<TTResourcePressureReport> resource_pressure_reports) {
-        return TTProgram(
-            std::move(entry_name), std::move(member_func),
-            std::move(mesh_plans), std::move(buffer_distribution_plans),
-            std::move(block_plans), std::move(kernel_plans),
+	        return TTProgram(
+	            std::move(entry_name), std::move(member_func),
+	            std::move(mesh_plans), std::move(buffer_distribution_plans),
+	            std::move(tensor_memory_config_plans),
+	            std::move(op_sharding_contracts),
+	            std::move(placement_resolution_plans),
+	            std::move(reshard_plans),
+	            std::move(block_plans), std::move(kernel_plans),
             std::move(compute_op_plans), std::move(transport_plans),
             std::move(sync_plans), std::move(abi_plans),
             std::move(execution_plans), std::move(kernels),

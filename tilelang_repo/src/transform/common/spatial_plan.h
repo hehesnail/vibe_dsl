@@ -548,6 +548,71 @@ class MaterializationBoundary : public ObjectRef {
                                              MaterializationBoundaryNode);
 };
 
+class TensorPlacementIntentNode : public Object {
+ public:
+  ffi::String name;
+  ffi::String subject;
+  ffi::String value_identity;
+  ffi::String source;
+  ffi::String dsl_origin;
+  ffi::String config_identity;
+  int64_t logical_rank = 0;
+  ffi::Array<PrimExpr> logical_shape;
+  ffi::Array<Integer> partitioned_dims;
+  ffi::Array<Integer> replicated_dims;
+  ffi::Array<ffi::String> virtual_device_axes;
+  ffi::String memory_space_class;
+  ffi::String strategy_class;
+  ffi::Array<Integer> shard_grid_shape;
+  ffi::Array<Integer> shard_shape;
+  ffi::String shard_orientation;
+  bool allow_reshard = true;
+  bool hard_requirement = false;
+  ffi::Array<TIRAnchor> anchors;
+
+  static void RegisterReflection() {
+    namespace refl = tvm::ffi::reflection;
+    refl::ObjectDef<TensorPlacementIntentNode>()
+        .def_ro("name", &TensorPlacementIntentNode::name)
+        .def_ro("subject", &TensorPlacementIntentNode::subject)
+        .def_ro("value_identity", &TensorPlacementIntentNode::value_identity)
+        .def_ro("source", &TensorPlacementIntentNode::source)
+        .def_ro("dsl_origin", &TensorPlacementIntentNode::dsl_origin)
+        .def_ro("config_identity", &TensorPlacementIntentNode::config_identity)
+        .def_ro("logical_rank", &TensorPlacementIntentNode::logical_rank)
+        .def_ro("logical_shape", &TensorPlacementIntentNode::logical_shape)
+        .def_ro("partitioned_dims", &TensorPlacementIntentNode::partitioned_dims)
+        .def_ro("replicated_dims", &TensorPlacementIntentNode::replicated_dims)
+        .def_ro("virtual_device_axes", &TensorPlacementIntentNode::virtual_device_axes)
+        .def_ro("memory_space_class", &TensorPlacementIntentNode::memory_space_class)
+        .def_ro("strategy_class", &TensorPlacementIntentNode::strategy_class)
+        .def_ro("shard_grid_shape", &TensorPlacementIntentNode::shard_grid_shape)
+        .def_ro("shard_shape", &TensorPlacementIntentNode::shard_shape)
+        .def_ro("shard_orientation", &TensorPlacementIntentNode::shard_orientation)
+        .def_ro("allow_reshard", &TensorPlacementIntentNode::allow_reshard)
+        .def_ro("hard_requirement", &TensorPlacementIntentNode::hard_requirement)
+        .def_ro("anchors", &TensorPlacementIntentNode::anchors);
+  }
+
+  TVM_FFI_DECLARE_OBJECT_INFO_FINAL("tl.TensorPlacementIntent",
+                                    TensorPlacementIntentNode, Object);
+};
+
+class TensorPlacementIntent : public ObjectRef {
+ public:
+  TVM_DLL TensorPlacementIntent(
+      ffi::String name, ffi::String subject, ffi::String value_identity,
+      ffi::String source, ffi::String dsl_origin, ffi::String config_identity,
+      int64_t logical_rank, ffi::Array<PrimExpr> logical_shape,
+      ffi::Array<Integer> partitioned_dims, ffi::Array<Integer> replicated_dims,
+      ffi::Array<ffi::String> virtual_device_axes, ffi::String memory_space_class,
+      ffi::String strategy_class, ffi::Array<Integer> shard_grid_shape,
+      ffi::Array<Integer> shard_shape, ffi::String shard_orientation,
+      bool allow_reshard, bool hard_requirement, ffi::Array<TIRAnchor> anchors);
+  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(TensorPlacementIntent, ObjectRef,
+                                             TensorPlacementIntentNode);
+};
+
 class SpatialPlanNode : public Object {
  public:
   ffi::String member_func;
@@ -560,6 +625,7 @@ class SpatialPlanNode : public Object {
   ffi::Array<LiveValue> live_values;
   ffi::Array<LiveValueEdge> live_value_edges;
   ffi::Array<MaterializationBoundary> materialization_boundaries;
+  ffi::Array<TensorPlacementIntent> tensor_placement_intents;
   ffi::Array<ExecutionClosure> closures;
   ffi::Array<ClosureBoundary> boundaries;
   ValidatedHintSet validated_hints;
@@ -578,6 +644,7 @@ class SpatialPlanNode : public Object {
         .def_ro("live_values", &SpatialPlanNode::live_values)
         .def_ro("live_value_edges", &SpatialPlanNode::live_value_edges)
         .def_ro("materialization_boundaries", &SpatialPlanNode::materialization_boundaries)
+        .def_ro("tensor_placement_intents", &SpatialPlanNode::tensor_placement_intents)
         .def_ro("closures", &SpatialPlanNode::closures)
         .def_ro("boundaries", &SpatialPlanNode::boundaries)
         .def_ro("validated_hints", &SpatialPlanNode::validated_hints)
@@ -597,6 +664,7 @@ class SpatialPlan : public ObjectRef {
                       ffi::Array<PhasePlan> phase_plans, ffi::Array<LiveValue> live_values,
                       ffi::Array<LiveValueEdge> live_value_edges,
                       ffi::Array<MaterializationBoundary> materialization_boundaries,
+                      ffi::Array<TensorPlacementIntent> tensor_placement_intents,
                       ValidatedHintSet validated_hints, ffi::Array<ExecutionClosure> closures,
                       ffi::Array<ClosureBoundary> boundaries, ffi::Array<TIRAnchor> anchors);
   TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(SpatialPlan, ObjectRef, SpatialPlanNode);

@@ -9,25 +9,30 @@
 ## Status
 
 - Date: `2026-05-02`
-- Active task: `T3 Tensor/value sharding and explicit reshard`
+- Active task: `T4 External accessor/runtime ABI expansion`
 - Main chain:
   `Normalized Tile TIR -> SpatialPlan -> TTProgram -> ExecutableSpec`
 
 ## Active Boundary
 
-The current admitted direct-runtime surface is T1's buffer-address ABI plus
-the completed T2 current-placement compute baseline:
+The current admitted direct-runtime surface is T1's buffer-address ABI, the
+completed T2 current-placement compute baseline, and T3's first explicit
+placement / reshard projection surface:
 interleaved DRAM runtime buffers, staged-copy resident L1 / CB-backed views,
 the admitted 64B page-indexed copy path, standalone leaf compute families
-where admitted, and current-placement GEMM direct correctness.
+where admitted, current-placement GEMM direct correctness, explicit
+`T.MemoryConfig` / `T.annotate_memory_config` placement intent,
+`TTTensorMemoryConfigPlan`, `TTOpShardingContract`,
+`TTPlacementResolutionPlan`, and `TTReshardPlan` projection for the current
+interleaved-DRAM to resident-L1 staged-copy conversion.
 
-Full tensor/value sharding is a design lane, not current implementation.
-It is now the active T3 task.
-Sharded GEMM/layout claims and production sharding claims must wait for the
-DSL placement surface, tensor memory-config plans, op sharding contracts,
-placement conflict handling, and explicit reshard plans.
+T3 does not claim sharded GEMM/layout variants, external sharded/page-indexed
+runtime accessor admission, DRAM-sharded production weights, N-D production
+cases, retile/work-coarsening, mesh/CCL/NoC, or distributed production
+variants.
 External `sharded_accessor_cta` / `page_indexed_accessor_cta` runtime
-admission is a separate T4 task after the sharding IR exists.
+admission is now the active T4 task and must consume the projected
+placement/conversion records instead of inferring sharding or page metadata.
 
 ## Completed Baseline: T1 Buffer Address ABI
 
@@ -56,28 +61,48 @@ typed direct-runtime unsupported reasons.
 T2 does not claim tensor/value sharding, explicit reshard, sharded GEMM, or
 external sharded/page-indexed runtime accessor admission.
 
-## Active Task: T3 Tensor/Value Sharding And Explicit Reshard
+## Completed Baseline: T3 Tensor/Value Sharding And Explicit Reshard
+
+T3 is complete for the first explicit placement and reshard surface.
+TileLang now exposes `T.MemoryConfig`, `T.ShardSpec`, `T.NDShardSpec`,
+`T.CoreGrid`, convenience constructors, and `T.annotate_memory_config`.
+User/default global placement lowers into `SpatialPlan.TensorPlacementIntent`.
+`TTProgram` carries `TTTensorMemoryConfigPlan`,
+`TTOpShardingContract`, `TTPlacementResolutionPlan`, and `TTReshardPlan`;
+validators reject placement conflicts and incomplete conversion records.
+
+`ExecutableSpec` projects tensor memory config and reshard records, and
+`BlackholeModule` metadata / serialization / direct-runtime admission consume
+those records. The first admitted conversion class is the existing
+interleaved-DRAM to resident-L1 staged-copy path, represented explicitly as
+`interleaved_to_sharded` with `materialization_protocol = staged_copy`.
+
+T3 does not admit external `sharded_accessor_cta` /
+`page_indexed_accessor_cta` runtime accessors or sharded GEMM/layout
+variants; those remain T4/T5.
+
+## Active Task: T4 External Accessor / Runtime ABI Expansion
 
 ### Problem
 
-The current implementation has low-level `TTBufferDistributionPlan` address
-contracts, but it does not yet have first-class tensor/value sharding intent,
-op placement contracts, placement conflict handling, or explicit reshard
-records in the IR chain.
+The current implementation has typed buffer distribution, tensor placement,
+and reshard records, but external `sharded_accessor_cta` and
+`page_indexed_accessor_cta` runtime/codegen forms are still typed-but-not
+admitted. T4 must turn those external accessor records into direct TT-Metal
+ABI records where supported, or reject from explicit executable accessor
+records.
 
 ### Completion Standard
 
-T3 is complete only when:
+T4 is complete only when:
 
-- TileLang exposes a concrete memory-config / sharding annotation surface,
-- user or op placement intent lowers into `SpatialPlan.TensorPlacementIntent`,
-- `TTProgram` contains `TTTensorMemoryConfigPlan` and
-  `TTOpShardingContract`,
-- producer/consumer placement conflicts either insert an explicit
-  `TTReshardPlan` or reject with typed diagnostics,
-- `ExecutableSpec` projects placement/conversion records for leaf consumers,
-- runtime/codegen consume those records or fail closed, without recovering
-  sharding from source text, names, argument order, or accessor strings.
+- `ExecutableSpec` projects enough accessor records for external sharded and
+  page-indexed forms,
+- direct runtime/codegen admit supported `sharded_accessor_cta` and
+  `page_indexed_accessor_cta` ABI forms,
+- unsupported page shapes, sharding layouts, or missing metadata fail closed
+  from typed executable records,
+- no source text, name, argument order, or accessor-string recovery is used.
 
 ## Required Verification
 
@@ -94,17 +119,17 @@ T3 is complete only when:
 
 ## Task Queue
 
-当前 active task 是 T3。
-T2 current-placement leaf/GEMM baseline is complete.
-T3 is the tensor/value sharding task and must complete before any sharded
-GEMM/layout claim.
+当前 active task 是 T4。
+T1, T2, and T3 are complete for their stated boundaries.
 T4 owns the currently typed-but-not-admitted external accessor ABI forms.
+T5 remains blocked on T4 when sharded GEMM/layout variants require external
+sharded or page-indexed accessors.
 
 | 任务 | 目标 | 依赖 | 完成目标 |
 | --- | --- | --- | --- |
 | T1 Buffer address ABI 接入执行路径 | Make sharded L1 and page-indexed address ABI real execution contracts. | Current typed placement fields. | Complete. |
 | T2 Leaf compute / GEMM baseline | Admit non-flash leaf compute and current-placement GEMM layout baseline. | T1 complete. | Complete. |
-| T3 Tensor/value sharding and explicit reshard | Make TTNN-style user placement intent, op placement contracts, placement conflict handling, and reshard plans first-class in the IR chain. | T2 baseline complete; design in `2026-05-02-blackhole-tensor-sharding-and-reshard.md`. | `T.MemoryConfig` / `T.annotate_memory_config` lower to `TensorPlacementIntent`; `TTTensorMemoryConfigPlan`, `TTOpShardingContract`, conflict rejects, `TTReshardPlan`, and executable projection exist with tests. |
+| T3 Tensor/value sharding and explicit reshard | Make TTNN-style user placement intent, op placement contracts, placement conflict handling, and reshard plans first-class in the IR chain. | T2 baseline complete; design in `2026-05-02-blackhole-tensor-sharding-and-reshard.md`. | Complete. |
 | T4 External accessor/runtime ABI expansion | Admit or precisely reject external `sharded_accessor_cta` and `page_indexed_accessor_cta` runtime/codegen forms. | T1 address ABI and T3 placement/conversion projection. | External sharded/page-indexed accessors have direct TT-Metal ABI records and runtime/codegen admission, or fail from explicit executable accessor records. |
 | T5 Sharded GEMM / layout variants | Admit GEMM/layout variants that depend on real tensor sharding, including explicit retile/work-coarsening when a layout changes logical work mapping. | T3 complete; T4 when external sharded/page-indexed accessors are required. | Sharded GEMM/layout correctness where admitted; typed rejects for unsupported placement/conversion/retile combinations. |
 | T6 `topk` | Admit standalone value/index selection. | T2 leaf reductions. | Value and `int32` index correctness, not compile-only. |
@@ -229,35 +254,34 @@ Each workload is a separate first-path checkpoint:
 ## Latest Verification
 
 Latest implementation batch:
-T2 leaf compute / current-placement GEMM baseline.
+T3 tensor/value sharding and explicit reshard.
 
 Verified:
 
 - `cmake --build /root/dev/vibe_dsl/tilelang_repo/build -- -j32`
-- Structure/copy regression:
-  `pytest -q testing/python/target/blackhole/test_blackhole_leaf_compute_runtime.py::test_blackhole_standalone_leaf_compute_projects_typed_runtime_contracts`
-  `testing/python/target/blackhole/test_blackhole_copy_pipeline.py`
-  (`62 passed, 10 skipped, 1 xfailed`)
-- TT-Sim direct leaf baseline via `scripts/setup_tt_sim.sh`:
-  `pytest -q -vv -x testing/python/target/blackhole/test_blackhole_leaf_compute_runtime.py::test_blackhole_standalone_leaf_compute_bf16_direct_runtime`
-  (`6 passed, 2 skipped`; skipped cases are typed standalone
-  `reduce_tile` and standalone fill/typecast publish simulator gates)
-- TT-Sim current-placement GEMM selectors:
-  direct ABI schema, richer compute config, transpose-A, basic GEMM,
-  multicore direct call, and oversubscribed work packets
-  (`6 passed`)
-- TT-Sim typed-reject / fill-cast selectors:
-  accessor common runtime arg count, runtime CRTA bits, launch core type,
-  unknown math fidelity, mbarrier typed compute schema, and fragment fill/cast
-  layout/runtime gate
-  (`6 passed, 1 skipped`)
+- Structure / planner / executable projection:
+  `pytest -q testing/python/transform/test_blackhole_spatial_ir.py`
+  (`101 passed`)
+- Source/spec and runtime-module metadata:
+  `pytest -q testing/python/target/blackhole/test_blackhole_copy_pipeline.py`
+  (`56 passed, 10 skipped, 1 xfailed`)
+- Leaf / GEMM compute schema regression:
+  `pytest -q`
+  `testing/python/target/blackhole/test_blackhole_leaf_compute_runtime.py::test_blackhole_standalone_leaf_compute_projects_typed_runtime_contracts`
+  `testing/python/target/blackhole/test_blackhole_gemm.py::test_blackhole_gemm_kernel_projects_typed_compute_ops_schema`
+  `testing/python/target/blackhole/test_blackhole_gemm.py::test_blackhole_gemm_compute_ops_carry_typed_operand_bindings`
+  `testing/python/target/blackhole/test_blackhole_gemm.py::test_blackhole_gemm_spec_uses_typed_compute_ops_without_legacy_payload`
+  (`11 passed`)
+- TT-Sim direct staged-copy selector via `scripts/setup_tt_sim.sh`:
+  `pytest -q -vv -x testing/python/target/blackhole/test_blackhole_copy_runtime.py::test_blackhole_module_direct_call_grid_indexed_copy_multicore_launch`
+  (`1 passed`)
 
 Observed boundary:
 
-- Standalone `reduce_tile` and standalone compute-only fill/typecast publish
-  currently hit TT-Sim `tensix_execute_pacr` capability boundaries for the
-  bf16 direct-runtime path. They remain structure/spec-admitted but
-  direct-runtime-gated with typed reasons.
+- T3's first admitted conversion is limited to interleaved DRAM source to
+  resident L1 sharded view through the existing staged-copy direct-runtime
+  path. Other reshard kinds remain typed unsupported until admitted by later
+  tasks.
 - Broadcast-cols rank-1 RHS materialization must be reader-produced as a
   full-tile CB page. Scalar NOC reads into first-column tile positions are
   not an admitted runtime path.

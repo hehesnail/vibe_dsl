@@ -29,6 +29,7 @@ from .common import (
     rebuild_tt_abi_plan,
     rebuild_tt_kernel,
     rebuild_tt_program,
+    rebuild_tt_reshard_plan,
     rebuild_tt_semaphore_plan,
     require_tt_kernel,
     require_tt_program,
@@ -822,6 +823,64 @@ def test_blackhole_copy_materializes_executable_writer_attr():
     assert kernel_spec["runtime_args"]
     assert executable["cb_configs"]
     assert executable["core_plan"]
+
+
+def test_blackhole_copy_runtime_metadata_carries_placement_and_reshard_records():
+    kernel = grid_indexed_staged_copy_kernel(3, 3)
+    target = Target("blackhole")
+
+    with target:
+        artifact = lower(kernel, target=target)
+
+    executable_spec = _extract_blackhole_executable_spec(artifact)
+    memory_configs = {
+        str(plan["subject"]): plan
+        for plan in executable_spec["tensor_memory_config_plans"]
+    }
+    reshard_plans = {
+        (str(plan["source_value"]), str(plan["target_value"])): plan
+        for plan in executable_spec["reshard_plans"]
+    }
+
+    assert str(memory_configs["A"]["memory_layout"]) == "INTERLEAVED"
+    assert str(memory_configs["A_shared"]["memory_layout"]) == "BLOCK_SHARDED"
+    assert str(memory_configs["A_shared"]["source_buffer"]) == "A"
+
+    reshard = reshard_plans[("A", "A_shared")]
+    assert str(reshard["conversion_kind"]) == "interleaved_to_sharded"
+    assert str(reshard["materialization_protocol"]) == "staged_copy"
+    assert str(reshard["admission_status"]) == "admitted"
+    assert not executable_spec.get("direct_runtime_unsupported_reasons", [])
+
+
+def test_blackhole_copy_runtime_gate_rejects_unsupported_projected_reshard():
+    kernel = grid_indexed_staged_copy_kernel(3, 3)
+    target = Target("blackhole")
+
+    with target:
+        artifact = lower(kernel, target=target)
+
+    def mutate(tt_program):
+        reshard_plans = list(tt_program.reshard_plans)
+        reshard_plans[0] = rebuild_tt_reshard_plan(
+            reshard_plans[0],
+            conversion_kind="unsupported",
+            admission_status="unsupported",
+            unsupported_reason="forced unsupported reshard for runtime gate",
+        )
+        return rebuild_tt_program(tt_program, reshard_plans=reshard_plans)
+
+    mutated_mod = _rebuild_codegen_module_with_tt_program(
+        artifact,
+        tt_program_mutator=mutate,
+    )
+    executable_spec = mutated_mod.get_function_metadata("main")
+
+    reasons = [
+        str(reason)
+        for reason in executable_spec.get("direct_runtime_unsupported_reasons", [])
+    ]
+    assert any("forced unsupported reshard for runtime gate" in reason for reason in reasons)
 
 
 def test_blackhole_copy_runtime_arg_identities_are_materialized():

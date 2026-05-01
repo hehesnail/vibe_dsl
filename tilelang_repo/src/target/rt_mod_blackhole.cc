@@ -1209,6 +1209,184 @@ static std::vector<BufferDistributionSpec> ExtractBufferDistributionPlans(
   return plans;
 }
 
+static std::vector<TensorMemoryConfigSpec> ExtractTensorMemoryConfigPlans(
+    const tir::PrimFunc& f) {
+  std::vector<TensorMemoryConfigSpec> plans;
+  auto items = tl::tt_program_projection::GetExecutableArrayField(
+      f, "Blackhole executable spec extraction",
+      tl::tt_program_projection::executable_key::kTensorMemoryConfigPlans);
+  for (const auto& item_any : items) {
+    auto item = RequireMap(item_any, "Blackhole executable tensor_memory_config_plans item");
+    TensorMemoryConfigSpec plan;
+    if (auto value = item.Get("name")) plan.name = Downcast<String>(value.value());
+    if (auto value = item.Get("subject")) plan.subject = Downcast<String>(value.value());
+    if (auto value = item.Get("value_identity")) {
+      plan.value_identity = Downcast<String>(value.value());
+    }
+    plan.logical_shape = ExtractIntegerVector(item, "logical_shape");
+    if (auto value = item.Get("dtype")) plan.dtype = Downcast<String>(value.value());
+    if (auto value = item.Get("memory_layout")) {
+      plan.memory_layout = Downcast<String>(value.value());
+    }
+    if (auto value = item.Get("buffer_type")) {
+      plan.buffer_type = Downcast<String>(value.value());
+    }
+    if (auto value = item.Get("grid_ref")) plan.grid_ref = Downcast<String>(value.value());
+    plan.shard_grid_shape = ExtractIntegerVector(item, "shard_grid_shape");
+    plan.shard_shape = ExtractIntegerVector(item, "shard_shape");
+    if (auto value = item.Get("shard_orientation")) {
+      plan.shard_orientation = Downcast<String>(value.value());
+    }
+    if (auto value = item.Get("shard_distribution_strategy")) {
+      plan.shard_distribution_strategy = Downcast<String>(value.value());
+    }
+    plan.page_shape = ExtractIntegerVector(item, "page_shape");
+    if (auto value = item.Get("origin")) plan.origin = Downcast<String>(value.value());
+    if (auto value = item.Get("source_buffer")) {
+      plan.source_buffer = Downcast<String>(value.value());
+    }
+    if (auto value = item.Get("buffer_distribution_plan")) {
+      plan.buffer_distribution_plan = Downcast<String>(value.value());
+    }
+    if (auto value = item.Get("buffer_distribution_plan_index")) {
+      plan.buffer_distribution_plan_index = Downcast<Integer>(value.value())->value;
+    }
+    if (auto value = item.Get("has_runtime_accessor")) {
+      plan.has_runtime_accessor = Downcast<Bool>(value.value());
+    }
+    if (auto value = item.Get("requires_materialization")) {
+      plan.requires_materialization = Downcast<Bool>(value.value());
+    }
+
+    ICHECK(!plan.name.empty())
+        << "Blackhole executable tensor_memory_config_plans item requires name";
+    ICHECK(!plan.subject.empty())
+        << "Blackhole executable tensor_memory_config_plans item requires subject";
+    ICHECK(!plan.memory_layout.empty())
+        << "Blackhole executable tensor_memory_config_plans item for "
+        << plan.subject << " requires memory_layout";
+    ICHECK(!plan.buffer_type.empty())
+        << "Blackhole executable tensor_memory_config_plans item for "
+        << plan.subject << " requires buffer_type";
+    ICHECK(!plan.origin.empty())
+        << "Blackhole executable tensor_memory_config_plans item for "
+        << plan.subject << " requires origin";
+    if (plan.memory_layout != "INTERLEAVED") {
+      ICHECK(!plan.grid_ref.empty())
+          << "Blackhole executable tensor_memory_config_plans sharded item for "
+          << plan.subject << " requires grid_ref";
+      ICHECK(HasPositiveIntegerShape(plan.shard_grid_shape))
+          << "Blackhole executable tensor_memory_config_plans sharded item for "
+          << plan.subject << " requires positive shard_grid_shape";
+      ICHECK(HasPositiveIntegerShape(plan.shard_shape))
+          << "Blackhole executable tensor_memory_config_plans sharded item for "
+          << plan.subject << " requires positive shard_shape";
+    }
+    plans.push_back(std::move(plan));
+  }
+  return plans;
+}
+
+static std::vector<ReshardPlanSpec> ExtractReshardPlans(const tir::PrimFunc& f) {
+  std::vector<ReshardPlanSpec> plans;
+  auto items = tl::tt_program_projection::GetExecutableArrayField(
+      f, "Blackhole executable spec extraction",
+      tl::tt_program_projection::executable_key::kReshardPlans);
+  for (const auto& item_any : items) {
+    auto item = RequireMap(item_any, "Blackhole executable reshard_plans item");
+    ReshardPlanSpec plan;
+    if (auto value = item.Get("name")) plan.name = Downcast<String>(value.value());
+    if (auto value = item.Get("source_value")) {
+      plan.source_value = Downcast<String>(value.value());
+    }
+    if (auto value = item.Get("target_value")) {
+      plan.target_value = Downcast<String>(value.value());
+    }
+    if (auto value = item.Get("source_memory_config_plan")) {
+      plan.source_memory_config_plan = Downcast<String>(value.value());
+    }
+    if (auto value = item.Get("source_memory_config_plan_index")) {
+      plan.source_memory_config_plan_index = Downcast<Integer>(value.value())->value;
+    }
+    if (auto value = item.Get("target_memory_config_plan")) {
+      plan.target_memory_config_plan = Downcast<String>(value.value());
+    }
+    if (auto value = item.Get("target_memory_config_plan_index")) {
+      plan.target_memory_config_plan_index = Downcast<Integer>(value.value())->value;
+    }
+    if (auto value = item.Get("conversion_kind")) {
+      plan.conversion_kind = Downcast<String>(value.value());
+    }
+    if (auto value = item.Get("source_region_kind")) {
+      plan.source_region_kind = Downcast<String>(value.value());
+    }
+    plan.source_region_shape = ExtractIntegerVector(item, "source_region_shape");
+    if (auto value = item.Get("materialization_plan")) {
+      plan.materialization_plan = Downcast<String>(value.value());
+    }
+    if (auto value = item.Get("materialization_plan_index")) {
+      plan.materialization_plan_index = Downcast<Integer>(value.value())->value;
+    }
+    if (auto value = item.Get("materialization_protocol")) {
+      plan.materialization_protocol = Downcast<String>(value.value());
+    }
+    plan.required_cb_plan_indices = ExtractIntegerVector(item, "required_cb_plan_indices");
+    plan.required_sync_plan_indices = ExtractIntegerVector(item, "required_sync_plan_indices");
+    if (auto value = item.Get("scheduling_kind")) {
+      plan.scheduling_kind = Downcast<String>(value.value());
+    }
+    if (auto value = item.Get("inserted_by")) {
+      plan.inserted_by = Downcast<String>(value.value());
+    }
+    if (auto value = item.Get("admission_status")) {
+      plan.admission_status = Downcast<String>(value.value());
+    }
+    if (auto value = item.Get("unsupported_reason")) {
+      plan.unsupported_reason = Downcast<String>(value.value());
+    }
+
+    ICHECK(!plan.name.empty())
+        << "Blackhole executable reshard_plans item requires name";
+    ICHECK(!plan.source_value.empty())
+        << "Blackhole executable reshard_plans item " << plan.name
+        << " requires source_value";
+    ICHECK(!plan.target_value.empty())
+        << "Blackhole executable reshard_plans item " << plan.name
+        << " requires target_value";
+    ICHECK_GE(plan.source_memory_config_plan_index, 0)
+        << "Blackhole executable reshard_plans item " << plan.name
+        << " requires source_memory_config_plan_index";
+    ICHECK_GE(plan.target_memory_config_plan_index, 0)
+        << "Blackhole executable reshard_plans item " << plan.name
+        << " requires target_memory_config_plan_index";
+    ICHECK(!plan.conversion_kind.empty())
+        << "Blackhole executable reshard_plans item " << plan.name
+        << " requires conversion_kind";
+    ICHECK(!plan.scheduling_kind.empty())
+        << "Blackhole executable reshard_plans item " << plan.name
+        << " requires scheduling_kind";
+    ICHECK(!plan.inserted_by.empty())
+        << "Blackhole executable reshard_plans item " << plan.name
+        << " requires inserted_by";
+    ICHECK(!plan.admission_status.empty())
+        << "Blackhole executable reshard_plans item " << plan.name
+        << " requires admission_status";
+    if (plan.conversion_kind == "interleaved_to_sharded") {
+      ICHECK(!plan.materialization_protocol.empty())
+          << "Blackhole executable reshard_plans item " << plan.name
+          << " requires materialization_protocol";
+      ICHECK(!plan.source_region_kind.empty() && plan.source_region_kind != "none")
+          << "Blackhole executable reshard_plans item " << plan.name
+          << " requires source_region_kind";
+      ICHECK(HasPositiveIntegerShape(plan.source_region_shape))
+          << "Blackhole executable reshard_plans item " << plan.name
+          << " requires positive source_region_shape";
+    }
+    plans.push_back(std::move(plan));
+  }
+  return plans;
+}
+
 static std::vector<LiveFormPlanSpec> ExtractLiveFormPlans(const tir::PrimFunc& f) {
   std::vector<LiveFormPlanSpec> plans;
   auto items = tl::tt_program_projection::GetExecutableArrayField(
@@ -1626,6 +1804,8 @@ static ExecutableSpec ExtractExecutableSpecFromDeviceFunc(const tir::PrimFunc& f
   ValidateExtractedCorePlan(spec.core_plan, entry_name);
   spec.semaphores = ExtractSemaphorePlan(f);
   spec.buffer_distribution_plans = ExtractBufferDistributionPlans(f);
+  spec.tensor_memory_config_plans = ExtractTensorMemoryConfigPlans(f);
+  spec.reshard_plans = ExtractReshardPlans(f);
   spec.runtime_args = ExtractRuntimeArgs(f);
   spec.common_runtime_args = ExtractCommonRuntimeArgs(f);
   spec.per_work_arg_specs = ExtractPerWorkArgSpecs(f);
@@ -2862,6 +3042,74 @@ static void EnforceBufferDistributionAddressContractGate(ExecutableSpec* spec) {
   }
 }
 
+static const ReshardPlanSpec* FindReshardPlanSpec(
+    const ExecutableSpec& spec, const std::string& source_value,
+    const std::string& target_value) {
+  auto it = std::find_if(
+      spec.reshard_plans.begin(), spec.reshard_plans.end(),
+      [&](const ReshardPlanSpec& plan) {
+        return plan.source_value == source_value && plan.target_value == target_value;
+      });
+  return it == spec.reshard_plans.end() ? nullptr : &(*it);
+}
+
+static void EnforceProjectedReshardAdmissionGate(ExecutableSpec* spec) {
+  ICHECK(spec != nullptr);
+  for (const auto& distribution : spec->buffer_distribution_plans) {
+    if (distribution.distribution_kind != "sharded" ||
+        !HasShardedSourceBinding(distribution)) {
+      continue;
+    }
+    const ReshardPlanSpec* reshard =
+        FindReshardPlanSpec(*spec, distribution.source_buffer, distribution.buffer);
+    if (reshard == nullptr) {
+      AppendDirectRuntimeUnsupportedReason(
+          spec,
+          "missing projected reshard conversion for " + distribution.source_buffer +
+              " -> " + distribution.buffer +
+              "; direct runtime consumes TTReshardPlan records and must not infer "
+              "conversion from buffer distribution source bindings");
+      return;
+    }
+  }
+
+  for (const auto& reshard : spec->reshard_plans) {
+    if (reshard.admission_status != "admitted") {
+      AppendDirectRuntimeUnsupportedReason(
+          spec,
+          "projected reshard conversion " + reshard.name + " is not admitted: " +
+              (reshard.unsupported_reason.empty() ? "missing unsupported_reason"
+                                                  : reshard.unsupported_reason));
+      return;
+    }
+    if (reshard.conversion_kind != "interleaved_to_sharded") {
+      AppendDirectRuntimeUnsupportedReason(
+          spec,
+          "projected reshard conversion " + reshard.name + " kind " +
+              reshard.conversion_kind +
+              " is not admitted by direct runtime; current admitted conversion is "
+              "interleaved_to_sharded staged copy");
+      return;
+    }
+    if (reshard.materialization_protocol != "staged_copy") {
+      AppendDirectRuntimeUnsupportedReason(
+          spec,
+          "projected reshard conversion " + reshard.name +
+              " requires unsupported materialization protocol " +
+              reshard.materialization_protocol);
+      return;
+    }
+    if (reshard.source_region_kind != "per_work_tile" ||
+        !HasPositiveIntegerShape(reshard.source_region_shape)) {
+      AppendDirectRuntimeUnsupportedReason(
+          spec,
+          "projected reshard conversion " + reshard.name +
+              " is missing admitted per_work_tile source-region evidence");
+      return;
+    }
+  }
+}
+
 static bool BufferMaterializationRequiresExplicitHostAxisOrder(
     const BufferMaterializationSpec& materialization) {
   return materialization.layout == "interleaved" && materialization.memory_space == "dram" &&
@@ -3294,6 +3542,7 @@ ffi::Module BuildTileLangBlackhole(IRModule mod, Target target) {
         CollectStaticBufferInfo(kv.second, CollectMaterializedBufferNames(spec_it->second));
     PopulateBufferMaterializationSpecs(buffer_info, &spec_it->second);
     EnforceBufferDistributionAddressContractGate(&spec_it->second);
+    EnforceProjectedReshardAdmissionGate(&spec_it->second);
     EnforceExplicitPerWorkAccessDescriptorGate(buffer_info, &spec_it->second);
     EnforceTypedDstCbAccumulationGate(&spec_it->second);
     EnforceExactLiveFormMultiPageRepublishGate(&spec_it->second);
@@ -3308,6 +3557,9 @@ ffi::Module BuildTileLangBlackhole(IRModule mod, Target target) {
       host_it->second.kernels = device_it->second.kernels;
       host_it->second.buffer_distribution_plans =
           device_it->second.buffer_distribution_plans;
+      host_it->second.tensor_memory_config_plans =
+          device_it->second.tensor_memory_config_plans;
+      host_it->second.reshard_plans = device_it->second.reshard_plans;
       host_it->second.buffer_materializations = device_it->second.buffer_materializations;
       host_it->second.live_form_plans = device_it->second.live_form_plans;
       host_it->second.materialization_plans = device_it->second.materialization_plans;
@@ -3394,6 +3646,7 @@ ffi::Module BuildTileLangBlackholeWithoutHost(IRModule mod, Target target) {
         CollectStaticBufferInfo(kv.second, CollectMaterializedBufferNames(spec_it->second));
     PopulateBufferMaterializationSpecs(buffer_info, &spec_it->second);
     EnforceBufferDistributionAddressContractGate(&spec_it->second);
+    EnforceProjectedReshardAdmissionGate(&spec_it->second);
     EnforceExplicitPerWorkAccessDescriptorGate(buffer_info, &spec_it->second);
     EnforceTypedDstCbAccumulationGate(&spec_it->second);
     EnforceExactLiveFormMultiPageRepublishGate(&spec_it->second);
@@ -3408,6 +3661,9 @@ ffi::Module BuildTileLangBlackholeWithoutHost(IRModule mod, Target target) {
       host_it->second.kernels = device_it->second.kernels;
       host_it->second.buffer_distribution_plans =
           device_it->second.buffer_distribution_plans;
+      host_it->second.tensor_memory_config_plans =
+          device_it->second.tensor_memory_config_plans;
+      host_it->second.reshard_plans = device_it->second.reshard_plans;
       host_it->second.buffer_materializations = device_it->second.buffer_materializations;
       host_it->second.live_form_plans = device_it->second.live_form_plans;
       host_it->second.materialization_plans = device_it->second.materialization_plans;

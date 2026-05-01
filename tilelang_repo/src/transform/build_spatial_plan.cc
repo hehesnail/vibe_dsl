@@ -63,6 +63,18 @@ struct ClosureCandidateInfo {
   ExecutionClosure closure;
 };
 
+struct MemoryConfigIntentInfo {
+  std::string source = "derived_default";
+  std::string dsl_origin = "global_buffer_default";
+  std::string memory_space_class = "DRAM";
+  std::string strategy_class = "interleaved";
+  Array<Integer> shard_grid_shape;
+  Array<Integer> shard_shape;
+  std::string shard_orientation = "row_major";
+  bool allow_reshard = true;
+  bool hard_requirement = false;
+};
+
 void AppendUnique(std::vector<std::string>* values, const std::string& value) {
   ICHECK(values != nullptr);
   if (value.empty()) {
@@ -788,6 +800,210 @@ class BufferMetadataCollector : public tir::StmtExprVisitor {
   std::unordered_map<std::string, BufferMetadata> metadata_by_buffer_;
 };
 
+constexpr const char* kMemoryConfigMapAttr = "tl.memory_config_map";
+
+String GetMapString(const Map<String, Any>& item, const char* key,
+                    const char* default_value = "") {
+  if (auto value = item.Get(key)) {
+    return Downcast<String>(value.value());
+  }
+  return String(default_value);
+}
+
+bool GetMapBool(const Map<String, Any>& item, const char* key, bool default_value) {
+  if (auto value = item.Get(key)) {
+    return Downcast<Bool>(value.value());
+  }
+  return default_value;
+}
+
+Array<Integer> GetMapIntegerArray(const Map<String, Any>& item, const char* key) {
+  Array<Integer> values;
+  if (auto value = item.Get(key)) {
+    for (const Any& element : Downcast<Array<Any>>(value.value())) {
+      values.push_back(Downcast<Integer>(element));
+    }
+  }
+  return values;
+}
+
+Map<String, Any> GetMapField(const Map<String, Any>& item, const char* key) {
+  if (auto value = item.Get(key)) {
+    return value.value().as<Map<String, Any>>().value_or(Map<String, Any>());
+  }
+  return Map<String, Any>();
+}
+
+std::string MemorySpaceClassFromBufferType(const std::string& buffer_type) {
+  if (buffer_type == "dram") {
+    return "DRAM";
+  }
+  if (buffer_type == "l1") {
+    return "L1";
+  }
+  return buffer_type;
+}
+
+Array<Integer> PartitionedDimsForStrategy(const std::string& strategy_class,
+                                          int64_t logical_rank) {
+  Array<Integer> dims;
+  if (strategy_class == "height_sharded" && logical_rank >= 1) {
+    dims.push_back(Integer(0));
+  } else if (strategy_class == "width_sharded" && logical_rank >= 2) {
+    dims.push_back(Integer(1));
+  } else if (strategy_class == "block_sharded") {
+    for (int64_t i = 0; i < std::min<int64_t>(logical_rank, 2); ++i) {
+      dims.push_back(Integer(i));
+    }
+  } else if (strategy_class == "nd_sharded") {
+    for (int64_t i = 0; i < logical_rank; ++i) {
+      dims.push_back(Integer(i));
+    }
+  }
+  return dims;
+}
+
+Array<Integer> ReplicatedDimsForStrategy(const std::string& strategy_class,
+                                         int64_t logical_rank) {
+  const Array<Integer> partitioned = PartitionedDimsForStrategy(strategy_class, logical_rank);
+  std::unordered_set<int64_t> partitioned_set;
+  for (const Integer& dim : partitioned) {
+    partitioned_set.insert(dim.IntValue());
+  }
+  Array<Integer> dims;
+  for (int64_t i = 0; i < logical_rank; ++i) {
+    if (partitioned_set.count(i) == 0U) {
+      dims.push_back(Integer(i));
+    }
+  }
+  return dims;
+}
+
+class MemoryConfigAnnotationCollector : public tir::StmtExprVisitor {
+ public:
+  std::unordered_map<std::string, MemoryConfigIntentInfo> Collect(const tir::PrimFunc& func) {
+    intents_by_buffer_.clear();
+    if (auto config_map = func->GetAttr<Map<tir::Var, Any>>(kMemoryConfigMapAttr)) {
+      RecordMemoryConfigMap(config_map.value(), /*allow_existing=*/false);
+    }
+    VisitStmt(func->body);
+    return intents_by_buffer_;
+  }
+
+ private:
+  static MemoryConfigIntentInfo DecodeMemoryConfig(const Map<String, Any>& config) {
+    MemoryConfigIntentInfo info;
+    const std::string memory_layout = str(GetMapString(config, "memory_layout", "interleaved"));
+    const std::string buffer_type = str(GetMapString(config, "buffer_type", "dram"));
+    info.source = "user";
+    info.dsl_origin = "memory_config_map";
+    info.memory_space_class = MemorySpaceClassFromBufferType(buffer_type);
+    info.strategy_class = memory_layout;
+    info.allow_reshard = GetMapBool(config, "allow_reshard", true);
+    info.hard_requirement = !info.allow_reshard;
+    const Map<String, Any> shard = GetMapField(config, "shard");
+    if (shard.defined()) {
+      info.shard_grid_shape = GetMapIntegerArray(shard, "grid_shape");
+      info.shard_shape = GetMapIntegerArray(shard, "shape");
+      info.shard_orientation = str(GetMapString(shard, "orientation", "row_major"));
+    }
+    return info;
+  }
+
+  void RecordMemoryConfigMap(const Map<tir::Var, Any>& config_map, bool allow_existing) {
+    for (const auto& [buffer_var, config_any] : config_map) {
+      const std::string buffer_name = buffer_var->name_hint;
+      ICHECK(!buffer_name.empty())
+          << "tl.memory_config_map key requires a named buffer data var";
+      if (allow_existing && intents_by_buffer_.count(buffer_name) != 0U) {
+        continue;
+      }
+      ICHECK(intents_by_buffer_.count(buffer_name) == 0U)
+          << "duplicate tl.memory_config_map entry for buffer " << buffer_name;
+      const Map<String, Any> config =
+          config_any.as<Map<String, Any>>().value_or(Map<String, Any>());
+      ICHECK(config.defined())
+          << "tl.memory_config_map entry for " << buffer_name
+          << " must be a MemoryConfig attr map";
+      intents_by_buffer_.emplace(buffer_name, DecodeMemoryConfig(config));
+    }
+  }
+
+  void VisitStmt_(const tir::BlockNode* op) final {
+    if (op->annotations.count(kMemoryConfigMapAttr)) {
+      if (auto config_map_any = op->annotations.Get(kMemoryConfigMapAttr)) {
+        auto config_map = config_map_any->as<Map<tir::Var, Any>>();
+        ICHECK(config_map && config_map.value().defined())
+            << "tl.memory_config_map must map buffer data vars to MemoryConfig attrs";
+        RecordMemoryConfigMap(config_map.value(), /*allow_existing=*/true);
+      }
+    }
+    tir::StmtExprVisitor::VisitStmt_(op);
+  }
+
+  std::unordered_map<std::string, MemoryConfigIntentInfo> intents_by_buffer_;
+};
+
+Array<PrimExpr> LogicalShapeForIntent(
+    const LayoutSpec& layout,
+    const std::unordered_map<std::string, BufferMetadata>& metadata_by_buffer) {
+  if (!layout->logical_shape.empty()) {
+    return layout->logical_shape;
+  }
+  auto metadata_it = metadata_by_buffer.find(str(layout->subject));
+  if (metadata_it != metadata_by_buffer.end()) {
+    return ToPrimExprArray(metadata_it->second.shape);
+  }
+  return Array<PrimExpr>();
+}
+
+TensorPlacementIntent MakeTensorPlacementIntent(
+    const LayoutSpec& layout, MemoryConfigIntentInfo info,
+    const std::unordered_map<std::string, BufferMetadata>& metadata_by_buffer) {
+  const Array<PrimExpr> logical_shape = LogicalShapeForIntent(layout, metadata_by_buffer);
+  const int64_t logical_rank = static_cast<int64_t>(logical_shape.size());
+  const std::string subject = str(layout->subject);
+  return TensorPlacementIntent(
+      String("tensor_placement_" + subject), layout->subject, String(""),
+      String(info.source), String(info.dsl_origin),
+      info.source == "user" ? String("memory_config_" + subject) : String(""),
+      logical_rank, logical_shape,
+      PartitionedDimsForStrategy(info.strategy_class, logical_rank),
+      ReplicatedDimsForStrategy(info.strategy_class, logical_rank),
+      Array<String>{}, String(info.memory_space_class), String(info.strategy_class),
+      info.shard_grid_shape, info.shard_shape, String(info.shard_orientation),
+      info.allow_reshard, info.hard_requirement, MakeAnchors("tensor_placement", subject));
+}
+
+Array<TensorPlacementIntent> BuildTensorPlacementIntents(
+    const tir::PrimFunc& func, const Array<LayoutSpec>& layout_specs,
+    const std::unordered_map<std::string, BufferMetadata>& metadata_by_buffer) {
+  MemoryConfigAnnotationCollector collector;
+  std::unordered_map<std::string, MemoryConfigIntentInfo> user_intents = collector.Collect(func);
+  Array<TensorPlacementIntent> intents;
+  std::unordered_set<std::string> emitted;
+  for (const LayoutSpec& layout : layout_specs) {
+    const std::string subject = str(layout->subject);
+    auto user_it = user_intents.find(subject);
+    if (user_it != user_intents.end()) {
+      intents.push_back(MakeTensorPlacementIntent(layout, user_it->second, metadata_by_buffer));
+      emitted.insert(subject);
+      continue;
+    }
+    auto metadata_it = metadata_by_buffer.find(subject);
+    if (metadata_it != metadata_by_buffer.end() && metadata_it->second.scope == "global") {
+      intents.push_back(
+          MakeTensorPlacementIntent(layout, MemoryConfigIntentInfo(), metadata_by_buffer));
+      emitted.insert(subject);
+    }
+  }
+  for (const auto& [subject, _] : user_intents) {
+    ICHECK(emitted.count(subject) != 0U)
+        << "tl.memory_config_map references unknown buffer " << subject;
+  }
+  return intents;
+}
+
 std::string DeriveDistributionKind(const std::string& scope) {
   if (scope == "global") {
     return "global_visible";
@@ -1434,6 +1650,8 @@ SpatialPlan BuildSpatialPlanForFunc(const std::string& member_func, const tir::P
   BufferMetadataCollector metadata_collector;
   const std::unordered_map<std::string, BufferMetadata> metadata_by_buffer =
       metadata_collector.Collect(func);
+  const Array<TensorPlacementIntent> tensor_placement_intents =
+      BuildTensorPlacementIntents(func, layout_specs, metadata_by_buffer);
   const Array<AccessRegion> access_regions =
       BuildAccessRegions(execution_units, layout_specs, metadata_by_buffer);
   const Array<ClosureBoundary> boundaries =
@@ -1461,8 +1679,9 @@ SpatialPlan BuildSpatialPlanForFunc(const std::string& member_func, const tir::P
 
   return SpatialPlan(String(member_func), execution_units, access_regions, dataflow_edges,
                      dependence_components, layout_specs, phase_plans, live_values,
-                     live_value_edges, materialization_boundaries, validated_hints, closures,
-                     boundaries, MakeAnchors("spatial_plan", member_func));
+                     live_value_edges, materialization_boundaries, tensor_placement_intents,
+                     validated_hints, closures, boundaries,
+                     MakeAnchors("spatial_plan", member_func));
 }
 
 }  // namespace

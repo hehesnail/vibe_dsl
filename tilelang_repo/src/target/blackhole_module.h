@@ -625,6 +625,132 @@ struct BufferDistributionSpec {
   }
 };
 
+struct TensorMemoryConfigSpec {
+  std::string name;
+  std::string subject;
+  std::string value_identity;
+  std::vector<int64_t> logical_shape;
+  std::string dtype;
+  std::string memory_layout;
+  std::string buffer_type;
+  std::string grid_ref;
+  std::vector<int64_t> shard_grid_shape;
+  std::vector<int64_t> shard_shape;
+  std::string shard_orientation;
+  std::string shard_distribution_strategy;
+  std::vector<int64_t> page_shape;
+  std::string origin;
+  std::string source_buffer;
+  std::string buffer_distribution_plan;
+  int64_t buffer_distribution_plan_index = -1;
+  bool has_runtime_accessor = false;
+  bool requires_materialization = false;
+
+  void Save(dmlc::JSONWriter* writer) const {
+    writer->BeginObject();
+    writer->WriteObjectKeyValue("name", name);
+    writer->WriteObjectKeyValue("subject", subject);
+    if (!value_identity.empty()) {
+      writer->WriteObjectKeyValue("value_identity", value_identity);
+    }
+    if (!logical_shape.empty()) {
+      writer->WriteObjectKeyValue("logical_shape", logical_shape);
+    }
+    if (!dtype.empty()) {
+      writer->WriteObjectKeyValue("dtype", dtype);
+    }
+    writer->WriteObjectKeyValue("memory_layout", memory_layout);
+    writer->WriteObjectKeyValue("buffer_type", buffer_type);
+    if (!grid_ref.empty()) {
+      writer->WriteObjectKeyValue("grid_ref", grid_ref);
+    }
+    if (!shard_grid_shape.empty()) {
+      writer->WriteObjectKeyValue("shard_grid_shape", shard_grid_shape);
+    }
+    if (!shard_shape.empty()) {
+      writer->WriteObjectKeyValue("shard_shape", shard_shape);
+    }
+    writer->WriteObjectKeyValue("shard_orientation", shard_orientation);
+    writer->WriteObjectKeyValue("shard_distribution_strategy",
+                                shard_distribution_strategy);
+    if (!page_shape.empty()) {
+      writer->WriteObjectKeyValue("page_shape", page_shape);
+    }
+    writer->WriteObjectKeyValue("origin", origin);
+    if (!source_buffer.empty()) {
+      writer->WriteObjectKeyValue("source_buffer", source_buffer);
+    }
+    writer->WriteObjectKeyValue("buffer_distribution_plan",
+                                buffer_distribution_plan);
+    writer->WriteObjectKeyValue("buffer_distribution_plan_index",
+                                buffer_distribution_plan_index);
+    writer->WriteObjectKeyValue("has_runtime_accessor", has_runtime_accessor);
+    writer->WriteObjectKeyValue("requires_materialization",
+                                requires_materialization);
+    writer->EndObject();
+  }
+};
+
+struct ReshardPlanSpec {
+  std::string name;
+  std::string source_value;
+  std::string target_value;
+  std::string source_memory_config_plan;
+  int64_t source_memory_config_plan_index = -1;
+  std::string target_memory_config_plan;
+  int64_t target_memory_config_plan_index = -1;
+  std::string conversion_kind;
+  std::string source_region_kind;
+  std::vector<int64_t> source_region_shape;
+  std::string materialization_plan;
+  int64_t materialization_plan_index = -1;
+  std::string materialization_protocol;
+  std::vector<int64_t> required_cb_plan_indices;
+  std::vector<int64_t> required_sync_plan_indices;
+  std::string scheduling_kind;
+  std::string inserted_by;
+  std::string admission_status;
+  std::string unsupported_reason;
+
+  void Save(dmlc::JSONWriter* writer) const {
+    writer->BeginObject();
+    writer->WriteObjectKeyValue("name", name);
+    writer->WriteObjectKeyValue("source_value", source_value);
+    writer->WriteObjectKeyValue("target_value", target_value);
+    writer->WriteObjectKeyValue("source_memory_config_plan",
+                                source_memory_config_plan);
+    writer->WriteObjectKeyValue("source_memory_config_plan_index",
+                                source_memory_config_plan_index);
+    writer->WriteObjectKeyValue("target_memory_config_plan",
+                                target_memory_config_plan);
+    writer->WriteObjectKeyValue("target_memory_config_plan_index",
+                                target_memory_config_plan_index);
+    writer->WriteObjectKeyValue("conversion_kind", conversion_kind);
+    writer->WriteObjectKeyValue("source_region_kind", source_region_kind);
+    if (!source_region_shape.empty()) {
+      writer->WriteObjectKeyValue("source_region_shape", source_region_shape);
+    }
+    if (!materialization_plan.empty()) {
+      writer->WriteObjectKeyValue("materialization_plan", materialization_plan);
+    }
+    writer->WriteObjectKeyValue("materialization_plan_index",
+                                materialization_plan_index);
+    writer->WriteObjectKeyValue("materialization_protocol",
+                                materialization_protocol);
+    writer->WriteObjectKeyValue("required_cb_plan_indices",
+                                required_cb_plan_indices);
+    if (!required_sync_plan_indices.empty()) {
+      writer->WriteObjectKeyValue("required_sync_plan_indices",
+                                  required_sync_plan_indices);
+    }
+    writer->WriteObjectKeyValue("scheduling_kind", scheduling_kind);
+    writer->WriteObjectKeyValue("inserted_by", inserted_by);
+    writer->WriteObjectKeyValue("admission_status", admission_status);
+    writer->WriteObjectKeyValue("unsupported_reason", unsupported_reason);
+    writer->EndObject();
+  }
+};
+
 struct LiveFormPlanSpec {
   std::string name;
   std::string logical_value;
@@ -813,6 +939,8 @@ struct ExecutableSpec {
   CorePlan core_plan;
   std::vector<SemaphoreSpec> semaphores;
   std::vector<BufferDistributionSpec> buffer_distribution_plans;
+  std::vector<TensorMemoryConfigSpec> tensor_memory_config_plans;
+  std::vector<ReshardPlanSpec> reshard_plans;
   std::vector<BufferMaterializationSpec> buffer_materializations;
   std::vector<KernelArgSpec> runtime_args;
   std::vector<KernelArgSpec> common_runtime_args;
@@ -841,6 +969,13 @@ struct ExecutableSpec {
     if (!buffer_distribution_plans.empty()) {
       writer->WriteObjectKeyValue("buffer_distribution_plans",
                                   buffer_distribution_plans);
+    }
+    if (!tensor_memory_config_plans.empty()) {
+      writer->WriteObjectKeyValue("tensor_memory_config_plans",
+                                  tensor_memory_config_plans);
+    }
+    if (!reshard_plans.empty()) {
+      writer->WriteObjectKeyValue("reshard_plans", reshard_plans);
     }
     if (!buffer_materializations.empty()) {
       writer->WriteObjectKeyValue("buffer_materializations", buffer_materializations);

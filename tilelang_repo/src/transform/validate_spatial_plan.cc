@@ -482,6 +482,59 @@ void ValidateLayoutSpecs(const SpatialPlan& plan) {
   }
 }
 
+void ValidateTensorPlacementIntents(const SpatialPlan& plan) {
+  std::unordered_set<std::string> layout_subjects;
+  for (const LayoutSpec& layout : plan->layout_specs) {
+    layout_subjects.insert(str(layout->subject));
+  }
+  std::unordered_set<std::string> seen_names;
+  std::unordered_set<std::string> seen_subjects;
+  for (const TensorPlacementIntent& intent : plan->tensor_placement_intents) {
+    ICHECK(!intent->name.empty()) << "TensorPlacementIntent requires name";
+    ICHECK(seen_names.insert(str(intent->name)).second)
+        << "duplicate TensorPlacementIntent name " << intent->name;
+    ICHECK(!intent->subject.empty())
+        << "TensorPlacementIntent " << intent->name << " requires subject";
+    ICHECK(layout_subjects.count(str(intent->subject)) != 0U)
+        << "TensorPlacementIntent " << intent->name
+        << " subject must match a SpatialPlan LayoutSpec";
+    ICHECK(seen_subjects.insert(str(intent->subject)).second)
+        << "duplicate TensorPlacementIntent subject " << intent->subject;
+    const std::string source = str(intent->source);
+    ICHECK(source == "user" || source == "op_contract" ||
+           source == "derived_default" || source == "materialization_requirement")
+        << "TensorPlacementIntent " << intent->name << " has invalid source "
+        << intent->source;
+    const std::string memory_space = str(intent->memory_space_class);
+    ICHECK(memory_space == "DRAM" || memory_space == "L1" || memory_space == "either")
+        << "TensorPlacementIntent " << intent->name
+        << " has invalid memory_space_class " << intent->memory_space_class;
+    const std::string strategy = str(intent->strategy_class);
+    ICHECK(strategy == "interleaved" || strategy == "height_sharded" ||
+           strategy == "width_sharded" || strategy == "block_sharded" ||
+           strategy == "nd_sharded")
+        << "TensorPlacementIntent " << intent->name << " has invalid strategy_class "
+        << intent->strategy_class;
+    ICHECK_GE(intent->logical_rank, 0)
+        << "TensorPlacementIntent " << intent->name << " requires non-negative rank";
+    ICHECK_EQ(intent->logical_rank, static_cast<int64_t>(intent->logical_shape.size()))
+        << "TensorPlacementIntent " << intent->name
+        << " logical_rank must match logical_shape";
+    if (strategy != "interleaved") {
+      ICHECK(!intent->shard_shape.empty())
+          << "TensorPlacementIntent " << intent->name
+          << " sharded placement requires shard_shape";
+      ICHECK(!intent->shard_grid_shape.empty())
+          << "TensorPlacementIntent " << intent->name
+          << " sharded placement requires shard_grid_shape";
+      ICHECK(str(intent->shard_orientation) == "row_major" ||
+             str(intent->shard_orientation) == "col_major")
+          << "TensorPlacementIntent " << intent->name
+          << " has invalid shard_orientation " << intent->shard_orientation;
+    }
+  }
+}
+
 void ValidatePhasePlans(const SpatialPlan& plan, const std::vector<int>& phase_index_by_unit) {
   std::unordered_map<std::string, int> edge_index_by_name;
   for (int edge_index = 0; edge_index < plan->dataflow_edges.size(); ++edge_index) {
@@ -890,6 +943,7 @@ void CheckSpatialPlan(const SpatialPlan& plan) {
   ValidateDataflowEdges(plan, phase_index_by_unit);
   ValidateDependenceComponents(plan);
   ValidateLayoutSpecs(plan);
+  ValidateTensorPlacementIntents(plan);
   ValidatePhasePlans(plan, phase_index_by_unit);
   ValidateLiveValueBoundaryObjects(plan, phase_index_by_unit);
 }
