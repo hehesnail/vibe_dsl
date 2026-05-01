@@ -1,7 +1,7 @@
 # 任务开发设计文档
 
 > 本目录只维护设计入口和任务级合同。
-> 当前 repo HEAD 状态、blocker、下一步只看
+> 当前执行状态、blocker、下一步只看
 > `../progress.md`。
 
 ## Entry Order
@@ -76,7 +76,8 @@ are per-task acceptance gates, not a separate cleanup lane.
 - 任务级设计只写 goal / non-goal / representation contract /
   validation contract / completion criteria。
 - `progress.md`
-  只写当前 HEAD 状态、blocker、下一步、最近验证摘要。
+  只写当前执行状态、blocker、下一步、最近验证摘要；
+  不写按 HEAD 滚动的实现库存或历史流水。
 - 经验沉淀写入 `memory/`；
   不要倒灌回核心设计文档。
 - 历史流水、阶段日志、patch notes、完整命令矩阵

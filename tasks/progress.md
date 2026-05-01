@@ -2,8 +2,9 @@
 
 > 这是当前 checkout 的执行看板。
 > 长期合同看 `tasks/dev_design/`。
-> 本文件只回答：当前什么是真的、现在做哪一项、下一项被什么挡住、
-> 最近跑过什么验证。
+> 本文件只回答：现在做哪一项、下一项被什么挡住、
+> 当前任务需要知道的边界、最近跑过什么验证。
+> 不维护按 HEAD 实时更新的实现库存或历史流水。
 
 ## Status
 
@@ -12,98 +13,21 @@
 - Main chain:
   `Normalized Tile TIR -> SpatialPlan -> TTProgram -> ExecutableSpec`
 
-## Current HEAD
+## Active Boundary
 
-当前代码状态：
+The current admitted direct-runtime surface is still T1's buffer-address ABI:
+interleaved DRAM runtime buffers, staged-copy resident L1 / CB-backed views,
+and the admitted 64B page-indexed copy path.
 
-- `BlackholeModule` in-process direct host path is the formal execution path.
-  The `execution_backend="tvm_ffi"` wrapper/export path is available.
-- Legacy external runner / `build_blackhole/` is gone.
-- Legacy protocol families are out of the active chain:
-  `compute_contract`,
-  `gemm_contract`,
-  `multi_*_contracts`,
-  top-level `TTProgram.payload`,
-  bridge attrs,
-  lowering facts contract maps,
-  compute-op seed maps,
-  and leaf name/default fallbacks.
-- `TTResourceDemand` and `TTResourcePressureReport` are in `TTProgram` and
-  are consumed by `ValidateTTProgram`.
-- Core groups consume `TTHardwareModel` worker-grid facts; validators reject
-  out-of-grid cores, duplicate cores, and invalid work packets.
-- `TTBufferDistributionPlan` can represent hardware-backed placement:
-  interleaved DRAM,
-  attached-core sharded L1 for shared / CB-backed views,
-  and device-local replicated placement for ordinary per-worker local L1.
-  This is a low-level buffer placement / address ABI contract, not the full
-  tensor/value sharding and reshard model.
-- Sharded L1 placement has typed address ABI fields:
-  `shard_grid_shape`,
-  `sharding_strategy`,
-  real per-core `shard_shape`,
-  `shard_orientation`,
-  `source_buffer`,
-  `source_region_kind`,
-  `source_region_shape`,
-  `logical_index_mapping`,
-  and `core_local_address_mapping`.
-  Pure local sharded scratch does not fabricate source-region binding.
-- `TTBufferDistributionPlan` now follows TT-Metal sharding terminology:
-  `sharding_strategy` is `height` / `width` / `block`,
-  while `shard_orientation` is `row_major` / `col_major`.
-  Validators reject strategy/orientation conflation before executable
-  construction or runtime admission.
-- `TTBufferDistributionPlan` is now projected into `ExecutableSpec` as the
-  runtime-visible buffer address contract.
-  `BlackholeModule` metadata / serialization preserves it, leaf readers
-  validate it, and direct-runtime admission consumes it before execution.
-- Sharded L1 is admitted for the staged-copy resident L1 / CB-backed path:
-  the executable carries DRAM `source_buffer`,
-  `per_work_tile` source region,
-  `work_packet_row_major` logical mapping,
-  and `l1_shard_linear` core-local mapping;
-  TT-Sim bf16 correctness passes.
-- Page-indexed 64B stick/page copy is admitted through typed
-  `transport_page_size`,
-  executable `page_size_bytes`,
-  and `interleaved_page_index` mapping;
-  direct runtime correctness passes.
-  32B bf16 sub-tile page transport remains outside the admitted boundary
-  because TT-Sim rejects the NOC read/write alignment.
-- Accessor compile-time ABI kinds are typed:
-  `interleaved_accessor_cta`,
-  `sharded_accessor_cta`,
-  and `page_indexed_accessor_cta`.
-- Direct runtime still admits external runtime buffers as interleaved DRAM
-  accessor execution.
-  `sharded_accessor_cta` and `page_indexed_accessor_cta` remain fail-closed
-  for external compile-time accessor materialization until a later task
-  gives them a direct TT-Metal accessor ABI.
-- Full tensor/value sharding is now recorded as a separate design lane in
-  `tasks/dev_design/2026-05-02-blackhole-tensor-sharding-and-reshard.md`.
-  The design now includes the user-facing DSL/API surface:
-  `T.MemoryConfig`, `T.ShardSpec`, `T.NDShardSpec`,
-  `T.annotate_memory_config`, and constructor sugar that lowers to the same
-  placement intent.
-  The current implementation does not yet expose that DSL, lower it to
-  `TensorPlacementIntent`, model per-op sharding contracts, resolve
-  producer/consumer placement conflicts, or insert explicit reshard plans.
+Full tensor/value sharding is a design lane, not current implementation.
+Sharded GEMM/layout claims in T2 and production sharding claims in T7 must
+wait for the DSL placement surface, tensor memory-config plans, op sharding
+contracts, placement conflict handling, and explicit reshard plans.
 
-## Completed Task: T1 Buffer Address ABI 接入执行路径
-
-### Result
+## Completed Baseline: T1 Buffer Address ABI
 
 T1 is complete for the current admitted direct-runtime surface.
-
-| 交付项 | 状态 |
-| --- | --- |
-| T1.1 Executable address contract | Done. `ExecutableSpec` carries `buffer_distribution_plans`; metadata, serialization, and leaf validation preserve required address fields. Missing sharded `source_buffer` rejects during build. |
-| T1.2 Sharded L1 execution sample | Done. Grid-indexed staged copy uses DRAM source -> resident per-worker L1 / CB-backed `A_shared`; direct runtime consumes the typed sharded distribution and passes TT-Sim bf16 correctness. |
-| T1.3 Page-indexed execution sample | Done for admitted 64B page transport. Stick/page copy uses explicit `transport_page_size`, executable `page_size_bytes`, and `interleaved_page_index`; direct runtime correctness passes. 32B bf16 sub-tile page transport is a recorded alignment boundary, not silently admitted. |
-| T1.4 Unsupported-form rejects | Done. Runtime-bound buffers with non-interleaved / replicated distribution fail from typed distribution fields; non-admitted compile-time accessor kinds remain typed rejects. |
-
-### Non-Negotiable Boundaries
+The active non-negotiable boundaries carried into T2 are:
 
 - Do not silently retile GPU-style `alloc_shared((tile_m, tile_n))` to fill
   Blackhole L1. Treat it as per-worker, per-work-item scratch unless an
@@ -149,7 +73,6 @@ typecast leaf families and the required GEMM layout variants have:
 
 ## Task Queue
 
-T1 已完成。
 当前 active task 是 T2。
 
 | 任务 | 目标 | 依赖 | 完成目标 |
@@ -174,25 +97,12 @@ design lane:
 
 ## Support Boundary
 
-- Current direct-runtime admitted execution:
-  interleaved DRAM buffer address schema with no common runtime args,
-  copy equal source/destination range with stride 1,
-  selected interleaved stick/page-shaped copy cases,
-  staged-copy sharded L1 / CB-backed resident view with typed source region,
-  GEMM A/B-separated reader range plus writer output range,
-  non-oversubscribed explicit semaphore / remote-endpoint path,
-  and admitted bf16 live-form paths.
-- Current typed-but-not-yet-executed external accessor forms:
-  `sharded_accessor_cta` and `page_indexed_accessor_cta`.
-  They are not T1 blockers because the admitted sharded/page-indexed address
-  contracts now execute through buffer distribution + interleaved external
-  DRAM accessors.
-- Current workload backlog:
-  `topk`,
-  MoE / `fusedmoe`,
-  paged attention / paged decode / MLA decode,
-  grouped / ragged / sparse attention,
-  and chunk recurrence / scan.
+- Admitted direct-runtime forms remain limited to the T1 surface plus current
+  GEMM A/B-separated reader and writer ranges.
+- `sharded_accessor_cta` and `page_indexed_accessor_cta` are typed but not
+  admitted as external runtime accessors.
+- Workload backlog stays ordered by the task queue: `topk`, then grouped /
+  ragged / materialization work, then workload-first paths.
 
 ## Latest Verification
 
