@@ -136,6 +136,49 @@
 
 ## 2. 已解决但值得记住的模式
 
+### T3 staged-copy reshard hardening exposed multi-record ABI and executable validation gaps
+
+- **症状**:
+  - 单个 copy 的 `interleaved_to_sharded` runtime case 能过，但同一个
+    fused dataflow segment 内出现两个 independent copy/reshard record 时，
+    codegen 只给最后一组输入/输出绑定 runtime buffer args。
+  - 修改 `ExecutableSpec` 中的 tensor memory config / reshard records 后，
+    build/runtime 没有全部 fail closed。
+  - flash-attn 邻近回归暴露出 executable reader 过度要求所有
+    buffer distribution 都有 positive page size，以及 `fill_tile` 被记录
+    为 unary input/output op 的类型错误。
+- **根因**:
+  - fused dataflow ABI 仍按 single-copy surface 保存
+    `copy_input_buffer_name_` / `copy_output_buffer_name_`，accessor slot
+    也硬编码到第一组 read/write slot。
+  - executable placement validation 只检查局部字段存在，没有把
+    `TTTensorMemoryConfigPlan`、`TTReshardPlan` 和 indexed
+    `TTBufferDistributionPlan` 交叉校验。
+  - replicated local L1 intermediates 不是 runtime-visible page address
+    ABI；它们的 storage/page ownership 可以来自 CB/materialization plan，
+    不能被当成 interleaved/sharded runtime distribution 一样强制
+    positive page size。
+  - `fill_tile` 只有 output operand，不是 unary input/output op；
+    copy-only live-CB republish/pack path 也不应该插入
+    `unary_op_init_common`。
+- **修法**:
+  - fused dataflow 记录所有 input/output buffer identities，并为同一
+    segment 内的 accessor 按 buffer identity 分配稳定 slots。
+  - 多 target CB materialization 按 CB requirement order 绑定 source，
+    避免把合法的多 resident target 全部标成 ambiguous。
+  - `BlackholeModule` / executable reader 交叉验证 tensor memory config、
+    reshard record 和 buffer distribution 的 subject、index、layout、
+    buffer type、source binding 与 source region。
+  - executable page-size 检查只强制 interleaved / sharded
+    runtime-visible address distributions；replicated local L1 记录允许无
+    page-size。
+  - `fill_tile` 使用独立 `fill` compute kind；copy-only republish/pack
+    去掉无语义的 unary init。
+- **教训**:
+  - T3 runtime gate 必须覆盖多 record、serialization、corrupted executable
+    records 和邻近 workload regression。只测一个小 copy case 会漏掉
+    single-record 假设和 leaf-reader 过度校验。
+
 ### sharded L1 source-region ABI 必须 all-or-none，不能给纯 local scratch 伪造 source
 
 - **症状**:

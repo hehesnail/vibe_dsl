@@ -39,6 +39,7 @@ const char* FindEnumName(Enum value, const EnumStringEntry<Enum> (&entries)[N]) 
 }
 
 constexpr EnumStringEntry<Result> kResultKindNames[] = {
+    {Result::kFill, "fill"},
     {Result::kUnary, "unary"},
     {Result::kBinary, "binary"},
     {Result::kCopy, "copy"},
@@ -203,7 +204,7 @@ std::vector<std::string> BlackholeTileComputeOperandRoleNames(
 
 const std::vector<BlackholeTileComputePattern>& GetBlackholeTileComputePatterns() {
   static const std::vector<BlackholeTileComputePattern> patterns = {
-      {"fill_fragment_pattern", "fill_tile", Result::kUnary, Op::kFillTile,
+      {"fill_fragment_pattern", "fill_tile", Result::kFill, Op::kFillTile,
        {Role::kOutput}, {}, Form::kFragment, SideEffect::kDst,
        SourceEmitter::kFillFragment, SourceCategory::kCustom, nullptr, nullptr,
        {{Role::kOutput, 1}}, {}, 1},

@@ -326,20 +326,34 @@ EnsureSegmentBufferRuntimeArgs(const std::string &segment_kind,
                                const Array<Any> &accessors,
                                const Optional<Any> &runtime_args_opt,
                                const std::string &input_buffer_name = "",
-                               const std::string &output_buffer_name = "") {
+                               const std::string &output_buffer_name = "",
+                               const std::vector<std::string> &input_buffer_names = {},
+                               const std::vector<std::string> &output_buffer_names = {}) {
   Array<Any> existing_runtime_args =
       runtime_args_opt ? Downcast<Array<Any>>(runtime_args_opt.value())
                        : Array<Any>();
   if (segment_kind == "fused_dataflow") {
-    std::string resolved_input_buffer_name =
-        !input_buffer_name.empty()
-            ? input_buffer_name
-            : ResolveAccessorBufferNameByCompileTimeArgOffset(accessors, 0);
-    std::string resolved_output_buffer_name =
-        !output_buffer_name.empty()
-            ? output_buffer_name
-            : ResolveAccessorBufferNameByCompileTimeArgOffset(
-                  accessors, resolved_input_buffer_name.empty() ? 0 : 2);
+    std::vector<std::string> resolved_input_buffer_names = input_buffer_names;
+    std::vector<std::string> resolved_output_buffer_names = output_buffer_names;
+    if (resolved_input_buffer_names.empty()) {
+      const std::string resolved_input_buffer_name =
+          !input_buffer_name.empty()
+              ? input_buffer_name
+              : ResolveAccessorBufferNameByCompileTimeArgOffset(accessors, 0);
+      if (!resolved_input_buffer_name.empty()) {
+        resolved_input_buffer_names.push_back(resolved_input_buffer_name);
+      }
+    }
+    if (resolved_output_buffer_names.empty()) {
+      const std::string resolved_output_buffer_name =
+          !output_buffer_name.empty()
+              ? output_buffer_name
+              : ResolveAccessorBufferNameByCompileTimeArgOffset(
+                    accessors, resolved_input_buffer_names.empty() ? 0 : 2);
+      if (!resolved_output_buffer_name.empty()) {
+        resolved_output_buffer_names.push_back(resolved_output_buffer_name);
+      }
+    }
     std::vector<bool> consumed(existing_runtime_args.size(), false);
     Array<Any> runtime_args;
     auto push_existing_or_synthesized = [&](const std::string &kind,
@@ -356,23 +370,23 @@ EnsureSegmentBufferRuntimeArgs(const std::string &segment_kind,
       runtime_args.push_back(MakeRuntimeArg(name, kind, "uint32", buffer_name));
     };
 
-    if (!resolved_input_buffer_name.empty()) {
+    for (const std::string &buffer_name : resolved_input_buffer_names) {
       push_existing_or_synthesized("input_buffer_addr32",
-                                   resolved_input_buffer_name + "_addr",
-                                   resolved_input_buffer_name);
+                                   buffer_name + "_addr",
+                                   buffer_name);
     }
-    if (!resolved_output_buffer_name.empty()) {
+    for (const std::string &buffer_name : resolved_output_buffer_names) {
       push_existing_or_synthesized("output_buffer_addr32",
-                                   resolved_output_buffer_name + "_addr",
-                                   resolved_output_buffer_name);
+                                   buffer_name + "_addr",
+                                   buffer_name);
     }
     push_existing_or_synthesized("work_linear_id", "work_linear_id");
-    if (!resolved_input_buffer_name.empty()) {
+    if (!resolved_input_buffer_names.empty()) {
       push_existing_or_synthesized("a_tile_start_id", "a_tile_start_id");
       push_existing_or_synthesized("a_tile_num_tiles", "a_tile_num_tiles");
       push_existing_or_synthesized("a_tile_stride", "a_tile_stride");
     }
-    if (!resolved_output_buffer_name.empty()) {
+    if (!resolved_output_buffer_names.empty()) {
       push_existing_or_synthesized("output_tile_start_id",
                                    "output_tile_start_id");
       push_existing_or_synthesized("output_tile_num_tiles",
@@ -1410,7 +1424,8 @@ void PlanTTKernelABI::StoreAccessorDescriptors(PrimFunc &func) {
                                        : copy_input_buffer_name_,
           copy_output_buffer_.defined()
               ? BufferIdentityName(copy_output_buffer_)
-              : copy_output_buffer_name_);
+              : copy_output_buffer_name_,
+          copy_input_buffer_names_, copy_output_buffer_names_);
       Array<TTPerWorkArgSpec> per_work_arg_specs =
           make_segment_per_work_arg_specs(
               kind, runtime_args,
@@ -1729,11 +1744,8 @@ int PlanTTKernelABI::GetReadAccessorSlot(const std::string &segment_kind,
                                          const Buffer &buffer,
                                          CopyDirection direction) {
   if (segment_kind == "fused_dataflow") {
-    if (copy_input_buffer_.defined() &&
-        SameBufferIdentity(buffer, copy_input_buffer_)) {
-      return 0;
-    }
-    return 0;
+    return GetOrAllocateSegmentAccessorSlot(&fused_dataflow_accessor_slots_,
+                                            segment_kind, buffer);
   }
   if (direction == CopyDirection::kDramToCB) {
     return GetOrAllocateSegmentAccessorSlot(&read_accessor_slots_, segment_kind,
@@ -1746,15 +1758,8 @@ int PlanTTKernelABI::GetWriteAccessorSlot(const std::string &segment_kind,
                                           const Buffer &buffer,
                                           CopyDirection direction) {
   if (segment_kind == "fused_dataflow") {
-    const bool has_input_transport =
-        copy_input_buffer_.defined() || !copy_input_buffer_name_.empty();
-    if ((copy_output_buffer_.defined() &&
-         SameBufferIdentity(buffer, copy_output_buffer_)) ||
-        (!copy_output_buffer_name_.empty() &&
-         BufferIdentityName(buffer) == copy_output_buffer_name_)) {
-      return has_input_transport ? 2 : 0;
-    }
-    return 0;
+    return GetOrAllocateSegmentAccessorSlot(&fused_dataflow_accessor_slots_,
+                                            segment_kind, buffer);
   }
   if (direction == CopyDirection::kCBToDram) {
     return GetOrAllocateSegmentAccessorSlot(&write_accessor_slots_,

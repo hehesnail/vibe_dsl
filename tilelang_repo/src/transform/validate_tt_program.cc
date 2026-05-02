@@ -524,7 +524,8 @@ void ValidateComputeOpPlan(
       << "TTComputeOpPlan requires operation_name";
   const std::string kind = plan->kind;
   ICHECK(kind == "gemm" || kind == "binary" || kind == "unary" ||
-         kind == "reduce" || kind == "sfpu" || kind == "pack" || kind == "copy")
+         kind == "reduce" || kind == "sfpu" || kind == "pack" ||
+         kind == "copy" || kind == "fill")
       << "TTComputeOpPlan unsupported kind " << plan->kind;
   ICHECK(!plan->operand_bindings.empty())
       << "TTComputeOpPlan requires operand_bindings";

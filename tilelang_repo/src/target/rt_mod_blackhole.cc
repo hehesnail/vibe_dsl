@@ -1144,7 +1144,10 @@ static std::vector<BufferDistributionSpec> ExtractBufferDistributionPlans(
         << "Blackhole executable buffer_distribution_plans item requires layout";
     ICHECK(!plan.memory_space.empty())
         << "Blackhole executable buffer_distribution_plans item requires memory_space";
-    ICHECK(has_page_size_bytes && plan.page_size_bytes > 0)
+    const bool requires_page_size_bytes =
+        plan.distribution_kind == "interleaved" || plan.distribution_kind == "sharded";
+    ICHECK(!requires_page_size_bytes ||
+           (has_page_size_bytes && plan.page_size_bytes > 0))
         << "Blackhole executable buffer_distribution_plans item for " << plan.buffer
         << " requires positive page_size_bytes";
     ICHECK(!plan.logical_index_mapping.empty())

@@ -1027,6 +1027,8 @@ PrimFunc PlanTTKernelABI::Transform(const PrimFunc& func) {
   copy_output_buffer_ = Buffer();
   copy_input_buffer_name_.clear();
   copy_output_buffer_name_.clear();
+  copy_input_buffer_names_.clear();
+  copy_output_buffer_names_.clear();
   host_buffer_by_compute_operand_buffer_.clear();
   direct_copy_source_by_buffer_identity_.clear();
   buffer_by_identity_.clear();
@@ -1054,6 +1056,9 @@ PrimFunc PlanTTKernelABI::Transform(const PrimFunc& func) {
   stmt_order_index_by_node_.clear();
   current_lowering_order_index_ = -1;
   segment_plan_.clear();
+  read_accessor_slots_.clear();
+  write_accessor_slots_.clear();
+  fused_dataflow_accessor_slots_.clear();
   tt_kernels_.clear();
   tt_abi_plans_.clear();
   tt_live_form_plans_.clear();

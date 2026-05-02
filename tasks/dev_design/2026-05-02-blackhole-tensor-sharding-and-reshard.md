@@ -1022,3 +1022,38 @@ This design is implemented only when:
 - runtime/codegen consume records or fail closed
 - tests cover at least one incompatible producer/consumer sharding case
 - tests cover at least one admitted explicit reshard/conversion case
+
+## Runtime Correctness Hardening Gate
+
+The first admitted T3 runtime conversion is still narrowly scoped:
+
+```text
+interleaved DRAM runtime tensor
+  -> resident L1 sharded staged-copy view
+  -> interleaved DRAM runtime tensor
+```
+
+The runtime gate for this surface must prove more than record projection.
+It must prove that `BlackholeModule` consumes the projected
+`TTTensorMemoryConfigPlan`, `TTReshardPlan`, and
+`TTBufferDistributionPlan` records when executing or rejecting the path.
+
+Required direct-runtime coverage:
+
+- large-shape staged-copy correctness at `1024x1024`, `2048x4096`,
+  `4096x2048`, and `4096x4096`;
+- oversubscribed logical grids where `work_per_core > 1`;
+- wide, tall, and square aspect ratios;
+- an explicit user placement case that names the resident L1 view with a
+  non-template buffer name and requires an `interleaved_to_sharded`
+  conversion record;
+- multiple independent reshard records in one executable;
+- non-zero source and destination tile offsets over a large tensor region;
+- typed rejects when executable placement or reshard records are removed,
+  unsupported, or inconsistent with each other;
+- serialization round-trip preservation for tensor memory config and reshard
+  records.
+
+These tests do not admit external `sharded_accessor_cta`,
+`page_indexed_accessor_cta`, sharded GEMM/layout variants, or production
+DRAM-sharded weights. Those remain T4/T5 surfaces.

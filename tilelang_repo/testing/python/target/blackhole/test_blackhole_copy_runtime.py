@@ -2,6 +2,7 @@ import pytest
 import torch
 
 import tilelang
+from tilelang import language as T
 from tilelang.engine.lower import lower
 from tilelang.engine.lower import merge_ir_modules
 from tvm.target import Target
@@ -21,6 +22,7 @@ from .common import (
     rebuild_tt_kernel,
     rebuild_tt_core_group,
     rebuild_tt_program,
+    rebuild_tt_reshard_plan,
     rebuild_tt_semaphore_plan,
     require_tt_program,
     staged_copy_kernel,
@@ -192,6 +194,218 @@ def _extract_tt_program_runtime_args(device_main):
     if not tt_program.abi_plans:
         pytest.fail("Expected TTProgram to carry a TTABIPlan")
     return tt_runtime_arg_specs_to_list(tt_program.abi_plans[0].runtime_args)
+
+
+def _require_device_main(artifact):
+    for func in artifact.device_mod.functions.values():
+        if getattr(func, "attrs", None) and "tl.tt_program" in func.attrs:
+            return func
+    pytest.fail("Expected artifact device module to carry tl.tt_program")
+
+
+def _bf16_matrix(m, n):
+    values = torch.arange(m * n, dtype=torch.float32).reshape(m, n)
+    values = (values.remainder(251) - 125) / 17
+    return values.to(torch.bfloat16)
+
+
+def _explicit_user_reshard_copy_kernel(
+    *,
+    grid_x: int,
+    grid_y: int,
+    tile_m: int = 32,
+    tile_n: int = 32,
+):
+    m = grid_y * tile_m
+    n = grid_x * tile_n
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((m, n), "bfloat16"),
+        B: T.Tensor((m, n), "bfloat16"),
+    ):
+        with T.Kernel(grid_x, grid_y) as (bx, by):
+            resident_tile = T.alloc_shared((tile_m, tile_n), "bfloat16")
+            T.annotate_memory_config(
+                {
+                    A: T.interleaved_dram(),
+                    resident_tile: T.sharded_l1(
+                        strategy="block",
+                        grid=T.CoreGrid(x=8, y=8),
+                        shard_shape=(tile_m, tile_n),
+                        orientation="row_major",
+                        allow_reshard=True,
+                    ),
+                    B: T.interleaved_dram(),
+                }
+            )
+            T.copy(A[by * tile_m, bx * tile_n], resident_tile)
+            T.copy(resident_tile, B[by * tile_m, bx * tile_n])
+
+    return main
+
+
+def _explicit_multi_reshard_copy_kernel(
+    *,
+    grid_x: int,
+    grid_y: int,
+    tile_m: int = 32,
+    tile_n: int = 32,
+):
+    m = grid_y * tile_m
+    n = grid_x * tile_n
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((m, n), "bfloat16"),
+        C: T.Tensor((m, n), "bfloat16"),
+        B: T.Tensor((m, n), "bfloat16"),
+        D: T.Tensor((m, n), "bfloat16"),
+    ):
+        with T.Kernel(grid_x, grid_y) as (bx, by):
+            resident_a = T.alloc_shared((tile_m, tile_n), "bfloat16")
+            resident_c = T.alloc_shared((tile_m, tile_n), "bfloat16")
+            T.annotate_memory_config(
+                {
+                    A: T.interleaved_dram(),
+                    C: T.interleaved_dram(),
+                    resident_a: T.sharded_l1(
+                        strategy="block",
+                        grid=T.CoreGrid(x=8, y=8),
+                        shard_shape=(tile_m, tile_n),
+                        orientation="row_major",
+                        allow_reshard=True,
+                    ),
+                    resident_c: T.sharded_l1(
+                        strategy="block",
+                        grid=T.CoreGrid(x=8, y=8),
+                        shard_shape=(tile_m, tile_n),
+                        orientation="row_major",
+                        allow_reshard=True,
+                    ),
+                    B: T.interleaved_dram(),
+                    D: T.interleaved_dram(),
+                }
+            )
+            T.copy(A[by * tile_m, bx * tile_n], resident_a)
+            T.copy(resident_a, B[by * tile_m, bx * tile_n])
+            T.copy(C[by * tile_m, bx * tile_n], resident_c)
+            T.copy(resident_c, D[by * tile_m, bx * tile_n])
+
+    return main
+
+
+def _offset_grid_indexed_reshard_copy_kernel(
+    *,
+    grid_x: int,
+    grid_y: int,
+    src_tile_row: int,
+    src_tile_col: int,
+    dst_tile_row: int,
+    dst_tile_col: int,
+    tile_m: int = 32,
+    tile_n: int = 32,
+):
+    input_m = (src_tile_row + grid_y) * tile_m
+    input_n = (src_tile_col + grid_x) * tile_n
+    output_m = (dst_tile_row + grid_y) * tile_m
+    output_n = (dst_tile_col + grid_x) * tile_n
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((input_m, input_n), "bfloat16"),
+        B: T.Tensor((output_m, output_n), "bfloat16"),
+    ):
+        with T.Kernel(grid_x, grid_y) as (bx, by):
+            resident_tile = T.alloc_shared((tile_m, tile_n), "bfloat16")
+            T.annotate_memory_config(
+                {
+                    A: T.interleaved_dram(),
+                    resident_tile: T.sharded_l1(
+                        strategy="block",
+                        grid=T.CoreGrid(x=8, y=8),
+                        shard_shape=(tile_m, tile_n),
+                        orientation="row_major",
+                        allow_reshard=True,
+                    ),
+                    B: T.interleaved_dram(),
+                }
+            )
+            T.copy(
+                A[(src_tile_row + by) * tile_m, (src_tile_col + bx) * tile_n],
+                resident_tile,
+            )
+            T.copy(
+                resident_tile,
+                B[(dst_tile_row + by) * tile_m, (dst_tile_col + bx) * tile_n],
+            )
+
+    return main
+
+
+def _t3_memory_configs_by_subject(executable_spec):
+    return {
+        str(plan["subject"]): plan
+        for plan in executable_spec["tensor_memory_config_plans"]
+    }
+
+
+def _t3_reshard_plans_by_edge(executable_spec):
+    return {
+        (str(plan["source_value"]), str(plan["target_value"])): plan
+        for plan in executable_spec["reshard_plans"]
+    }
+
+
+def _t3_distributions_by_buffer(executable_spec):
+    return {
+        str(plan["buffer"]): plan
+        for plan in executable_spec["buffer_distribution_plans"]
+    }
+
+
+def _assert_t3_interleaved_to_sharded_contract(
+    executable_spec,
+    *,
+    source: str,
+    target: str,
+    source_region_shape=(32, 32),
+):
+    memory_configs = _t3_memory_configs_by_subject(executable_spec)
+    reshard_plans = _t3_reshard_plans_by_edge(executable_spec)
+    distributions = _t3_distributions_by_buffer(executable_spec)
+
+    assert str(memory_configs[source]["memory_layout"]) == "INTERLEAVED"
+    assert str(memory_configs[source]["buffer_type"]) == "DRAM"
+    assert str(memory_configs[target]["memory_layout"]) == "BLOCK_SHARDED"
+    assert str(memory_configs[target]["buffer_type"]) == "L1"
+    assert str(memory_configs[target]["source_buffer"]) == source
+
+    sharded_distribution = distributions[target]
+    assert str(sharded_distribution["distribution_kind"]) == "sharded"
+    assert str(sharded_distribution["memory_space"]) == "L1"
+    assert str(sharded_distribution["sharding_strategy"]) == "block"
+    assert str(sharded_distribution["shard_orientation"]) == "row_major"
+    assert str(sharded_distribution["source_buffer"]) == source
+    assert str(sharded_distribution["source_region_kind"]) == "per_work_tile"
+    assert tuple(int(dim) for dim in sharded_distribution["source_region_shape"]) == (
+        source_region_shape
+    )
+    assert str(sharded_distribution["logical_index_mapping"]) == "work_packet_row_major"
+    assert str(sharded_distribution["core_local_address_mapping"]) == "l1_shard_linear"
+
+    reshard = reshard_plans[(source, target)]
+    assert str(reshard["source_memory_config_plan"]) == str(memory_configs[source]["name"])
+    assert str(reshard["target_memory_config_plan"]) == str(memory_configs[target]["name"])
+    assert str(reshard["conversion_kind"]) == "interleaved_to_sharded"
+    assert str(reshard["source_region_kind"]) == "per_work_tile"
+    assert tuple(int(dim) for dim in reshard["source_region_shape"]) == source_region_shape
+    assert str(reshard["materialization_protocol"]) == "staged_copy"
+    assert str(reshard["scheduling_kind"]) == "runtime"
+    assert str(reshard["inserted_by"]) == "planner"
+    assert str(reshard["admission_status"]) == "admitted"
+    assert str(reshard["unsupported_reason"]) == ""
+    assert not executable_spec.get("direct_runtime_unsupported_reasons", [])
 
 
 def _inject_worker_semaphore_handshake(remote_core_x, remote_core_y):
@@ -450,6 +664,224 @@ def test_blackhole_module_direct_call_grid_indexed_copy_multicore_launch():
     )
 
 
+@pytest.mark.parametrize(
+    "grid_x,grid_y",
+    [
+        (32, 32),
+        (128, 64),
+        (64, 128),
+        (128, 128),
+    ],
+)
+def test_blackhole_t3_large_shape_explicit_reshard_direct_runtime(grid_x, grid_y):
+    can_run, msg = check_blackhole_direct_execution_requirements()
+    if not can_run:
+        pytest.skip(f"Blackhole requirements not met: {msg}")
+
+    tile_m, tile_n = 32, 32
+    m, n = grid_y * tile_m, grid_x * tile_n
+    a_torch = _bf16_matrix(m, n)
+    b_output = torch.zeros_like(a_torch)
+
+    target = Target("blackhole")
+    kernel = _explicit_user_reshard_copy_kernel(grid_x=grid_x, grid_y=grid_y)
+    with target:
+        artifact = lower(kernel, target=target)
+
+    device_main = _require_device_main(artifact)
+    assert int(extract_blackhole_work_per_core(device_main)) > 1
+    executable_spec = _extract_blackhole_executable_spec(artifact)
+    _assert_t3_interleaved_to_sharded_contract(
+        executable_spec,
+        source="A",
+        target="resident_tile",
+        source_region_shape=(tile_m, tile_n),
+    )
+
+    artifact.codegen_mod["main"](a_torch, b_output)
+    assert_tensors_close_or_dump(
+        b_output,
+        a_torch,
+        atol=0.0,
+        rtol=0.0,
+        failure_message=f"T3 large-shape reshard copy mismatch for {m}x{n}",
+    )
+
+
+def test_blackhole_t3_explicit_user_placement_reshard_direct_runtime():
+    can_run, msg = check_blackhole_direct_execution_requirements()
+    if not can_run:
+        pytest.skip(f"Blackhole requirements not met: {msg}")
+
+    grid_x, grid_y = 5, 4
+    m, n = grid_y * 32, grid_x * 32
+    a_torch = _bf16_matrix(m, n)
+    b_output = torch.zeros_like(a_torch)
+
+    target = Target("blackhole")
+    kernel = _explicit_user_reshard_copy_kernel(grid_x=grid_x, grid_y=grid_y)
+    with target:
+        artifact = lower(kernel, target=target)
+
+    executable_spec = _extract_blackhole_executable_spec(artifact)
+    assert "A_shared" not in _t3_memory_configs_by_subject(executable_spec)
+    _assert_t3_interleaved_to_sharded_contract(
+        executable_spec,
+        source="A",
+        target="resident_tile",
+    )
+
+    artifact.codegen_mod["main"](a_torch, b_output)
+    assert_tensors_close_or_dump(
+        b_output,
+        a_torch,
+        atol=0.0,
+        rtol=0.0,
+        failure_message="T3 explicit user-placement reshard copy mismatch",
+    )
+
+
+def test_blackhole_t3_multiple_projected_reshards_direct_runtime():
+    can_run, msg = check_blackhole_direct_execution_requirements()
+    if not can_run:
+        pytest.skip(f"Blackhole requirements not met: {msg}")
+
+    grid_x, grid_y = 4, 3
+    m, n = grid_y * 32, grid_x * 32
+    a_torch = _bf16_matrix(m, n)
+    c_torch = (_bf16_matrix(m, n).float() * -0.5).to(torch.bfloat16)
+    b_output = torch.zeros_like(a_torch)
+    d_output = torch.zeros_like(c_torch)
+
+    target = Target("blackhole")
+    kernel = _explicit_multi_reshard_copy_kernel(grid_x=grid_x, grid_y=grid_y)
+    with target:
+        artifact = lower(kernel, target=target)
+
+    executable_spec = _extract_blackhole_executable_spec(artifact)
+    _assert_t3_interleaved_to_sharded_contract(
+        executable_spec,
+        source="A",
+        target="resident_a",
+    )
+    _assert_t3_interleaved_to_sharded_contract(
+        executable_spec,
+        source="C",
+        target="resident_c",
+    )
+    assert len(_t3_reshard_plans_by_edge(executable_spec)) == 2
+
+    artifact.codegen_mod["main"](a_torch, c_torch, b_output, d_output)
+    assert_tensors_close_or_dump(
+        b_output,
+        a_torch,
+        atol=0.0,
+        rtol=0.0,
+        failure_message="T3 multi-reshard A output mismatch",
+    )
+    assert_tensors_close_or_dump(
+        d_output,
+        c_torch,
+        atol=0.0,
+        rtol=0.0,
+        failure_message="T3 multi-reshard C output mismatch",
+    )
+
+
+def test_blackhole_t3_large_offset_subregion_reshard_direct_runtime():
+    can_run, msg = check_blackhole_direct_execution_requirements()
+    if not can_run:
+        pytest.skip(f"Blackhole requirements not met: {msg}")
+
+    grid_x, grid_y = 64, 64
+    src_tile_row, src_tile_col = 64, 64
+    dst_tile_row, dst_tile_col = 32, 16
+    tile_m, tile_n = 32, 32
+    input_m = (src_tile_row + grid_y) * tile_m
+    input_n = (src_tile_col + grid_x) * tile_n
+    output_m = (dst_tile_row + grid_y) * tile_m
+    output_n = (dst_tile_col + grid_x) * tile_n
+
+    a_torch = _bf16_matrix(input_m, input_n)
+    b_output = torch.zeros((output_m, output_n), dtype=torch.bfloat16)
+    b_ref = torch.zeros_like(b_output)
+    src_row = src_tile_row * tile_m
+    src_col = src_tile_col * tile_n
+    dst_row = dst_tile_row * tile_m
+    dst_col = dst_tile_col * tile_n
+    region_m = grid_y * tile_m
+    region_n = grid_x * tile_n
+    b_ref[dst_row : dst_row + region_m, dst_col : dst_col + region_n] = (
+        a_torch[src_row : src_row + region_m, src_col : src_col + region_n]
+    )
+
+    target = Target("blackhole")
+    kernel = _offset_grid_indexed_reshard_copy_kernel(
+        grid_x=grid_x,
+        grid_y=grid_y,
+        src_tile_row=src_tile_row,
+        src_tile_col=src_tile_col,
+        dst_tile_row=dst_tile_row,
+        dst_tile_col=dst_tile_col,
+    )
+    with target:
+        artifact = lower(kernel, target=target)
+
+    device_main = _require_device_main(artifact)
+    assert int(extract_blackhole_work_per_core(device_main)) > 1
+    executable_spec = _extract_blackhole_executable_spec(artifact)
+    _assert_t3_interleaved_to_sharded_contract(
+        executable_spec,
+        source="A",
+        target="resident_tile",
+    )
+
+    artifact.codegen_mod["main"](a_torch, b_output)
+    assert_tensors_close_or_dump(
+        b_output,
+        b_ref,
+        atol=0.0,
+        rtol=0.0,
+        failure_message="T3 large offset/subregion reshard copy mismatch",
+    )
+
+
+def test_blackhole_t3_serialized_module_preserves_reshard_runtime_contract():
+    can_run, msg = check_blackhole_direct_execution_requirements()
+    if not can_run:
+        pytest.skip(f"Blackhole requirements not met: {msg}")
+
+    grid_x, grid_y = 3, 2
+    m, n = grid_y * 32, grid_x * 32
+    a_torch = _bf16_matrix(m, n)
+    b_output = torch.zeros_like(a_torch)
+
+    target = Target("blackhole")
+    kernel = _explicit_user_reshard_copy_kernel(grid_x=grid_x, grid_y=grid_y)
+    with target:
+        artifact = lower(kernel, target=target)
+
+    serialized = artifact.codegen_mod.save_to_bytes()
+    assert len(serialized) > 0
+    loader = tvm.get_global_func("ffi.Module.load_from_bytes.blackhole")
+    loaded = loader(serialized)
+    executable_spec = loaded.get_function_metadata("main")
+    _assert_t3_interleaved_to_sharded_contract(
+        executable_spec,
+        source="A",
+        target="resident_tile",
+    )
+
+    loaded["main"](a_torch, b_output)
+    assert_tensors_close_or_dump(
+        b_output,
+        a_torch,
+        atol=0.0,
+        rtol=0.0,
+        failure_message="T3 serialized module reshard copy mismatch",
+    )
+
+
 def test_blackhole_module_direct_call_page_indexed_copy_consumes_address_contract():
     can_run, msg = check_blackhole_direct_execution_requirements()
     if not can_run:
@@ -690,6 +1122,137 @@ def test_blackhole_build_rejects_incomplete_executable_buffer_distribution_contr
     ):
         _rebuild_direct_runtime_module_with_executable_mutator(
             artifact, drop_sharded_source_buffer
+        )
+
+
+def test_blackhole_t3_direct_runtime_rejects_missing_projected_reshard_record():
+    can_run, msg = check_blackhole_direct_execution_requirements()
+    if not can_run:
+        pytest.skip(f"Blackhole requirements not met: {msg}")
+
+    target = Target("blackhole")
+    kernel = _explicit_user_reshard_copy_kernel(grid_x=2, grid_y=2)
+    with target:
+        artifact = lower(kernel, target=target)
+
+    def drop_reshard_plans(executable):
+        executable["reshard_plans"] = []
+        return executable
+
+    mutated_mod = _rebuild_direct_runtime_module_with_executable_mutator(
+        artifact, drop_reshard_plans
+    )
+
+    a_torch = _bf16_matrix(64, 64)
+    b_output = torch.zeros_like(a_torch)
+    with pytest.raises(
+        tvm.error.InternalError,
+        match="missing projected reshard conversion",
+    ):
+        mutated_mod["main"](a_torch, b_output)
+
+
+def test_blackhole_t3_direct_runtime_rejects_unsupported_projected_reshard():
+    can_run, msg = check_blackhole_direct_execution_requirements()
+    if not can_run:
+        pytest.skip(f"Blackhole requirements not met: {msg}")
+
+    target = Target("blackhole")
+    kernel = _explicit_user_reshard_copy_kernel(grid_x=2, grid_y=2)
+    with target:
+        artifact = lower(kernel, target=target)
+
+    def mutate(tt_program):
+        reshard_plans = list(tt_program.reshard_plans)
+        assert len(reshard_plans) == 1
+        reshard_plans[0] = rebuild_tt_reshard_plan(
+            reshard_plans[0],
+            conversion_kind="reshard",
+            admission_status="unsupported",
+            unsupported_reason="forced unsupported reshard for runtime execution gate",
+        )
+        return rebuild_tt_program(tt_program, reshard_plans=reshard_plans)
+
+    mutated_mod = _rebuild_direct_runtime_module_with_tt_program(
+        artifact, tt_program_mutator=mutate
+    )
+
+    a_torch = _bf16_matrix(64, 64)
+    b_output = torch.zeros_like(a_torch)
+    with pytest.raises(
+        tvm.error.InternalError,
+        match="forced unsupported reshard for runtime execution gate",
+    ):
+        mutated_mod["main"](a_torch, b_output)
+
+
+def test_blackhole_t3_build_rejects_reshard_source_region_mismatch():
+    target = Target("blackhole")
+    kernel = _explicit_user_reshard_copy_kernel(grid_x=2, grid_y=2)
+    with target:
+        artifact = lower(kernel, target=target)
+
+    def mutate_reshard_source_region(executable):
+        plans = []
+        for item in executable["reshard_plans"]:
+            plan = {str(key): value for key, value in item.items()}
+            if str(plan.get("target_value", "")) == "resident_tile":
+                plan["source_region_shape"] = [16, 32]
+            plans.append(plan)
+        executable["reshard_plans"] = plans
+        return executable
+
+    with pytest.raises(
+        tvm.error.InternalError,
+        match="source_region_shape.*buffer distribution",
+    ):
+        _rebuild_direct_runtime_module_with_executable_mutator(
+            artifact, mutate_reshard_source_region
+        )
+
+
+def test_blackhole_t3_build_rejects_tensor_memory_config_distribution_mismatch():
+    target = Target("blackhole")
+    kernel = _explicit_user_reshard_copy_kernel(grid_x=2, grid_y=2)
+    with target:
+        artifact = lower(kernel, target=target)
+
+    def mutate_tensor_memory_config(executable):
+        plans = []
+        for item in executable["tensor_memory_config_plans"]:
+            plan = {str(key): value for key, value in item.items()}
+            if str(plan.get("subject", "")) == "resident_tile":
+                plan["memory_layout"] = "HEIGHT_SHARDED"
+                plan["shard_distribution_strategy"] = "height"
+            plans.append(plan)
+        executable["tensor_memory_config_plans"] = plans
+        return executable
+
+    with pytest.raises(
+        tvm.error.InternalError,
+        match="tensor memory config.*buffer distribution",
+    ):
+        _rebuild_direct_runtime_module_with_executable_mutator(
+            artifact, mutate_tensor_memory_config
+        )
+
+
+def test_blackhole_t3_build_rejects_missing_tensor_memory_config_records():
+    target = Target("blackhole")
+    kernel = _explicit_user_reshard_copy_kernel(grid_x=2, grid_y=2)
+    with target:
+        artifact = lower(kernel, target=target)
+
+    def drop_tensor_memory_configs(executable):
+        executable["tensor_memory_config_plans"] = []
+        return executable
+
+    with pytest.raises(
+        tvm.error.InternalError,
+        match="tensor memory config|source_memory_config_plan_index",
+    ):
+        _rebuild_direct_runtime_module_with_executable_mutator(
+            artifact, drop_tensor_memory_configs
         )
 
 

@@ -2103,3 +2103,16 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   produced it; seeded and final compute plans can share numeric node ids.
   Tests and validators should not treat that id as a cross-stage global
   identity unless a separate DAG identity/version is represented explicitly.
+- 2026-05-02 T3 runtime hardening pattern:
+  direct-runtime sharding/reshard tests should include oversized logical grids
+  with `work_per_core > 1`, wide/tall/square shapes, explicit user placement
+  with non-template resident L1 names, multiple independent reshard records,
+  non-zero tile offsets, executable-record mutation rejects, and module
+  serialization reload.  A passing projection test is not enough; the
+  `BlackholeModule` execution path must consume the projected
+  `TTTensorMemoryConfigPlan` / `TTReshardPlan` / `TTBufferDistributionPlan`
+  records.
+  When tightening executable validation, keep the address-ABI boundary exact:
+  interleaved and sharded runtime-visible distributions require page sizes,
+  but replicated local L1 intermediates can remain device-local records whose
+  storage is owned by CB/materialization plans.

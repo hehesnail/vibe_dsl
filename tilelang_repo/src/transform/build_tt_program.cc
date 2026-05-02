@@ -225,6 +225,7 @@ CollectSourceBufferByMaterializedTarget(const tir::PrimFunc &func,
   std::unordered_set<std::string> ambiguous_targets;
   std::unordered_map<const tir::VarNode *, std::string> buffer_by_data;
   std::unordered_map<int64_t, std::vector<std::string>> cb_targets;
+  std::unordered_map<int64_t, size_t> cb_next_target_index;
 
   auto record_buffer_data = [&](const tir::Buffer &buffer) {
     const tir::VarNode *data = BufferDataIdentity(buffer);
@@ -294,6 +295,14 @@ CollectSourceBufferByMaterializedTarget(const tir::PrimFunc &func,
                                         ? source_it->second
                                         : std::string(source_var->name_hint);
     if (source_name.empty()) {
+      return;
+    }
+    if (targets_it->second.size() > 1) {
+      size_t &next_target_index = cb_next_target_index[cb_id->value];
+      if (next_target_index < targets_it->second.size()) {
+        bind_source(targets_it->second[next_target_index], source_name);
+        ++next_target_index;
+      }
       return;
     }
     for (const std::string &target : targets_it->second) {

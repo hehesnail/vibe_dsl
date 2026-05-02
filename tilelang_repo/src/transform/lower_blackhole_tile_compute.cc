@@ -1065,7 +1065,7 @@ Stmt PlanTTKernelABI::GenerateFillTileSequence(const Buffer& dst, const PrimExpr
   if (const VarNode* data = BufferDataIdentity(dst)) {
     last_fragment_fill_value_by_data_[data] = value;
   }
-  RecordExactComputeOpPlan("unary", "fill_tile",
+  RecordExactComputeOpPlan("fill", "fill_tile",
                            {{"output", dst, "identity"}});
   return MaybeWrapComputeSegment(MakeBlackholeCall(
       tir::builtin::blackhole_fill_fragment(), {dst->data, num_elements, value}));

@@ -74,7 +74,6 @@ using tir::builtin::blackhole_tile_regs_release;
 using tir::builtin::blackhole_tile_regs_wait;
 using tir::builtin::blackhole_tilize_cast_fragment_slice;
 using tir::builtin::blackhole_tilize_local_fragment_slice;
-using tir::builtin::blackhole_unary_op_init_common;
 using tvm::Bool;
 using tvm::DataType;
 using tvm::Integer;
@@ -445,8 +444,6 @@ Stmt PlanTTKernelABI::GenerateFragmentCastSequence(const FragmentCastMatch& matc
       stmts.push_back(MakeBlackholeCall(blackhole_cb_reserve_back(),
                                         {IntImm32(cb_id), IntImm32(num_pages)}));
       MarkExactCBValuesOverlap({live_source.cb_id, cb_id});
-      stmts.push_back(MakeBlackholeCall(blackhole_unary_op_init_common(),
-                                        {IntImm32(live_source.cb_id), IntImm32(cb_id)}));
       for (int tile = 0; tile < num_pages; ++tile) {
         stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_acquire(), {}));
         stmts.push_back(
@@ -665,8 +662,6 @@ Stmt PlanTTKernelABI::GenerateLocalToCBSliceLoopSequence(const ForNode* op,
     stmts.push_back(MakeBlackholeCall(blackhole_cb_reserve_back(),
                                       {IntImm32(cb_id), IntImm32(num_pages)}));
     MarkExactCBValuesOverlap({live_source.cb_id, cb_id});
-    stmts.push_back(MakeBlackholeCall(blackhole_unary_op_init_common(),
-                                      {IntImm32(live_source.cb_id), IntImm32(cb_id)}));
     for (int tile = 0; tile < num_pages; ++tile) {
       stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_acquire(), {}));
       stmts.push_back(

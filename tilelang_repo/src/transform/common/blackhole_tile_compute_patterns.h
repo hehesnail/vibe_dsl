@@ -20,6 +20,7 @@ namespace tvm {
 namespace tl {
 
 enum class BlackholeTileComputeResultKind {
+  kFill,
   kUnary,
   kBinary,
   kCopy,

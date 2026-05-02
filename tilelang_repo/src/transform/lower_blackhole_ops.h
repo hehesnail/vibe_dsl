@@ -737,6 +737,8 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   tvm::tir::Buffer copy_output_buffer_;
   std::string copy_input_buffer_name_;
   std::string copy_output_buffer_name_;
+  std::vector<std::string> copy_input_buffer_names_;
+  std::vector<std::string> copy_output_buffer_names_;
   std::unordered_map<std::string, std::string> host_buffer_by_compute_operand_buffer_;
   std::unordered_map<std::string, std::string> direct_copy_source_by_buffer_identity_;
   std::unordered_map<std::string, tvm::tir::Buffer> buffer_by_identity_;
@@ -800,6 +802,7 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   std::string current_segment_kind_;
   std::unordered_map<std::string, int> read_accessor_slots_;
   std::unordered_map<std::string, int> write_accessor_slots_;
+  std::unordered_map<std::string, int> fused_dataflow_accessor_slots_;
   std::unordered_map<std::string, int> cb_consumed_compute_input_pages_by_buffer_identity_;
   std::unordered_map<std::string, int> cb_consumed_compute_input_use_count_by_buffer_identity_;
   std::unordered_map<std::string, BlackholeBufferFlowFact> buffer_flow_facts_;

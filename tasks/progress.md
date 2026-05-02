@@ -34,6 +34,13 @@ External `sharded_accessor_cta` / `page_indexed_accessor_cta` runtime
 admission is now the active T4 task and must consume the projected
 placement/conversion records instead of inferring sharding or page metadata.
 
+The T3 hardening gate for the admitted `interleaved_to_sharded`
+staged-copy conversion now covers large and oversubscribed copy shapes,
+explicit user placement of the resident L1 view, multiple independent
+reshard records, non-zero tile offsets, corrupted executable placement /
+reshard records, and serialization preservation. It does not expand T3 into
+external accessors, sharded GEMM, or production DRAM-sharded weights.
+
 ## Completed Baseline: T1 Buffer Address ABI
 
 T1 is complete for the current admitted direct-runtime surface.
@@ -119,6 +126,19 @@ T4 is complete only when:
 | Direct runtime | The admitted path runs through `BlackholeModule`, not an external runner. |
 | TT-Sim correctness | Runtime correctness uses the repository TT-Sim setup and bf16 baseline. |
 | Unsupported reason | Unsupported forms fail closed with typed diagnostics before source/runtime guessing. |
+
+## Recent Verification
+
+2026-05-02 T3 runtime hardening and adjacent Blackhole regression:
+
+- `cmake --build build -- -j32` passed.
+- T3 hardening selector in
+  `testing/python/target/blackhole/test_blackhole_copy_runtime.py`:
+  `13 passed`.
+- `pytest -q -vv testing/python/target/blackhole --tb=short`:
+  `253 passed, 9 skipped, 1 xfailed`.
+- `pytest -q -vv testing/python/transform/test_blackhole_spatial_ir.py --tb=short`:
+  `101 passed`.
 
 ## Task Queue
 

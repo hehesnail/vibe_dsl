@@ -979,10 +979,21 @@ void PlanTTKernelABI::RecordStagedCopyBufferBinding(const BufferStoreNode* op,
   if (!load) {
     return;
   }
+  auto append_unique = [](std::vector<std::string>* buffers,
+                          const std::string& buffer_name) {
+    if (buffer_name.empty()) {
+      return;
+    }
+    if (std::find(buffers->begin(), buffers->end(), buffer_name) ==
+        buffers->end()) {
+      buffers->push_back(buffer_name);
+    }
+  };
   needs_copy_runtime_args_ = true;
   if (direction == CopyDirection::kDramToCB) {
     copy_input_buffer_ = load->buffer;
     copy_input_buffer_name_ = BufferIdentityName(load->buffer);
+    append_unique(&copy_input_buffer_names_, copy_input_buffer_name_);
     copy_input_shape_ = GetEncodedCurrentBufferShape(load->buffer);
     copy_intermediate_shape_ = GetEncodedCurrentBufferShape(op->buffer);
     host_buffer_by_compute_operand_buffer_[BufferIdentityName(op->buffer)] =
@@ -990,6 +1001,7 @@ void PlanTTKernelABI::RecordStagedCopyBufferBinding(const BufferStoreNode* op,
   } else if (direction == CopyDirection::kCBToDram) {
     copy_output_buffer_ = op->buffer;
     copy_output_buffer_name_ = BufferIdentityName(op->buffer);
+    append_unique(&copy_output_buffer_names_, copy_output_buffer_name_);
     copy_output_shape_ = GetEncodedCurrentBufferShape(op->buffer);
     copy_intermediate_shape_ = GetEncodedCurrentBufferShape(load->buffer);
     host_buffer_by_compute_operand_buffer_[BufferIdentityName(load->buffer)] =
@@ -1000,6 +1012,16 @@ void PlanTTKernelABI::RecordStagedCopyBufferBinding(const BufferStoreNode* op,
 void PlanTTKernelABI::RecordDramToDramCopy(const BufferStoreNode* op) {
   const auto* load = op->value.as<BufferLoadNode>();
   if (!load) return;
+  auto append_unique = [](std::vector<std::string>* buffers,
+                          const std::string& buffer_name) {
+    if (buffer_name.empty()) {
+      return;
+    }
+    if (std::find(buffers->begin(), buffers->end(), buffer_name) ==
+        buffers->end()) {
+      buffers->push_back(buffer_name);
+    }
+  };
 
   auto ensure_requirement = [&](const Buffer& buffer, CBType type) {
     auto it = buffer_to_req_.find(buffer);
@@ -1019,6 +1041,8 @@ void PlanTTKernelABI::RecordDramToDramCopy(const BufferStoreNode* op) {
   copy_output_buffer_ = op->buffer;
   copy_input_buffer_name_ = BufferIdentityName(load->buffer);
   copy_output_buffer_name_ = BufferIdentityName(op->buffer);
+  append_unique(&copy_input_buffer_names_, copy_input_buffer_name_);
+  append_unique(&copy_output_buffer_names_, copy_output_buffer_name_);
   copy_input_shape_ = GetEncodedCurrentBufferShape(load->buffer);
   copy_output_shape_ = GetEncodedCurrentBufferShape(op->buffer);
 }

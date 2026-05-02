@@ -2914,7 +2914,9 @@ static void ValidateExecutableSpecBufferDistributionPlans(const std::string& fun
     ICHECK(!plan.memory_space.empty())
         << "Blackhole executable buffer distribution for " << plan.buffer
         << " requires memory_space";
-    ICHECK_GT(plan.page_size_bytes, 0U)
+    const bool requires_page_size_bytes =
+        plan.distribution_kind == "interleaved" || plan.distribution_kind == "sharded";
+    ICHECK(!requires_page_size_bytes || plan.page_size_bytes > 0U)
         << "Blackhole executable buffer distribution for " << plan.buffer
         << " requires page_size_bytes";
     ICHECK(!plan.host_visibility.empty())
@@ -2996,6 +2998,31 @@ static bool IsShardedTensorMemoryLayout(const std::string& layout) {
          layout == "BLOCK_SHARDED" || layout == "ND_SHARDED";
 }
 
+static std::string ExpectedTensorMemoryLayoutFromDistribution(
+    const BufferDistributionSpec& distribution) {
+  if (distribution.distribution_kind == "interleaved" ||
+      distribution.distribution_kind == "replicated") {
+    return "INTERLEAVED";
+  }
+  if (distribution.distribution_kind == "sharded") {
+    if (distribution.sharding_strategy == "height") {
+      return "HEIGHT_SHARDED";
+    }
+    if (distribution.sharding_strategy == "width") {
+      return "WIDTH_SHARDED";
+    }
+    if (distribution.sharding_strategy == "block") {
+      return "BLOCK_SHARDED";
+    }
+  }
+  return "";
+}
+
+static std::string ExpectedTensorBufferTypeFromDistribution(
+    const BufferDistributionSpec& distribution) {
+  return LowerAscii(distribution.memory_space) == "dram" ? "DRAM" : "L1";
+}
+
 static void ValidateExecutableSpecPlacementRecords(const std::string& func_name,
                                                    const ExecutableSpec& spec) {
   std::unordered_map<std::string, const TensorMemoryConfigSpec*> memory_by_name;
@@ -3040,6 +3067,51 @@ static void ValidateExecutableSpecPlacementRecords(const std::string& func_name,
           << "Blackhole executable sharded tensor memory config " << plan.name
           << " requires sharding strategy";
     }
+  }
+
+  for (const auto& plan : spec.tensor_memory_config_plans) {
+    ICHECK_GE(plan.buffer_distribution_plan_index, 0)
+        << "Blackhole executable tensor memory config " << plan.name
+        << " requires buffer_distribution_plan_index";
+    ICHECK_LT(plan.buffer_distribution_plan_index,
+              static_cast<int64_t>(spec.buffer_distribution_plans.size()))
+        << "Blackhole executable tensor memory config " << plan.name
+        << " buffer_distribution_plan_index out of bounds";
+    const auto& distribution =
+        spec.buffer_distribution_plans[static_cast<size_t>(
+            plan.buffer_distribution_plan_index)];
+    ICHECK_EQ(plan.buffer_distribution_plan, distribution.name)
+        << "Blackhole executable tensor memory config " << plan.name
+        << " buffer_distribution_plan must match indexed buffer distribution";
+    ICHECK_EQ(plan.subject, distribution.buffer)
+        << "Blackhole executable tensor memory config " << plan.name
+        << " subject must match buffer distribution buffer";
+    ICHECK_EQ(plan.memory_layout,
+              ExpectedTensorMemoryLayoutFromDistribution(distribution))
+        << "Blackhole executable tensor memory config " << plan.name
+        << " memory_layout must match buffer distribution";
+    ICHECK_EQ(plan.buffer_type,
+              ExpectedTensorBufferTypeFromDistribution(distribution))
+        << "Blackhole executable tensor memory config " << plan.name
+        << " buffer_type must match buffer distribution";
+    if (IsShardedTensorMemoryLayout(plan.memory_layout)) {
+      ICHECK(plan.shard_grid_shape == distribution.shard_grid_shape)
+          << "Blackhole executable tensor memory config " << plan.name
+          << " shard_grid_shape must match buffer distribution";
+      ICHECK(plan.shard_shape == distribution.shard_shape)
+          << "Blackhole executable tensor memory config " << plan.name
+          << " shard_shape must match buffer distribution";
+      ICHECK_EQ(plan.shard_orientation, distribution.shard_orientation)
+          << "Blackhole executable tensor memory config " << plan.name
+          << " shard_orientation must match buffer distribution";
+      ICHECK_EQ(plan.shard_distribution_strategy,
+                distribution.sharding_strategy)
+          << "Blackhole executable tensor memory config " << plan.name
+          << " sharding strategy must match buffer distribution";
+    }
+    ICHECK_EQ(plan.source_buffer, distribution.source_buffer)
+        << "Blackhole executable tensor memory config " << plan.name
+        << " source_buffer must match buffer distribution";
   }
 
   for (const auto& plan : spec.reshard_plans) {
@@ -3091,6 +3163,27 @@ static void ValidateExecutableSpecPlacementRecords(const std::string& func_name,
     ICHECK_EQ(plan.target_value, target_config->subject)
         << "Blackhole executable reshard plan " << plan.name
         << " target_value must match target config subject";
+    ICHECK_GE(target_config->buffer_distribution_plan_index, 0)
+        << "Blackhole executable reshard plan " << plan.name
+        << " target config requires buffer distribution index";
+    ICHECK_LT(target_config->buffer_distribution_plan_index,
+              static_cast<int64_t>(spec.buffer_distribution_plans.size()))
+        << "Blackhole executable reshard plan " << plan.name
+        << " target config buffer distribution index out of bounds";
+    const auto& target_distribution =
+        spec.buffer_distribution_plans[static_cast<size_t>(
+            target_config->buffer_distribution_plan_index)];
+    if (HasShardedSourceBinding(target_distribution)) {
+      ICHECK_EQ(target_distribution.source_buffer, plan.source_value)
+          << "Blackhole executable reshard plan " << plan.name
+          << " source_value must match target buffer distribution source_buffer";
+      ICHECK_EQ(plan.source_region_kind, target_distribution.source_region_kind)
+          << "Blackhole executable reshard plan " << plan.name
+          << " source_region_kind must match target buffer distribution";
+      ICHECK(plan.source_region_shape == target_distribution.source_region_shape)
+          << "Blackhole executable reshard plan " << plan.name
+          << " source_region_shape must match target buffer distribution";
+    }
     ICHECK(plan.conversion_kind == "interleaved_to_sharded" ||
            plan.conversion_kind == "sharded_to_interleaved" ||
            plan.conversion_kind == "reshard" || plan.conversion_kind == "unsupported")
@@ -3128,6 +3221,13 @@ BlackholeModuleNode::BlackholeModuleNode(
 
 ffi::Optional<ffi::Function> BlackholeModuleNode::GetFunction(const ffi::String& name) {
   ObjectPtr<Object> sptr_to_self = ffi::GetObjectPtr<Object>(this);
+
+  if (name == "save_to_bytes") {
+    return ffi::Function([sptr_to_self, this](ffi::PackedArgs args, ffi::Any* rv) {
+      ICHECK_EQ(args.size(), 0) << "BlackholeModule save_to_bytes expects no args";
+      *rv = this->SaveToBytes();
+    });
+  }
 
   auto it = fmap_.find(name);
   if (it == fmap_.end()) {
