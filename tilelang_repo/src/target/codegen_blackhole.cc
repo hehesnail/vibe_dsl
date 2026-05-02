@@ -87,6 +87,44 @@ const tvm::tir::VarNode* AsHandleVar(const tvm::PrimExpr& expr) {
   return nullptr;
 }
 
+bool StmtUsesVar(const tvm::tir::Stmt& stmt, const tvm::tir::VarNode* target) {
+  class Visitor final : public tvm::tir::StmtExprVisitor {
+   public:
+    explicit Visitor(const tvm::tir::VarNode* target) : target_(target) {}
+
+    bool Check(const tvm::tir::Stmt& stmt) {
+      VisitStmt(stmt);
+      return found_;
+    }
+
+   private:
+    void VisitStmt(const tvm::tir::Stmt& stmt) final {
+      if (found_) {
+        return;
+      }
+      tvm::tir::StmtExprVisitor::VisitStmt(stmt);
+    }
+
+    void VisitExpr(const tvm::PrimExpr& expr) final {
+      if (found_) {
+        return;
+      }
+      tvm::tir::StmtExprVisitor::VisitExpr(expr);
+    }
+
+    void VisitExpr_(const tvm::tir::VarNode* op) final {
+      if (op == target_) {
+        found_ = true;
+      }
+    }
+
+    const tvm::tir::VarNode* target_;
+    bool found_{false};
+  };
+
+  return target != nullptr && stmt.defined() && Visitor(target).Check(stmt);
+}
+
 std::vector<tvm::tir::Stmt> FlattenTopLevelSeq(const tvm::tir::Stmt& stmt) {
   if (const auto* seq = stmt.as<tvm::tir::SeqStmtNode>()) {
     return std::vector<tvm::tir::Stmt>(seq->seq.begin(), seq->seq.end());
@@ -158,8 +196,7 @@ bool ExtractThreadScopedCBStaging(const tvm::tir::Stmt& stmt,
   }
   tvm::tir::Stmt middle_stmt =
       middle.size() == 1 ? middle.front() : tvm::tir::SeqStmt::Flatten(middle);
-  const bool uses_thread_var = tir::UsesVar(
-      middle_stmt, [thread_var](const tvm::tir::VarNode* var) { return var == thread_var; });
+  const bool uses_thread_var = StmtUsesVar(middle_stmt, thread_var);
   if (!uses_thread_var) {
     return false;
   }
@@ -203,8 +240,7 @@ std::vector<ThreadEmissionPiece> BuildThreadEmissionPieces(const tvm::tir::Stmt&
       continue;
     }
 
-    const bool uses_thread_var = tir::UsesVar(
-        top_level_stmt, [thread_var](const tvm::tir::VarNode* var) { return var == thread_var; });
+    const bool uses_thread_var = StmtUsesVar(top_level_stmt, thread_var);
     add_piece(&pieces, top_level_stmt, uses_thread_var);
   }
   return pieces;

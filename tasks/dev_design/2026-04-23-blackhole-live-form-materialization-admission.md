@@ -108,6 +108,12 @@ Direct-runtime rejection must use typed, queryable reasons such as:
 - missing full-logical-tile proof
 - simulator capability boundary
 
+Current standalone row `reduce_tile` is schema/source-complete through the
+full-tile reduce CB to rank-1 writer path: the writer consumes the compute
+published CB, writes scalar pages with tiled-row L1 offsets, and owns one
+final barrier/pop. Its direct-runtime reject is therefore only the current
+TT-Sim `tensix_execute_pacr: count=1` simulator capability boundary.
+
 ## Forbidden Regression
 
 Do not reintroduce:

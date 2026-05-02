@@ -201,6 +201,7 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   struct RowReductionMatch {
     tvm::tir::Buffer src;
     tvm::tir::Buffer dst;
+    tvm::tir::Buffer live_form_dst;
     tvm::PrimExpr num_elements;
     tvm::PrimExpr row_width;
     std::string kind;
@@ -601,6 +602,8 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
 
   /*! \brief Detect and lower explicit preserved tile reductions. */
   bool MatchExplicitTileReduce(const tvm::tir::CallNode* op, RowReductionMatch* match) const;
+  tvm::tir::Buffer ResolveRowReductionLiveFormDestination(
+      const tvm::tir::Buffer& reduce_dst, int64_t reduce_dst_elements) const;
   bool MatchExplicitTileTypecast(const tvm::tir::CallNode* op,
                                  FragmentCastMatch* match) const;
   tvm::tir::Stmt LowerExplicitTileComputeCall(const tvm::tir::CallNode* op);

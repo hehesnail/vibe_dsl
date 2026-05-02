@@ -27,6 +27,7 @@
 #include "../op/utils.h"
 #include "common/blackhole_tile_compute_dag.h"
 #include "common/blackhole_utils.h"
+#include "runtime/thread_storage_scope.h"
 
 #include <tvm/tir/op.h>
 
@@ -297,8 +298,11 @@ bool PlanTTKernelABI::MatchExplicitTileReduce(const CallNode* op,
   const int64_t dst_elements =
       dst_shape.empty() ? GetLogicalBufferElementCount(dst)
                         : ComputeStaticElementCount(dst_shape);
+  const Buffer live_form_dst =
+      ResolveRowReductionLiveFormDestination(logical_dst, dst_elements);
   match->src = src;
   match->dst = dst;
+  match->live_form_dst = live_form_dst.defined() ? live_form_dst : logical_dst;
   match->num_elements = IntImm32(static_cast<int>(std::max<int64_t>(1, dst_elements)));
   match->row_width = IntImm32(static_cast<int>(std::max<int64_t>(1, src_shape[dim])));
   match->kind = kind;
@@ -306,6 +310,75 @@ bool PlanTTKernelABI::MatchExplicitTileReduce(const CallNode* op,
   match->clear = clear;
   match->accumulate_existing = !clear;
   return true;
+}
+
+Buffer PlanTTKernelABI::ResolveRowReductionLiveFormDestination(
+    const Buffer& reduce_dst, int64_t reduce_dst_elements) const {
+  if (!reduce_dst.defined() || reduce_dst_elements <= 0) {
+    return Buffer();
+  }
+
+  auto is_state_scope = [](const std::string& scope) {
+    if (scope == "local" || scope == "local.fragment") {
+      return true;
+    }
+    const auto parsed = runtime::StorageScope::Create(scope);
+    return parsed.rank == runtime::StorageRank::kBlackholeAccumulator;
+  };
+  auto is_dram_scope = [](const std::string& scope) {
+    return scope.empty() || scope == "global";
+  };
+  auto same_logical_shape = [&](const Buffer& candidate) {
+    const std::vector<int64_t> reduce_shape = GetLogicalBufferShape(reduce_dst);
+    const std::vector<int64_t> candidate_shape = GetLogicalBufferShape(candidate);
+    if (!reduce_shape.empty() && !candidate_shape.empty()) {
+      return reduce_shape == candidate_shape;
+    }
+    return GetLogicalBufferElementCount(candidate) == reduce_dst_elements;
+  };
+
+  const std::string reduce_dst_identity = BufferIdentityName(reduce_dst);
+  std::vector<Buffer> candidates;
+  std::unordered_set<std::string> seen_candidates;
+  for (const auto& [dram_identity, source_identity] : direct_copy_source_by_buffer_identity_) {
+    if (source_identity.empty()) {
+      continue;
+    }
+    auto source_it = buffer_by_identity_.find(source_identity);
+    if (source_it == buffer_by_identity_.end() || !source_it->second.defined()) {
+      continue;
+    }
+    auto dram_it = buffer_by_identity_.find(dram_identity);
+    if (dram_it != buffer_by_identity_.end() && dram_it->second.defined() &&
+        !is_dram_scope(GetStorageScope(dram_it->second))) {
+      continue;
+    }
+
+    const Buffer& candidate = source_it->second;
+    if (!is_state_scope(GetStorageScope(candidate)) || candidate->dtype != reduce_dst->dtype) {
+      continue;
+    }
+    if (GetLogicalBufferElementCount(candidate) != reduce_dst_elements ||
+        !same_logical_shape(candidate)) {
+      continue;
+    }
+
+    const std::string candidate_identity = BufferIdentityName(candidate);
+    if (candidate_identity.empty()) {
+      continue;
+    }
+    if (!reduce_dst_identity.empty() && candidate_identity == reduce_dst_identity) {
+      return candidate;
+    }
+    if (seen_candidates.insert(candidate_identity).second) {
+      candidates.push_back(candidate);
+    }
+  }
+
+  if (candidates.size() == 1U) {
+    return candidates.front();
+  }
+  return Buffer();
 }
 
 bool PlanTTKernelABI::MatchExplicitTileTypecast(const CallNode* op,
@@ -945,12 +1018,13 @@ Stmt PlanTTKernelABI::GenerateRowReductionSequence(const RowReductionMatch& matc
     }
     emit.Push(out.cb_id, out.num_tiles);
   }
-  RecordExactOutputLiveForm(match.dst, out);
+  const Buffer live_form_dst = match.live_form_dst.defined() ? match.live_form_dst : match.dst;
+  RecordExactOutputLiveForm(live_form_dst, out);
 
   Stmt body = SeqStmt::Flatten(stmts);
   body = tir::DeclBuffer(scaler_local, body);
   body = tir::Allocate(scaler_local->data, scaler_local->dtype, scaler_local->shape, Bool(1), body);
-  body = AttachExactOutputLiveFormMarker(match.dst, out, body);
+  body = AttachExactOutputLiveFormMarker(live_form_dst, out, body);
   return MaybeWrapComputeSegment(body);
 }
 

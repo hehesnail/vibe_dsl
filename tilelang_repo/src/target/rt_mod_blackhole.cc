@@ -1876,7 +1876,8 @@ class SegmentBodyExtractor final : public tir::StmtMutator {
     }
 
     if (!has_segment_anchors) {
-      if (retain_unmarked_stmts_) {
+      if (retain_unmarked_stmts_ ||
+          (has_ambiguous_blackhole_stmt && forced_segment_kind_ == RequestedSegmentKind())) {
         return tir::StmtMutator::VisitStmt_(op);
       }
       return tir::Evaluate(IntImm(DataType::Int(32), 0));
@@ -1900,7 +1901,12 @@ class SegmentBodyExtractor final : public tir::StmtMutator {
       if (!keep_segment_stmt) {
         continue;
       }
+      const DetectedKind previous_forced_segment_kind = forced_segment_kind_;
+      if (child_info[i].kind == RequestedSegmentKind()) {
+        forced_segment_kind_ = child_info[i].kind;
+      }
       Stmt rewritten = this->VisitStmt(op->seq[i]);
+      forced_segment_kind_ = previous_forced_segment_kind;
       if (!IsNoOp(rewritten)) {
         seq.push_back(rewritten);
       }
@@ -2103,6 +2109,7 @@ class SegmentBodyExtractor final : public tir::StmtMutator {
  private:
   std::string segment_kind_;
   bool retain_unmarked_stmts_{false};
+  DetectedKind forced_segment_kind_{DetectedKind::kNone};
 };
 
 static ffi::Array<ffi::Any> EncodeRuntimeArgs(const std::vector<KernelArgSpec>& runtime_args) {
@@ -2923,8 +2930,7 @@ static void EnforceStandalonePacrLeafSimulatorGate(ExecutableSpec* spec) {
     AppendDirectRuntimeUnsupportedReason(
         spec,
         "standalone reduce_tile leaf direct runtime is gated: TT-Sim reports "
-        "tensix_execute_pacr count=1 for row-reduce pack and vector-output "
-        "materialization is not yet admitted");
+        "UnimplementedFunctionality tensix_execute_pacr count=1 for row-reduce pack");
   }
   if (has_fill_typecast_publish && !has_gemm) {
     AppendDirectRuntimeUnsupportedReason(

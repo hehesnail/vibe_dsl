@@ -1886,31 +1886,39 @@
   - standalone compute-only `fill_tile` / `typecast_tile` publish 也会命中
     同类 TT-Sim pack/publish capability boundary 或输出不可靠。
 - **根因**:
-  - 这些 standalone leaf forms 已有结构/source/spec 投影，但当前 TT-Sim
-    对对应 compute-only PACR 路径未覆盖；这不是让后端恢复名字或
-    fallback source path 的理由。
-  - standalone row reduce 还有第二个结构边界：compute 生产并 publish
-    的是 full-tile reduce CB（如 `C_local_reduce_out_*`），writer 当前等
-    逻辑 rank-1 输出 CB（如 `C_local`）并按 2B page 写回。二者之间缺少
-    vector-output materialization / consumer binding，不能把 packed reduce
-    tile 直接当作 admitted rank-1 host output。
+  - 当前 TT-Sim 对 standalone row-reduce 的 compute-side PACR 路径未覆盖；
+    这不是让后端恢复名字或 fallback source path 的理由。
+  - 2026-05-02 修掉了先前混在同一个 gate 下的结构问题：
+    reduce exact live form 绑定到了临时 `local.fragment` 输出，writer 因而
+    等另一个 rank-1 logical buffer CB；writer 还会按每个 active lane
+    wait/pop，并且 segment extractor 会丢掉只含 barrier/pop 的 writer
+    内层 sync if。
   - 2026-05-02 的对照实验显示，把 `reduce_uninit` 放在 `pack_tile`
     前后两种序列都会在 TT-Sim direct runtime 命中
     `tensix_execute_pacr: count=1`；这个 fatal 不是单次调序引入的。
 - **修法**:
+  - reduce live form destination 从当前 IR 的 direct-copy source、logical
+    shape、dtype 和 DRAM writer use 唯一证明，绑定到 writer 实际读取的
+    logical local buffer；不靠 `C_local` / `C_local_1` 命名。
+  - rank-1 exact tiled CB writer 对 full-tile reduce output 只 wait/pop
+    一次，按 logical row 生成 scalar page id，并使用 tiled row L1 byte
+    offset 写回 host rank-1 输出。
+  - codegen thread emission 用完整 Stmt/Expr visitor 判定 thread var
+    使用，segment extraction 在父节点已判定 segment 时继承上下文，保留
+    writer final barrier/pop。
   - 保留 typed leaf records，并在 `ExecutableSpec` direct-runtime reasons
     中对 standalone reduce 和 standalone fill/typecast publish fail closed。
     不把 GEMM/flash-attn 内已经 admitted 的 compute chain 全局 gate 掉。
-  - standalone reduce 的 unsupported reason 要同时点明 PACR simulator
-    boundary 和 vector-output materialization 未 admitted，避免把 compile /
-    source 结构绿测误报成 runtime correctness。
+  - standalone reduce 的 unsupported reason 现在只点明 PACR simulator
+    boundary；不要再把已修复的 vector-output writer binding 说成未
+    admitted。
 - **教训**:
   - simulator capability boundary 应写成 queryable typed unsupported reason；
     不要把它伪装成 semantic unsupported，也不要为绕过它新增旧 matcher /
     runtime guessing path。
-  - 解除 reduce gate 前必须同时证明：TT-Sim 能执行 PACR count=1 pack，
-    并且 full-tile reduce live form 到 rank-1 host-visible output 的
-    materialization / writer consumer binding 已由 typed plan 表达。
+  - 解除 reduce gate 前现在只剩一个条件：TT-Sim 能执行 PACR count=1
+    row-reduce pack；full-tile reduce live form 到 rank-1 host-visible
+    output 的 writer consumer binding 已由 typed lowering/source 结构覆盖。
 
 ## 3. 环境问题速查
 

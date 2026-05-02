@@ -19,8 +19,7 @@ M = 32
 N = 32
 STANDALONE_REDUCE_SIM_REASON = "standalone reduce_tile leaf direct runtime is gated"
 STANDALONE_REDUCE_SIM_REASON_DETAILS = (
-    "tensix_execute_pacr count=1",
-    "vector-output materialization is not yet admitted",
+    "UnimplementedFunctionality tensix_execute_pacr count=1",
 )
 STANDALONE_FILL_TYPECAST_SIM_REASON = (
     "standalone fill/typecast publish direct runtime is gated"
@@ -181,6 +180,7 @@ def test_blackhole_standalone_leaf_compute_projects_typed_runtime_contracts(
         assert all(
             detail in reduce_reasons[0] for detail in STANDALONE_REDUCE_SIM_REASON_DETAILS
         )
+        assert "vector-output materialization is not yet admitted" not in reduce_reasons[0]
     elif case_name == "typecast_publish":
         assert any(STANDALONE_FILL_TYPECAST_SIM_REASON in reason for reason in reasons)
     else:
@@ -211,6 +211,38 @@ def test_blackhole_standalone_reduce_packs_before_reduce_uninit():
     assert reduce_tile_offset >= 0
     assert pack_offset > reduce_tile_offset
     assert uninit_offset > pack_offset
+
+
+def test_blackhole_standalone_reduce_writer_consumes_reduce_output_cb():
+    artifact = _lower_blackhole(reduction_sum_leaf_kernel())
+    executable_spec = _extract_blackhole_executable_spec(artifact)
+    compute_source = _compute_kernel_source(executable_spec)
+    writer_source = str(
+        next(
+            kernel["source_code"]
+            for kernel in executable_spec["kernels"]
+            if str(kernel["kind"]) == "writer" and str(kernel["core_type"]) == "ncrisc"
+        )
+    )
+
+    reduce_init = re.search(
+        r"reduce_init<PoolType::SUM, ReduceDim::REDUCE_ROW>\(\d+, \d+, (?P<out_cb>\d+)\);",
+        compute_source,
+    )
+    assert reduce_init is not None
+    reduce_out_cb = int(reduce_init.group("out_cb"))
+
+    assert f"cb_push_back({reduce_out_cb}, 1);" in compute_source
+    assert f"cb_wait_front({reduce_out_cb}, 1);" in writer_source
+    assert f"get_read_ptr({reduce_out_cb})" in writer_source
+    assert writer_source.count(f"cb_wait_front({reduce_out_cb}, 1);") == 1
+    assert writer_source.count(f"cb_pop_front({reduce_out_cb}, 1);") == 1
+    assert "const uint32_t page_id = (tx >> 2);" in writer_source
+    assert "const uint32_t page_bytes = 2;" in writer_source
+    assert f"get_read_ptr({reduce_out_cb}) + 0" not in writer_source
+    assert "((tx >> 2) / 16) * 1024" in writer_source
+    assert "((tx >> 2) % 16) * 32" in writer_source
+    assert "noc_async_write_barrier();" in writer_source
 
 
 @pytest.mark.parametrize(

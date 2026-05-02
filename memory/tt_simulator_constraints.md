@@ -224,6 +224,10 @@
    32B bf16 staged stick page transport 会在 `noc_cmd_ctrl`
    命中 read alignment mismatch fatal，
    当前 direct-runtime page transport 仍按 64B page alignment admission。
+   2026-05-02 另确认：standalone bf16 row `reduce_tile` 在 writer
+   CB binding、rank-1 scalar page writeback、final writer barrier/pop 都修正后，
+   放开 direct-runtime gate 真跑仍在 workload enqueue 后命中
+   `UnimplementedFunctionality: tensix_execute_pacr: count=1`。
 4. 当 direct runtime 首次命中这三类 taxonomy 时，
    应先把它和 target contract 回归分开判断。
 

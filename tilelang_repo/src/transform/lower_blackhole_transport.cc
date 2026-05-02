@@ -1177,6 +1177,11 @@ Stmt PlanTTKernelABI::GenerateCopySequence(const BufferStoreNode* op,
         }
         RecordStagedCopyBufferBinding(op, direction);
         const int accessor_slot = GetWriteAccessorSlot(segment_kind, op->buffer, direction);
+        PrimExpr logical_index = IntImm32(0);
+        if (op->indices.size() == 1U) {
+          Analyzer analyzer;
+          logical_index = analyzer.Simplify(ScalarizeVectorizedIndex(op->indices[0]));
+        }
         PrimExpr page_index = IntImm32(0);
         if (op->indices.size() == 1U && shared_rank1.value() > 0) {
           Analyzer analyzer;
@@ -1185,17 +1190,58 @@ Stmt PlanTTKernelABI::GenerateCopySequence(const BufferStoreNode* op,
                                              std::vector<Var>{}),
                        IntImm32(static_cast<int>(shared_rank1.value()))));
         }
-        stmts.push_back(MakeBlackholeCall(
-            blackhole_cb_wait_front(), {IntImm32(cb_id), IntImm32(1)}));
+        PrimExpr l1_offset = IntImm32(0);
+        int write_page_bytes = page_bytes;
+        const bool live_rank1_vector_output =
+            has_live_output && global_rank1.value() > 1 && live_output.num_tiles == 1 &&
+            live_output.num_elements == global_rank1.value();
+        if (live_rank1_vector_output) {
+          Analyzer analyzer;
+          constexpr int kFaceRows = 16;
+          constexpr int kFaceCols = 16;
+          const PrimExpr row = logical_index;
+          page_index = analyzer.Simplify(row);
+          const PrimExpr tiled_element_offset = analyzer.Simplify(
+              FloorDiv(row, IntImm32(kFaceRows)) *
+                  IntImm32(kFaceRows * kBlackholeTileCols) +
+              FloorMod(row, IntImm32(kFaceRows)) * IntImm32(kFaceCols));
+          l1_offset =
+              analyzer.Simplify(tiled_element_offset *
+                                IntImm32(static_cast<int>(load->buffer->dtype.bytes())));
+          write_page_bytes = static_cast<int>(op->buffer->dtype.bytes());
+        }
+        auto make_wait = [&]() {
+          return MakeBlackholeCall(blackhole_cb_wait_front(),
+                                   {IntImm32(cb_id), IntImm32(1)});
+        };
+        auto make_pop = [&]() {
+          return MakeBlackholeCall(blackhole_cb_pop_front(),
+                                   {IntImm32(cb_id), IntImm32(1)});
+        };
+        if (live_rank1_vector_output && !active_serial_loop_vars_.empty()) {
+          stmts.push_back(tir::IfThenElse(tir::EQ(page_index, IntImm32(0)), make_wait()));
+        } else {
+          stmts.push_back(make_wait());
+        }
         stmts.push_back(MakeBlackholeCall(
             blackhole_write_page_from_cb(), {IntImm32(cb_id), op->buffer->data, page_index,
-                                             IntImm32(page_bytes), IntImm32(accessor_slot),
-                                             IntImm32(0)}));
-        stmts.push_back(MakeBlackholeCall(blackhole_noc_async_write_barrier(), {}));
+                                             IntImm32(write_page_bytes), IntImm32(accessor_slot),
+                                             l1_offset}));
+        if (live_rank1_vector_output && !active_serial_loop_vars_.empty()) {
+          std::vector<Stmt> final_sync;
+          final_sync.push_back(MakeBlackholeCall(blackhole_noc_async_write_barrier(), {}));
+          final_sync.push_back(make_pop());
+          stmts.push_back(tir::IfThenElse(
+              tir::EQ(page_index, IntImm32(static_cast<int>(global_rank1.value() - 1))),
+              SeqStmt::Flatten(final_sync)));
+        } else {
+          stmts.push_back(MakeBlackholeCall(blackhole_noc_async_write_barrier(), {}));
+        }
         RegisterAccessor(segment_kind, op->buffer, accessor_slot, 2, 0, 0, 2,
-                         page_bytes, {0});
-        stmts.push_back(MakeBlackholeCall(
-            blackhole_cb_pop_front(), {IntImm32(cb_id), IntImm32(1)}));
+                         write_page_bytes, {0});
+        if (!(live_rank1_vector_output && !active_serial_loop_vars_.empty())) {
+          stmts.push_back(make_pop());
+        }
         return WrapSegmentStmtIfNeeded(current_segment_kind_, segment_kind,
                                        SeqStmt::Flatten(stmts));
       }

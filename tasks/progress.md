@@ -57,9 +57,9 @@ current-placement GEMM baseline now project typed leaf/source/spec contracts.
 Admitted leaf and GEMM forms run through `BlackholeModule`; simulator-limited
 standalone reduction and standalone fill/typecast publish fail closed with
 typed direct-runtime unsupported reasons. Standalone reduction remains gated
-until both the TT-Sim `tensix_execute_pacr: count=1` boundary and the
-full-tile reduce CB to rank-1 output materialization / writer binding are
-admitted.
+until the TT-Sim `tensix_execute_pacr: count=1` row-reduce PACR boundary is
+resolved. The full-tile reduce CB to rank-1 output writer binding is now
+covered by typed lowering/source checks.
 
 T2 does not claim tensor/value sharding, explicit reshard, sharded GEMM, or
 external sharded/page-indexed runtime accessor admission.
