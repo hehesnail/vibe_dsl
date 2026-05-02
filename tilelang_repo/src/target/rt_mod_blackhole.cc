@@ -2911,22 +2911,87 @@ static std::unordered_set<std::string> CollectRuntimeBoundBufferNames(
   return names;
 }
 
+static std::unordered_set<std::string> CollectRuntimeOutputBufferNames(
+    const ExecutableSpec& spec) {
+  std::unordered_set<std::string> names;
+  auto record_args = [&](const std::vector<KernelArgSpec>& args) {
+    for (const auto& arg : args) {
+      if (IsOutputBufferArgKind(arg.kind) && !arg.buffer.empty()) {
+        names.insert(arg.buffer);
+      }
+    }
+  };
+  record_args(spec.runtime_args);
+  record_args(spec.common_runtime_args);
+  for (const auto& kernel : spec.kernels) {
+    record_args(kernel.runtime_args);
+    record_args(kernel.common_runtime_args);
+  }
+  return names;
+}
+
+static bool IsComputeOutputBindingRole(const std::string& role) {
+  return role == "output" || role == "out" || role == "dst" ||
+         role == "result";
+}
+
+static std::unordered_set<std::string> CollectComputeInputBufferNames(
+    const ExecutableSpec& spec) {
+  std::unordered_set<std::string> names;
+  for (const KernelSpec& kernel : spec.kernels) {
+    for (const KernelComputeOpSpec& compute_op : kernel.compute_ops) {
+      if (!compute_op.enabled) {
+        continue;
+      }
+      for (const auto& binding : compute_op.operand_bindings) {
+        if (!binding.buffer.empty() && !IsComputeOutputBindingRole(binding.role)) {
+          names.insert(binding.buffer);
+        }
+      }
+    }
+  }
+  return names;
+}
+
 static void EnforceStandalonePacrLeafSimulatorGate(ExecutableSpec* spec) {
   ICHECK(spec != nullptr);
   bool has_reduce = false;
   bool has_fill_typecast_publish = false;
   bool has_gemm = false;
+  const std::unordered_set<std::string> runtime_outputs =
+      CollectRuntimeOutputBufferNames(*spec);
+  const std::unordered_set<std::string> compute_inputs =
+      CollectComputeInputBufferNames(*spec);
   for (const KernelSpec& kernel : spec->kernels) {
     for (const KernelComputeOpSpec& compute_op : kernel.compute_ops) {
       if (!compute_op.enabled) {
         continue;
       }
       has_gemm = has_gemm || compute_op.kind == "gemm";
-      has_reduce = has_reduce || compute_op.kind == "reduce" ||
-                   compute_op.operation_name == "reduce_tile";
+      bool produces_runtime_output = false;
+      bool produces_terminal_compute_value = false;
+      for (const auto& binding : compute_op.operand_bindings) {
+        if (!IsComputeOutputBindingRole(binding.role) || binding.buffer.empty()) {
+          continue;
+        }
+        if (runtime_outputs.count(binding.buffer) != 0U) {
+          produces_runtime_output = true;
+        }
+        if (compute_inputs.count(binding.buffer) == 0U) {
+          produces_terminal_compute_value = true;
+        }
+      }
+      const bool terminal_leaf_publish =
+          produces_runtime_output || produces_terminal_compute_value;
+      has_reduce =
+          has_reduce || ((compute_op.kind == "reduce" ||
+                          compute_op.operation_name == "reduce_tile") &&
+                         terminal_leaf_publish);
       has_fill_typecast_publish =
-          has_fill_typecast_publish || compute_op.operation_name == "fill_tile" ||
-          compute_op.operation_name == "typecast_tile";
+          has_fill_typecast_publish ||
+          ((compute_op.operation_name == "fill_tile" ||
+            compute_op.operation_name == "typecast_tile") &&
+           terminal_leaf_publish);
     }
   }
   if (has_reduce && !has_gemm) {

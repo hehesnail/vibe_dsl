@@ -1044,6 +1044,12 @@ Required direct-runtime coverage:
   `4096x2048`, and `4096x4096`;
 - oversubscribed logical grids where `work_per_core > 1`;
 - wide, tall, and square aspect ratios;
+- resident-L1 staged-copy inputs followed by continuous elementwise compute
+  chains over multiple tensor shapes and height / width / block sharding
+  strategies;
+- mixed elementwise-plus-reduce forms where the reduce result is consumed by a
+  later elementwise leaf sequence and runtime correctness is checked on the
+  final tensor output;
 - an explicit user placement case that names the resident L1 view with a
   non-template buffer name and requires an `interleaved_to_sharded`
   conversion record;

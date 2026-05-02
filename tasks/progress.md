@@ -37,9 +37,11 @@ placement/conversion records instead of inferring sharding or page metadata.
 The T3 hardening gate for the admitted `interleaved_to_sharded`
 staged-copy conversion now covers large and oversubscribed copy shapes,
 explicit user placement of the resident L1 view, multiple independent
-reshard records, non-zero tile offsets, corrupted executable placement /
-reshard records, and serialization preservation. It does not expand T3 into
-external accessors, sharded GEMM, or production DRAM-sharded weights.
+reshard records, non-zero tile offsets, sharded resident-L1 elementwise
+compute chains, mixed elementwise-plus-reduce compute chains, corrupted
+executable placement / reshard records, and serialization preservation. It
+does not expand T3 into external accessors, sharded GEMM, or production
+DRAM-sharded weights.
 
 ## Completed Baseline: T1 Buffer Address ABI
 
@@ -139,6 +141,28 @@ T4 is complete only when:
   `253 passed, 9 skipped, 1 xfailed`.
 - `pytest -q -vv testing/python/transform/test_blackhole_spatial_ir.py --tb=short`:
   `101 passed`.
+
+2026-05-03 UTC T3 sharded compute runtime hardening:
+
+- `cmake --build build -- -j32` passed after final cleanup.
+- `pytest -q -vv testing/python/target/blackhole/test_blackhole_t3_compute_runtime.py --tb=short`:
+  `7 passed`.
+- `pytest -q -vv testing/python/target/blackhole/test_blackhole_leaf_compute_runtime.py --tb=short`:
+  `16 passed, 2 skipped`.
+- `pytest -q -vv testing/python/target/blackhole/test_blackhole_copy_runtime.py --tb=short`:
+  `31 passed`.
+- `pytest -q -vv testing/python/target/blackhole/test_blackhole_flash_attention_runtime.py --tb=short`:
+  `15 passed, 5 skipped`.
+- Remaining target files
+  `test_blackhole_gemm.py`, `test_blackhole_copy_pipeline.py`,
+  `test_blackhole_flash_attention_pipeline.py`, and
+  `test_blackhole_tvm_ffi_export.py`:
+  `191 passed, 2 skipped, 1 xfailed`.
+- Post-cleanup smoke:
+  `test_blackhole_t3_compute_runtime.py` stayed `7 passed`, and
+  `test_blackhole_flash_attention_runtime.py::test_blackhole_flash_attention_single_work_item_metadata_drops_contract_family`
+  passed.
+- `git diff --check` passed.
 
 ## Task Queue
 

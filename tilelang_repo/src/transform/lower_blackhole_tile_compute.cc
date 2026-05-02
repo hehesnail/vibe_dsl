@@ -77,6 +77,8 @@ using tir::builtin::blackhole_reconfig_data_format;
 using tir::builtin::blackhole_reduce_init;
 using tir::builtin::blackhole_reduce_tile;
 using tir::builtin::blackhole_reduce_uninit;
+using tir::builtin::blackhole_sub_tiles;
+using tir::builtin::blackhole_sub_tiles_init;
 using tir::builtin::blackhole_tile_regs_acquire;
 using tir::builtin::blackhole_tile_regs_commit;
 using tir::builtin::blackhole_tile_regs_release;
@@ -729,6 +731,7 @@ Stmt BlackholeTileComputeSourceProjection::EmitCustom(
     case BlackholeTileComputeSourceEmitterKind::kReduceTile:
       return EmitReduce(abi, op, covering, pattern);
     case BlackholeTileComputeSourceEmitterKind::kAddTiles:
+    case BlackholeTileComputeSourceEmitterKind::kSubTiles:
     case BlackholeTileComputeSourceEmitterKind::kMulTiles:
     case BlackholeTileComputeSourceEmitterKind::kMulTilesBcastCols:
     case BlackholeTileComputeSourceEmitterKind::kAddTilesBcastCols:
@@ -860,7 +863,8 @@ Stmt BlackholeTileComputeSourceProjection::EmitUnary(
       RequiredSourceBuiltin(pattern, "source_init_builtin",
                             pattern.source_init_builtin),
       RequiredSourceBuiltin(pattern, "source_tile_builtin",
-                            pattern.source_tile_builtin));
+                            pattern.source_tile_builtin),
+      abi->GetBlackholeTileComputePrimArg(op, 3, covering));
 }
 
 Stmt BlackholeTileComputeSourceProjection::EmitReduce(
@@ -887,9 +891,15 @@ Stmt PlanTTKernelABI::GenerateRowReductionSequence(const RowReductionMatch& matc
   ExactTiledCBValue reduced;
   if (accumulate_existing) {
     reduced = CreateEmptyExactTiledCBValue(match.dst, "reduce_partial");
-    out = reduced.num_tiles == 1 ? reduced : CreateEmptyExactTiledCBValue(match.dst, "reduce_out");
+    out = reduced.num_tiles == 1
+              ? reduced
+              : CreateEmptyExactTiledCBValue(
+                    match.dst, "reduce_out",
+                    ExactOutputCBTypeForBuffer(match.dst, current_lowering_order_index_));
   } else {
-    out = CreateEmptyExactTiledCBValue(match.dst, "reduce_out");
+    out = CreateEmptyExactTiledCBValue(
+        match.dst, "reduce_out",
+        ExactOutputCBTypeForBuffer(match.dst, current_lowering_order_index_));
     reduced = out;
   }
   const bool reuse_reduced_as_output =
@@ -1115,7 +1125,9 @@ Stmt PlanTTKernelABI::GenerateCopyTileSequence(const Buffer& src, const Buffer& 
 Stmt PlanTTKernelABI::GenerateBinaryMaxTileSequence(const Buffer& dst, const Buffer& rhs) {
   ExactTiledCBValue lhs_in = CreateExactInputCBValue(dst, "binary_max_lhs");
   ExactTiledCBValue rhs_in = CreateExactInputCBValue(rhs, "binary_max_rhs");
-  ExactTiledCBValue out = CreateEmptyExactTiledCBValue(dst, "binary_max_out");
+  ExactTiledCBValue out = CreateEmptyExactTiledCBValue(
+      dst, "binary_max_out",
+      ExactOutputCBTypeForBuffer(dst, current_lowering_order_index_));
   RecordExactComputeOpPlan("binary", "binary_max_tile",
                            {{"lhs", dst, "identity"},
                             {"rhs", rhs, "identity"},
@@ -1163,7 +1175,9 @@ Stmt PlanTTKernelABI::GenerateBinaryTileSequence(const Buffer& dst,
                                                   const Op& tile_op) {
   ExactTiledCBValue lhs_in = CreateExactInputCBValue(dst, operation_name + "_lhs");
   ExactTiledCBValue rhs_in = CreateExactInputCBValue(rhs, operation_name + "_rhs");
-  ExactTiledCBValue out = CreateEmptyExactTiledCBValue(dst, operation_name + "_out");
+  ExactTiledCBValue out = CreateEmptyExactTiledCBValue(
+      dst, operation_name + "_out",
+      ExactOutputCBTypeForBuffer(dst, current_lowering_order_index_));
   RecordExactComputeOpPlan("binary", operation_name,
                            {{"lhs", dst, "identity"},
                             {"rhs", rhs, "identity"},
@@ -1217,7 +1231,9 @@ Stmt PlanTTKernelABI::GenerateBroadcastColsBinaryTileSequence(
   if (!TryCreateBroadcastColsSourceLiveExactTiledCBValue(rhs, &rhs_in)) {
     rhs_in = CreateExactInputCBValue(rhs, operation_name + "_rhs");
   }
-  ExactTiledCBValue out = CreateEmptyExactTiledCBValue(dst, operation_name + "_out");
+  ExactTiledCBValue out = CreateEmptyExactTiledCBValue(
+      dst, operation_name + "_out",
+      ExactOutputCBTypeForBuffer(dst, current_lowering_order_index_));
   const auto [logical_rows, logical_cols] = GetLogicalMatrixShape(dst);
   const int tiles_per_row =
       logical_rows > 0 && logical_cols > 0
@@ -1262,9 +1278,15 @@ Stmt PlanTTKernelABI::GenerateBroadcastColsBinaryTileSequence(
 
 Stmt PlanTTKernelABI::GenerateUnaryTileSequence(
     const Buffer& input, const Buffer& output, const std::string& operation_name,
-    const Op& init_op, const Op& tile_op) {
+    const Op& init_op, const Op& tile_op, const PrimExpr& num_elements) {
   ExactTiledCBValue input_cb = CreateExactInputCBValue(input, operation_name + "_input");
-  ExactTiledCBValue out = CreateEmptyExactTiledCBValue(output, operation_name + "_out");
+  ExactTiledCBValue out = CreateEmptyExactTiledCBValue(
+      output, operation_name + "_out",
+      ExactOutputCBTypeForBuffer(output, current_lowering_order_index_));
+  RefineExactTiledCBValueShapeFromNumElements(&out, num_elements);
+  RefineExactTiledCBValueShapeFromNumElements(
+      &out, IntImm(DataType::Int(64), input_cb.num_elements));
+  out.row_width = std::max(out.row_width, input_cb.row_width);
   RecordExactComputeOpPlan("unary", operation_name,
                            {{"input", input, "identity"},
                             {"output", output, "identity"}});

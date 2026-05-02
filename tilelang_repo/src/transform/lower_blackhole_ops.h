@@ -537,11 +537,20 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
                                              const std::string& suffix) const;
   tvm::tir::Buffer CreateConstantTileBuffer(tvm::DataType dtype, const std::string& suffix) const;
   tvm::DataType ExactTiledCBStorageDType(tvm::DataType dtype) const;
-  int PrepareExactTiledCBRequirement(const tvm::tir::Buffer& buffer);
+  int PrepareExactTiledCBRequirement(
+      const tvm::tir::Buffer& buffer,
+      CBType type = CBType::kIntermediate);
   tvm::tir::Stmt FillLocalTileBuffer(const tvm::tir::Buffer& buffer,
                                      const tvm::PrimExpr& value);
   void PopulateExactTiledCBValueShape(const tvm::tir::Buffer& buffer,
                                       ExactTiledCBValue* value) const;
+  void RefineExactTiledCBValueShapeFromRequirement(ExactTiledCBValue* value) const;
+  void RefineExactTiledCBValueShapeFromNumElements(
+      ExactTiledCBValue* value,
+      const tvm::PrimExpr& num_elements);
+  CBType ExactOutputCBTypeForBuffer(const tvm::tir::Buffer& buffer,
+                                    int current_order_index) const;
+  void MarkExactTiledCBValueConsumedByTransport(const ExactTiledCBValue& value);
   bool TryCreateLiveExactTiledCBValue(const tvm::tir::Buffer& buffer,
                                       ExactTiledCBValue* value) const;
   bool TryCreateExactOutputLiveTiledCBValue(const tvm::tir::Buffer& buffer,
@@ -570,9 +579,11 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
                                                  const ExactTiledCBValue& cb_value,
                                                  const tvm::tir::Stmt& body) const;
   ExactTiledCBValue CreatePublishedExactTiledCBValue(const tvm::tir::Buffer& src,
-                                                     const std::string& suffix);
+                                                     const std::string& suffix,
+                                                     CBType type = CBType::kIntermediate);
   ExactTiledCBValue CreateEmptyExactTiledCBValue(const tvm::tir::Buffer& like_buffer,
-                                                 const std::string& suffix);
+                                                 const std::string& suffix,
+                                                 CBType type = CBType::kIntermediate);
   ExactTiledCBValue CreateConstantExactTiledCBValue(tvm::DataType dtype,
                                                     const std::string& suffix);
   ExactTiledCBValue CreateReduceScalerExactTiledCBValue();
@@ -655,7 +666,8 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
                                            const tvm::tir::Buffer& output,
                                            const std::string& operation_name,
                                            const tvm::Op& init_op,
-                                           const tvm::Op& tile_op);
+                                           const tvm::Op& tile_op,
+                                           const tvm::PrimExpr& num_elements);
   bool MatchDirectFragmentCast(const tvm::tir::ForNode* op, FragmentCastMatch* match) const;
   tvm::tir::Stmt GenerateFragmentCastSequence(const FragmentCastMatch& match,
                                               bool publish_cb = false,

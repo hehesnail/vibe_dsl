@@ -1963,6 +1963,51 @@
     row-reduce pack；full-tile reduce live form 到 rank-1 host-visible
     output 的 writer consumer binding 已由 typed lowering/source 结构覆盖。
 
+#### T3 sharded compute runtime exposed exact-CB event/role and grouped-broadcast gaps
+
+- **症状**:
+  - 多核 sharded resident-L1 elementwise chain 读到每个 core 都从 tile 0
+    开始的数据，runtime correctness 失败。
+  - full-tensor division 先被误判成 broadcast division，后续 reciprocal
+    临时 exact-CB 只覆盖一个物理 fragment tile，32x64 等 case 输出不全。
+  - mixed `elementwise + reduce + elementwise` 中 writer 可能消费 reduce
+    中间值所在的同一个硬件 CB，而不是最终输出。
+  - 修复 reduce materialization 后，flash-attn 暴露 `acc_o`
+    accumulator merge 把 `tiled_cb_republish` fact 按
+    `dst_cb_binary_pack` 路径断言，以及 `acc_o[i] / logsum[i >> 2]`
+    这类一维分组 broadcast 未归一化导致残留 cast。
+- **根因**:
+  - 非 GEMM staged-copy reader ABI 仍把 per-work tile start 当常量 0，
+    没有绑定到 `work_linear_id`。
+  - division matcher 没区分 full-tensor identity RHS 和 grouped
+    broadcast RHS；unary temp shape 又从当前 physical fragment 推导，
+    没继承 input live-CB 的 logical coverage。
+  - exact-CB `num_pages` 被误当成 event size / logical shape，导致
+    compute wait 多于 reader push，或把 rank-1 logical output 膨胀成
+    full tile logical shape。
+  - accumulator merge 对 materialization fact 的校验没有按 reload 来源
+    分支；有 live tiled-CB reload 时，`tiled_cb_republish` 是合法 live
+    form，不是 local-fragment binary-pack reload。
+- **修法**:
+  - 非 GEMM reader start-id ABI 改为从 `work_linear_id` 取值。
+  - `sub_tiles` 纳入 typed leaf pattern / builtin / codegen；full division
+    降成 `recip_tile + mul_tiles`，broadcast division 只接受结构化
+    broadcast load。
+  - exact-CB live value refinement 只用 publish/consume event 和 logical
+    live value tile count，不用 capacity `num_pages` 扩 logical shape；
+    writer 消费 live exact-CB 时把该 CB 角色提升为 output。
+  - grouped one-dimensional broadcast 识别 `i / group` 和
+    `i >> log2(group)` 这类结构，并从 output/RHS 元素数推出 group 宽度。
+  - accumulator merge 只在需要 local-fragment reload 时要求
+    `dst_cb_binary_pack`；zero reload 或 live tiled-CB reload 不套用该
+    断言。
+- **教训**:
+  - runtime correctness 要覆盖连续 compute 链和 reduce 后继续消费的链；
+    单 leaf 或 projection-only tests 很容易漏掉 CB reuse、writer role、
+    event-size 和 per-core tile-start 问题。
+  - exact-CB 的 capacity、event size、logical value shape 是三件事；
+    混用会表现成 hang、错 CB、或 rank-1 writer 结构回归。
+
 ## 3. 环境问题速查
 
 | 问题 | 解决 |

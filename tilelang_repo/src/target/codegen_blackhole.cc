@@ -1858,6 +1858,12 @@ bool CodeGenBlackhole::HandleBlackholeBuiltin(const tvm::tir::CallNode *op,
   } else if (builtin_name == "add_tiles") {
     PrintAddTiles(op, os);
     return true;
+  } else if (builtin_name == "sub_tiles_init") {
+    PrintSubTilesInit(op, os);
+    return true;
+  } else if (builtin_name == "sub_tiles") {
+    PrintSubTiles(op, os);
+    return true;
   } else if (builtin_name == "add_bcast_rows_init_short") {
     PrintAddBcastRowsInitShort(op, os);
     return true;
@@ -2378,6 +2384,35 @@ void CodeGenBlackhole::PrintAddTiles(const tvm::tir::CallNode* op,
   need_compute_api_h_ = true;
   ICHECK_EQ(op->args.size(), 5) << "tl.blackhole.add_tiles expects 5 arguments";
   os << "add_tiles(";
+  PrintResolvedCBId(op->args[0], os);
+  os << ", ";
+  PrintResolvedCBId(op->args[1], os);
+  os << ", ";
+  PrintExpr(op->args[2], os);
+  os << ", ";
+  PrintExpr(op->args[3], os);
+  os << ", ";
+  PrintExpr(op->args[4], os);
+  os << ")";
+}
+
+void CodeGenBlackhole::PrintSubTilesInit(const tvm::tir::CallNode* op,
+                                         std::ostream& os) {
+  need_compute_api_h_ = true;
+  ICHECK_EQ(op->args.size(), 2)
+      << "tl.blackhole.sub_tiles_init expects 2 arguments";
+  os << "sub_tiles_init(";
+  PrintResolvedCBId(op->args[0], os);
+  os << ", ";
+  PrintResolvedCBId(op->args[1], os);
+  os << ")";
+}
+
+void CodeGenBlackhole::PrintSubTiles(const tvm::tir::CallNode* op,
+                                     std::ostream& os) {
+  need_compute_api_h_ = true;
+  ICHECK_EQ(op->args.size(), 5) << "tl.blackhole.sub_tiles expects 5 arguments";
+  os << "sub_tiles(";
   PrintResolvedCBId(op->args[0], os);
   os << ", ";
   PrintResolvedCBId(op->args[1], os);

@@ -316,6 +316,23 @@ TVM_DLL const Op& blackhole_add_tiles_init();
 TVM_DLL const Op& blackhole_add_tiles();
 
 /*!
+ * \brief Initialize TT-Metal elementwise subtract for two CB-backed tile streams.
+ * \param lhs_cb_id Left-hand-side CB id
+ * \param rhs_cb_id Right-hand-side CB id
+ */
+TVM_DLL const Op& blackhole_sub_tiles_init();
+
+/*!
+ * \brief Subtract one tile from two CBs into a DST register slot.
+ * \param lhs_cb_id Left-hand-side CB id
+ * \param rhs_cb_id Right-hand-side CB id
+ * \param lhs_tile_index Tile index in the left-hand-side CB front window
+ * \param rhs_tile_index Tile index in the right-hand-side CB front window
+ * \param dst_tile_index Destination tile index within DST registers
+ */
+TVM_DLL const Op& blackhole_sub_tiles();
+
+/*!
  * \brief Initialize TT-Metal add broadcast-rows sequence.
  * \param lhs_cb_id Left-hand-side CB id
  * \param rhs_cb_id Right-hand-side CB id

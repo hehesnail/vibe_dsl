@@ -205,6 +205,9 @@ std::vector<int> GetCBArgPositions(const std::string& op_name) {
   if (op_name == "tl.blackhole.add_tiles_init" || op_name == "tl.blackhole.add_tiles") {
     return {0, 1};
   }
+  if (op_name == "tl.blackhole.sub_tiles_init" || op_name == "tl.blackhole.sub_tiles") {
+    return {0, 1};
+  }
   if (op_name == "tl.blackhole.mul_tiles_init" || op_name == "tl.blackhole.mul_tiles") {
     return {0, 1};
   }

@@ -95,6 +95,67 @@ bool ProvenEqual(const PrimExpr& lhs, const PrimExpr& rhs) {
   return tir::is_zero(analyzer.Simplify(lhs - rhs));
 }
 
+int64_t StaticPositiveIntValue(const PrimExpr& expr) {
+  if (const auto* imm = expr.as<IntImmNode>()) {
+    return imm->value > 0 ? imm->value : -1;
+  }
+  return -1;
+}
+
+int64_t StaticBufferElementCount(const Buffer& buffer) {
+  if (!buffer.defined() || buffer->shape.empty()) {
+    return -1;
+  }
+  int64_t elements = 1;
+  for (const PrimExpr& dim : buffer->shape) {
+    const int64_t extent = StaticPositiveIntValue(dim);
+    if (extent <= 0) {
+      return -1;
+    }
+    elements *= extent;
+  }
+  return elements;
+}
+
+bool MatchShiftRightByDivisor(const PrimExpr& expr, const PrimExpr& value,
+                              int64_t divisor) {
+  if (divisor <= 0 || (divisor & (divisor - 1)) != 0) {
+    return false;
+  }
+  const auto* call = expr.as<CallNode>();
+  if (!call || !call->op->IsInstance<OpNode>() || call->args.size() != 2U) {
+    return false;
+  }
+  const Op op = Downcast<Op>(call->op);
+  if (op->name != "tir.shift_right") {
+    return false;
+  }
+  const int64_t shift = StaticPositiveIntValue(call->args[1]);
+  if (shift < 0 || (int64_t{1} << shift) != divisor) {
+    return false;
+  }
+  return ProvenEqual(call->args[0], value);
+}
+
+bool MatchGroupedBroadcastIndex(const PrimExpr& load_index,
+                                const PrimExpr& linear_index,
+                                int64_t row_width) {
+  if (row_width <= 0) {
+    return false;
+  }
+  const PrimExpr divisor = IntImm(linear_index.dtype(), row_width);
+  if (ProvenEqual(load_index, FloorDiv(linear_index, divisor))) {
+    return true;
+  }
+  if (const auto* div = load_index.as<FloorDivNode>()) {
+    const int64_t divisor_value = StaticPositiveIntValue(div->b);
+    if (divisor_value == row_width && ProvenEqual(div->a, linear_index)) {
+      return true;
+    }
+  }
+  return MatchShiftRightByDivisor(load_index, linear_index, row_width);
+}
+
 PrimExpr MakeFullRegionExpr(const Buffer& buffer, int access_mask) {
   Array<PrimExpr> indices;
   Array<PrimExpr> args;
@@ -320,7 +381,14 @@ bool MatchBroadcastColsLoad(const PrimExpr& expr,
     return true;
   }
   if (!ctx.row_index.defined() || !ProvenEqual(load_index, ctx.row_index)) {
-    return false;
+    const int64_t total_elements = StaticPositiveIntValue(ctx.num_elements);
+    const int64_t broadcast_elements = StaticBufferElementCount(load_buffer);
+    if (total_elements <= 0 || broadcast_elements <= 0 ||
+        total_elements % broadcast_elements != 0 ||
+        !MatchGroupedBroadcastIndex(load_index, ctx.linear_index,
+                                    total_elements / broadcast_elements)) {
+      return false;
+    }
   }
   if (buffer != nullptr) {
     *buffer = load_buffer;
@@ -551,6 +619,25 @@ bool EmitAddRootTileComputeIfMatched(const TileComputeRewriteContext& ctx,
               blackhole_tile_compute_schema::kAddTilesBcastCols));
 }
 
+bool EmitSubRootTileComputeIfMatched(const TileComputeRewriteContext& ctx,
+                                     TileComputeRewriteMatch* match,
+                                     TileComputeIRBuilder* builder) {
+  (void)builder;
+  const auto* sub = ctx.store->value.as<SubNode>();
+  if (!sub) {
+    return false;
+  }
+  Buffer lhs;
+  Buffer rhs;
+  if (!MatchIdentityLoad(sub->a, ctx, &lhs) ||
+      !MatchIdentityLoad(sub->b, ctx, &rhs)) {
+    return false;
+  }
+  AddSeededInplaceBinary(ctx, match, blackhole_tile_compute_schema::kSubTiles,
+                         lhs, rhs);
+  return true;
+}
+
 bool EmitExp2RootTileComputeIfMatched(const TileComputeRewriteContext& ctx,
                                       TileComputeRewriteMatch* match,
                                       TileComputeIRBuilder* builder) {
@@ -654,12 +741,33 @@ bool EmitDivRootTileComputeIfMatched(const TileComputeRewriteContext& ctx,
                                      TileComputeRewriteMatch* match,
                                      TileComputeIRBuilder* builder) {
   const auto* div = ctx.store->value.as<DivNode>();
-  Buffer scalar;
-  if (!div ||
-      !MatchLoadFromBuffer(div->a, ctx.store->buffer, ctx.linear_index) ||
-      !MatchLoad(div->b, &scalar, nullptr) ||
-      SameBufferStorage(scalar, ctx.store->buffer)) {
+  if (!div) {
     return false;
+  }
+  Buffer lhs;
+  Buffer rhs;
+  if (MatchIdentityLoad(div->a, ctx, &lhs) &&
+      MatchIdentityLoad(div->b, ctx, &rhs)) {
+    if (!SameBufferStorage(lhs, ctx.store->buffer)) {
+      match->AddUnary(blackhole_tile_compute_schema::kCopyTile, lhs,
+                      ctx.store->buffer, ctx.num_elements);
+    }
+    Buffer reciprocal = builder->TempLike(rhs, "_recip");
+    match->temp_buffers.push_back(reciprocal);
+    match->AddUnary(blackhole_tile_compute_schema::kRecipTile, rhs,
+                    reciprocal, ctx.num_elements);
+    match->AddInplaceBinary(blackhole_tile_compute_schema::kMulTiles,
+                            ctx.store->buffer, reciprocal, ctx.num_elements);
+    return true;
+  }
+  Buffer scalar;
+  if (!MatchIdentityLoad(div->a, ctx, &lhs) ||
+      !MatchBroadcastColsLoad(div->b, ctx, &scalar)) {
+    return false;
+  }
+  if (!SameBufferStorage(lhs, ctx.store->buffer)) {
+    match->AddUnary(blackhole_tile_compute_schema::kCopyTile, lhs,
+                    ctx.store->buffer, ctx.num_elements);
   }
   Buffer reciprocal = builder->TempLike(scalar, "_recip");
   match->temp_buffers.push_back(reciprocal);
@@ -717,6 +825,10 @@ Stmt NormalizeBlackholeTileComputeStore(const BufferStoreNode* store,
     return stmt;
   }
   if (Stmt stmt = render_if_matched(EmitAddRootTileComputeIfMatched);
+      stmt.defined()) {
+    return stmt;
+  }
+  if (Stmt stmt = render_if_matched(EmitSubRootTileComputeIfMatched);
       stmt.defined()) {
     return stmt;
   }

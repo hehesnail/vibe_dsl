@@ -167,6 +167,8 @@ class CodeGenBlackhole : public CodeGenCHost {
   void PrintUnaryOpInitCommon(const tvm::tir::CallNode *op, std::ostream &os);
   void PrintAddTilesInit(const tvm::tir::CallNode *op, std::ostream &os);
   void PrintAddTiles(const tvm::tir::CallNode *op, std::ostream &os);
+  void PrintSubTilesInit(const tvm::tir::CallNode *op, std::ostream &os);
+  void PrintSubTiles(const tvm::tir::CallNode *op, std::ostream &os);
   void PrintAddBcastRowsInitShort(const tvm::tir::CallNode *op, std::ostream &os);
   void PrintAddBcastColsInitShort(const tvm::tir::CallNode *op, std::ostream &os);
   void PrintAddTilesBcastRows(const tvm::tir::CallNode *op, std::ostream &os);

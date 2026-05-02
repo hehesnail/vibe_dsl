@@ -1187,6 +1187,9 @@ Stmt PlanTTKernelABI::GenerateCopySequence(const BufferStoreNode* op,
         const bool has_live_output =
             TryCreateExactOutputLiveTiledCBValue(load->buffer, &live_output) ||
             TryCreateLiveExactTiledCBValue(load->buffer, &live_output);
+        if (has_live_output) {
+          MarkExactTiledCBValueConsumedByTransport(live_output);
+        }
         const int cb_id =
             has_live_output
                 ? live_output.cb_id
@@ -1388,6 +1391,9 @@ Stmt PlanTTKernelABI::GenerateCopySequence(const BufferStoreNode* op,
       const bool has_live_output =
           TryCreateExactOutputLiveTiledCBValue(load->buffer, &live_output) ||
           TryCreateLiveExactTiledCBValue(load->buffer, &live_output);
+      if (has_live_output) {
+        MarkExactTiledCBValueConsumedByTransport(live_output);
+      }
       int cb_id = has_live_output
                       ? live_output.cb_id
                       : AllocateRequirementIndex(
@@ -1574,6 +1580,9 @@ Stmt PlanTTKernelABI::GenerateStagedCopyLoopSequence(
     const bool has_live_output =
         TryCreateExactOutputLiveTiledCBValue(load->buffer, &live_output) ||
         TryCreateLiveExactTiledCBValue(load->buffer, &live_output);
+    if (has_live_output) {
+      MarkExactTiledCBValueConsumedByTransport(live_output);
+    }
     int cb_id = has_live_output
                     ? live_output.cb_id
                     : AllocateRequirementIndex(

@@ -58,6 +58,7 @@ constexpr const char* kFillTile = "fill_tile";
 constexpr const char* kCopyTile = "copy_tile";
 constexpr const char* kBinaryMaxTile = "binary_max_tile";
 constexpr const char* kAddTiles = "add_tiles";
+constexpr const char* kSubTiles = "sub_tiles";
 constexpr const char* kMulTiles = "mul_tiles";
 constexpr const char* kMulTilesBcastCols = "mul_tiles_bcast_cols";
 constexpr const char* kAddTilesBcastCols = "add_tiles_bcast_cols";

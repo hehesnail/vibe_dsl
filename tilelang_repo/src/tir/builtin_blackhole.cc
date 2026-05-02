@@ -77,6 +77,8 @@ TIR_DEFINE_BUILTIN(binary_op_init_common)
 TIR_DEFINE_BUILTIN(unary_op_init_common)
 TIR_DEFINE_BUILTIN(add_tiles_init)
 TIR_DEFINE_BUILTIN(add_tiles)
+TIR_DEFINE_BUILTIN(sub_tiles_init)
+TIR_DEFINE_BUILTIN(sub_tiles)
 TIR_DEFINE_BUILTIN(add_bcast_rows_init_short)
 TIR_DEFINE_BUILTIN(add_bcast_cols_init_short)
 TIR_DEFINE_BUILTIN(add_tiles_bcast_rows)
@@ -349,6 +351,21 @@ TVM_REGISTER_OP("tl.blackhole.add_tiles_init")
     .add_argument("acc_to_dest", "int", "Whether to accumulate into the destination register");
 
 TVM_REGISTER_OP("tl.blackhole.add_tiles")
+    .set_num_inputs(5)
+    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque))
+    .add_argument("lhs_cb_id", "int", "Left-hand-side CB ID")
+    .add_argument("rhs_cb_id", "int", "Right-hand-side CB ID")
+    .add_argument("lhs_tile_index", "int", "Left-hand-side tile index in the CB front window")
+    .add_argument("rhs_tile_index", "int", "Right-hand-side tile index in the CB front window")
+    .add_argument("dst_tile_index", "int", "Destination tile index in DST");
+
+TVM_REGISTER_OP("tl.blackhole.sub_tiles_init")
+    .set_num_inputs(2)
+    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque))
+    .add_argument("lhs_cb_id", "int", "Left-hand-side CB ID")
+    .add_argument("rhs_cb_id", "int", "Right-hand-side CB ID");
+
+TVM_REGISTER_OP("tl.blackhole.sub_tiles")
     .set_num_inputs(5)
     .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque))
     .add_argument("lhs_cb_id", "int", "Left-hand-side CB ID")

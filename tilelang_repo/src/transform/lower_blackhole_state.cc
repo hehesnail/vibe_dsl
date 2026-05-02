@@ -1068,6 +1068,7 @@ bool PlanTTKernelABI::TryCreateBroadcastColsSourceLiveExactTiledCBValue(
     value->producer_live = true;
     value->borrowed_live = true;
     PopulateExactTiledCBValueShape(buffer, value);
+    RefineExactTiledCBValueShapeFromRequirement(value);
     return true;
   }
   for (const std::string& identity : producer_candidates) {
@@ -1089,6 +1090,7 @@ bool PlanTTKernelABI::TryCreateBroadcastColsSourceLiveExactTiledCBValue(
     value->producer_live = true;
     value->borrowed_live = false;
     PopulateExactTiledCBValueShape(buffer, value);
+    RefineExactTiledCBValueShapeFromRequirement(value);
     return true;
   }
   for (int cb_id = 0; cb_id < static_cast<int>(cb_requirements_.size()); ++cb_id) {
@@ -1106,6 +1108,7 @@ bool PlanTTKernelABI::TryCreateBroadcastColsSourceLiveExactTiledCBValue(
     value->producer_live = true;
     value->borrowed_live = false;
     PopulateExactTiledCBValueShape(buffer, value);
+    RefineExactTiledCBValueShapeFromRequirement(value);
     return true;
   }
   for (const std::string& identity : producer_candidates) {
@@ -1125,6 +1128,7 @@ bool PlanTTKernelABI::TryCreateBroadcastColsSourceLiveExactTiledCBValue(
     value->producer_live = true;
     value->borrowed_live = false;
     PopulateExactTiledCBValueShape(buffer, value);
+    RefineExactTiledCBValueShapeFromRequirement(value);
     return true;
   }
   return false;

@@ -131,8 +131,9 @@ DataType PlanTTKernelABI::ExactTiledCBStorageDType(DataType dtype) const {
   return dtype;
 }
 
-int PlanTTKernelABI::PrepareExactTiledCBRequirement(const Buffer& buffer) {
-  const int cb_id = AllocateRequirementIndex(buffer, CBType::kIntermediate);
+int PlanTTKernelABI::PrepareExactTiledCBRequirement(const Buffer& buffer,
+                                                    CBType type) {
+  const int cb_id = AllocateRequirementIndex(buffer, type);
   ICHECK_GE(cb_id, 0);
   ICHECK_LT(cb_id, static_cast<int>(cb_requirements_.size()));
   const int num_tiles = GetLogicalBufferTileCount(buffer);
@@ -190,6 +191,78 @@ void PlanTTKernelABI::PopulateExactTiledCBValueShape(const Buffer& buffer,
   }
 }
 
+void PlanTTKernelABI::RefineExactTiledCBValueShapeFromRequirement(
+    ExactTiledCBValue* value) const {
+  ICHECK(value != nullptr);
+  if (value->cb_id < 0 ||
+      value->cb_id >= static_cast<int>(cb_requirements_.size())) {
+    return;
+  }
+  const CBRequirement& req = cb_requirements_.at(value->cb_id);
+  const int event_tiles = std::max({req.publish_pages_per_event,
+                                    req.consume_pages_per_event,
+                                    value->num_tiles});
+  value->num_tiles = std::max(1, event_tiles);
+  if (value->num_elements <= 0) {
+    value->num_elements =
+        static_cast<int64_t>(value->num_tiles) * kBlackholeTileRows *
+        kBlackholeTileCols;
+  }
+}
+
+void PlanTTKernelABI::RefineExactTiledCBValueShapeFromNumElements(
+    ExactTiledCBValue* value, const PrimExpr& num_elements) {
+  ICHECK(value != nullptr);
+  if (!num_elements.defined() || value->cb_id < 0) {
+    return;
+  }
+  const auto* int_imm = num_elements.as<IntImmNode>();
+  if (int_imm == nullptr || int_imm->value <= 0) {
+    return;
+  }
+  const int64_t logical_elements = int_imm->value;
+  constexpr int64_t kTileElements = kBlackholeTileRows * kBlackholeTileCols;
+  const int required_tiles = std::max(1, CeilDivToInt(logical_elements, kTileElements));
+  if (required_tiles <= value->num_tiles && logical_elements <= value->num_elements) {
+    return;
+  }
+  value->num_tiles = std::max(value->num_tiles, required_tiles);
+  value->num_elements = std::max<int64_t>(value->num_elements, logical_elements);
+  ICHECK_LT(value->cb_id, static_cast<int>(cb_requirements_.size()));
+  const DataType storage_dtype =
+      value->buffer.defined() ? ExactTiledCBStorageDType(value->buffer->dtype)
+                              : DataType::BFloat(16);
+  SetRequirementPageLayout(
+      value->cb_id,
+      kBlackholeTileRows * kBlackholeTileCols * storage_dtype.bytes(),
+      std::max(cb_requirements_.at(value->cb_id).num_pages, value->num_tiles));
+  auto& req = cb_requirements_.at(value->cb_id);
+  req.publish_pages_per_event = std::max(req.publish_pages_per_event, value->num_tiles);
+  req.consume_pages_per_event = std::max(req.consume_pages_per_event, value->num_tiles);
+  req.data_format = DataTypeToDataFormatForBlackhole(storage_dtype);
+}
+
+CBType PlanTTKernelABI::ExactOutputCBTypeForBuffer(
+    const Buffer& buffer, int current_order_index) const {
+  const FutureBufferUses uses = ClassifyFutureBufferUses(buffer, current_order_index);
+  if (uses.has_transport_consume && !uses.has_compute_consume) {
+    return CBType::kOutput;
+  }
+  return CBType::kIntermediate;
+}
+
+void PlanTTKernelABI::MarkExactTiledCBValueConsumedByTransport(
+    const ExactTiledCBValue& value) {
+  if (value.cb_id < 0) {
+    return;
+  }
+  ICHECK_LT(value.cb_id, static_cast<int>(cb_requirements_.size()));
+  auto& req = cb_requirements_.at(value.cb_id);
+  ICHECK(req.type != CBType::kInput)
+      << "PlanTTKernelABI cannot consume input CB requirement as a writer output";
+  req.type = CBType::kOutput;
+}
+
 bool PlanTTKernelABI::TryCreateLiveExactTiledCBValue(const Buffer& buffer,
                                                      ExactTiledCBValue* value) const {
   ICHECK(value != nullptr);
@@ -239,6 +312,7 @@ bool PlanTTKernelABI::TryCreateLiveExactTiledCBValue(const Buffer& buffer,
   value->cb_id = cb_id;
   value->borrowed_live = true;
   PopulateExactTiledCBValueShape(buffer, value);
+  RefineExactTiledCBValueShapeFromRequirement(value);
   return true;
 }
 
@@ -293,6 +367,7 @@ bool PlanTTKernelABI::TryCreateExactOutputLiveTiledCBValue(const Buffer& buffer,
   value->cb_id = cb_id;
   value->borrowed_live = true;
   PopulateExactTiledCBValueShape(buffer, value);
+  RefineExactTiledCBValueShapeFromRequirement(value);
   return true;
 }
 
@@ -512,11 +587,11 @@ Stmt PlanTTKernelABI::AttachExactOutputLiveFormMarker(const Buffer& dst,
 }
 
 PlanTTKernelABI::ExactTiledCBValue PlanTTKernelABI::CreatePublishedExactTiledCBValue(
-    const Buffer& src, const std::string& suffix) {
+    const Buffer& src, const std::string& suffix, CBType type) {
   ExactTiledCBValue value;
   value.buffer = CreateEphemeralBufferLike(src, suffix);
   PopulateExactTiledCBValueShape(src, &value);
-  value.cb_id = PrepareExactTiledCBRequirement(value.buffer);
+  value.cb_id = PrepareExactTiledCBRequirement(value.buffer, type);
   SetRequirementPageLayout(value.cb_id,
                            kBlackholeTileRows * kBlackholeTileCols * value.buffer->dtype.bytes(),
                            value.num_tiles);
@@ -527,8 +602,8 @@ PlanTTKernelABI::ExactTiledCBValue PlanTTKernelABI::CreatePublishedExactTiledCBV
 }
 
 PlanTTKernelABI::ExactTiledCBValue PlanTTKernelABI::CreateEmptyExactTiledCBValue(
-    const Buffer& like_buffer, const std::string& suffix) {
-  return CreatePublishedExactTiledCBValue(like_buffer, suffix);
+    const Buffer& like_buffer, const std::string& suffix, CBType type) {
+  return CreatePublishedExactTiledCBValue(like_buffer, suffix, type);
 }
 
 PlanTTKernelABI::ExactTiledCBValue PlanTTKernelABI::CreateConstantExactTiledCBValue(

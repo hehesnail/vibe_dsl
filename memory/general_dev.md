@@ -2116,3 +2116,18 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   interleaved and sharded runtime-visible distributions require page sizes,
   but replicated local L1 intermediates can remain device-local records whose
   storage is owned by CB/materialization plans.
+- 2026-05-03 T3 sharded compute runtime pattern:
+  resident-L1 staged-copy coverage should not stop at copy.  Add bf16 direct
+  runtime correctness for chained elementwise ops across height, width, and
+  block sharding, including at least one large oversubscribed block case.
+  Mixed elementwise + reduce cases must check the final tensor output after
+  the reduce result feeds later elementwise leaves; otherwise writer/CB
+  lifetime bugs can pass projection-only tests.
+  For exact-CB values, `num_pages` is CB capacity, not a publish/consume event
+  size or logical tensor shape.  Event waits/pushes should come from
+  `publish_pages_per_event` / `consume_pages_per_event` and the logical live
+  value tile count; preserving logical `num_elements` matters for rank-1
+  reduce writer paths.
+  Grouped one-dimensional broadcast such as `x[i] / y[i >> k]` is a real
+  broadcast-cols structure; derive the grouping from IR shape/index structure,
+  not from names.

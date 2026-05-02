@@ -750,13 +750,16 @@ Stmt PlanTTKernelABI::GenerateMergeFragmentTilesSequence(const Buffer& dst,
     ICHECK(!fact->execution_protocol.empty())
         << "PlanTTKernelABI requires execution_protocol in buffer materialization fact for "
         << dst_buffer_name;
-    ICHECK_EQ(fact->bridge_kind, "tile_nfaces_materialization")
+    ICHECK_EQ(fact->bridge_kind, buffer_materialization::kTileNFacesMaterialization)
         << "PlanTTKernelABI does not support buffer-materialization bridge_kind "
         << fact->bridge_kind
         << " for " << dst_buffer_name;
-    ICHECK_EQ(fact->execution_protocol, "dst_cb_binary_pack")
-        << "PlanTTKernelABI does not support buffer-materialization execution_protocol "
-        << fact->execution_protocol << " for " << dst_buffer_name;
+    if (!merge_with_zero_reload && !use_live_reload) {
+      ICHECK_EQ(fact->execution_protocol, buffer_materialization::kDstCbBinaryPack)
+          << "PlanTTKernelABI does not support buffer-materialization execution_protocol "
+          << fact->execution_protocol << " for local-fragment accumulator reload of "
+          << dst_buffer_name;
+    }
   }
   ICHECK_GT(gemm_c_dtype_.bytes(), 0)
       << "Blackhole accumulator-merge lowering requires a valid destination dtype for "
