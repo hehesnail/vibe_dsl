@@ -871,21 +871,23 @@ Stmt PlanTTKernelABI::GenerateRowReductionSequence(const RowReductionMatch& matc
   emit.Wait(scaler.cb_id, scaler.num_tiles);
   emit.ReconfigDataFormat(src_in.cb_id, scaler.cb_id);
   for (int out_tile = 0; out_tile < reduced.num_tiles; ++out_tile) {
-    emit.EmitPackedTile(reduced.cb_id, out_tile, [&](ExactTileComputeEmitter& tile_emit) {
-      tile_emit.Append(
-          blackhole_reduce_init(),
-          {IntImm32(src_in.cb_id), IntImm32(scaler.cb_id), IntImm32(reduced.cb_id),
-           StringImm(match.kind), StringImm("row")});
-      for (int tile = 0; tile < tiles_per_reduction; ++tile) {
-        const int src_tile = out_tile * tiles_per_reduction + tile;
-        tile_emit.Append(
-            blackhole_reduce_tile(),
-            {IntImm32(src_in.cb_id), IntImm32(scaler.cb_id), IntImm32(src_tile), IntImm32(0),
-             IntImm32(0), StringImm(match.kind), StringImm("row")});
-      }
-      tile_emit.Append(blackhole_reduce_uninit(),
-                       {StringImm(match.kind), StringImm("row")});
-    });
+    emit.Append(blackhole_tile_regs_acquire(), {});
+    emit.Append(
+        blackhole_reduce_init(),
+        {IntImm32(src_in.cb_id), IntImm32(scaler.cb_id), IntImm32(reduced.cb_id),
+         StringImm(match.kind), StringImm("row")});
+    for (int tile = 0; tile < tiles_per_reduction; ++tile) {
+      const int src_tile = out_tile * tiles_per_reduction + tile;
+      emit.Append(
+          blackhole_reduce_tile(),
+          {IntImm32(src_in.cb_id), IntImm32(scaler.cb_id), IntImm32(src_tile), IntImm32(0),
+           IntImm32(0), StringImm(match.kind), StringImm("row")});
+    }
+    emit.Append(blackhole_tile_regs_commit(), {});
+    emit.Append(blackhole_tile_regs_wait(), {});
+    emit.PackTile(reduced.cb_id, out_tile);
+    emit.Append(blackhole_tile_regs_release(), {});
+    emit.Append(blackhole_reduce_uninit(), {StringImm(match.kind), StringImm("row")});
   }
   emit.PopIfOwned(src_in.cb_id, src_in.num_tiles, src_in.borrowed_live);
   emit.Pop(scaler.cb_id, scaler.num_tiles);

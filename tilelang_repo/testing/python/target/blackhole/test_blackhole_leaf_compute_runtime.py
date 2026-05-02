@@ -1,3 +1,5 @@
+import re
+
 import pytest
 import torch
 
@@ -16,6 +18,10 @@ from .test_blackhole_copy_pipeline import _extract_blackhole_executable_spec
 M = 32
 N = 32
 STANDALONE_REDUCE_SIM_REASON = "standalone reduce_tile leaf direct runtime is gated"
+STANDALONE_REDUCE_SIM_REASON_DETAILS = (
+    "tensix_execute_pacr count=1",
+    "vector-output materialization is not yet admitted",
+)
 STANDALONE_FILL_TYPECAST_SIM_REASON = (
     "standalone fill/typecast publish direct runtime is gated"
 )
@@ -38,6 +44,16 @@ def _compute_operation_names(executable_spec):
         for op in kernel.get("compute_ops", []):
             operations.append(str(op["operation_name"]))
     return operations
+
+
+def _compute_kernel_source(executable_spec):
+    return str(
+        next(
+            kernel["source_code"]
+            for kernel in executable_spec["kernels"]
+            if str(kernel["kind"]) == "compute" and str(kernel["core_type"]) == "trisc"
+        )
+    )
 
 
 def binary_leaf_kernel(operation):
@@ -158,12 +174,43 @@ def test_blackhole_standalone_leaf_compute_projects_typed_runtime_contracts(
     assert "multi_compute_contracts" not in executable_spec
     reasons = _direct_runtime_unsupported_reasons(artifact)
     if case_name == "reduction_sum":
-        assert any(STANDALONE_REDUCE_SIM_REASON in reason for reason in reasons)
+        reduce_reasons = [
+            reason for reason in reasons if STANDALONE_REDUCE_SIM_REASON in reason
+        ]
+        assert reduce_reasons
+        assert all(
+            detail in reduce_reasons[0] for detail in STANDALONE_REDUCE_SIM_REASON_DETAILS
+        )
     elif case_name == "typecast_publish":
         assert any(STANDALONE_FILL_TYPECAST_SIM_REASON in reason for reason in reasons)
     else:
         assert not reasons, case_name
     assert expected_ops <= set(_compute_operation_names(executable_spec))
+
+
+def test_blackhole_standalone_reduce_packs_before_reduce_uninit():
+    artifact = _lower_blackhole(reduction_sum_leaf_kernel())
+    executable_spec = _extract_blackhole_executable_spec(artifact)
+    compute_source = _compute_kernel_source(executable_spec)
+
+    reduce_window = re.search(
+        r"reduce_init<PoolType::SUM, ReduceDim::REDUCE_ROW>\(\d+, \d+, (?P<out_cb>\d+)\);"
+        r"(?P<body>.*?)"
+        r"cb_push_back\((?P=out_cb), 1\);",
+        compute_source,
+        flags=re.DOTALL,
+    )
+    assert reduce_window is not None
+
+    out_cb = int(reduce_window.group("out_cb"))
+    body = reduce_window.group("body")
+    reduce_tile_offset = body.find("reduce_tile<PoolType::SUM, ReduceDim::REDUCE_ROW>")
+    pack_offset = body.find(f"pack_tile(0, {out_cb}, 0);")
+    uninit_offset = body.find("reduce_uninit<false>();")
+
+    assert reduce_tile_offset >= 0
+    assert pack_offset > reduce_tile_offset
+    assert uninit_offset > pack_offset
 
 
 @pytest.mark.parametrize(

@@ -2923,7 +2923,8 @@ static void EnforceStandalonePacrLeafSimulatorGate(ExecutableSpec* spec) {
     AppendDirectRuntimeUnsupportedReason(
         spec,
         "standalone reduce_tile leaf direct runtime is gated: TT-Sim reports "
-        "tensix_execute_pacr unsupported for bf16 row reduction");
+        "tensix_execute_pacr count=1 for row-reduce pack and vector-output "
+        "materialization is not yet admitted");
   }
   if (has_fill_typecast_publish && !has_gemm) {
     AppendDirectRuntimeUnsupportedReason(
