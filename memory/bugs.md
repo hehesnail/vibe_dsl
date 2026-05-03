@@ -2134,6 +2134,28 @@
     protocol；只看输出 dtype 或 projection metadata 容易漏掉 direct runtime
     还未接收的 cast/publication path。
 
+#### T5 110-core sharded GEMM exposed square-shape axis masking
+
+- **症状**:
+  - 2x2 external sharded-L1 GEMM 通过后，把 shape 扩到
+    `M=320, N=352, K=256`、logical grid `11x10`、110 个 worker core 的
+    all-bf16 direct runtime，TT-Metal 在写入 B 的 sharded L1 MeshBuffer 时
+    报 `No L1 bank exists for core (x=0,y=10)`。
+- **根因**:
+  - B tensor 的形状是 `(N, K)`，height shard 对应输出列方向 `bx`。
+    测试 helper 之前把 B 的 sharding grid 写成 `CoreGrid(x=1, y=grid_x)`。
+    在 2x2 下 `x/y` 交换不可见；在 Blackhole 逻辑 worker grid
+    `11x10` 下，`grid_x=11` 被错误放到 y 轴，越过合法 y 范围。
+- **修法**:
+  - B 的 external sharded-L1 memory config 改为
+    `CoreGrid(x=grid_x, y=1)`。
+  - 增加 110-core all-external-bf16 direct runtime gate，断言 logical grid
+    `11x10`、110 个 physical cores、110 个 one-work packets，以及 A/B/C
+    sharded accessor counts `11/12/61`。
+- **教训**:
+  - 多 core sharding 测试不能只用方形小 grid；至少要覆盖硬件 grid 的
+    非方形边界，否则 operand-to-axis 错误会被对称 shape 掩盖。
+
 ## 3. 环境问题速查
 
 | 问题 | 解决 |

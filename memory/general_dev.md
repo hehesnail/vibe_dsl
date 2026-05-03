@@ -2174,3 +2174,9 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   with `pack_tile`; direct `fp32 fragment -> bf16 output` creates an
   unsupported compute cast, and an ordinary fragment-cast materialization can
   hit the direct-runtime `cb_republish` gate.
+- 2026-05-04 T5 many-core sharded GEMM coverage:
+  square 2x2 sharded GEMM does not prove operand shard axis orientation.  For
+  B shaped `(N, K)`, height sharding follows output-column work `bx`, so the
+  static L1 sharding grid should be `CoreGrid(x=grid_x, y=1)`.  A square
+  2x2 case masks `x/y` swaps; an 11x10 full-worker case exposes them as
+  invalid L1 bank coordinates such as `(x=0, y=10)`.

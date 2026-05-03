@@ -134,10 +134,12 @@ The admitted T5 subset is the first static external sharded-L1 GEMM layout:
   `sharded_accessor_cta` records, including typed accessor offsets/counts,
   layout, memory space, and buffer distribution fields;
 - direct runtime executes the admitted single-core bf16-input / fp32-output
-  GEMM and the hardened 2x2 multi-core GEMM through `BlackholeModule` using
-  sharded L1 MeshBuffers.  The 2x2 case covers `A` and `B` height-sharded L1
-  inputs and a block-sharded L1 output.  It runs both bf16-input /
-  fp32-output and all external bf16 input/output tensors;
+  GEMM and the hardened multi-core GEMM through `BlackholeModule` using
+  sharded L1 MeshBuffers.  The covered multi-core cases include a 2x2 smoke
+  shape and an 11x10 many-core shape (`M=320`, `N=352`, `K=256`) that uses
+  all 110 logical worker cores.  They cover `A` and `B` height-sharded L1
+  inputs and a block-sharded L1 output, with both bf16-input / fp32-output
+  and all external bf16 input/output tensors;
 - all-external-bf16 output uses the explicit preclear plus
   `clear_accum = false` post-merge cast path so the materialized bf16 tile is
   published with `publication_protocol = pack_tile`, not an unadmitted
@@ -168,7 +170,7 @@ T5 validation must cover:
 - GEMM placement-contract tests for admitted input/output memory configs
 - source/spec tests proving GEMM accessor records match placement decisions
 - direct-runtime bf16 correctness for the first admitted sharded layout,
-  including multi-core sharded execution and all external bf16 input/output
-  coverage
+  including multi-core sharded execution, a many-core shape that uses the full
+  110-worker logical grid, and all external bf16 input/output coverage
 - typed rejects for unsupported placement, conversion, page-shape, retile, or
   work-coarsening combinations

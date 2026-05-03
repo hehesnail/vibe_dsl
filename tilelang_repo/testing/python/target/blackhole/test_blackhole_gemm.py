@@ -431,7 +431,7 @@ def external_sharded_l1_multicore_gemm_kernel(
             )
             B_sharded = T.sharded_l1(
                 strategy="height",
-                grid=T.CoreGrid(x=1, y=grid_x),
+                grid=T.CoreGrid(x=grid_x, y=1),
                 shard_shape=(tile_n, K),
                 orientation="row_major",
                 allow_reshard=False,
@@ -486,12 +486,24 @@ def external_sharded_l1_multicore_gemm_kernel(
     return main
 
 
-def _assert_t5_multicore_external_sharded_accessor_contract(device_main):
+def _assert_t5_multicore_external_sharded_accessor_contract(
+    device_main,
+    *,
+    expected_grid_x: int,
+    expected_grid_y: int,
+    expected_accessor_counts: dict[str, int],
+):
     core_plan = extract_blackhole_core_plan(device_main)
-    assert int(core_plan["logical_grid_x"]) == 2
-    assert int(core_plan["logical_grid_y"]) == 2
-    assert len(core_plan["physical_cores"]) == 4
-    assert sum(int(packet["work_count"]) for packet in core_plan["work_packets"]) == 4
+    expected_work = expected_grid_x * expected_grid_y
+    assert int(core_plan["logical_grid_x"]) == expected_grid_x
+    assert int(core_plan["logical_grid_y"]) == expected_grid_y
+    assert len(core_plan["physical_cores"]) == expected_work
+    assert len(core_plan["work_packets"]) == expected_work
+    assert (
+        sum(int(packet["work_count"]) for packet in core_plan["work_packets"])
+        == expected_work
+    )
+    assert max(int(packet["work_count"]) for packet in core_plan["work_packets"]) == 1
 
     executable = _extract_materialized_blackhole_executable(device_main)
     sharded_accessors = {}
@@ -511,11 +523,7 @@ def _assert_t5_multicore_external_sharded_accessor_contract(device_main):
     assert {
         name: int(accessor["compile_time_arg_count"])
         for name, accessor in sharded_accessors.items()
-    } == {
-        "A": 7,
-        "B": 7,
-        "C": 8,
-    }
+    } == expected_accessor_counts
     assert all(
         int(accessor["common_runtime_arg_count"]) == 0
         for accessor in sharded_accessors.values()
@@ -1774,7 +1782,12 @@ def test_blackhole_t5_multicore_external_sharded_l1_gemm_direct_runtime_bf16():
         artifact = lower(kernel, target=target)
 
     device_main = artifact.device_mod["main_kernel"]
-    _assert_t5_multicore_external_sharded_accessor_contract(device_main)
+    _assert_t5_multicore_external_sharded_accessor_contract(
+        device_main,
+        expected_grid_x=2,
+        expected_grid_y=2,
+        expected_accessor_counts={"A": 7, "B": 7, "C": 8},
+    )
 
     artifact.codegen_mod["main"](a_torch, b_torch, c_output)
     assert_tensors_close_or_dump(
@@ -1808,9 +1821,17 @@ def test_blackhole_t5_multicore_external_sharded_l1_gemm_direct_runtime_all_bf16
         artifact = lower(kernel, target=target)
 
     device_main = artifact.device_mod["main_kernel"]
-    _assert_t5_multicore_external_sharded_accessor_contract(device_main)
+    _assert_t5_multicore_external_sharded_accessor_contract(
+        device_main,
+        expected_grid_x=2,
+        expected_grid_y=2,
+        expected_accessor_counts={"A": 7, "B": 7, "C": 8},
+    )
     reasons = _direct_runtime_unsupported_reasons(artifact)
-    assert not any("thread-distributed cb_republish materialization" in reason for reason in reasons)
+    assert not any(
+        "thread-distributed cb_republish materialization" in reason
+        for reason in reasons
+    )
 
     executable_spec = _extract_blackhole_executable_spec(artifact)
     materializations = {
@@ -1828,6 +1849,49 @@ def test_blackhole_t5_multicore_external_sharded_l1_gemm_direct_runtime_all_bf16
         rtol=2e-1,
         failure_message=(
             "All-bf16 multicore external sharded L1 GEMM direct-call output mismatch"
+        ),
+    )
+
+
+def test_blackhole_t5_manycore_external_sharded_l1_gemm_direct_runtime_all_bf16():
+    can_run, msg = check_blackhole_direct_execution_requirements()
+    if not can_run:
+        pytest.skip(f"Blackhole requirements not met: {msg}")
+
+    m, n, k = 320, 352, 256
+    torch.manual_seed(2)
+    a_torch = torch.randn(m, k, dtype=torch.bfloat16)
+    b_torch = torch.randn(n, k, dtype=torch.bfloat16)
+    c_output = torch.zeros(m, n, dtype=torch.bfloat16)
+    c_ref = torch.matmul(a_torch.float(), b_torch.float().transpose(0, 1)).to(
+        torch.bfloat16
+    )
+
+    target = Target("blackhole")
+    kernel = external_sharded_l1_multicore_gemm_kernel(
+        M=m, N=n, K=k, output_dtype="bfloat16"
+    )
+    with target:
+        artifact = lower(kernel, target=target)
+
+    device_main = artifact.device_mod["main_kernel"]
+    _assert_t5_multicore_external_sharded_accessor_contract(
+        device_main,
+        expected_grid_x=11,
+        expected_grid_y=10,
+        expected_accessor_counts={"A": 11, "B": 12, "C": 61},
+    )
+    reasons = _direct_runtime_unsupported_reasons(artifact)
+    assert not any("thread-distributed cb_republish materialization" in reason for reason in reasons)
+
+    artifact.codegen_mod["main"](a_torch, b_torch, c_output)
+    assert_tensors_close_or_dump(
+        c_output,
+        c_ref,
+        atol=2e-1,
+        rtol=2e-1,
+        failure_message=(
+            "Manycore all-bf16 external sharded L1 GEMM direct-call output mismatch"
         ),
     )
 

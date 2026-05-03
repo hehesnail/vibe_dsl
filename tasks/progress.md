@@ -24,7 +24,8 @@ the admitted 64B page-indexed copy path, static external sharded L1 accessors,
 admitted standalone leaf compute families, current-placement GEMM direct
 correctness, static external sharded-L1 GEMM direct correctness for the first
 admitted bf16 layouts including 2x2 multi-core sharded execution and all
-external bf16 input/output tensors, explicit
+external bf16 input/output tensors, plus a 110-core many-core all-bf16
+sharded execution gate, explicit
 `T.MemoryConfig` / `T.annotate_memory_config` placement intent,
 `TTTensorMemoryConfigPlan`, `TTOpShardingContract`,
 `TTPlacementResolutionPlan`, and `TTReshardPlan` projection for the current
@@ -122,8 +123,8 @@ placement intent when the shard grid is covered by the kernel work mapping.
 The GEMM source/spec/direct-runtime path consumes T4 `TTABIPlan` /
 `ExecutableSpec` sharded accessor records and direct runtime executes the
 admitted single-core bf16-input / fp32-output case plus the 2x2 multi-core
-bf16-input / fp32-output and all external bf16 cases through
-`BlackholeModule`.
+bf16-input / fp32-output, 2x2 all-external-bf16, and 110-core many-core
+all-external-bf16 cases through `BlackholeModule`.
 
 Unsupported external sharded-L1 GEMM layouts that require a logical work
 mapping change now fail closed from typed records: a runtime-visible sharded
@@ -181,9 +182,14 @@ T6 is complete only when:
   `test_blackhole_t5_external_sharded_l1_gemm_direct_runtime_bf16`,
   `test_blackhole_t5_multicore_external_sharded_l1_gemm_direct_runtime_bf16`,
   `test_blackhole_t5_multicore_external_sharded_l1_gemm_direct_runtime_all_bf16`,
+  `test_blackhole_t5_manycore_external_sharded_l1_gemm_direct_runtime_all_bf16`,
   and
   `test_blackhole_t4_external_sharded_l1_accessor_projects_from_memory_config`
-  passed: `6 passed`.
+  passed: `7 passed`.
+- The many-core case covers `M=320`, `N=352`, `K=256`, logical grid
+  `11 x 10`, 110 physical worker cores, 110 one-work packets, A/B/C sharded
+  accessor compile-time counts `11/12/61`, and all external bf16 input/output
+  tensors.
 - GEMM non-direct regression subset:
   `pytest -q testing/python/target/blackhole/test_blackhole_gemm.py -k 'not direct_runtime and not direct_call and not gemm_basic and not multicore' --tb=short`
   passed: `45 passed, 2 skipped, 17 deselected`.
@@ -355,8 +361,8 @@ Large tasks must land through these smaller checkpoints.
   typed retile/work-coarsening diagnostic.
 - T5.3 First sharded GEMM correctness (complete):
   direct correctness for the first admitted sharded layout variant, including
-  single-core, 2x2 multi-core, bf16-input / fp32-output, and all external
-  bf16 input/output coverage.
+  single-core, 2x2 multi-core, 110-core many-core, bf16-input /
+  fp32-output, and all external bf16 input/output coverage.
 
 ### T7 Exact-CB / Materialization Primitives
 
