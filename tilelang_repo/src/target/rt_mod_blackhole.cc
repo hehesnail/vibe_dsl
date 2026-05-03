@@ -3069,6 +3069,55 @@ static std::string NormalizeMemorySpace(std::string value) {
   return value;
 }
 
+static bool HasPositiveShape(const std::vector<int64_t>& shape) {
+  return !shape.empty() &&
+         std::all_of(shape.begin(), shape.end(), [](int64_t value) { return value > 0; });
+}
+
+static bool IsAdmittedRuntimeBufferDistribution(const BufferDistributionSpec& distribution,
+                                                std::string* reject_reason) {
+  const std::string memory_space = NormalizeMemorySpace(distribution.memory_space);
+  if (distribution.distribution_kind == "interleaved" &&
+      (distribution.layout == "interleaved" ||
+       distribution.layout == "page_indexed") &&
+      memory_space == "dram") {
+    if (distribution.logical_index_mapping != "interleaved_page_index") {
+      if (reject_reason != nullptr) {
+        *reject_reason = "lacks interleaved_page_index address mapping";
+      }
+      return false;
+    }
+    return true;
+  }
+  if (distribution.distribution_kind == "sharded" &&
+      distribution.layout == "sharded" && memory_space == "l1") {
+    const bool valid_strategy = distribution.sharding_strategy == "height" ||
+                                distribution.sharding_strategy == "width" ||
+                                distribution.sharding_strategy == "block";
+    const bool valid_orientation = distribution.shard_orientation == "row_major" ||
+                                   distribution.shard_orientation == "col_major";
+    if (!valid_strategy || !valid_orientation ||
+        !HasPositiveShape(distribution.shard_grid_shape) ||
+        !HasPositiveShape(distribution.shard_shape) ||
+        distribution.logical_index_mapping != "work_packet_row_major" ||
+        distribution.core_local_address_mapping != "l1_shard_linear" ||
+        distribution.attached_core_group.empty() ||
+        distribution.attached_core_group_index < 0) {
+      if (reject_reason != nullptr) {
+        *reject_reason =
+            "lacks sharded L1 strategy/orientation/shape/core mapping fields";
+      }
+      return false;
+    }
+    return true;
+  }
+  if (reject_reason != nullptr) {
+    *reject_reason = "is " + distribution.distribution_kind + "/" + distribution.layout +
+                     "/" + memory_space;
+  }
+  return false;
+}
+
 static void EnforceBufferDistributionAddressContractGate(ExecutableSpec* spec) {
   ICHECK(spec != nullptr);
   const std::unordered_set<std::string> runtime_buffers =
@@ -3094,21 +3143,13 @@ static void EnforceBufferDistributionAddressContractGate(ExecutableSpec* spec) {
               buffer_name);
       return;
     }
-    const std::string memory_space = NormalizeMemorySpace(distribution->memory_space);
-    if (distribution->distribution_kind != "interleaved" ||
-        distribution->layout != "interleaved" || memory_space != "dram") {
+    std::string reject_reason;
+    if (!IsAdmittedRuntimeBufferDistribution(*distribution, &reject_reason)) {
       AppendDirectRuntimeUnsupportedReason(
           spec,
-          "buffer distribution for runtime buffer " + buffer_name +
-              " is " + distribution->distribution_kind +
-              "; direct runtime admits only interleaved DRAM runtime buffers");
-      return;
-    }
-    if (distribution->logical_index_mapping != "interleaved_page_index") {
-      AppendDirectRuntimeUnsupportedReason(
-          spec,
-          "buffer distribution for runtime buffer " + buffer_name +
-              " lacks interleaved_page_index address mapping");
+          "buffer distribution for runtime buffer " + buffer_name + " " +
+              reject_reason +
+              "; direct runtime admits interleaved DRAM or static sharded L1 runtime buffers");
       return;
     }
     if (distribution->page_size_bytes == 0) {

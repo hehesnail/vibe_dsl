@@ -1368,32 +1368,51 @@ void PlanTTKernelABI::StoreAccessorDescriptors(PrimFunc &func) {
                         accessor.Get("transport_page_size").value())
                         .IntValue()
                   : 0;
+          const AccessorDescriptor *matched_descriptor = nullptr;
+          for (const AccessorDescriptor &desc : accessor_descriptors_) {
+            const bool matches = desc.segment_kind == kind &&
+                                 desc.buffer_name == buffer_name &&
+                                 desc.compile_time_arg_offset ==
+                                     compile_time_arg_offset &&
+                                 desc.compile_time_arg_count ==
+                                     compile_time_arg_count &&
+                                 desc.common_runtime_arg_offset ==
+                                     common_runtime_arg_offset &&
+                                 desc.common_runtime_arg_count ==
+                                     common_runtime_arg_count &&
+                                 desc.args_config_bits == args_config_bits;
+            if (!matches) {
+              continue;
+            }
+            if (matched_descriptor != nullptr) {
+              ICHECK(matched_descriptor->layout == desc.layout &&
+                     matched_descriptor->memory_space == desc.memory_space &&
+                     matched_descriptor->transport_page_size_bytes ==
+                         desc.transport_page_size_bytes)
+                  << "PlanTTKernelABI found conflicting accessor descriptors "
+                     "for buffer "
+                  << buffer_name
+                  << "; a single accessor slot cannot mix page-indexed and "
+                     "interleaved transport metadata";
+              continue;
+            }
+            matched_descriptor = &desc;
+          }
+          std::string resolved_layout = layout;
+          std::string resolved_memory_space = memory_space;
           int resolved_transport_page_size = transport_page_size;
+          if (matched_descriptor != nullptr) {
+            resolved_layout = matched_descriptor->layout;
+            resolved_memory_space = matched_descriptor->memory_space;
+            if (matched_descriptor->transport_page_size_bytes > 0) {
+              resolved_transport_page_size =
+                  matched_descriptor->transport_page_size_bytes;
+            }
+          }
           if (resolved_transport_page_size == 0 && accessor.Get("buffer")) {
             auto transport_it = accessor_transport_page_sizes.find(buffer_name);
             if (transport_it != accessor_transport_page_sizes.end()) {
               resolved_transport_page_size = transport_it->second;
-            }
-            auto desc_it = std::find_if(
-                accessor_descriptors_.begin(), accessor_descriptors_.end(),
-                [&](const AccessorDescriptor &desc) {
-                  return desc.segment_kind == kind &&
-                         desc.buffer_name == buffer_name &&
-                         desc.compile_time_arg_offset ==
-                             compile_time_arg_offset &&
-                         desc.compile_time_arg_count ==
-                             compile_time_arg_count &&
-                         desc.common_runtime_arg_offset ==
-                             common_runtime_arg_offset &&
-                         desc.common_runtime_arg_count ==
-                             common_runtime_arg_count &&
-                         desc.args_config_bits == args_config_bits;
-                });
-            if (desc_it != accessor_descriptors_.end()) {
-              if (desc_it->transport_page_size_bytes > 0) {
-                resolved_transport_page_size =
-                    desc_it->transport_page_size_bytes;
-              }
             }
           }
 
@@ -1410,8 +1429,8 @@ void PlanTTKernelABI::StoreAccessorDescriptors(PrimFunc &func) {
             accessor.Set("transport_page_size",
                          Integer(resolved_transport_page_size));
           }
-          accessor.Set("layout", String(layout));
-          accessor.Set("memory_space", String(memory_space));
+          accessor.Set("layout", String(resolved_layout));
+          accessor.Set("memory_space", String(resolved_memory_space));
           accessors.push_back(accessor);
         }
       }
@@ -1673,7 +1692,8 @@ void PlanTTKernelABI::RegisterAccessor(
     int compile_time_arg_offset, int compile_time_arg_count,
     int common_runtime_arg_offset, int common_runtime_arg_count,
     int args_config_bits, int transport_page_size_bytes,
-    std::vector<int64_t> host_axis_order, bool transpose_2d) {
+    std::vector<int64_t> host_axis_order, bool transpose_2d,
+    const std::string &layout, const std::string &memory_space) {
   auto it = std::find_if(
       accessor_descriptors_.begin(), accessor_descriptors_.end(),
       [&](const AccessorDescriptor &desc) {
@@ -1686,7 +1706,9 @@ void PlanTTKernelABI::RegisterAccessor(
                desc.args_config_bits == args_config_bits &&
                desc.transport_page_size_bytes == transport_page_size_bytes &&
                desc.host_axis_order == host_axis_order &&
-               desc.transpose_2d == transpose_2d;
+               desc.transpose_2d == transpose_2d &&
+               desc.layout == layout &&
+               desc.memory_space == memory_space;
       });
   if (it != accessor_descriptors_.end()) {
     return;
@@ -1695,7 +1717,7 @@ void PlanTTKernelABI::RegisterAccessor(
       segment_kind, buffer, BufferIdentityName(buffer), compile_time_arg_offset,
       compile_time_arg_count, common_runtime_arg_offset,
       common_runtime_arg_count, args_config_bits, transport_page_size_bytes,
-      "interleaved", "dram", std::move(host_axis_order), transpose_2d});
+      layout, memory_space, std::move(host_axis_order), transpose_2d});
 }
 
 std::string

@@ -919,6 +919,30 @@ bool IsSharedSpatialDistributionKind(const String &distribution_kind) {
   return distribution_kind == "shared_visible";
 }
 
+std::string ShardingStrategyFromPlacementIntent(
+    const TensorPlacementIntent &intent) {
+  const std::string strategy = str(intent->strategy_class);
+  if (strategy == "height_sharded") {
+    return "height";
+  }
+  if (strategy == "width_sharded") {
+    return "width";
+  }
+  if (strategy == "block_sharded") {
+    return "block";
+  }
+  if (strategy == "nd_sharded") {
+    return "nd";
+  }
+  return strategy;
+}
+
+bool IsShardedPlacementIntent(const TensorPlacementIntent &intent) {
+  const std::string strategy = ShardingStrategyFromPlacementIntent(intent);
+  return strategy == "height" || strategy == "width" ||
+         strategy == "block" || strategy == "nd";
+}
+
 int64_t TotalAlignedL1BufferBytes(
     const Array<TTBufferDistributionPlan> &buffer_distribution_plans,
     int64_t alignment) {
@@ -1251,6 +1275,28 @@ ShardDataShapeForBuffer(const LogicalTileLayoutInfo &layout_info,
   return Array<Integer>();
 }
 
+bool EqualIntegerArray(const Array<Integer> &lhs, const Array<Integer> &rhs) {
+  if (lhs.size() != rhs.size()) {
+    return false;
+  }
+  for (size_t i = 0; i < lhs.size(); ++i) {
+    if (lhs[i]->value != rhs[i]->value) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool EquivalentPlacementIntent(const TensorPlacementIntent &lhs,
+                               const TensorPlacementIntent &rhs) {
+  return lhs.defined() && rhs.defined() &&
+         str(lhs->memory_space_class) == str(rhs->memory_space_class) &&
+         str(lhs->strategy_class) == str(rhs->strategy_class) &&
+         str(lhs->shard_orientation) == str(rhs->shard_orientation) &&
+         EqualIntegerArray(lhs->shard_grid_shape, rhs->shard_grid_shape) &&
+         EqualIntegerArray(lhs->shard_shape, rhs->shard_shape);
+}
+
 Array<TTBufferDistributionPlan>
 BuildBufferDistributionPlans(const SpatialPlan &spatial_plan,
                              const TTProgramSlices &slices,
@@ -1268,6 +1314,11 @@ BuildBufferDistributionPlans(const SpatialPlan &spatial_plan,
     info.memory_space = NormalizeMemorySpace(dst_layout->memory_space);
     info.page_size_bytes = dst_layout->page_size_bytes;
     dst_layout_by_buffer.emplace(str(dst_layout->buffer), std::move(info));
+  }
+  std::unordered_map<std::string, TensorPlacementIntent> intent_by_subject;
+  for (const TensorPlacementIntent &intent :
+       spatial_plan->tensor_placement_intents) {
+    intent_by_subject.emplace(str(intent->subject), intent);
   }
 
   const std::unordered_map<std::string, LogicalTileLayoutInfo>
@@ -1307,6 +1358,20 @@ BuildBufferDistributionPlans(const SpatialPlan &spatial_plan,
       abi_layout = dst_it->second.layout;
       abi_memory_space = dst_it->second.memory_space;
     }
+    auto intent_it = intent_by_subject.find(buffer);
+    TensorPlacementIntent placement_intent;
+    const bool has_placement_intent = intent_it != intent_by_subject.end();
+    if (has_placement_intent) {
+      placement_intent = intent_it->second;
+      memory_space = NormalizeMemorySpace(placement_intent->memory_space_class);
+      if (IsShardedPlacementIntent(placement_intent)) {
+        layout = String("sharded");
+      } else if (str(placement_intent->strategy_class) == "interleaved") {
+        if (str(layout) != "page_indexed") {
+          layout = String("interleaved");
+        }
+      }
+    }
     auto storage_it = storage_info_by_buffer.find(buffer);
     if (page_size_bytes == 0 && storage_it != storage_info_by_buffer.end()) {
       if (str(memory_space) == "L1") {
@@ -1342,7 +1407,40 @@ BuildBufferDistributionPlans(const SpatialPlan &spatial_plan,
         current_layout_it->second.logical_shape.size() > 0) {
       layout_info = current_layout_it->second;
     }
-    if (str(memory_space) == "DRAM" && str(layout) == "interleaved") {
+    if (has_placement_intent && IsShardedPlacementIntent(placement_intent)) {
+      ICHECK(has_core_group)
+          << "BuildTTProgram requires a TTCoreGroup for sharded placement intent on buffer "
+          << buffer;
+      const TTCoreGroup &core_group = slices.core_groups[0];
+      distribution_kind = String("sharded");
+      shard_grid_shape = placement_intent->shard_grid_shape;
+      shard_shape = placement_intent->shard_shape;
+      sharding_strategy = String(ShardingStrategyFromPlacementIntent(placement_intent));
+      shard_orientation = placement_intent->shard_orientation.empty()
+                              ? String("row_major")
+                              : placement_intent->shard_orientation;
+      if (storage_it != storage_info_by_buffer.end()) {
+        page_size_bytes = EstimateDRAMPageSizeBytes(storage_it->second);
+      }
+      logical_index_mapping = String("work_packet_row_major");
+      core_local_address_mapping = String("l1_shard_linear");
+      attached_core_group_name = core_group->name;
+      attached_core_group_index = 0;
+      auto source_it = source_buffer_by_target.find(buffer);
+      if (source_it != source_buffer_by_target.end()) {
+        auto source_intent_it = intent_by_subject.find(source_it->second);
+        const bool same_source_placement =
+            source_intent_it != intent_by_subject.end() &&
+            EquivalentPlacementIntent(source_intent_it->second, placement_intent);
+        if (!same_source_placement) {
+          source_buffer = String(source_it->second);
+          source_region_kind = String("per_work_tile");
+          source_region_shape = shard_shape;
+        }
+      }
+    } else if (str(memory_space) == "DRAM" &&
+               (str(layout) == "interleaved" ||
+                str(layout) == "page_indexed")) {
       distribution_kind = String("interleaved");
       logical_index_mapping = String("interleaved_page_index");
     } else if (str(memory_space) == "L1" && has_core_group &&
@@ -1381,6 +1479,204 @@ BuildBufferDistributionPlans(const SpatialPlan &spatial_plan,
         spatial_distribution_kind, abi_layout, abi_memory_space));
   }
   return distribution_plans;
+}
+
+std::unordered_map<std::string, TTBufferDistributionPlan>
+BuildDistributionByBuffer(
+    const Array<TTBufferDistributionPlan> &buffer_distribution_plans) {
+  std::unordered_map<std::string, TTBufferDistributionPlan> by_buffer;
+  for (const TTBufferDistributionPlan &plan : buffer_distribution_plans) {
+    by_buffer.emplace(str(plan->buffer), plan);
+  }
+  return by_buffer;
+}
+
+int64_t PositiveProduct(const Array<Integer> &values) {
+  int64_t product = 1;
+  for (const Integer &value : values) {
+    if (value->value <= 0) {
+      return 0;
+    }
+    product *= value->value;
+  }
+  return product;
+}
+
+int64_t AccessorCompileTimeArgCountFromDistribution(
+    const TTBufferDistributionPlan &distribution) {
+  if (distribution->distribution_kind == "sharded") {
+    int64_t rank = 0;
+    for (const Integer &dim : distribution->shard_grid_shape) {
+      if (dim->value > 1) {
+        ++rank;
+      }
+    }
+    if (rank == 0) {
+      rank = std::min<int64_t>(
+          static_cast<int64_t>(distribution->shard_shape.size()), 1);
+    }
+    const int64_t banks = PositiveProduct(distribution->shard_grid_shape);
+    if (rank <= 0 || banks <= 0) {
+      return 0;
+    }
+    const int64_t packed_bank_coords = (banks + 1) / 2;
+    return 2 + 1 + 1 + rank + rank + packed_bank_coords;
+  }
+  return 2;
+}
+
+int64_t AccessorArgsConfigBitsFromDistribution(
+    const TTBufferDistributionPlan &distribution) {
+  int64_t bits = 0;
+  if (distribution->distribution_kind == "sharded") {
+    bits |= 1;
+  }
+  if (distribution->memory_space == "DRAM" ||
+      distribution->memory_space == "dram") {
+    bits |= 2;
+  }
+  return bits;
+}
+
+String AccessorLayoutFromDistribution(
+    const TTBufferDistributionPlan &distribution) {
+  if (distribution->distribution_kind == "sharded") {
+    return String("sharded");
+  }
+  return distribution->layout.empty() ? String("interleaved")
+                                      : distribution->layout;
+}
+
+String AccessorMemorySpaceFromDistribution(
+    const TTBufferDistributionPlan &distribution) {
+  const std::string value = str(distribution->memory_space);
+  if (value == "DRAM") {
+    return String("dram");
+  }
+  if (value == "L1") {
+    return String("l1");
+  }
+  return String(value);
+}
+
+String AccessorKindFromDistribution(
+    const TTBufferDistributionPlan &distribution) {
+  if (distribution->distribution_kind == "sharded") {
+    return String("sharded_accessor_cta");
+  }
+  if (distribution->layout == "page_indexed") {
+    return String("page_indexed_accessor_cta");
+  }
+  return String("interleaved_accessor_cta");
+}
+
+TTCompileTimeArgSpec RewriteCompileTimeAccessorSpec(
+    const TTCompileTimeArgSpec &spec, const TTBufferDistributionPlan &distribution,
+    int64_t offset, int64_t count) {
+  return TTCompileTimeArgSpec(
+      spec->name, AccessorKindFromDistribution(distribution), spec->dtype,
+      offset, count, spec->buffer, spec->segment_role, spec->values,
+      AccessorArgsConfigBitsFromDistribution(distribution),
+      distribution->page_size_bytes, AccessorLayoutFromDistribution(distribution),
+      AccessorMemorySpaceFromDistribution(distribution), spec->host_axis_order,
+      spec->transpose_2d);
+}
+
+TTCompileTimeArgSpec RewriteCompileTimeLiteralSpec(
+    const TTCompileTimeArgSpec &spec, int64_t offset) {
+  return TTCompileTimeArgSpec(
+      spec->name, spec->kind, spec->dtype, offset, spec->count, spec->buffer,
+      spec->segment_role, spec->values, spec->args_config_bits,
+      spec->transport_page_size, spec->layout, spec->memory_space,
+      spec->host_axis_order, spec->transpose_2d);
+}
+
+Array<TTAccessorSpec> RewriteAccessorSpecsForDistributions(
+    const Array<TTAccessorSpec> &accessors,
+    const std::unordered_map<std::string, TTBufferDistributionPlan>
+        &distribution_by_buffer,
+    const std::unordered_map<std::string, int64_t> &offset_by_buffer,
+    const std::unordered_map<std::string, int64_t> &count_by_buffer) {
+  Array<TTAccessorSpec> rewritten;
+  for (const TTAccessorSpec &accessor : accessors) {
+    const std::string buffer = str(accessor->buffer);
+    auto distribution_it = distribution_by_buffer.find(buffer);
+    auto offset_it = offset_by_buffer.find(buffer);
+    auto count_it = count_by_buffer.find(buffer);
+    if (distribution_it == distribution_by_buffer.end() ||
+        offset_it == offset_by_buffer.end() ||
+        count_it == count_by_buffer.end()) {
+      rewritten.push_back(accessor);
+      continue;
+    }
+    const TTBufferDistributionPlan &distribution = distribution_it->second;
+    rewritten.push_back(TTAccessorSpec(
+        accessor->buffer, offset_it->second, count_it->second,
+        accessor->common_runtime_arg_offset, accessor->common_runtime_arg_count,
+        AccessorArgsConfigBitsFromDistribution(distribution),
+        distribution->page_size_bytes, AccessorLayoutFromDistribution(distribution),
+        AccessorMemorySpaceFromDistribution(distribution),
+        accessor->host_axis_order, accessor->transpose_2d));
+  }
+  return rewritten;
+}
+
+Array<TTABIPlan> RewriteABIPlansForBufferDistributions(
+    const Array<TTABIPlan> &abi_plans,
+    const Array<TTBufferDistributionPlan> &buffer_distribution_plans) {
+  const auto distribution_by_buffer =
+      BuildDistributionByBuffer(buffer_distribution_plans);
+  Array<TTABIPlan> rewritten_abis;
+  for (const TTABIPlan &abi : abi_plans) {
+    std::vector<TTCompileTimeArgSpec> ordered_specs(
+        abi->compile_time_arg_specs.begin(), abi->compile_time_arg_specs.end());
+    std::sort(ordered_specs.begin(), ordered_specs.end(),
+              [](const TTCompileTimeArgSpec &a,
+                 const TTCompileTimeArgSpec &b) {
+                if (a->offset != b->offset) {
+                  return a->offset < b->offset;
+                }
+                return str(a->name) < str(b->name);
+              });
+
+    Array<TTCompileTimeArgSpec> compile_time_arg_specs;
+    std::unordered_map<std::string, int64_t> offset_by_buffer;
+    std::unordered_map<std::string, int64_t> count_by_buffer;
+    int64_t next_offset = 0;
+    for (const TTCompileTimeArgSpec &spec : ordered_specs) {
+      auto distribution_it = distribution_by_buffer.find(str(spec->buffer));
+      const bool is_accessor =
+          str(spec->kind) == "interleaved_accessor_cta" ||
+          str(spec->kind) == "sharded_accessor_cta" ||
+          str(spec->kind) == "page_indexed_accessor_cta";
+      if (is_accessor && distribution_it != distribution_by_buffer.end()) {
+        const int64_t count =
+            AccessorCompileTimeArgCountFromDistribution(distribution_it->second);
+        ICHECK_GT(count, 0)
+            << "BuildTTProgram requires positive accessor compile-time count "
+               "for buffer "
+            << spec->buffer;
+        compile_time_arg_specs.push_back(RewriteCompileTimeAccessorSpec(
+            spec, distribution_it->second, next_offset, count));
+        offset_by_buffer[str(spec->buffer)] = next_offset;
+        count_by_buffer[str(spec->buffer)] = count;
+        next_offset += count;
+        continue;
+      }
+      compile_time_arg_specs.push_back(
+          RewriteCompileTimeLiteralSpec(spec, next_offset));
+      next_offset += spec->count;
+    }
+
+    Array<TTAccessorSpec> accessors = RewriteAccessorSpecsForDistributions(
+        abi->accessors, distribution_by_buffer, offset_by_buffer,
+        count_by_buffer);
+    rewritten_abis.push_back(TTABIPlan(
+        abi->name, abi->kernel_name, abi->runtime_args,
+        abi->common_runtime_args, compile_time_arg_specs, accessors,
+        abi->semaphore_bindings));
+  }
+  return rewritten_abis;
 }
 
 std::string TTMemoryLayoutFromDistribution(const TTBufferDistributionPlan &plan) {
@@ -1561,6 +1857,15 @@ std::string ReshardConversionKind(const TTTensorMemoryConfigPlan &source,
                                   const TTTensorMemoryConfigPlan &target) {
   const std::string source_layout = str(source->memory_layout);
   const std::string target_layout = str(target->memory_layout);
+  if (source_layout == target_layout &&
+      str(source->buffer_type) == str(target->buffer_type) &&
+      str(source->shard_distribution_strategy) ==
+          str(target->shard_distribution_strategy) &&
+      str(source->shard_orientation) == str(target->shard_orientation) &&
+      EqualIntegerArray(source->shard_grid_shape, target->shard_grid_shape) &&
+      EqualIntegerArray(source->shard_shape, target->shard_shape)) {
+    return "none";
+  }
   if (source_layout == "INTERLEAVED" && target_layout != "INTERLEAVED") {
     return "interleaved_to_sharded";
   }
@@ -1619,6 +1924,9 @@ Array<TTReshardPlan> BuildReshardPlans(
         tensor_memory_config_plans[static_cast<size_t>(target_index)];
     const std::string conversion_kind =
         ReshardConversionKind(source_config, target_config);
+    if (conversion_kind == "none") {
+      continue;
+    }
     auto materialization_it = materialization_index_by_target.find(target);
     String materialization_name;
     int64_t materialization_index = -1;
@@ -1870,6 +2178,8 @@ tvm::transform::Pass PlanTTABI() {
       slices.dst_layout_plans = BuildDstLayoutPlans(slices.abi_plans);
       slices.buffer_distribution_plans =
           BuildBufferDistributionPlans(spatial_plan, slices, func.value());
+      slices.abi_plans = RewriteABIPlansForBufferDistributions(
+          slices.abi_plans, slices.buffer_distribution_plans);
       slices.tensor_memory_config_plans =
           BuildTensorMemoryConfigPlans(spatial_plan, slices.buffer_distribution_plans);
       slices.op_sharding_contracts = BuildOpShardingContracts(

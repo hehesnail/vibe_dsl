@@ -48,6 +48,12 @@
 
 - 只做 codegen/reference compare 不算 true E2E
 - 当前支持面和 fail-fast 边界都应该在更早层被看见，不要全部压到 runtime
+- Blackhole external accessor admission 要同时测结构层和 runtime 层：
+  `TTABIPlan` / `ExecutableSpec` 里必须能看到 accessor kind、layout、
+  memory space、compile-time offset/count、`args_config_bits`、
+  page size、shard grid/shape/strategy/orientation；
+  direct runtime 再用这些 typed records 构造 TT-Metal buffer/accessor ABI。
+  只在 generated source 里看到 `TensorAccessorArgs` 不算完成。
 
 ## 4. Layered IR / explicit representation 模式
 
@@ -60,6 +66,12 @@
   plan /
   projection truth；
   不要只删单个旧 attr
+- `SpatialPlan` same-subject loop-carried boundary 只能说明结构上的
+  consume/produce 关系；它不能单独证明 accumulator live-in state。
+  GEMM lowering 仍要从当前 TIR / live-CB / materialization fact 判断是否
+  需要 accumulator reload。fresh 或 zero-precleared fragment 可以
+  canonicalize 到 `clear_accum=true`，不要为了补一个 lowering fact 把
+  self-edge 升级成跨阶段 owner truth。
 - cross-pass schema 一律 handle-first；
   字符串只保留
   display / debug / compatibility 角色

@@ -428,7 +428,7 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   /*! \brief Record Stage 2 copy requirements for a DRAM -> DRAM copy */
   void RecordDramToDramCopy(const tvm::tir::BufferStoreNode* op);
 
-  /*! \brief Register a segment-local interleaved accessor descriptor */
+  /*! \brief Register a segment-local accessor descriptor */
   void RegisterAccessor(const std::string& segment_kind,
                         const tvm::tir::Buffer& buffer,
                         int compile_time_arg_offset,
@@ -438,7 +438,9 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
                         int args_config_bits,
                         int transport_page_size_bytes = 0,
                         std::vector<int64_t> host_axis_order = {},
-                        bool transpose_2d = false);
+                        bool transpose_2d = false,
+                        const std::string& layout = "interleaved",
+                        const std::string& memory_space = "dram");
 
   std::string ResolveAccessorSegmentKind(CopyDirection direction) const;
   tvm::tir::Stmt MaybeWrapComputeSegment(const tvm::tir::Stmt& stmt) const;

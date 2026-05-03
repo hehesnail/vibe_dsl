@@ -716,6 +716,7 @@ void CodeGenBlackhole::GenerateGenericKernelMain(const tvm::tir::PrimFunc &f,
   stream << "  // Load kernel arguments from runtime\n";
   LoadCorePlan(f);
   LoadLogicalTileLayouts(f);
+  LoadAccessorOffsets(f);
   if (HasRuntimeArgsForCodegen(f)) {
     EmitRuntimeArgLoads(f);
     this->VisitStmt(f->body);
@@ -854,6 +855,48 @@ void CodeGenBlackhole::LoadLogicalTileLayouts(const tvm::tir::PrimFunc& f) {
       continue;
     }
     ingest_spec(item);
+  }
+}
+
+void CodeGenBlackhole::LoadAccessorOffsets(const tvm::tir::PrimFunc& f) {
+  accessor_compile_time_offset_by_buffer_.clear();
+  for (const ffi::Any& segment_any : tt_program_projection::GetExecutableArrayField(
+           f, "Blackhole codegen", tt_program_projection::executable_key::kSegmentPlan)) {
+    auto segment = segment_any.as<ffi::Map<ffi::String, ffi::Any>>().value_or(
+        ffi::Map<ffi::String, ffi::Any>());
+    if (segment.empty()) {
+      continue;
+    }
+    Array<ffi::Any> accessors;
+    if (auto value = segment.Get(ffi::String("accessors"))) {
+      accessors = Downcast<Array<ffi::Any>>(value.value());
+    }
+    for (const ffi::Any& accessor_any : accessors) {
+      auto accessor = accessor_any.as<ffi::Map<ffi::String, ffi::Any>>().value_or(
+          ffi::Map<ffi::String, ffi::Any>());
+      if (accessor.empty()) {
+        continue;
+      }
+      std::string buffer;
+      if (auto value = accessor.Get(ffi::String("buffer"))) {
+        buffer = Downcast<ffi::String>(value.value());
+      }
+      if (buffer.empty()) {
+        continue;
+      }
+      int64_t offset = -1;
+      if (auto value = accessor.Get(ffi::String("compile_time_arg_offset"))) {
+        offset = Downcast<Integer>(value.value()).IntValue();
+      }
+      ICHECK_GE(offset, 0)
+          << "Blackhole codegen requires accessor compile_time_arg_offset for buffer "
+          << buffer;
+      auto [it, inserted] =
+          accessor_compile_time_offset_by_buffer_.emplace(buffer, static_cast<int>(offset));
+      ICHECK(inserted || it->second == offset)
+          << "Blackhole codegen cannot disambiguate multiple compile-time accessor offsets for "
+          << "buffer " << buffer << ": " << it->second << " vs " << offset;
+    }
   }
 }
 
@@ -2278,13 +2321,31 @@ void EmitTensorAccessorGenerator(std::ostream& os,
 
 }  // namespace
 
+int CodeGenBlackhole::ResolveAccessorOffsetForBuffer(const tvm::PrimExpr& buffer_expr,
+                                                     int tir_accessor_arg_index,
+                                                     const tvm::tir::CallNode* op,
+                                                     const char* builtin_name) const {
+  const int tir_offset =
+      ResolveCompileTimeAccessorOffset(op, tir_accessor_arg_index, builtin_name);
+  const auto* buffer_var = buffer_expr.as<tvm::tir::VarNode>();
+  if (buffer_var == nullptr) {
+    return tir_offset;
+  }
+  auto it = accessor_compile_time_offset_by_buffer_.find(buffer_var->name_hint);
+  if (it == accessor_compile_time_offset_by_buffer_.end()) {
+    return tir_offset;
+  }
+  return it->second;
+}
+
 void CodeGenBlackhole::PrintReadTileToCB(const tvm::tir::CallNode *op,
                                          std::ostream &os) {
   need_dataflow_api_h_ = true;
   const std::string src_addr_var = GetRuntimeArgVarForBuffer(op->args[0], "input_buffer_addr");
   const int cb_id = ResolveCBId(op->args[2]);
   const int accessor_offset =
-      ResolveCompileTimeAccessorOffset(op, /*arg_index=*/4, "tl.blackhole.read_tile_to_cb");
+      ResolveAccessorOffsetForBuffer(op->args[0], /*tir_accessor_arg_index=*/4, op,
+                                     "tl.blackhole.read_tile_to_cb");
   os << "{ ";
   os << "const uint32_t tile_index = ";
   PrintExpr(op->args[1], os);
@@ -2302,7 +2363,8 @@ void CodeGenBlackhole::PrintWriteTileFromCB(const tvm::tir::CallNode *op,
   const std::string dst_addr_var = GetRuntimeArgVarForBuffer(op->args[1], "output_buffer_addr");
   const int cb_id = ResolveCBId(op->args[0]);
   const int accessor_offset =
-      ResolveCompileTimeAccessorOffset(op, /*arg_index=*/4, "tl.blackhole.write_tile_from_cb");
+      ResolveAccessorOffsetForBuffer(op->args[1], /*tir_accessor_arg_index=*/4, op,
+                                     "tl.blackhole.write_tile_from_cb");
   os << "{ ";
   os << "const uint32_t tile_index = ";
   PrintExpr(op->args[2], os);
@@ -2320,7 +2382,8 @@ void CodeGenBlackhole::PrintReadPageToCB(const tvm::tir::CallNode *op,
   const std::string src_addr_var = GetRuntimeArgVarForBuffer(op->args[0], "input_buffer_addr");
   const int cb_id = ResolveCBId(op->args[2]);
   const int accessor_offset =
-      ResolveCompileTimeAccessorOffset(op, /*arg_index=*/4, "tl.blackhole.read_page_to_cb");
+      ResolveAccessorOffsetForBuffer(op->args[0], /*tir_accessor_arg_index=*/4, op,
+                                     "tl.blackhole.read_page_to_cb");
   os << "{ ";
   os << "const uint32_t page_id = ";
   PrintExpr(op->args[1], os);
@@ -2339,8 +2402,8 @@ void CodeGenBlackhole::PrintReadBcastColsToCB(const tvm::tir::CallNode *op,
   const std::string src_addr_var = GetRuntimeArgVarForBuffer(op->args[0], "input_buffer_addr");
   const int cb_id = ResolveCBId(op->args[2]);
   const int accessor_offset =
-      ResolveCompileTimeAccessorOffset(op, /*arg_index=*/4,
-                                       "tl.blackhole.read_bcast_cols_to_cb");
+      ResolveAccessorOffsetForBuffer(op->args[0], /*tir_accessor_arg_index=*/4, op,
+                                     "tl.blackhole.read_bcast_cols_to_cb");
   os << "{ ";
   os << "const uint32_t page_id = ";
   PrintExpr(op->args[1], os);
@@ -2383,7 +2446,8 @@ void CodeGenBlackhole::PrintWritePageFromCB(const tvm::tir::CallNode *op,
   const std::string dst_addr_var = GetRuntimeArgVarForBuffer(op->args[1], "output_buffer_addr");
   const int cb_id = ResolveCBId(op->args[0]);
   const int accessor_offset =
-      ResolveCompileTimeAccessorOffset(op, /*arg_index=*/4, "tl.blackhole.write_page_from_cb");
+      ResolveAccessorOffsetForBuffer(op->args[1], /*tir_accessor_arg_index=*/4, op,
+                                     "tl.blackhole.write_page_from_cb");
   os << "{ ";
   os << "const uint32_t page_id = ";
   PrintExpr(op->args[2], os);

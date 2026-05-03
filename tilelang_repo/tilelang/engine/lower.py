@@ -229,7 +229,7 @@ def _align_blackhole_device_symbol(
     target_symbol = _prim_func_symbol(optimized_gvar, optimized_func)
     aligned_func = optimized_func.with_attr("global_symbol", target_symbol)
     source_attrs = source_func.attrs or {}
-    for key in ("tl.spatial_plan", "tl.spatial_plan_validated"):
+    for key in ("tl.memory_config_map", "tl.spatial_plan", "tl.spatial_plan_validated"):
         if key in source_attrs:
             aligned_func = aligned_func.with_attr(key, source_attrs[key])
     return tvm.IRModule(

@@ -9,30 +9,30 @@
 ## Status
 
 - Date: `2026-05-03`
-- Active task: `T4 External accessor/runtime ABI expansion`
+- Active task: `T5 Sharded GEMM / layout variants`
 - Main chain:
   `Normalized Tile TIR -> SpatialPlan -> TTProgram -> ExecutableSpec`
 
 ## Active Boundary
 
 The current admitted direct-runtime surface is T1's buffer-address ABI, the
-completed T2 current-placement compute baseline, and T3's first explicit
-placement / reshard projection surface:
+completed T2 current-placement compute baseline, T3's first explicit
+placement / reshard projection surface, and T4's external accessor ABI
+expansion:
 interleaved DRAM runtime buffers, staged-copy resident L1 / CB-backed views,
-the admitted 64B page-indexed copy path, standalone leaf compute families
+the admitted 64B page-indexed copy path, static external sharded L1 accessors,
+standalone leaf compute families
 where admitted, current-placement GEMM direct correctness, explicit
 `T.MemoryConfig` / `T.annotate_memory_config` placement intent,
 `TTTensorMemoryConfigPlan`, `TTOpShardingContract`,
 `TTPlacementResolutionPlan`, and `TTReshardPlan` projection for the current
 interleaved-DRAM to resident-L1 staged-copy conversion.
 
-T3 does not claim sharded GEMM/layout variants, external sharded/page-indexed
-runtime accessor admission, DRAM-sharded production weights, N-D production
-cases, retile/work-coarsening, mesh/CCL/NoC, or distributed production
-variants.
-External `sharded_accessor_cta` / `page_indexed_accessor_cta` runtime
-admission is now the active T4 task and must consume the projected
-placement/conversion records instead of inferring sharding or page metadata.
+T4 does not claim sharded GEMM/layout variants, DRAM-sharded production
+weights, N-D production cases, retile/work-coarsening, mesh/CCL/NoC, or
+distributed production variants.  Those remain T5+ work and must consume the
+projected placement/conversion/accessor records instead of inferring sharding
+or page metadata.
 
 The T3 hardening gate for the admitted `interleaved_to_sharded`
 staged-copy conversion now covers large and oversubscribed copy shapes,
@@ -93,28 +93,48 @@ T3 does not admit external `sharded_accessor_cta` /
 `page_indexed_accessor_cta` runtime accessors or sharded GEMM/layout
 variants; those remain T4/T5.
 
-## Active Task: T4 External Accessor / Runtime ABI Expansion
+## Completed Baseline: T4 External Accessor / Runtime ABI Expansion
+
+T4 is complete for the admitted external accessor surface.
+`TTBufferDistributionPlan`, `TTTensorMemoryConfigPlan`, `TTABIPlan`, and
+`ExecutableSpec` now project enough records for:
+
+- interleaved DRAM accessors,
+- 64B page-indexed DRAM transport accessors,
+- static sharded L1 external accessors backed by `TensorAccessorArgs`.
+
+Direct runtime/codegen consume typed accessor offsets/counts and buffer
+distribution records.  Missing page metadata, unsupported common-runtime
+accessor metadata, and incomplete sharded distribution records fail closed
+from executable records before source/runtime guessing.
+
+T4 does not claim dynamic/common-runtime accessor metadata, production
+DRAM-sharded weights, N-D sharding, or GEMM/layout variants beyond the
+current-placement baseline.
+
+## Active Task: T5 Sharded GEMM / Layout Variants
 
 ### Problem
 
-The current implementation has typed buffer distribution, tensor placement,
-and reshard records, but external `sharded_accessor_cta` and
-`page_indexed_accessor_cta` runtime/codegen forms are still typed-but-not
-admitted. T4 must turn those external accessor records into direct TT-Metal
-ABI records where supported, or reject from explicit executable accessor
-records.
+The compiler now has explicit placement, reshard, and external accessor ABI
+records, but GEMM/layout variants still only claim the current-placement
+baseline. T5 must admit sharded GEMM/layout forms only where the typed
+placement/accessor contracts are sufficient, and reject unsupported placement,
+conversion, page-shape, or retile/work-coarsening combinations from explicit
+IR records.
 
 ### Completion Standard
 
-T4 is complete only when:
+T5 is complete only when:
 
-- `ExecutableSpec` projects enough accessor records for external sharded and
-  page-indexed forms,
-- direct runtime/codegen admit supported `sharded_accessor_cta` and
-  `page_indexed_accessor_cta` ABI forms,
-- unsupported page shapes, sharding layouts, or missing metadata fail closed
-  from typed executable records,
-- no source text, name, argument order, or accessor-string recovery is used.
+- admitted GEMM input/output placements are represented by
+  `TTOpShardingContract` and `TTPlacementResolutionPlan`,
+- required accessor records come from T4 `TTABIPlan` / `ExecutableSpec`
+  fields,
+- source/spec/direct runtime use the admitted sharded layout without name or
+  argument-order recovery,
+- unsupported sharded/layout combinations fail closed from typed records,
+- retile or work-coarsening is either explicitly represented or rejected.
 
 ## Required Verification
 
@@ -130,6 +150,25 @@ T4 is complete only when:
 | Unsupported reason | Unsupported forms fail closed with typed diagnostics before source/runtime guessing. |
 
 ## Recent Verification
+
+2026-05-03 UTC T4 external accessor/runtime ABI expansion:
+
+- `cmake --build build -- -j32` passed.
+- `pytest -q tilelang_repo/testing/python/target/blackhole/test_blackhole_copy_pipeline.py`:
+  `57 passed, 10 skipped, 1 xfailed`.
+- TT-Sim direct runtime:
+  `pytest -q testing/python/target/blackhole/test_blackhole_copy_runtime.py`:
+  `34 passed`.
+- Spatial / TTProgram / executable projection:
+  `pytest -q tilelang_repo/testing/python/transform/test_blackhole_spatial_ir.py`:
+  `104 passed`.
+- Adjacent GEMM schema/source regression without direct-runtime execution:
+  `pytest -q tilelang_repo/testing/python/target/blackhole/test_blackhole_gemm.py -k 'not direct_runtime and not direct_call and not gemm_basic and not multicore' --tb=short`:
+  `43 passed, 2 skipped, 14 deselected`.
+- `timeout 240s pytest -q testing/python/target/blackhole/test_blackhole_gemm.py --tb=short`
+  timed out in direct-runtime GEMM execution; no residual pytest/TT-Sim
+  process remained. This is tracked as an adjacent TT-Sim/GEMM runtime
+  boundary, not as a T4 external accessor blocker.
 
 2026-05-03 UTC flash-attn exact-CB lifetime regression fix:
 
@@ -187,19 +226,18 @@ T4 is complete only when:
 
 ## Task Queue
 
-当前 active task 是 T4。
-T1, T2, and T3 are complete for their stated boundaries.
-T4 owns the currently typed-but-not-admitted external accessor ABI forms.
-T5 remains blocked on T4 when sharded GEMM/layout variants require external
-sharded or page-indexed accessors.
+当前 active task 是 T5。
+T1, T2, T3, and T4 are complete for their stated boundaries.
+T5 now owns sharded GEMM/layout variants that depend on T3 placement records
+and T4 external accessor ABI records.
 
 | 任务 | 目标 | 依赖 | 完成目标 |
 | --- | --- | --- | --- |
 | T1 Buffer address ABI 接入执行路径 | Make sharded L1 and page-indexed address ABI real execution contracts. | Current typed placement fields. | Complete. |
 | T2 Leaf compute / GEMM baseline | Admit non-flash leaf compute and current-placement GEMM layout baseline. | T1 complete. | Complete. |
 | T3 Tensor/value sharding and explicit reshard | Make TTNN-style user placement intent, op placement contracts, placement conflict handling, and reshard plans first-class in the IR chain. | T2 baseline complete; design in `2026-05-02-blackhole-tensor-sharding-and-reshard.md`. | Complete. |
-| T4 External accessor/runtime ABI expansion | Admit or precisely reject external `sharded_accessor_cta` and `page_indexed_accessor_cta` runtime/codegen forms. | T1 address ABI and T3 placement/conversion projection. | External sharded/page-indexed accessors have direct TT-Metal ABI records and runtime/codegen admission, or fail from explicit executable accessor records. |
-| T5 Sharded GEMM / layout variants | Admit GEMM/layout variants that depend on real tensor sharding, including explicit retile/work-coarsening when a layout changes logical work mapping. | T3 complete; T4 when external sharded/page-indexed accessors are required. | Sharded GEMM/layout correctness where admitted; typed rejects for unsupported placement/conversion/retile combinations. |
+| T4 External accessor/runtime ABI expansion | Admit or precisely reject external `sharded_accessor_cta` and `page_indexed_accessor_cta` runtime/codegen forms. | T1 address ABI and T3 placement/conversion projection. | Complete. |
+| T5 Sharded GEMM / layout variants | Admit GEMM/layout variants that depend on real tensor sharding, including explicit retile/work-coarsening when a layout changes logical work mapping. | T3 and T4 complete. | Sharded GEMM/layout correctness where admitted; typed rejects for unsupported placement/conversion/retile combinations. |
 | T6 `topk` | Admit standalone value/index selection. | T2 leaf reductions. | Value and `int32` index correctness, not compile-only. |
 | T7 Exact-CB / materialization primitives | Repair wider publish/consume, partial combine, source-live-form materialization, and multi-block flash-attn / flash-decode exact-CB correctness. | T1 and relevant T3 materialization rules when sharded values are involved. | Multi-kernel intermediate correctness and typed materialization rejects. |
 | T8 Grouped / ragged work packets | Represent group/ragged metadata as typed planning input. | T1 and relevant per-work descriptors. | Missing/inconsistent group/ragged metadata rejects before source/runtime emission. |

@@ -32,6 +32,7 @@ from .common import (
 )
 from .test_blackhole_copy_pipeline import (
     _extract_blackhole_executable_spec,
+    _external_sharded_l1_copy_kernel,
 )
 
 
@@ -522,6 +523,55 @@ def test_blackhole_module_direct_call_rectangular_tiles():
     )
 
 
+def test_blackhole_t4_external_sharded_l1_accessor_direct_runtime_bf16():
+    can_run, msg = check_blackhole_direct_execution_requirements()
+    if not can_run:
+        pytest.skip(f"Blackhole requirements not met: {msg}")
+
+    m, n = 32, 64
+    a_torch = _bf16_matrix(m, n)
+    b_output = torch.zeros_like(a_torch)
+
+    target = Target("blackhole")
+    kernel = _external_sharded_l1_copy_kernel(grid_x=2, grid_y=1)
+    with target:
+        artifact = lower(kernel, target=target)
+
+    artifact.codegen_mod["main"](a_torch, b_output)
+    assert_tensors_close_or_dump(
+        b_output,
+        a_torch,
+        atol=1e-3,
+        rtol=1e-3,
+        failure_message="External sharded L1 accessor direct-runtime output mismatch",
+    )
+
+
+def test_blackhole_t4_direct_runtime_rejects_sharded_accessor_missing_distribution_metadata():
+    target = Target("blackhole")
+    kernel = _external_sharded_l1_copy_kernel(grid_x=2, grid_y=1)
+    with target:
+        artifact = lower(kernel, target=target)
+
+    def drop_shard_shape(executable):
+        distributions = []
+        for item in executable["buffer_distribution_plans"]:
+            plan = {str(key): value for key, value in item.items()}
+            if str(plan.get("buffer", "")) == "A":
+                plan.pop("shard_shape", None)
+            distributions.append(plan)
+        executable["buffer_distribution_plans"] = distributions
+        return executable
+
+    with pytest.raises(
+        tvm.error.InternalError,
+        match="sharded.*requires shard_shape|lacks sharded L1",
+    ):
+        _rebuild_direct_runtime_module_with_executable_mutator(
+            artifact, drop_shard_shape
+        )
+
+
 def test_blackhole_module_direct_call_stick_copy():
     can_run, msg = check_blackhole_direct_execution_requirements()
     if not can_run:
@@ -909,6 +959,15 @@ def test_blackhole_module_direct_call_page_indexed_copy_consumes_address_contrac
     executable_spec = _extract_blackhole_executable_spec(artifact)
     kernel_spec = executable_spec["kernels"][0]
     accessors = {str(accessor["buffer"]): accessor for accessor in kernel_spec["accessors"]}
+    compile_specs = {
+        str(spec["buffer"]): spec
+        for spec in kernel_spec["compile_time_arg_specs"]
+        if "buffer" in spec and "accessor_cta" in str(spec["kind"])
+    }
+    assert str(compile_specs["A"]["kind"]) == "page_indexed_accessor_cta"
+    assert str(compile_specs["B"]["kind"]) == "page_indexed_accessor_cta"
+    assert str(accessors["A"]["layout"]) == "page_indexed"
+    assert str(accessors["B"]["layout"]) == "page_indexed"
     assert int(accessors["A"]["transport_page_size"]) == 64
     assert int(accessors["B"]["transport_page_size"]) == 64
     distribution_by_buffer = {
@@ -917,6 +976,8 @@ def test_blackhole_module_direct_call_page_indexed_copy_consumes_address_contrac
     }
     assert str(distribution_by_buffer["A"]["logical_index_mapping"]) == "interleaved_page_index"
     assert str(distribution_by_buffer["B"]["logical_index_mapping"]) == "interleaved_page_index"
+    assert str(distribution_by_buffer["A"]["layout"]) == "page_indexed"
+    assert str(distribution_by_buffer["B"]["layout"]) == "page_indexed"
     assert int(distribution_by_buffer["A"]["page_size_bytes"]) == 64
     assert int(distribution_by_buffer["B"]["page_size_bytes"]) == 64
 
@@ -928,6 +989,38 @@ def test_blackhole_module_direct_call_page_indexed_copy_consumes_address_contrac
         rtol=1e-5,
         failure_message="Page-indexed copy direct-call output mismatch",
     )
+
+
+def test_blackhole_t4_direct_runtime_rejects_page_indexed_accessor_missing_page_metadata():
+    target = Target("blackhole")
+    kernel = staged_stick_copy_kernel(
+        tile_m=32,
+        tile_n=16,
+        global_n=32,
+        dtype="float32",
+        src_col=0,
+        dst_col=0,
+    )
+    with target:
+        artifact = lower(kernel, target=target)
+
+    def drop_page_size_bytes(executable):
+        plans = []
+        for item in executable["buffer_distribution_plans"]:
+            plan = {str(key): value for key, value in item.items()}
+            if str(plan.get("buffer", "")) == "A":
+                plan.pop("page_size_bytes", None)
+            plans.append(plan)
+        executable["buffer_distribution_plans"] = plans
+        return executable
+
+    with pytest.raises(
+        tvm.error.InternalError,
+        match="buffer_distribution_plans.*A.*page_size_bytes",
+    ):
+        _rebuild_direct_runtime_module_with_executable_mutator(
+            artifact, drop_page_size_bytes
+        )
 
 
 def test_blackhole_module_direct_call_grid_indexed_copy_worker_semaphore_handshake():

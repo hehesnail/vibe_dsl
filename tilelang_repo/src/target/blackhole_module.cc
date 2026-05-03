@@ -1424,6 +1424,7 @@ static const BufferMaterializationSpec& ResolveBufferMaterializationSpec(
 static const BufferMaterializationSpec* FindBufferMaterializationSpec(
     const ExecutableSpec& spec,
     const std::string& buffer_name);
+static std::string LowerAsciiDirect(std::string value);
 
 template <typename T>
 static const T* GetTensorData(const DLTensor* tensor) {
@@ -1808,9 +1809,16 @@ static const BufferMaterializationSpec& ResolveBufferMaterializationSpec(
   ICHECK_EQ(materialization->materialization_kind, "replicated")
       << "Unsupported Blackhole buffer materialization kind for " << buffer_name << ": "
       << materialization->materialization_kind;
-  ICHECK_EQ(materialization->memory_space, "dram")
-      << "Unsupported Blackhole buffer memory_space for " << buffer_name << ": "
-      << materialization->memory_space;
+  const std::string memory_space = LowerAsciiDirect(materialization->memory_space);
+  const std::string layout = LowerAsciiDirect(materialization->layout);
+  const bool is_interleaved_dram =
+      memory_space == "dram" && (layout == "interleaved" || layout == "page_indexed");
+  const bool is_static_sharded_l1 = memory_space == "l1" && layout == "sharded";
+  ICHECK(is_interleaved_dram || is_static_sharded_l1)
+      << "Unsupported Blackhole buffer materialization for " << buffer_name
+      << ": layout=" << materialization->layout
+      << ", memory_space=" << materialization->memory_space
+      << "; direct runtime admits interleaved/page-indexed DRAM or static sharded L1";
   ICHECK_GT(materialization->transport_page_size_bytes, 0U)
       << "Blackhole buffer materialization requires transport_page_size for " << buffer_name;
   return *materialization;
@@ -1943,6 +1951,150 @@ struct DirectRuntimeBufferState {
   std::vector<std::string> ordered_output_names;
 };
 
+static std::string LowerAsciiDirect(std::string value) {
+  std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
+    return static_cast<char>(std::tolower(c));
+  });
+  return value;
+}
+
+static const BufferDistributionSpec* FindRuntimeBufferDistributionSpec(
+    const ExecutableSpec& spec, const std::string& buffer_name) {
+  auto it = std::find_if(
+      spec.buffer_distribution_plans.begin(), spec.buffer_distribution_plans.end(),
+      [&](const BufferDistributionSpec& distribution) {
+        return distribution.buffer == buffer_name;
+      });
+  return it == spec.buffer_distribution_plans.end() ? nullptr : &(*it);
+}
+
+static bool IsStaticShardedL1RuntimeBuffer(const BufferDistributionSpec* distribution) {
+  return distribution != nullptr &&
+         distribution->distribution_kind == "sharded" &&
+         distribution->layout == "sharded" &&
+         LowerAsciiDirect(distribution->memory_space) == "l1";
+}
+
+static TensorMemoryLayout ParseShardedTensorMemoryLayout(
+    const BufferDistributionSpec& distribution) {
+  if (distribution.sharding_strategy == "height") {
+    return TensorMemoryLayout::HEIGHT_SHARDED;
+  }
+  if (distribution.sharding_strategy == "width") {
+    return TensorMemoryLayout::WIDTH_SHARDED;
+  }
+  if (distribution.sharding_strategy == "block") {
+    return TensorMemoryLayout::BLOCK_SHARDED;
+  }
+  LOG(FATAL) << "Unsupported static sharded L1 runtime layout strategy for buffer "
+             << distribution.buffer << ": " << distribution.sharding_strategy;
+  return TensorMemoryLayout::BLOCK_SHARDED;
+}
+
+static ShardOrientation ParseShardOrientation(const BufferDistributionSpec& distribution) {
+  if (distribution.shard_orientation.empty() || distribution.shard_orientation == "row_major") {
+    return ShardOrientation::ROW_MAJOR;
+  }
+  if (distribution.shard_orientation == "col_major") {
+    return ShardOrientation::COL_MAJOR;
+  }
+  LOG(FATAL) << "Unsupported static sharded L1 runtime shard_orientation for buffer "
+             << distribution.buffer << ": " << distribution.shard_orientation;
+  return ShardOrientation::ROW_MAJOR;
+}
+
+static uint32_t CheckedPositiveU32(int64_t value, const std::string& field,
+                                   const std::string& buffer_name) {
+  ICHECK_GT(value, 0) << "Blackhole static sharded L1 runtime buffer "
+                     << buffer_name << " requires positive " << field;
+  ICHECK_LE(static_cast<uint64_t>(value),
+            static_cast<uint64_t>(std::numeric_limits<uint32_t>::max()))
+      << "Blackhole static sharded L1 runtime buffer " << buffer_name
+      << " has " << field << " outside uint32 range";
+  return static_cast<uint32_t>(value);
+}
+
+static BufferShardingArgs BuildStaticShardedL1BufferShardingArgs(
+    const BufferDistributionSpec& distribution,
+    const DLTensor* tensor,
+    uint32_t page_size_bytes) {
+  ICHECK(tensor != nullptr)
+      << "Blackhole static sharded L1 runtime buffer requires a host tensor for "
+      << distribution.buffer;
+  ICHECK_GE(tensor->ndim, 2)
+      << "Blackhole static sharded L1 runtime buffer " << distribution.buffer
+      << " currently requires a rank-2-or-higher tensor";
+  ICHECK_EQ(tensor->dtype.lanes, 1)
+      << "Blackhole static sharded L1 runtime buffer " << distribution.buffer
+      << " requires scalar-lane dtype";
+  const uint32_t element_size_bytes =
+      static_cast<uint32_t>((tensor->dtype.bits + 7) / 8);
+  ICHECK_GT(element_size_bytes, 0U)
+      << "Blackhole static sharded L1 runtime buffer " << distribution.buffer
+      << " has invalid dtype bits";
+  ICHECK_GT(page_size_bytes, 0U)
+      << "Blackhole static sharded L1 runtime buffer " << distribution.buffer
+      << " requires positive page size";
+  ICHECK_EQ(page_size_bytes % element_size_bytes, 0U)
+      << "Blackhole static sharded L1 runtime buffer " << distribution.buffer
+      << " page size must be divisible by dtype element size";
+  constexpr uint32_t kTileRows = 32;
+  const uint32_t page_elements = page_size_bytes / element_size_bytes;
+  ICHECK_GT(page_elements, 0U);
+  ICHECK_EQ(page_elements % kTileRows, 0U)
+      << "Blackhole static sharded L1 runtime buffer " << distribution.buffer
+      << " requires a page shape with 32 rows";
+  const uint32_t page_cols = page_elements / kTileRows;
+  ICHECK_GT(page_cols, 0U);
+
+  ICHECK_EQ(distribution.shard_grid_shape.size(), 2U)
+      << "Blackhole static sharded L1 runtime buffer " << distribution.buffer
+      << " requires 2D shard_grid_shape";
+  ICHECK_EQ(distribution.shard_shape.size(), 2U)
+      << "Blackhole static sharded L1 runtime buffer " << distribution.buffer
+      << " requires 2D shard_shape";
+  const uint32_t grid_y = CheckedPositiveU32(
+      distribution.shard_grid_shape[0], "shard_grid_shape[0]", distribution.buffer);
+  const uint32_t grid_x = CheckedPositiveU32(
+      distribution.shard_grid_shape[1], "shard_grid_shape[1]", distribution.buffer);
+  const uint32_t shard_rows = CheckedPositiveU32(
+      distribution.shard_shape[0], "shard_shape[0]", distribution.buffer);
+  const uint32_t shard_cols = CheckedPositiveU32(
+      distribution.shard_shape[1], "shard_shape[1]", distribution.buffer);
+
+  const uint32_t tensor_rows = CheckedPositiveU32(
+      tensor->shape[tensor->ndim - 2], "tensor rows", distribution.buffer);
+  const uint32_t tensor_cols = CheckedPositiveU32(
+      tensor->shape[tensor->ndim - 1], "tensor columns", distribution.buffer);
+  ICHECK_EQ(tensor_rows % kTileRows, 0U)
+      << "Blackhole static sharded L1 runtime buffer " << distribution.buffer
+      << " tensor rows must be divisible by page rows";
+  ICHECK_EQ(tensor_cols % page_cols, 0U)
+      << "Blackhole static sharded L1 runtime buffer " << distribution.buffer
+      << " tensor columns must be divisible by page columns";
+
+  const CoreRange cores(CoreCoord(0, 0), CoreCoord(grid_x - 1, grid_y - 1));
+  const CoreRangeSet core_range_set(cores);
+  const ShardOrientation orientation = ParseShardOrientation(distribution);
+  const ShardSpecBuffer shard_spec(
+      core_range_set,
+      {shard_rows, shard_cols},
+      orientation,
+      {kTileRows, page_cols},
+      {tensor_rows / kTileRows, tensor_cols / page_cols});
+  const tt::tt_metal::BufferDistributionSpec buffer_distribution_spec =
+      tt::tt_metal::BufferDistributionSpec::from_shard_spec(
+          Shape({tensor_rows, tensor_cols}),
+          Shape({shard_rows, shard_cols}),
+          Shape2D(kTileRows, page_cols),
+          core_range_set,
+          orientation);
+  return BufferShardingArgs(
+      std::optional<tt::tt_metal::BufferDistributionSpec>(buffer_distribution_spec),
+      std::optional<ShardSpecBuffer>(shard_spec),
+      ParseShardedTensorMemoryLayout(distribution));
+}
+
 struct SynchronizationRuntimeContext {
   const IDevice* device{nullptr};
   const std::unordered_map<uint32_t, uint32_t>* semaphore_ids{nullptr};
@@ -2029,9 +2181,18 @@ static DirectRuntimeBufferState MaterializeRuntimeBuffers(
     ICHECK(binding.tensor != nullptr) << "Null tensor passed to Blackhole direct path";
     const size_t tensor_size = GetDataSize(*binding.tensor);
     const auto& materialization = ResolveBufferMaterializationSpec(spec, binding.name);
+    const BufferDistributionSpec* distribution =
+        FindRuntimeBufferDistributionSpec(spec, binding.name);
+    const bool is_static_sharded_l1 =
+        IsStaticShardedL1RuntimeBuffer(distribution);
     distributed::DeviceLocalBufferConfig dram_config{
         .page_size = materialization.transport_page_size_bytes,
-        .buffer_type = BufferType::DRAM};
+        .buffer_type = is_static_sharded_l1 ? BufferType::L1 : BufferType::DRAM};
+    if (is_static_sharded_l1) {
+      ICHECK(distribution != nullptr);
+      dram_config.sharding_args = BuildStaticShardedL1BufferShardingArgs(
+          *distribution, binding.tensor, materialization.transport_page_size_bytes);
+    }
     distributed::ReplicatedBufferConfig buffer_config{.size = tensor_size};
     auto mesh_buffer =
         distributed::MeshBuffer::create(buffer_config, dram_config, mesh_device);
@@ -2192,26 +2353,41 @@ static void ValidateDirectRuntimeAccessorSpec(const std::string& buffer_name,
                                               const std::string& memory_space,
                                               uint32_t common_runtime_arg_count,
                                               uint32_t args_config_bits) {
-  ICHECK_EQ(layout, "interleaved")
-      << "Blackhole direct runtime currently supports only interleaved accessors";
-  ICHECK_EQ(memory_space, "dram")
-      << "Blackhole direct runtime currently supports only DRAM accessors";
+  const auto underlying_args_config_bits = static_cast<tensor_accessor::ArgsConfig::Underlying>(
+      args_config_bits);
+  const tensor_accessor::ArgsConfig args_config(underlying_args_config_bits);
+  ICHECK((args_config & tensor_accessor::ArgConfig::Runtime).raw() == 0)
+      << "Blackhole direct runtime does not yet support accessor common runtime args";
   ICHECK_EQ(common_runtime_arg_count, 0U)
-      << "Blackhole direct runtime currently supports only interleaved accessors without common runtime args";
-  ICHECK_EQ(args_config_bits, 2U)
-      << "Blackhole direct runtime expects interleaved DRAM accessor args_config_bits == 2";
+      << "Blackhole direct runtime currently supports only compile-time accessor metadata";
+  const bool is_interleaved_dram =
+      (layout == "interleaved" || layout == "page_indexed") && memory_space == "dram" &&
+      args_config_bits == 2U;
+  const bool is_static_sharded_l1 =
+      layout == "sharded" && memory_space == "l1" &&
+      (args_config & tensor_accessor::ArgConfig::Sharded).raw() != 0 &&
+      (args_config & tensor_accessor::ArgConfig::IsDram).raw() == 0;
+  ICHECK(is_interleaved_dram || is_static_sharded_l1)
+      << "Blackhole direct runtime accessor for buffer " << buffer_name
+      << " has unsupported ABI layout=" << layout
+      << ", memory_space=" << memory_space
+      << ", args_config_bits=" << args_config_bits
+      << "; admitted forms are interleaved/page-indexed DRAM or static sharded L1";
 }
 
-static void AppendInterleavedAccessorCompileTimeArgs(
+static void AppendAccessorCompileTimeArgsFromBuffer(
     const std::string& buffer_name,
     uint32_t expected_count,
     uint32_t args_config_bits,
+    const std::string& layout,
+    const std::string& memory_space,
     const std::unordered_map<std::string, RuntimeBufferBinding>& buffer_bindings,
     std::vector<uint32_t>* compile_time_args) {
   ICHECK(!buffer_name.empty())
-      << "Blackhole interleaved accessor compile-time ABI entry is missing a buffer name";
-  ValidateDirectRuntimeAccessorSpec(buffer_name, "interleaved", "dram",
-                                    /*common_runtime_arg_count=*/0, args_config_bits);
+      << "Blackhole accessor compile-time ABI entry is missing a buffer name";
+  ValidateDirectRuntimeAccessorSpec(buffer_name, layout, memory_space,
+                                    /*common_runtime_arg_count=*/0,
+                                    args_config_bits);
   auto it = buffer_bindings.find(buffer_name);
   ICHECK(it != buffer_bindings.end())
       << "Missing runtime buffer binding for accessor buffer " << buffer_name;
@@ -2225,13 +2401,11 @@ static void AppendInterleavedAccessorCompileTimeArgs(
   TensorAccessorArgs(*(it->second.mesh_buffer), args_config).append_to(*compile_time_args);
   const uint32_t emitted_count =
       static_cast<uint32_t>(compile_time_args->size() - before);
-  ICHECK_EQ(emitted_count, 2U)
-      << "Blackhole interleaved accessor compile-time ABI for buffer " << buffer_name
-      << " must materialize exactly two uint32 values";
   if (expected_count != 0U) {
     ICHECK_EQ(expected_count, emitted_count)
-        << "Blackhole interleaved accessor compile-time ABI count mismatch for buffer "
-        << buffer_name;
+        << "Blackhole accessor compile-time ABI count mismatch for buffer "
+        << buffer_name << ": expected " << expected_count
+        << ", materialized " << emitted_count;
   }
 }
 
@@ -2240,10 +2414,11 @@ static void AppendAccessorCompileTimeArgs(
     const std::unordered_map<std::string, RuntimeBufferBinding>& buffer_bindings,
     std::vector<uint32_t>* compile_time_args) {
   ICHECK(!spec.buffer.empty())
-      << "Blackhole interleaved accessor compile-time ABI requires explicit buffer binding for "
+      << "Blackhole accessor compile-time ABI requires explicit buffer binding for "
       << spec.name;
-  AppendInterleavedAccessorCompileTimeArgs(spec.buffer, spec.count, spec.args_config_bits,
-                                           buffer_bindings, compile_time_args);
+  AppendAccessorCompileTimeArgsFromBuffer(spec.buffer, spec.count, spec.args_config_bits,
+                                          spec.layout, spec.memory_space,
+                                          buffer_bindings, compile_time_args);
 }
 
 static bool IsSupportedCommonRuntimeArgKind(const std::string& kind) {
@@ -2390,7 +2565,9 @@ static void ValidateKernelDirectRuntimeSchema(const KernelSpec& kernel) {
   }
 
   for (const auto& spec : kernel.compile_time_arg_specs) {
-    if (spec.kind != "interleaved_accessor_cta") {
+    if (spec.kind != "interleaved_accessor_cta" &&
+        spec.kind != "sharded_accessor_cta" &&
+        spec.kind != "page_indexed_accessor_cta") {
       continue;
     }
     ICHECK(!spec.buffer.empty())
@@ -2441,7 +2618,9 @@ static std::vector<uint32_t> BuildKernelCompileTimeArgsFromSchema(
         << "Blackhole compile-time ABI offset mismatch for " << spec.name
         << ": got " << spec.offset << ", expected " << expected_offset;
 
-    if (spec.kind == "interleaved_accessor_cta") {
+    if (spec.kind == "interleaved_accessor_cta" ||
+        spec.kind == "sharded_accessor_cta" ||
+        spec.kind == "page_indexed_accessor_cta") {
       AppendAccessorCompileTimeArgs(spec, buffer_bindings, &compile_time_args);
     } else if (spec.kind == "gemm_shape" || spec.kind == "gemm_transpose_flags" ||
                spec.kind == "gemm_block_shape" || spec.kind == "gemm_subblock_shape" ||
@@ -2563,14 +2742,12 @@ static std::vector<uint32_t> BuildKernelCompileTimeArgs(
     ValidateDirectRuntimeAccessorSpec(accessor.buffer, accessor.layout, accessor.memory_space,
                                       accessor.common_runtime_arg_count,
                                       accessor.args_config_bits);
-    ICHECK_EQ(accessor.compile_time_arg_count, 2U)
-        << "Blackhole direct runtime currently supports only interleaved accessors with two compile-time args";
     ICHECK_EQ(accessor.compile_time_arg_offset, expected_slot)
         << "Accessor compile-time offset mismatch for buffer " << accessor.buffer
         << ": got " << accessor.compile_time_arg_offset << ", expected " << expected_slot;
-    AppendInterleavedAccessorCompileTimeArgs(accessor.buffer, accessor.compile_time_arg_count,
-                                             accessor.args_config_bits, buffer_bindings,
-                                             &compile_time_args);
+    AppendAccessorCompileTimeArgsFromBuffer(
+        accessor.buffer, accessor.compile_time_arg_count, accessor.args_config_bits,
+        accessor.layout, accessor.memory_space, buffer_bindings, &compile_time_args);
     expected_slot += accessor.compile_time_arg_count;
   }
   return compile_time_args;
@@ -2925,9 +3102,9 @@ static void ValidateExecutableSpecBufferDistributionPlans(const std::string& fun
 
     const std::string memory_space = LowerAscii(plan.memory_space);
     if (plan.distribution_kind == "interleaved") {
-      ICHECK_EQ(plan.layout, "interleaved")
+      ICHECK(plan.layout == "interleaved" || plan.layout == "page_indexed")
           << "Blackhole executable interleaved buffer distribution for "
-          << plan.buffer << " requires interleaved layout";
+          << plan.buffer << " requires interleaved or page_indexed layout";
       ICHECK_EQ(memory_space, "dram")
           << "Blackhole executable interleaved buffer distribution for "
           << plan.buffer << " requires DRAM memory_space";

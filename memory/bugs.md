@@ -86,9 +86,33 @@
     /
     per-event one-page exact CB republish
     subset；
-    stage2/block64
-    multi-page publish/consume event
-    仍需后续 typed contract
+  stage2/block64
+  multi-page publish/consume event
+  仍需后续 typed contract
+
+### GEMM direct-runtime broad suite can still hit TT-Sim/JIT execution boundaries
+
+- **现象**:
+  - `timeout 240s pytest -q testing/python/target/blackhole/test_blackhole_gemm.py --tb=short`
+    reached the direct-runtime section and timed out without pytest summary
+    after the non-runtime GEMM schema/source tests had already passed.
+  - Earlier runs that forced accumulator reload paths could also surface
+    TT-Metal JIT `undefined reference to cb_interface` failures.
+- **根因 / 当前判断**:
+  - The `cb_interface` form is the same compute-side CB interface boundary
+    recorded above.
+  - A separate lowering bug was fixed by not treating generic future writer
+    transport or same-subject SpatialPlan self-edges as proof that a GEMM
+    accumulator reload is required.
+- **当前结论**:
+  - For accessor/runtime ABI work, use copy/page/sharded direct-runtime bf16
+    tests as the T4 gate.
+  - For adjacent GEMM regression during T4/T5 setup, run the non-direct
+    schema/source selection:
+    `pytest -q testing/python/target/blackhole/test_blackhole_gemm.py -k 'not direct_runtime and not direct_call and not gemm_basic and not multicore' --tb=short`.
+  - Do not convert the whole broad GEMM direct-runtime timeout into a T4
+    external accessor blocker without first isolating a typed executable
+    contract regression.
 
 ### Blackhole tile compute 不能先 scalar expand 再靠 late matcher 恢复
 

@@ -36,6 +36,7 @@
 | `2026-04-28-blackhole-tile-compute-legalizer-dag-covering.md` | `TileComputeDAG` legalizer / covering contract。 |
 | `2026-04-29-blackhole-resource-planning-roadmap.md` | Resource planning roadmap；CB/L1 admission、core placement、buffer distribution、later NoC work。 |
 | `2026-05-02-blackhole-tensor-sharding-and-reshard.md` | Tensor/value sharding and explicit reshard design；separates TTNN-style `MemoryConfig` intent from low-level `TTBufferDistributionPlan` address ABI。 |
+| `2026-05-03-blackhole-t4-t5-accessor-and-sharded-gemm.md` | T4 external accessor/runtime ABI expansion and dependent T5 sharded GEMM/layout boundary。 |
 | `blackhole_first_principles_protocol_audit.md` | Historical fake/legacy protocol audit table。 |
 
 ## Stable Architecture Skeleton
@@ -59,9 +60,9 @@ Pass 名字、helper、payload、bag、bridge attr
 ```text
 T1 Buffer address ABI execution integration (complete)
   -> T2 Leaf compute / GEMM baseline (complete)
-  -> T3 tensor/value sharding and explicit reshard (active)
-  -> T4 external accessor / runtime ABI expansion
-  -> T5 sharded GEMM / layout variants
+  -> T3 tensor/value sharding and explicit reshard (complete)
+  -> T4 external accessor / runtime ABI expansion (complete)
+  -> T5 sharded GEMM / layout variants (active)
   -> T6 topk
   -> T7 exact-CB / materialization primitives
   -> T8 grouped / ragged work packets

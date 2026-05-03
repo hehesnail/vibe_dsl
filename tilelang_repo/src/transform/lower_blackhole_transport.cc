@@ -1163,7 +1163,7 @@ Stmt PlanTTKernelABI::GenerateCopySequence(const BufferStoreNode* op,
         }
         stmts.push_back(MakeBlackholeCall(blackhole_noc_async_read_barrier(), {}));
         RegisterAccessor(segment_kind, load->buffer, accessor_slot, 2, 0, 0, 2,
-                         page_bytes, {0});
+                         page_bytes, {0}, false, "page_indexed");
         stmts.push_back(MakeBlackholeCall(
             blackhole_cb_push_back(), {IntImm32(cb_id), IntImm32(1)}));
         RecordTiledCBLiveFormAliases(op->buffer, cb_id);
@@ -1320,7 +1320,7 @@ Stmt PlanTTKernelABI::GenerateCopySequence(const BufferStoreNode* op,
           stmts.push_back(MakeBlackholeCall(blackhole_noc_async_write_barrier(), {}));
         }
         RegisterAccessor(segment_kind, op->buffer, accessor_slot, 2, 0, 0, 2,
-                         write_page_bytes, {0});
+                         write_page_bytes, {0}, false, "page_indexed");
         if (!(live_rank1_vector_output && !active_serial_loop_vars_.empty())) {
           stmts.push_back(make_pop());
         }
@@ -1616,7 +1616,7 @@ Stmt PlanTTKernelABI::GenerateStagedCopyLoopSequence(
                                           IntImm32(page_row * geometry.l1_stick_stride)}));
         RegisterAccessor(segment_kind, load->buffer,
                          accessor_slot, 2, 0, 0, 2, geometry.page_bytes, host_axis_order,
-                         transpose_b_reader);
+                         transpose_b_reader, "page_indexed");
       }
       stmts.push_back(MakeBlackholeCall(
           blackhole_noc_async_read_barrier(), {}));
@@ -1688,7 +1688,8 @@ Stmt PlanTTKernelABI::GenerateStagedCopyLoopSequence(
                                              IntImm32(accessor_slot),
                                              IntImm32(page_row * geometry.l1_stick_stride)}));
         RegisterAccessor(segment_kind, op->buffer,
-                         accessor_slot, 2, 0, 0, 2, geometry.page_bytes, host_axis_order);
+                         accessor_slot, 2, 0, 0, 2, geometry.page_bytes, host_axis_order,
+                         false, "page_indexed");
       }
       stmts.push_back(MakeBlackholeCall(
           blackhole_noc_async_write_barrier(), {}));
@@ -1783,7 +1784,7 @@ Stmt PlanTTKernelABI::GenerateFusedStagedCopySequence(
            IntImm32(geometry.page_bytes), IntImm32(input_accessor_slot),
            IntImm32(page_row * geometry.l1_stick_stride)}));
       RegisterAccessor("fused_dataflow", dram_load->buffer, input_accessor_slot, 2, 0, 0, 2,
-                       geometry.page_bytes);
+                       geometry.page_bytes, {}, false, "page_indexed");
       stmts.push_back(MakeBlackholeCall(
           blackhole_noc_async_read_barrier(), {}));
     }
@@ -1806,7 +1807,7 @@ Stmt PlanTTKernelABI::GenerateFusedStagedCopySequence(
            IntImm32(geometry.page_bytes), IntImm32(output_accessor_slot),
            IntImm32(page_row * geometry.l1_stick_stride)}));
       RegisterAccessor("fused_dataflow", cb_to_dram->buffer, output_accessor_slot, 2, 0, 0, 2,
-                       geometry.page_bytes);
+                       geometry.page_bytes, {}, false, "page_indexed");
       stmts.push_back(MakeBlackholeCall(
           blackhole_noc_async_write_barrier(), {}));
     }

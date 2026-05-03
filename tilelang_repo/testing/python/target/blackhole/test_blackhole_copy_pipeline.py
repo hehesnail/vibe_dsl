@@ -546,6 +546,13 @@ def _extract_blackhole_executable_spec(artifact, function_names=("main", "main_k
     )
 
 
+def _require_device_main_with_tt_program(artifact):
+    for func in artifact.device_mod.functions.values():
+        if getattr(func, "attrs", None) and "tl.tt_program" in func.attrs:
+            return func
+    pytest.fail("Expected artifact device module to carry tl.tt_program")
+
+
 def _extract_materialized_blackhole_executable(func):
     if not (func.attrs and "tl.blackhole_executable" in func.attrs):
         pytest.fail("Expected PrimFunc to carry tl.blackhole_executable")
@@ -666,6 +673,39 @@ def _with_compile_time_abi_schema(func, *, strip_accessors=False, compile_time_a
     )
 
 
+def _external_sharded_l1_copy_kernel(*, grid_x=2, grid_y=1, tile_m=32, tile_n=32):
+    m = grid_y * tile_m
+    n = grid_x * tile_n
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((m, n), "bfloat16"),
+        B: T.Tensor((m, n), "bfloat16"),
+    ):
+        with T.Kernel(grid_x, grid_y) as (bx, by):
+            resident = T.alloc_shared((tile_m, tile_n), "bfloat16")
+            external_l1 = T.sharded_l1(
+                strategy="width",
+                grid=T.CoreGrid(x=grid_x, y=grid_y),
+                shard_shape=(tile_m, tile_n),
+                orientation="row_major",
+                allow_reshard=False,
+            )
+            T.annotate_memory_config(
+                {
+                    A: external_l1,
+                    resident: external_l1,
+                    B: T.interleaved_dram(),
+                }
+            )
+            row = by * tile_m
+            col = bx * tile_n
+            T.copy(A[row, col], resident)
+            T.copy(resident, B[row, col])
+
+    return main
+
+
 def test_blackhole_codegen_only():
     can_run, msg = check_blackhole_codegen_requirements()
     if not can_run:
@@ -761,6 +801,80 @@ def test_blackhole_copy_pass_attrs():
     assert "tl.blackhole.write_tile_from_cb" in body_script
     assert body_script.count("tl.blackhole.read_tile_to_cb") == 1
     assert body_script.count("tl.blackhole.write_tile_from_cb") == 1
+
+
+def test_blackhole_t4_external_sharded_l1_accessor_projects_from_memory_config():
+    kernel = _external_sharded_l1_copy_kernel(grid_x=2, grid_y=1)
+    target = Target("blackhole")
+
+    with target:
+        artifact = lower(kernel, target=target)
+
+    device_main = _require_device_main_with_tt_program(artifact)
+    tt_program = require_tt_program(device_main)
+    fused_dataflow = require_tt_kernel(tt_program, kind="fused_dataflow", core_type="brisc")
+    abi = tt_abi_for_kernel(tt_program, fused_dataflow)
+    tt_accessors = {
+        str(item["buffer"]): item for item in tt_accessor_specs_to_list(abi.accessors)
+    }
+    tt_compile_specs = {
+        str(item["buffer"]): item
+        for item in tt_compile_time_arg_specs_to_list(abi.compile_time_arg_specs)
+        if str(item["kind"]).endswith("_accessor_cta")
+    }
+
+    executable_spec = _extract_blackhole_executable_spec(artifact)
+    distributions = {
+        str(plan["buffer"]): plan
+        for plan in executable_spec["buffer_distribution_plans"]
+    }
+    kernel_accessors = {
+        str(accessor["buffer"]): accessor
+        for kernel_spec in executable_spec["kernels"]
+        for accessor in kernel_spec.get("accessors", [])
+    }
+    kernel_compile_specs = {
+        str(spec["buffer"]): spec
+        for kernel_spec in executable_spec["kernels"]
+        for spec in kernel_spec.get("compile_time_arg_specs", [])
+        if str(spec["kind"]).endswith("_accessor_cta")
+    }
+
+    assert str(distributions["A"]["distribution_kind"]) == "sharded"
+    assert str(distributions["A"]["memory_space"]) == "L1"
+    assert str(distributions["A"]["sharding_strategy"]) == "width"
+    assert tuple(int(dim) for dim in distributions["A"]["shard_grid_shape"]) == (1, 2)
+    assert tuple(int(dim) for dim in distributions["A"]["shard_shape"]) == (32, 32)
+    assert str(distributions["A"]["source_region_kind"]) == "none"
+    assert "source_buffer" not in distributions["A"]
+
+    for accessors in (tt_accessors, kernel_accessors):
+        assert str(accessors["A"]["layout"]) == "sharded"
+        assert str(accessors["A"]["memory_space"]).lower() == "l1"
+        assert int(accessors["A"]["args_config_bits"]) & 1
+        assert int(accessors["A"]["compile_time_arg_count"]) > 2
+
+    for compile_specs in (tt_compile_specs, kernel_compile_specs):
+        assert str(compile_specs["A"]["kind"]) == "sharded_accessor_cta"
+        assert str(compile_specs["A"]["layout"]) == "sharded"
+        assert str(compile_specs["A"]["memory_space"]).lower() == "l1"
+        assert int(compile_specs["A"]["count"]) == int(
+            tt_accessors["A"]["compile_time_arg_count"]
+        )
+
+    assert int(tt_accessors["B"]["compile_time_arg_offset"]) == (
+        int(tt_accessors["A"]["compile_time_arg_offset"])
+        + int(tt_accessors["A"]["compile_time_arg_count"])
+    )
+
+    fused_kernel = _require_blackhole_kernel(
+        executable_spec["kernels"], kind="fused_dataflow", core_type="brisc"
+    )
+    source = str(fused_kernel["source_code"])
+    b_offset = int(tt_accessors["B"]["compile_time_arg_offset"])
+    assert "TensorAccessorArgs<0>()" in source
+    assert f"TensorAccessorArgs<{b_offset}>()" in source
+    assert "TensorAccessorArgs<2>()" not in source
 
 
 def test_blackhole_copy_compile_time_abi_is_materialized():
@@ -1425,7 +1539,10 @@ def test_blackhole_copy_direct_runtime_rejects_common_runtime_accessor_schema():
     a_torch = torch.randn(32, 32, dtype=torch.bfloat16)
     b_output = torch.zeros_like(a_torch)
 
-    with pytest.raises(tvm.error.InternalError, match="common runtime args|interleaved"):
+    with pytest.raises(
+        tvm.error.InternalError,
+        match="accessor_common_u32|shared common runtime args",
+    ):
         mutated_mod["main"](a_torch, b_output)
 
 
@@ -1504,7 +1621,10 @@ def test_blackhole_copy_direct_runtime_rejects_accessor_common_runtime_arg_count
     a_torch = torch.randn(32, 32, dtype=torch.bfloat16)
     b_output = torch.zeros_like(a_torch)
 
-    with pytest.raises(tvm.error.InternalError, match="common runtime args|interleaved"):
+    with pytest.raises(
+        tvm.error.InternalError,
+        match="common_runtime_arg_count|compile-time accessor metadata",
+    ):
         mutated_mod["main"](a_torch, b_output)
 
 
@@ -1944,13 +2064,27 @@ def test_blackhole_stick_copy_pipeline_formalizes_page_transport():
     assert "noc_async_read(" in source
     assert "noc_async_write(" in source
 
+    compile_specs = {
+        str(item["buffer"]): item
+        for item in kernel_spec["compile_time_arg_specs"]
+        if "buffer" in item and "accessor_cta" in str(item["kind"])
+    }
     cb_configs = spec["cb_configs"]
     assert len(cb_configs) == 1
     assert int(cb_configs[0]["page_size"]) == 2048
     assert int(cb_configs[0]["num_pages"]) == 1
-    accessors = kernel_spec["accessors"]
-    assert int(accessors[0]["transport_page_size"]) == 64
-    assert int(accessors[1]["transport_page_size"]) == 64
+    accessors = {str(item["buffer"]): item for item in kernel_spec["accessors"]}
+    for buffer in ("A", "B"):
+        assert str(compile_specs[buffer]["kind"]) == "page_indexed_accessor_cta"
+        assert str(compile_specs[buffer]["layout"]) == "page_indexed"
+        assert int(compile_specs[buffer]["transport_page_size"]) == 64
+        assert str(accessors[buffer]["layout"]) == "page_indexed"
+        assert int(accessors[buffer]["transport_page_size"]) == 64
+    distributions = {
+        str(item["buffer"]): item for item in spec["buffer_distribution_plans"]
+    }
+    assert str(distributions["A"]["layout"]) == "page_indexed"
+    assert str(distributions["B"]["layout"]) == "page_indexed"
 
 
 def test_blackhole_tall_stick_copy_pipeline_formalizes_page_transport():

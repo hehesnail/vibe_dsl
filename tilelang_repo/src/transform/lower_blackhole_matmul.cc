@@ -470,15 +470,43 @@ Stmt PlanTTKernelABI::LowerMatmulCallWithFlowAnalysis(
   bool publish_transport_out = true;
   bool preserve_out_local_state = false;
   if (IsBufferLikeExpr(op->args[2])) {
-    const Buffer out_buffer = ResolvePhysicalComputeBuffer(NormalizeToBufferRegion(op->args[2])->buffer);
-    const FutureBufferUses future_uses =
-        ClassifyFutureBufferUses(out_buffer, current_order_index);
+    const Buffer logical_out_buffer = NormalizeToBufferRegion(op->args[2])->buffer;
+    const Buffer out_buffer = ResolvePhysicalComputeBuffer(logical_out_buffer);
+    FutureBufferUses future_uses = ClassifyFutureBufferUses(out_buffer, current_order_index);
+    if (logical_out_buffer.defined() && !SameBufferIdentity(logical_out_buffer, out_buffer)) {
+      const FutureBufferUses logical_future_uses =
+          ClassifyFutureBufferUses(logical_out_buffer, current_order_index);
+      future_uses.has_compute_consume =
+          future_uses.has_compute_consume || logical_future_uses.has_compute_consume;
+      future_uses.has_transport_consume =
+          future_uses.has_transport_consume || logical_future_uses.has_transport_consume;
+      future_uses.has_reference = future_uses.has_reference || logical_future_uses.has_reference;
+    }
+    auto has_direct_transport_consumer = [&](const Buffer& buffer) {
+      const std::string identity = BufferIdentityName(buffer);
+      return !identity.empty() &&
+             host_buffer_by_compute_operand_buffer_.find(identity) !=
+                 host_buffer_by_compute_operand_buffer_.end();
+    };
+    if (has_direct_transport_consumer(out_buffer) ||
+        (logical_out_buffer.defined() && has_direct_transport_consumer(logical_out_buffer))) {
+      future_uses.has_transport_consume = true;
+    }
     const bool planned_output_cb_compute_consume =
         gemm_c_req_index_ >= 0 && gemm_c_req_index_ < static_cast<int>(cb_requirements_.size()) &&
         cb_requirements_.at(gemm_c_req_index_).flow_class == CBFlowClass::kRepublish &&
         cb_requirements_.at(gemm_c_req_index_).consume_pages_per_event > 0;
     bool planned_output_tile_compute_consume = false;
-    for (const std::string& identity : CollectBufferFlowIdentities(out_buffer)) {
+    std::vector<std::string> output_identities = CollectBufferFlowIdentities(out_buffer);
+    if (logical_out_buffer.defined() && !SameBufferIdentity(logical_out_buffer, out_buffer)) {
+      for (const std::string& identity : CollectBufferFlowIdentities(logical_out_buffer)) {
+        if (std::find(output_identities.begin(), output_identities.end(), identity) ==
+            output_identities.end()) {
+          output_identities.push_back(identity);
+        }
+      }
+    }
+    for (const std::string& identity : output_identities) {
       if (tile_compute_input_buffers_.count(identity) != 0U) {
         planned_output_tile_compute_consume = true;
         break;
@@ -499,11 +527,11 @@ Stmt PlanTTKernelABI::LowerMatmulCallWithFlowAnalysis(
         !has_zero_preclear;
     const bool future_exact_live_form_compute_consume =
         HasFutureExactLiveFormTileComputeConsume(out_buffer, current_order_index);
+    const bool needs_post_merge_cast_materialization = post_merge_cast != nullptr && has_zero_preclear;
     const bool needs_accumulator_merge =
         FindBufferMaterializationFact(out_buffer) != nullptr ||
-        ((future_uses.has_compute_consume || future_exact_live_form_compute_consume ||
-          planned_output_cb_compute_consume || planned_output_tile_compute_consume) &&
-         !post_merge_cast_can_consume_live_cb);
+        (future_exact_live_form_compute_consume && !post_merge_cast_can_consume_live_cb) ||
+        needs_post_merge_cast_materialization;
     ExactTiledCBValue live_accumulator;
     const bool has_live_accumulator =
         !gemm_clear_accum_ && !needs_accumulator_merge &&
