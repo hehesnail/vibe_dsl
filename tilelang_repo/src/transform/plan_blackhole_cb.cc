@@ -46,6 +46,7 @@
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 namespace tvm {
@@ -78,6 +79,13 @@ struct CBRequirementUseInfo {
   bool referenced = false;
   int first_use = std::numeric_limits<int>::max();
   int last_use = -1;
+};
+
+struct CBRequirementEventInfo {
+  int max_reserve_pages = 0;
+  int max_push_pages = 0;
+  int max_wait_pages = 0;
+  int max_pop_pages = 0;
 };
 
 bool IsBlackholeOp(const tir::CallNode* op, const char* op_name) {
@@ -333,6 +341,50 @@ std::vector<bool> ReferencedRequirementMask(
   return referenced;
 }
 
+std::vector<CBRequirementEventInfo> CollectCBRequirementEventInfo(const tir::Stmt& body,
+                                                                  int requirement_count) {
+  class Collector final : public tir::StmtExprVisitor {
+   public:
+    explicit Collector(int requirement_count)
+        : event_info_(std::max(0, requirement_count)) {}
+
+    using tir::StmtExprVisitor::VisitExpr_;
+
+    void Collect(const tir::Stmt& body) { VisitStmt(body); }
+
+    void VisitExpr_(const tir::CallNode* op) final {
+      if (op->args.size() >= 2U) {
+        const auto* cb_id = op->args[0].as<IntImmNode>();
+        const auto* pages = op->args[1].as<IntImmNode>();
+        if (cb_id != nullptr && pages != nullptr && cb_id->value >= 0 &&
+            cb_id->value < static_cast<int64_t>(event_info_.size()) && pages->value > 0) {
+          auto& info = event_info_[static_cast<size_t>(cb_id->value)];
+          const int page_count = static_cast<int>(pages->value);
+          if (IsBlackholeOp(op, "tl.blackhole.cb_reserve_back")) {
+            info.max_reserve_pages = std::max(info.max_reserve_pages, page_count);
+          } else if (IsBlackholeOp(op, "tl.blackhole.cb_push_back")) {
+            info.max_push_pages = std::max(info.max_push_pages, page_count);
+          } else if (IsBlackholeOp(op, "tl.blackhole.cb_wait_front")) {
+            info.max_wait_pages = std::max(info.max_wait_pages, page_count);
+          } else if (IsBlackholeOp(op, "tl.blackhole.cb_pop_front")) {
+            info.max_pop_pages = std::max(info.max_pop_pages, page_count);
+          }
+        }
+      }
+      tir::StmtExprVisitor::VisitExpr_(op);
+    }
+
+    std::vector<CBRequirementEventInfo> Take() { return std::move(event_info_); }
+
+   private:
+    std::vector<CBRequirementEventInfo> event_info_;
+  };
+
+  Collector collector(requirement_count);
+  collector.Collect(body);
+  return collector.Take();
+}
+
 std::vector<int> CollectOutstandingReservedPages(const tir::Stmt& body,
                                                  int requirement_count) {
   class Collector final : public tir::StmtExprVisitor {
@@ -442,8 +494,10 @@ tir::Stmt InsertStateFrontPopsBeforeReReserve(
 
     void MaybeInsertPopBeforeStateProducer(const tir::CallNode* op, Array<tir::Stmt>* stmts) {
       ICHECK(stmts != nullptr);
-      if (!IsBlackholeOp(op, "tl.blackhole.cb_reserve_back") &&
-          !IsBlackholeOp(op, "tl.blackhole.pack_reconfig_data_format")) {
+      const bool is_reserve = IsBlackholeOp(op, "tl.blackhole.cb_reserve_back");
+      const bool is_pack_reconfig =
+          IsBlackholeOp(op, "tl.blackhole.pack_reconfig_data_format");
+      if (!is_reserve && !is_pack_reconfig) {
         return;
       }
       const int cb_id = StaticCBId(op);
@@ -451,11 +505,20 @@ tir::Stmt InsertStateFrontPopsBeforeReReserve(
           available_front_pages_[cb_id] <= 0) {
         return;
       }
+      const int capacity_pages = std::max(1, requirements_[cb_id].num_pages);
       const int event_pages =
           requirements_[cb_id].consume_pages_per_event > 0
               ? requirements_[cb_id].consume_pages_per_event
               : std::max(1, requirements_[cb_id].publish_pages_per_event);
-      const int pop_pages = std::min(available_front_pages_[cb_id], event_pages);
+      const int producer_pages =
+          is_reserve ? std::max(1, StaticPages(op)) : event_pages;
+      const int overflow_pages =
+          std::max(0, available_front_pages_[cb_id] + producer_pages - capacity_pages);
+      if (overflow_pages <= 0) {
+        return;
+      }
+      const int pop_pages = std::min(available_front_pages_[cb_id],
+                                     std::max(overflow_pages, event_pages));
       stmts->push_back(MakeCBPopFrontStmt(cb_id, pop_pages));
       available_front_pages_[cb_id] -= pop_pages;
     }
@@ -506,6 +569,27 @@ void ApplyIRUseIntervalsToRequirements(
   }
 }
 
+void ApplyIRCBEventsToRequirements(
+    std::vector<CBRequirement>* requirements,
+    const std::vector<CBRequirementEventInfo>& event_info) {
+  ICHECK(requirements != nullptr);
+  ICHECK_EQ(requirements->size(), event_info.size());
+  for (size_t i = 0; i < requirements->size(); ++i) {
+    CBRequirement& req = requirements->at(i);
+    const CBRequirementEventInfo& info = event_info[i];
+    const int produced_pages = std::max(info.max_reserve_pages, info.max_push_pages);
+    const int consumed_pages = std::max(info.max_wait_pages, info.max_pop_pages);
+    if (req.flow_class == CBFlowClass::kState &&
+        req.publish_pages_per_event == 0 &&
+        req.consume_pages_per_event == 0 &&
+        produced_pages > 0 && consumed_pages > 0) {
+      req.flow_class = CBFlowClass::kRepublish;
+      req.publish_pages_per_event = produced_pages;
+      req.consume_pages_per_event = consumed_pages;
+    }
+  }
+}
+
 std::vector<int> ComputeAutoPopPages(
     const std::vector<CBRequirement>& requirements,
     const std::vector<CBRequirementUseInfo>& use_info,
@@ -542,6 +626,14 @@ tir::Stmt InsertAutoPopsAfterLastUse(const tir::Stmt& body,
     using tir::StmtExprMutator::VisitStmt_;
 
     tir::Stmt Rewrite(const tir::Stmt& body) { return VisitStmt(body); }
+
+    tir::Stmt VisitStmt_(const tir::ForNode* op) final {
+      ++loop_depth_;
+      tir::Stmt body = VisitStmt(op->body);
+      --loop_depth_;
+      return tir::For(op->loop_var, op->min, op->extent, op->kind, body, op->thread_binding,
+                      op->annotations, op->step, op->span);
+    }
 
     tir::Stmt VisitStmt_(const tir::SeqStmtNode* op) final {
       Array<tir::Stmt> rewritten;
@@ -603,7 +695,7 @@ tir::Stmt InsertAutoPopsAfterLastUse(const tir::Stmt& body,
 
     void FlushPendingPops(Array<tir::Stmt>* stmts) {
       ICHECK(stmts != nullptr);
-      if (pending_pops_.empty() || tile_section_depth_ != 0) {
+      if (pending_pops_.empty() || tile_section_depth_ != 0 || loop_depth_ != 0) {
         return;
       }
       for (int requirement_index : pending_pops_) {
@@ -618,11 +710,123 @@ tir::Stmt InsertAutoPopsAfterLastUse(const tir::Stmt& body,
     const std::vector<int>& auto_pop_pages_;
     int next_position_ = 0;
     int tile_section_depth_ = 0;
+    int loop_depth_ = 0;
     std::vector<int> pending_pops_;
     std::unordered_set<int> emitted_pops_;
   };
 
   Inserter inserter(use_info, auto_pop_pages);
+  return inserter.Rewrite(body);
+}
+
+tir::Stmt InsertPhysicalPopsBeforeBlockingReserve(
+    const tir::Stmt& body, const std::vector<CBConfig>& configs) {
+  int max_cb_id = -1;
+  for (const CBConfig& config : configs) {
+    max_cb_id = std::max(max_cb_id, config.cb_id);
+  }
+  std::vector<int> capacity_pages(std::max(0, max_cb_id + 1), 0);
+  for (const CBConfig& config : configs) {
+    if (config.cb_id >= 0) {
+      capacity_pages[config.cb_id] = std::max(capacity_pages[config.cb_id],
+                                              std::max(1, config.num_pages));
+    }
+  }
+
+  class Inserter final : public tir::StmtExprMutator {
+   public:
+    explicit Inserter(std::vector<int> capacity_pages)
+        : capacity_pages_(std::move(capacity_pages)),
+          front_pages_(capacity_pages_.size(), 0),
+          reserved_pages_(capacity_pages_.size(), 0) {}
+
+    using tir::StmtExprMutator::VisitStmt_;
+
+    tir::Stmt Rewrite(const tir::Stmt& body) { return VisitStmt(body); }
+
+    tir::Stmt VisitStmt_(const tir::SeqStmtNode* op) final {
+      Array<tir::Stmt> rewritten;
+      rewritten.reserve(op->seq.size());
+      for (const tir::Stmt& child : op->seq) {
+        tir::Stmt new_child = VisitStmt(child);
+        if (const auto* eval = new_child.as<tir::EvaluateNode>()) {
+          if (const auto* call = eval->value.as<tir::CallNode>()) {
+            MaybeInsertPopBeforeReserve(call, &rewritten);
+          }
+        }
+        rewritten.push_back(new_child);
+        if (const auto* eval = new_child.as<tir::EvaluateNode>()) {
+          if (const auto* call = eval->value.as<tir::CallNode>()) {
+            RecordQueueMutation(call);
+          }
+        }
+      }
+      return tir::SeqStmt::Flatten(rewritten);
+    }
+
+   private:
+    int StaticCBId(const tir::CallNode* op) const {
+      if (op == nullptr || op->args.empty()) {
+        return -1;
+      }
+      const auto* cb_id = op->args[0].as<IntImmNode>();
+      if (cb_id == nullptr || cb_id->value < 0 ||
+          cb_id->value >= static_cast<int64_t>(capacity_pages_.size())) {
+        return -1;
+      }
+      return static_cast<int>(cb_id->value);
+    }
+
+    int StaticPages(const tir::CallNode* op) const {
+      if (op == nullptr || op->args.size() < 2U) {
+        return 0;
+      }
+      const auto* pages = op->args[1].as<IntImmNode>();
+      return pages != nullptr ? static_cast<int>(pages->value) : 0;
+    }
+
+    void MaybeInsertPopBeforeReserve(const tir::CallNode* op, Array<tir::Stmt>* stmts) {
+      ICHECK(stmts != nullptr);
+      if (!IsBlackholeOp(op, "tl.blackhole.cb_reserve_back")) {
+        return;
+      }
+      const int cb_id = StaticCBId(op);
+      const int pages = StaticPages(op);
+      if (cb_id < 0 || pages <= 0 || capacity_pages_[cb_id] <= 0) {
+        return;
+      }
+      const int over_capacity =
+          front_pages_[cb_id] + reserved_pages_[cb_id] + pages - capacity_pages_[cb_id];
+      if (over_capacity <= 0 || front_pages_[cb_id] <= 0) {
+        return;
+      }
+      const int pop_pages = std::min(front_pages_[cb_id], over_capacity);
+      stmts->push_back(MakeCBPopFrontStmt(cb_id, pop_pages));
+      front_pages_[cb_id] -= pop_pages;
+    }
+
+    void RecordQueueMutation(const tir::CallNode* op) {
+      const int cb_id = StaticCBId(op);
+      const int pages = StaticPages(op);
+      if (cb_id < 0 || pages <= 0) {
+        return;
+      }
+      if (IsBlackholeOp(op, "tl.blackhole.cb_reserve_back")) {
+        reserved_pages_[cb_id] += pages;
+      } else if (IsBlackholeOp(op, "tl.blackhole.cb_push_back")) {
+        reserved_pages_[cb_id] = std::max(0, reserved_pages_[cb_id] - pages);
+        front_pages_[cb_id] += pages;
+      } else if (IsBlackholeOp(op, "tl.blackhole.cb_pop_front")) {
+        front_pages_[cb_id] = std::max(0, front_pages_[cb_id] - pages);
+      }
+    }
+
+    std::vector<int> capacity_pages_;
+    std::vector<int> front_pages_;
+    std::vector<int> reserved_pages_;
+  };
+
+  Inserter inserter(std::move(capacity_pages));
   return inserter.Rewrite(body);
 }
 
@@ -669,6 +873,9 @@ PrimFunc PlanTTCBAlloc::Transform(const PrimFunc& func) {
   const std::vector<CBRequirementUseInfo> use_info =
       CollectCBRequirementUseInfo(body_with_auto_pops, static_cast<int>(requirements.size()));
   ApplyIRUseIntervalsToRequirements(&requirements, use_info);
+  const std::vector<CBRequirementEventInfo> event_info =
+      CollectCBRequirementEventInfo(body_with_auto_pops, static_cast<int>(requirements.size()));
+  ApplyIRCBEventsToRequirements(&requirements, event_info);
   const std::vector<bool> referenced_requirements = ReferencedRequirementMask(use_info);
   std::vector<CBConfig> configs = AssignCBIds(requirements, referenced_requirements);
 
@@ -685,7 +892,10 @@ PrimFunc PlanTTCBAlloc::Transform(const PrimFunc& func) {
       cb_id_by_requirement_index[requirement_index] = config.cb_id;
     }
   }
-  new_func.CopyOnWrite()->body = RewriteCBIdsInIR(body_with_auto_pops, cb_id_by_requirement_index);
+  tir::Stmt physical_cb_body =
+      RewriteCBIdsInIR(body_with_auto_pops, cb_id_by_requirement_index);
+  physical_cb_body = InsertPhysicalPopsBeforeBlockingReserve(physical_cb_body, configs);
+  new_func.CopyOnWrite()->body = physical_cb_body;
   cb_configs_ = configs;
 
   // Post-condition: verify no blackhole builtin retains an unrewritten requirement_index.

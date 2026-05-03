@@ -64,6 +64,12 @@ namespace {
 constexpr int kBlackholeTileRows = 32;
 constexpr int kBlackholeTileCols = 32;
 constexpr const char* kBlackholeExactOutputLiveCBAttr = "blackhole.exact_output_live_cb";
+constexpr const char* kBlackholeExactOutputLiveNumTilesAttr =
+    "blackhole.exact_output_live_num_tiles";
+constexpr const char* kBlackholeExactOutputLiveNumElementsAttr =
+    "blackhole.exact_output_live_num_elements";
+constexpr const char* kBlackholeExactOutputLiveRowWidthAttr =
+    "blackhole.exact_output_live_row_width";
 
 Stmt MakeBlackholeCall(const Op& op, const std::vector<PrimExpr>& args) {
   return Evaluate(Call(DataType::Int(32), op, args));
@@ -282,6 +288,7 @@ bool PlanTTKernelABI::TryCreateLiveExactTiledCBValue(const Buffer& buffer,
 
   int cb_id = -1;
   int live_order_index = -1;
+  std::string selected_identity;
   auto consider_identity = [&](const std::string& identity) {
     auto [candidate_cb_id, candidate_order_index] = find_live_cb(identity);
     if (candidate_cb_id < 0) {
@@ -290,6 +297,7 @@ bool PlanTTKernelABI::TryCreateLiveExactTiledCBValue(const Buffer& buffer,
     if (cb_id < 0 || candidate_order_index > live_order_index) {
       cb_id = candidate_cb_id;
       live_order_index = candidate_order_index;
+      selected_identity = identity;
     }
   };
 
@@ -305,12 +313,20 @@ bool PlanTTKernelABI::TryCreateLiveExactTiledCBValue(const Buffer& buffer,
     }
   }
   if (cb_id < 0) return false;
+  const std::string requested_identity = BufferIdentityName(buffer);
+  if (!requested_identity.empty()) {
+    auto [requested_cb_id, _] = find_live_cb(requested_identity);
+    if (requested_cb_id == cb_id) {
+      selected_identity = requested_identity;
+    }
+  }
   if (HasInterveningBufferWrite(buffer, live_order_index, current_lowering_order_index_)) {
     return false;
   }
   value->buffer = buffer;
   value->cb_id = cb_id;
   value->borrowed_live = true;
+  value->live_identity = selected_identity;
   PopulateExactTiledCBValueShape(buffer, value);
   RefineExactTiledCBValueShapeFromRequirement(value);
   return true;
@@ -335,6 +351,7 @@ bool PlanTTKernelABI::TryCreateExactOutputLiveTiledCBValue(const Buffer& buffer,
 
   int cb_id = -1;
   int live_order_index = -1;
+  std::string selected_identity;
   auto consider_identity = [&](const std::string& identity) {
     auto [candidate_cb_id, candidate_order_index] = find_live_cb(identity);
     if (candidate_cb_id < 0) {
@@ -343,6 +360,7 @@ bool PlanTTKernelABI::TryCreateExactOutputLiveTiledCBValue(const Buffer& buffer,
     if (cb_id < 0 || candidate_order_index > live_order_index) {
       cb_id = candidate_cb_id;
       live_order_index = candidate_order_index;
+      selected_identity = identity;
     }
   };
 
@@ -360,13 +378,50 @@ bool PlanTTKernelABI::TryCreateExactOutputLiveTiledCBValue(const Buffer& buffer,
   if (cb_id < 0) {
     return false;
   }
+  const std::string requested_identity = BufferIdentityName(buffer);
+  if (!requested_identity.empty()) {
+    auto [requested_cb_id, _] = find_live_cb(requested_identity);
+    if (requested_cb_id == cb_id) {
+      selected_identity = requested_identity;
+    }
+  }
+  if (current_lowering_order_index_ >= 0 && live_order_index > current_lowering_order_index_) {
+    return false;
+  }
+  int latest_materialized_order = -1;
+  for (const std::string& identity : CollectBufferFlowIdentities(buffer)) {
+    auto materialized_order_it = buffer_live_form_order_by_buffer_identity_.find(identity);
+    if (materialized_order_it != buffer_live_form_order_by_buffer_identity_.end()) {
+      latest_materialized_order =
+          std::max(latest_materialized_order, materialized_order_it->second);
+    }
+  }
+  if (latest_materialized_order > live_order_index &&
+      (current_lowering_order_index_ < 0 ||
+       latest_materialized_order <= current_lowering_order_index_)) {
+    return false;
+  }
   if (HasInterveningBufferWrite(buffer, live_order_index, current_lowering_order_index_)) {
     return false;
   }
   value->buffer = buffer;
   value->cb_id = cb_id;
   value->borrowed_live = true;
+  value->live_identity = selected_identity;
   PopulateExactTiledCBValueShape(buffer, value);
+  auto value_it = exact_output_live_form_value_by_buffer_identity_.find(selected_identity);
+  if (value_it != exact_output_live_form_value_by_buffer_identity_.end()) {
+    const ExactTiledCBValue& live_value = value_it->second;
+    if (live_value.num_tiles > 0) {
+      value->num_tiles = live_value.num_tiles;
+    }
+    if (live_value.num_elements > 0) {
+      value->num_elements = live_value.num_elements;
+    }
+    if (live_value.row_width > 0) {
+      value->row_width = live_value.row_width;
+    }
+  }
   RefineExactTiledCBValueShapeFromRequirement(value);
   return true;
 }
@@ -383,16 +438,60 @@ bool PlanTTKernelABI::TryCreateSelectedSourceLiveExactTiledCBValue(const Buffer&
   value->buffer = buffer;
   value->cb_id = PrepareExactTiledCBRequirement(buffer);
   value->borrowed_live = true;
+  value->live_identity = BufferIdentityName(buffer);
   PopulateExactTiledCBValueShape(buffer, value);
   return true;
+}
+
+bool PlanTTKernelABI::ShouldReleaseBorrowedExactInputAfterUse(
+    const ExactTiledCBValue& value, int current_order_index) const {
+  if (!value.borrowed_live || !value.buffer.defined() || value.cb_id < 0) {
+    return false;
+  }
+  if (select_compute_builtins_only_ && value.num_tiles > 1) {
+    return false;
+  }
+  if (!value.live_identity.empty() &&
+      BufferIdentityHasWriteAtOrder(value.live_identity, current_order_index)) {
+    return true;
+  }
+  const FutureBufferUses future_uses =
+      !value.live_identity.empty()
+          ? ClassifyFutureBufferIdentityReadsBeforeNextWrite(value.live_identity,
+                                                             current_order_index)
+          : ClassifyFutureLiveCBReadsBeforeNextWrite(value.buffer, current_order_index);
+  return !future_uses.has_compute_consume &&
+         !future_uses.has_transport_consume &&
+         !future_uses.has_reference;
+}
+
+Stmt PlanTTKernelABI::ReleaseExactInputAfterUse(
+    const ExactTiledCBValue& value, int current_order_index) {
+  if (value.cb_id < 0 || value.num_tiles <= 0) {
+    return Stmt();
+  }
+  if (!value.borrowed_live) {
+    return MakeBlackholeCall(
+        blackhole_cb_pop_front(), {IntImm32(value.cb_id), IntImm32(value.num_tiles)});
+  }
+  if (!ShouldReleaseBorrowedExactInputAfterUse(value, current_order_index)) {
+    return Stmt();
+  }
+  if (!value.live_identity.empty()) {
+    ClearTiledCBLiveFormIdentity(value.live_identity);
+  } else {
+    ClearTiledCBLiveFormAliases(value.buffer);
+  }
+  return MakeBlackholeCall(
+      blackhole_cb_pop_front(), {IntImm32(value.cb_id), IntImm32(value.num_tiles)});
 }
 
 PlanTTKernelABI::ExactTiledCBValue PlanTTKernelABI::CreateRowReductionInputCBValue(
     const Buffer& src) {
   ExactTiledCBValue live_value;
   if (TryCreateExactOutputLiveTiledCBValue(src, &live_value) ||
-      TryCreateSelectedSourceLiveExactTiledCBValue(src, &live_value) ||
-      TryCreateLiveExactTiledCBValue(src, &live_value)) {
+      TryCreateLiveExactTiledCBValue(src, &live_value) ||
+      TryCreateSelectedSourceLiveExactTiledCBValue(src, &live_value)) {
     return live_value;
   }
   return CreatePublishedExactTiledCBValue(src, "reduce_src");
@@ -402,8 +501,8 @@ PlanTTKernelABI::ExactTiledCBValue PlanTTKernelABI::CreateExactInputCBValue(
     const Buffer& src, const std::string& suffix) {
   ExactTiledCBValue live_value;
   if (TryCreateExactOutputLiveTiledCBValue(src, &live_value) ||
-      TryCreateSelectedSourceLiveExactTiledCBValue(src, &live_value) ||
-      TryCreateLiveExactTiledCBValue(src, &live_value)) {
+      TryCreateLiveExactTiledCBValue(src, &live_value) ||
+      TryCreateSelectedSourceLiveExactTiledCBValue(src, &live_value)) {
     return live_value;
   }
   return CreatePublishedExactTiledCBValue(src, suffix);
@@ -489,6 +588,23 @@ Stmt PlanTTKernelABI::PublishExactInputToTiledCB(const Buffer& src,
 void PlanTTKernelABI::RecordExactOutputLiveForm(const Buffer& dst,
                                                 const ExactTiledCBValue& cb_value) {
   RecordTiledCBLiveFormAliases(dst, cb_value.cb_id);
+  if (cb_value.cb_id >= 0) {
+    ICHECK_LT(cb_value.cb_id, static_cast<int>(cb_requirements_.size()));
+    const FutureBufferUses future_uses =
+        ClassifyFutureBufferUses(dst, current_lowering_order_index_);
+    const std::string dst_scope = GetStorageScope(dst);
+    const bool dst_is_cb_scope =
+        dst_scope.rfind("blackhole.cb", 0) == 0 || dst_scope.rfind("shared", 0) == 0;
+    if (future_uses.has_transport_consume || dst_is_cb_scope) {
+      auto& req = cb_requirements_.at(cb_value.cb_id);
+      req.flow_class = CBFlowClass::kRepublish;
+      const int event_pages = std::max(1, cb_value.num_tiles);
+      req.publish_pages_per_event =
+          std::max(req.publish_pages_per_event, event_pages);
+      req.consume_pages_per_event =
+          std::max(req.consume_pages_per_event, event_pages);
+    }
+  }
   const int order_index = current_lowering_order_index_;
   auto record_exact_buffer = [&](const Buffer& candidate) {
     const std::string identity = BufferIdentityName(candidate);
@@ -497,6 +613,7 @@ void PlanTTKernelABI::RecordExactOutputLiveForm(const Buffer& dst,
     }
     exact_output_live_form_cb_by_buffer_identity_[identity] = cb_value.cb_id;
     exact_output_live_form_order_by_buffer_identity_[identity] = order_index;
+    exact_output_live_form_value_by_buffer_identity_[identity] = cb_value;
   };
   record_exact_buffer(dst);
   const Buffer physical = ResolvePhysicalComputeBuffer(dst);
@@ -507,6 +624,7 @@ void PlanTTKernelABI::RecordExactOutputLiveForm(const Buffer& dst,
           SameBufferIdentity(physical_candidate, physical)) {
         exact_output_live_form_cb_by_buffer_identity_[identity] = cb_value.cb_id;
         exact_output_live_form_order_by_buffer_identity_[identity] = order_index;
+        exact_output_live_form_value_by_buffer_identity_[identity] = cb_value;
       }
     }
   }
@@ -583,7 +701,17 @@ Stmt PlanTTKernelABI::AttachExactOutputLiveFormMarker(const Buffer& dst,
   if (!select_compute_builtins_only_ || !dst.defined() || cb_value.cb_id < 0) {
     return body;
   }
-  return AttrStmt(dst->data, kBlackholeExactOutputLiveCBAttr, IntImm32(cb_value.cb_id), body);
+  const PrimExpr identity = tir::StringImm(BufferIdentityName(dst));
+  Stmt marked = body;
+  marked = AttrStmt(identity, kBlackholeExactOutputLiveRowWidthAttr,
+                    IntImm(DataType::Int(64), cb_value.row_width), marked);
+  marked = AttrStmt(identity, kBlackholeExactOutputLiveNumElementsAttr,
+                    IntImm(DataType::Int(64), cb_value.num_elements), marked);
+  marked = AttrStmt(identity, kBlackholeExactOutputLiveNumTilesAttr,
+                    IntImm32(cb_value.num_tiles), marked);
+  marked = AttrStmt(identity, kBlackholeExactOutputLiveCBAttr,
+                    IntImm32(cb_value.cb_id), marked);
+  return marked;
 }
 
 PlanTTKernelABI::ExactTiledCBValue PlanTTKernelABI::CreatePublishedExactTiledCBValue(

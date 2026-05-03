@@ -65,6 +65,11 @@ def NormalizeBlackholeTileCompute():
     return _ffi_api.NormalizeBlackholeTileCompute()  # type: ignore
 
 
+def ValidateBlackholeTileComputeNormalized():
+    """Reject Blackhole compute-buffer scalar residue after tile compute normalization."""
+    return _ffi_api.ValidateBlackholeTileComputeNormalized()  # type: ignore
+
+
 def InjectSoftwarePipeline():
     """InjectSoftwarePipeline
 

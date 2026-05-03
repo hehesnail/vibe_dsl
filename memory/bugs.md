@@ -2008,6 +2008,43 @@
   - exact-CB 的 capacity、event size、logical value shape 是三件事；
     混用会表现成 hang、错 CB、或 rank-1 writer 结构回归。
 
+#### flash-attn seq64 exposed stale exact-CB fronts across k-block iterations
+
+- **症状**:
+  - small flash-attn runtime 仍然通过，但 seq64 MHA/GQA direct runtime
+    数值大幅偏离 reference。
+  - source 级 CB event replay 进一步暴露两类队列问题：`acc_s` 的 QK
+    score CB 在下一次 QK publish 前没有释放旧 front page；`acc_o`
+    缩放后 PV merge 又对已经释放的旧 live-form CB 做第二次 pop。
+- **根因**:
+  - 多 block flash-attn 让同一个 logical state 在多个 exact-CB live
+    forms 间流动。旧实现把部分释放职责推迟到 accumulator merge 的
+    late discard 路径，等同于在后端重新猜当前 CB queue state。
+  - select/source projection 也曾禁止 borrowed selected-source live value
+    在消费点释放，导致 QK score 的 stale front page 留在 CB 里，下一轮
+    reduce 读到旧分数。
+  - 单页 exact-CB 输入还曾用动态 tile index 读取，`copy_tile(cb, tile)`
+    会在 single-page CB 上读越当前 event 的逻辑页。
+- **修法**:
+  - exact-CB consumer 在消费点基于 live identity、future uses 和下一次
+    write 判定是否释放 borrowed live page；single-page selected-source
+    live values 允许在 source projection 阶段释放，多页 selected-source
+    值仍保守保留。
+  - 删除 accumulator merge 的 late `discard_live_form_before_publish`
+    兜底；重新发布到 live-form CB 前必须由真正的消费者负责释放旧页。
+  - single-page exact-CB 输入的 leaf copy/binary/broadcast tile index 固定
+    为 0；多页输入才按 output tile 做取模。
+  - tests 增加 seq64 CB event replay、QK score release、PV merge consumed
+    scaled `acc_o` live form，以及 single-page CB tile-index 检查。
+- **教训**:
+  - flash-attn 小 shape 不能覆盖 multi-block exact-CB state lifetime；
+    seq64 是必要 runtime gate。
+  - CB queue lifetime 是源/IR 可验证的协议，不应靠后段 merge 或 codegen
+    根据当前 source 形状补救。
+  - 修 runtime correctness 时，必须同时跑 source queue replay 和 direct
+    runtime；source queue 绿不等价于数值正确，数值绿也不能证明没有
+    latent CB overflow/underflow。
+
 ## 3. 环境问题速查
 
 | 问题 | 解决 |

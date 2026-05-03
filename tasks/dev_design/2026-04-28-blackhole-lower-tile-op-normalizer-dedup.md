@@ -8,12 +8,11 @@ It is a task-level implementation contract, not a history log.
 
 ## Goal
 
-Keep one shared Blackhole tile-compute normalizer used by:
+Blackhole tile-compute normalization is a `Normalized Tile TIR` admission
+step that runs before generic `LowerTileOp`.
 
-- `LowerTileOpPass`
-- standalone `tl.NormalizeBlackholeTileCompute`
-
-The helper normalizes current TIR into explicit
+The normalizer rewrites admitted frontend fragment/local compute loops into
+explicit
 `tl.tileop.blackhole_compute`
 leaf statements.
 It does not create a new IR layer or cross-stage protocol.
@@ -22,15 +21,16 @@ Implementation boundary:
 the Blackhole-specific normalizer lives outside
 `lower_tile_op.cc`.
 `LowerTileOpPass`
-may call a narrow normalization function,
-but `lower_tile_op.cc`
-must not own Blackhole leaf-call builders,
-logical-temp construction,
-or composite-expression decomposition.
+must preserve existing
+`tl.tileop.blackhole_compute`
+leaf calls for Blackhole and must not call scalar-loop normalization helpers.
+After the normalizer runs, any remaining admitted compute-buffer scalar loop
+that is not represented as a tile op / explicit Blackhole leaf call is rejected
+before generic `LowerTileOp` can lower it into target-ambiguous scalar code.
 
 ## Contract
 
-- Output is explicit tile-compute TIR.
+- Output is explicit tile-compute TIR before `LowerTileOp`.
 - One emitted call represents one TT-Metal semantic leaf op.
 - The implementation is a bounded normalizer, not a pattern engine.
   It may dispatch on the current TIR store value root and use local helper
@@ -78,6 +78,18 @@ or composite-expression decomposition.
 - Operation-changing `mode` /
   `kind`
   payloads are forbidden.
+- `LowerTileOpPass`
+  is not a second normalization site.
+  Its Blackhole responsibility is to keep
+  `tl.gemm_py`,
+  `tl.tileop.reduce`,
+  and already-normalized
+  `tl.tileop.blackhole_compute`
+  calls visible to the Blackhole IR chain.
+- A validation pass must run after normalization and before `LowerTileOp`.
+  It rejects residual fragment/local compute loops whose destination is a
+  Blackhole compute buffer and whose value still depends on compute-buffer
+  loads or literal compute values.
 
 ## Composite Expression Rule
 
@@ -130,7 +142,18 @@ Required checks:
 
 - there is a single shared Blackhole tile-compute normalizer surface
 - `lower_tile_op.cc`
-  calls the normalizer but does not define it
+  does not call the normalizer and does not define it
+- `LowerAndLegalize`
+  runs
+  `NormalizeBlackholeTileCompute`
+  and
+  `ValidateBlackholeTileComputeNormalized`
+  before
+  `LowerTileOp`
+- `LowerTileOp`
+  preserves existing
+  `tl.tileop.blackhole_compute`
+  calls for Blackhole
 - the normalizer has one loop-normalization implementation surface,
   without a pure forwarding `TryNormalizeBlackholeTileComputeLoop`
   wrapper
@@ -141,4 +164,5 @@ Required checks:
 - frontend normalization emits only admitted leaf operation names
 - composite payload strings are absent from leaf-looking calls
 - division-by-scalar-load normalization produces `recip_tile`
+- residual unsupported compute loops fail before `LowerTileOp`
 - Blackhole transform tests cover the normalized source surface

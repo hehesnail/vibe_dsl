@@ -62,6 +62,7 @@
 
 #include "../target/tt_program_projection.h"
 #include "../layout/layout.h"
+#include "../op/utils.h"
 #include "common/tt_target_program.h"
 #include "common/companion_base.h"
 #include "runtime/thread_storage_scope.h"
@@ -210,6 +211,21 @@ class BlackholeResourceClassifier : public StmtExprVisitor {
     StmtExprVisitor::VisitStmt_(op);
   }
 
+  void VisitExpr_(const CallNode* op) final {
+    for (const PrimExpr& arg : op->args) {
+      if (!IsBufferLikeExpr(arg)) {
+        continue;
+      }
+      BufferRegion region = NormalizeToBufferRegion(arg);
+      if (!region.defined() || !region->buffer.defined()) {
+        continue;
+      }
+      ClassifyBuffer(std::string(region->buffer->name),
+                     GetStorageScopeStr(region->buffer));
+    }
+    StmtExprVisitor::VisitExpr_(op);
+  }
+
   void CollectLayoutFragments(const BlockNode* op) {
     if (!op->annotations.count(attr::kLayoutMap)) return;
     auto layout_map_any = op->annotations.Get(attr::kLayoutMap);
@@ -333,6 +349,7 @@ class BlackholeResourceCanonicalizer : public StmtExprMutator {
       : resource_map_(resource_map) {}
 
   PrimFunc Transform(PrimFunc func) {
+    wrapped_ = !HasThreadExtent(func->body);
     Stmt new_body = VisitStmt(func->body);
     auto n = func.CopyOnWrite();
     n->body = new_body;
@@ -354,8 +371,24 @@ class BlackholeResourceCanonicalizer : public StmtExprMutator {
   std::unordered_map<const BufferNode*, Buffer> buf_remap_;
   // collected wrappers stripped from above thread_extent, to inject inside it
   std::vector<WrapperInfo> wrappers_;
+  // Remapped resource Allocate vars currently enclosing a DeclBuffer.
+  std::unordered_set<const VarNode*> active_resource_allocate_vars_;
   // true once we have entered (and are wrapping) the outermost thread_extent
   bool wrapped_{false};
+
+  bool HasThreadExtent(const Stmt& stmt) const {
+    bool found = false;
+    tir::PostOrderVisit(stmt, [&](const ObjectRef& node) {
+      if (found) {
+        return;
+      }
+      const auto* attr = node.as<AttrStmtNode>();
+      if (attr != nullptr && attr->attr_key == tir::attr::thread_extent) {
+        found = true;
+      }
+    });
+    return found;
+  }
 
   const ResourceInfo* GetInfo(const std::string& name) const {
     auto it = resource_map_.find(name);
@@ -453,16 +486,30 @@ class BlackholeResourceCanonicalizer : public StmtExprMutator {
     }
   }
 
+  Var CreateCanonicalResourceVar(const std::string& name,
+                                 const Var& old_var,
+                                 const ResourceInfo* info) {
+    ICHECK(info != nullptr);
+    Var new_var = RemapVarScope(old_var, info->new_scope);
+    RecordCanonicalResourceVar(name, new_var);
+    return new_var;
+  }
+
   Buffer GetNewBuffer(const Buffer& buf) {
     auto it = buf_remap_.find(buf.get());
     if (it != buf_remap_.end()) return it->second;
     Var new_data = GetNewVar(buf->data);
+    const std::string name = std::string(buf->name);
+    const ResourceInfo* info = GetOrInferInfo(name, buf.scope());
     if (new_data.same_as(buf->data) &&
-        GetOrInferInfo(std::string(buf->name), buf.scope()) != nullptr &&
-        !ambiguous_resource_names_.count(std::string(buf->name))) {
-      auto alias_it = canonical_var_by_resource_name_.find(std::string(buf->name));
+        info != nullptr &&
+        !ambiguous_resource_names_.count(name)) {
+      auto alias_it = canonical_var_by_resource_name_.find(name);
       if (alias_it != canonical_var_by_resource_name_.end()) {
         new_data = alias_it->second;
+      } else {
+        new_data = CreateCanonicalResourceVar(name, buf->data, info);
+        var_remap_[buf->data.get()] = new_data;
       }
     }
     if (new_data.same_as(buf->data)) return buf;
@@ -487,20 +534,23 @@ class BlackholeResourceCanonicalizer : public StmtExprMutator {
     Array<Buffer> new_alloc_buffers;
     for (const auto& buf : op->alloc_buffers) {
       std::string name = std::string(buf->name);
-        const ResourceInfo* info = GetOrInferInfo(name, buf.scope());
-        if (info != nullptr) {
-          Var new_var = RemapVarScope(buf->data, info->new_scope);
-          var_remap_[buf->data.get()] = new_var;
-          RecordCanonicalResourceVar(name, new_var);
-          Buffer new_buf = RemapBufferData(buf, new_var);
-        WrapperInfo wi;
-        wi.kind = WrapperInfo::kAllocateFromBuffer;
-        wi.new_var = new_var;
-        wi.dtype = buf->dtype;
-        wi.extents = buf->shape;
-        wi.new_buf = new_buf;
-        wrappers_.push_back(std::move(wi));
-        // Stripped: don't add to new_alloc_buffers
+      const ResourceInfo* info = GetOrInferInfo(name, buf.scope());
+      if (info != nullptr) {
+        Var new_var = CreateCanonicalResourceVar(name, buf->data, info);
+        var_remap_[buf->data.get()] = new_var;
+        Buffer new_buf = RemapBufferData(buf, new_var);
+        if (!wrapped_) {
+          WrapperInfo wi;
+          wi.kind = WrapperInfo::kAllocateFromBuffer;
+          wi.new_var = new_var;
+          wi.dtype = buf->dtype;
+          wi.extents = buf->shape;
+          wi.new_buf = new_buf;
+          wrappers_.push_back(std::move(wi));
+          // Stripped: don't add to new_alloc_buffers
+        } else {
+          new_alloc_buffers.push_back(new_buf);
+        }
       } else {
         new_alloc_buffers.push_back(buf);
       }
@@ -522,9 +572,8 @@ class BlackholeResourceCanonicalizer : public StmtExprMutator {
     std::string name = op->buffer_var->name_hint;
     const ResourceInfo* info = GetOrInferInfo(name, GetScope(op->buffer_var));
     if (info != nullptr) {
-      Var new_var = RemapVarScope(op->buffer_var, info->new_scope);
+      Var new_var = CreateCanonicalResourceVar(name, op->buffer_var, info);
       var_remap_[op->buffer_var.get()] = new_var;
-      RecordCanonicalResourceVar(name, new_var);
 
       if (!wrapped_) {
         // Above thread_extent: strip this node, collect for relocation
@@ -539,7 +588,9 @@ class BlackholeResourceCanonicalizer : public StmtExprMutator {
         return VisitStmt(op->body);
       } else {
         // Inside thread_extent: keep the Allocate but remap buffer_var scope
+        active_resource_allocate_vars_.insert(new_var.get());
         Stmt new_body = VisitStmt(op->body);
+        active_resource_allocate_vars_.erase(new_var.get());
         return Allocate(new_var, op->dtype, op->extents, op->condition, new_body,
                         op->annotations);
       }
@@ -562,7 +613,12 @@ class BlackholeResourceCanonicalizer : public StmtExprMutator {
         return VisitStmt(op->body);
       } else {
         // Inside thread_extent: keep DeclBuffer with updated buffer
-        return DeclBuffer(new_buf, VisitStmt(op->body));
+        Stmt new_body = DeclBuffer(new_buf, VisitStmt(op->body));
+        if (!active_resource_allocate_vars_.count(new_buf->data.get())) {
+          new_body = Allocate(new_buf->data, new_buf->dtype, new_buf->shape,
+                              Bool(1), new_body);
+        }
+        return new_body;
       }
     }
     // Non-device-private: still update buffer data var if it was remapped
@@ -594,6 +650,13 @@ class BlackholeResourceCanonicalizer : public StmtExprMutator {
   PrimExpr VisitExpr_(const VarNode* op) final {
     auto it = var_remap_.find(op);
     if (it != var_remap_.end()) return it->second;
+    const std::string name = op->name_hint;
+    if (!ambiguous_resource_names_.count(name)) {
+      auto alias_it = canonical_var_by_resource_name_.find(name);
+      if (alias_it != canonical_var_by_resource_name_.end()) {
+        return alias_it->second;
+      }
+    }
     return GetRef<Var>(op);
   }
 

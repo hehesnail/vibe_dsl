@@ -116,6 +116,11 @@ std::string GetStorageScope(const Buffer& buffer) {
   return "";
 }
 
+bool IsBlackholeAccumulatorLikeScope(const std::string& scope) {
+  return scope == "blackhole.acc" || scope == "local.fragment" ||
+         scope.rfind("local", 0) == 0;
+}
+
 PrimExpr ScalarizeVectorizedIndex(const PrimExpr& index) {
   if (const auto* ramp = index.as<tir::RampNode>()) {
     return ramp->base;
@@ -434,6 +439,45 @@ static PrimExpr LinearizeStagedCopyTransportIndex(Analyzer* analyzer,
 }
 
 }  // namespace
+
+tvm::ffi::Optional<Buffer> PlanTTKernelABI::FindSingleTileComputeDirectCopyTarget(
+    const Buffer& source) const {
+  if (!source.defined()) {
+    return tvm::ffi::Optional<Buffer>();
+  }
+  const std::vector<std::string> source_identities = CollectBufferFlowIdentities(source);
+  tvm::ffi::Optional<Buffer> selected;
+  for (const auto& [target_identity, source_identity] : direct_copy_source_by_buffer_identity_) {
+    if (target_identity.empty() || source_identity.empty()) {
+      continue;
+    }
+    if (std::find(source_identities.begin(), source_identities.end(), source_identity) ==
+        source_identities.end()) {
+      continue;
+    }
+    if (tile_compute_input_buffers_.count(target_identity) == 0U) {
+      continue;
+    }
+    auto target_it = buffer_by_identity_.find(target_identity);
+    if (target_it == buffer_by_identity_.end() || !target_it->second.defined()) {
+      continue;
+    }
+    const Buffer& target = target_it->second;
+    if (!IsBlackholeAccumulatorLikeScope(GetStorageScope(target))) {
+      continue;
+    }
+    if (selected.defined() && !SameBufferIdentity(selected.value(), target)) {
+      return tvm::ffi::Optional<Buffer>();
+    }
+    selected = target;
+  }
+  return selected;
+}
+
+Buffer PlanTTKernelABI::SelectCBProducerBufferForDramToCB(const Buffer& source) const {
+  tvm::ffi::Optional<Buffer> target = FindSingleTileComputeDirectCopyTarget(source);
+  return target.defined() ? target.value() : source;
+}
 
 std::optional<std::pair<int64_t, int64_t>>
 PlanTTKernelABI::InferStagedCopySharedShapeFromTransportCoverage(
@@ -897,6 +941,9 @@ const BufferStoreNode* PlanTTKernelABI::FindNestedCopyStore(
   if (const auto* allocate = stmt.as<tir::AllocateNode>()) {
     return FindNestedCopyStore(allocate->body, nested_loop_vars);
   }
+  if (const auto* decl_buffer = stmt.as<tir::DeclBufferNode>()) {
+    return FindNestedCopyStore(decl_buffer->body, nested_loop_vars);
+  }
   if (const auto* if_then_else = stmt.as<IfThenElseNode>()) {
     if (const BufferStoreNode* store = FindNestedCopyStore(if_then_else->then_case,
                                                            nested_loop_vars)) {
@@ -946,6 +993,10 @@ void PlanTTKernelABI::CollectNestedCopyStores(const Stmt& stmt,
   }
   if (const auto* allocate = stmt.as<tir::AllocateNode>()) {
     CollectNestedCopyStores(allocate->body, loop_stack, matches);
+    return;
+  }
+  if (const auto* decl_buffer = stmt.as<tir::DeclBufferNode>()) {
+    CollectNestedCopyStores(decl_buffer->body, loop_stack, matches);
     return;
   }
   if (const auto* if_then_else = stmt.as<IfThenElseNode>()) {
@@ -1219,6 +1270,10 @@ Stmt PlanTTKernelABI::GenerateCopySequence(const BufferStoreNode* op,
         }
         PrimExpr l1_offset = IntImm32(0);
         int write_page_bytes = page_bytes;
+        if (has_live_output && global_rank1.value() > 1 && live_output.num_tiles == 1 &&
+            live_output.num_elements < global_rank1.value()) {
+          live_output.num_elements = global_rank1.value();
+        }
         const bool live_rank1_vector_output =
             has_live_output && global_rank1.value() > 1 && live_output.num_tiles == 1 &&
             live_output.num_elements == global_rank1.value();
@@ -1303,12 +1358,27 @@ Stmt PlanTTKernelABI::GenerateCopySequence(const BufferStoreNode* op,
     }
 
     case CopyDirection::kCBToLocal: {
+      ExactTiledCBValue target_live_value;
+      if (TryCreateExactOutputLiveTiledCBValue(op->buffer, &target_live_value) ||
+          TryCreateLiveExactTiledCBValue(op->buffer, &target_live_value)) {
+        return Evaluate(IntImm32(0));
+      }
       const int src_cb_id = AllocateRequirementIndex(load->buffer, CBType::kIntermediate);
       auto& req = cb_requirements_.at(src_cb_id);
       req.lifetime_end = std::max(req.lifetime_end, next_requirement_index_);
       ExactTiledCBValue live_value;
       const FutureBufferUses future_uses =
           ClassifyFutureBufferUses(op->buffer, current_lowering_order_index_);
+      const FutureBufferUses same_or_future_uses =
+          current_lowering_order_index_ >= 0
+              ? ClassifyFutureBufferUses(op->buffer, current_lowering_order_index_ - 1)
+              : future_uses;
+      const FutureBufferUses load_future_uses =
+          ClassifyFutureBufferUses(load->buffer, current_lowering_order_index_);
+      const FutureBufferUses load_same_or_future_uses =
+          current_lowering_order_index_ >= 0
+              ? ClassifyFutureBufferUses(load->buffer, current_lowering_order_index_ - 1)
+              : load_future_uses;
       const bool has_live_value = TryCreateLiveExactTiledCBValue(load->buffer, &live_value);
       if (!has_live_value) {
         live_value.buffer = load->buffer;
@@ -1324,7 +1394,11 @@ Stmt PlanTTKernelABI::GenerateCopySequence(const BufferStoreNode* op,
         }
       }
       if (future_uses.has_compute_consume || future_uses.has_transport_consume ||
-          has_tile_compute_input_use || IsBroadcastColsSourceBuffer(load->buffer) ||
+          same_or_future_uses.has_transport_consume ||
+          load_future_uses.has_transport_consume ||
+          load_same_or_future_uses.has_transport_consume ||
+          has_tile_compute_input_use ||
+          IsBroadcastColsSourceBuffer(load->buffer) ||
           IsBroadcastColsSourceBuffer(op->buffer)) {
         RecordTiledCBLiveFormAliases(op->buffer, live_value.cb_id);
         return Evaluate(IntImm32(0));
@@ -1356,8 +1430,9 @@ Stmt PlanTTKernelABI::GenerateCopySequence(const BufferStoreNode* op,
     case CopyDirection::kDramToCB: {
       const std::string segment_kind = ResolveAccessorSegmentKind(direction);
       const bool segmented_gemm = !gemm_a_buffer_name_.empty() && segment_kind == "reader";
+      const Buffer cb_producer_buffer = SelectCBProducerBufferForDramToCB(op->buffer);
       int cb_id = AllocateRequirementIndex(
-          op->buffer, segmented_gemm ? CBType::kInput : CBType::kIntermediate);
+          cb_producer_buffer, segmented_gemm ? CBType::kInput : CBType::kIntermediate);
       int tile_bytes = EstimateCopyPageSize(op->buffer);
       RecordStagedCopyBufferBinding(op, direction);
       const Array<PrimExpr>& global_indices = load->indices;
@@ -1377,7 +1452,10 @@ Stmt PlanTTKernelABI::GenerateCopySequence(const BufferStoreNode* op,
                        accessor_slot, 2, 0, 0, 2, tile_bytes, host_axis_order);
       stmts.push_back(MakeBlackholeCall(
           blackhole_cb_push_back(), {IntImm32(cb_id), IntImm32(1)}));
-      RecordTiledCBLiveFormAliases(op->buffer, cb_id);
+      RecordTiledCBLiveFormAliases(cb_producer_buffer, cb_id);
+      if (!SameBufferIdentity(cb_producer_buffer, op->buffer)) {
+        RecordTiledCBLiveFormAliases(op->buffer, cb_id);
+      }
       return maybe_wrap_segment_stmt(segment_kind, SeqStmt::Flatten(stmts));
     }
     case CopyDirection::kCBToDram: {
@@ -1521,8 +1599,9 @@ Stmt PlanTTKernelABI::GenerateStagedCopyLoopSequence(
   };
 
   if (direction == CopyDirection::kDramToCB) {
+    const Buffer cb_producer_buffer = SelectCBProducerBufferForDramToCB(op->buffer);
     int cb_id = AllocateRequirementIndex(
-        op->buffer, segmented_gemm ? CBType::kInput : CBType::kIntermediate);
+        cb_producer_buffer, segmented_gemm ? CBType::kInput : CBType::kIntermediate);
     RecordStagedCopyBufferBinding(op, direction);
     const int accessor_slot = GetReadAccessorSlot(segment_kind, load->buffer, direction);
     if (use_page_transport) {
@@ -1543,7 +1622,10 @@ Stmt PlanTTKernelABI::GenerateStagedCopyLoopSequence(
           blackhole_noc_async_read_barrier(), {}));
       stmts.push_back(MakeBlackholeCall(
           blackhole_cb_push_back(), {IntImm32(cb_id), IntImm32(1)}));
-      RecordTiledCBLiveFormAliases(op->buffer, cb_id);
+      RecordTiledCBLiveFormAliases(cb_producer_buffer, cb_id);
+      if (!SameBufferIdentity(cb_producer_buffer, op->buffer)) {
+        RecordTiledCBLiveFormAliases(op->buffer, cb_id);
+      }
       return maybe_wrap_segment_stmt(SeqStmt::Flatten(stmts));
     }
     const int total_subtiles = geometry.subtile_rows * geometry.subtile_cols;
@@ -1571,7 +1653,10 @@ Stmt PlanTTKernelABI::GenerateStagedCopyLoopSequence(
       stmts.push_back(MakeBlackholeCall(
           blackhole_cb_push_back(), {IntImm32(cb_id), IntImm32(1)}));
     }
-    RecordTiledCBLiveFormAliases(op->buffer, cb_id);
+    RecordTiledCBLiveFormAliases(cb_producer_buffer, cb_id);
+    if (!SameBufferIdentity(cb_producer_buffer, op->buffer)) {
+      RecordTiledCBLiveFormAliases(op->buffer, cb_id);
+    }
     return maybe_wrap_segment_stmt(SeqStmt::Flatten(stmts));
   }
 

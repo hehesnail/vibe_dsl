@@ -7,6 +7,7 @@
 #define TVM_TL_OP_UTILS_H_
 
 #include "../target/stubs/cuda.h"
+#include "../transform/common/blackhole_utils.h"
 #include "./operator.h"
 #include "region.h"
 #include "tvm/runtime/base.h"
@@ -104,6 +105,64 @@ inline bool IsLocalBuffer(const Buffer &buffer, bool allow_var = false) {
 
 inline bool IsLocalVarBuffer(const Buffer &buffer) {
   return buffer.defined() && buffer.scope() == "local.var";
+}
+
+inline bool IsBlackholeComputeBuffer(const Buffer &buffer) {
+  if (!buffer.defined()) {
+    return false;
+  }
+  const std::string scope = buffer.scope();
+  return scope == "local" || scope == "local.fragment" ||
+         scope == "blackhole.acc";
+}
+
+inline PrimExpr BlackholeBufferElementCount(const Buffer &buffer) {
+  PrimExpr elements = IntImm(DataType::Int(32), 1);
+  for (const PrimExpr &extent : buffer->shape) {
+    elements = elements * extent;
+  }
+  return elements;
+}
+
+inline bool RegionCoversWholeBuffer(const Buffer &buffer,
+                                    const Array<Range> &region,
+                                    arith::Analyzer *analyzer) {
+  if (!buffer.defined() || region.size() != buffer->shape.size()) {
+    return false;
+  }
+  for (size_t i = 0; i < region.size(); ++i) {
+    if (!analyzer->CanProveEqual(region[i]->min, 0) ||
+        !analyzer->CanProveEqual(region[i]->extent, buffer->shape[i])) {
+      return false;
+    }
+  }
+  return true;
+}
+
+inline PrimExpr MakeBlackholeFullRegionExpr(const Buffer &buffer,
+                                            int access_mask) {
+  Array<PrimExpr> indices;
+  Array<PrimExpr> args;
+  for (const PrimExpr &shape : buffer->shape) {
+    indices.push_back(IntImm(shape.dtype(), 0));
+  }
+  args.push_back(BufferLoad(buffer, indices));
+  args.push_back(IntImm(DataType::Int(32), access_mask));
+  for (const PrimExpr &shape : buffer->shape) {
+    args.push_back(shape);
+  }
+  return Call(DataType::Handle(), RegionOp::Get(), args);
+}
+
+inline Stmt MakeBlackholeTileComputeCall(const char *operation,
+                                         Array<PrimExpr> payload) {
+  Array<PrimExpr> args;
+  args.push_back(StringImm(operation));
+  for (const PrimExpr &arg : payload) {
+    args.push_back(arg);
+  }
+  return Evaluate(Call(DataType::Handle(),
+                       Op::Get(blackhole_tile_compute_schema::kOpName), args));
 }
 
 } // namespace tl

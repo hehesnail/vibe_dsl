@@ -889,6 +889,23 @@ CopyInst CopyNode::GetCopyInst(Target target, bool disable_tma_lower,
 // functions.
 Stmt CopyNode::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
   Target target = T.target;
+  if (TargetIsBlackhole(target) && IsBlackholeComputeBuffer(src) &&
+      IsBlackholeComputeBuffer(dst)) {
+    ICHECK(RegionCoversWholeBuffer(src, src_range, analyzer))
+        << "Blackhole compute copy requires full source region for "
+        << src->name;
+    ICHECK(RegionCoversWholeBuffer(dst, dst_range, analyzer))
+        << "Blackhole compute copy requires full destination region for "
+        << dst->name;
+    const char* operation = src->dtype == dst->dtype
+                                ? blackhole_tile_compute_schema::kCopyTile
+                                : blackhole_tile_compute_schema::kTypecastTile;
+    return MakeBlackholeTileComputeCall(
+        operation,
+        {MakeBlackholeFullRegionExpr(src, 1),
+         MakeBlackholeFullRegionExpr(dst, 2),
+         BlackholeBufferElementCount(dst)});
+  }
 
   using namespace tvm::transform;
   PassContext pass_ctx = PassContext::Current();

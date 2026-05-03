@@ -25,7 +25,7 @@
 #include "../op/reduce.h"
 #include "../op/utils.h"
 #include "../target/utils.h"
-#include "common/blackhole_tile_compute_normalizer.h"
+#include "common/blackhole_utils.h"
 #include "ptx_async_copy_injector.h"
 
 #include "arith/ir_mutator_with_analyzer.h"
@@ -982,6 +982,11 @@ private:
     if (TargetIsBlackhole(target_) && tile_op->IsInstance<ReduceOpNode>()) {
       return tvm::ffi::GetRef<Stmt>(op);
     }
+    if (TargetIsBlackhole(target_) && call && call->op->IsInstance<OpNode>() &&
+        Downcast<Op>(call->op)->name ==
+            blackhole_tile_compute_schema::kOpName) {
+      return tvm::ffi::GetRef<Stmt>(op);
+    }
 
     AddWorkspaceCallback callback = [this](int num_elem, DataType dtype) {
       auto workspace =
@@ -1062,14 +1067,6 @@ private:
    * @return Stmt The lowered statement.
    */
   Stmt VisitStmt_(const ForNode *op) final {
-    if (TargetIsBlackhole(target_)) {
-      if (Stmt normalized = NormalizeBlackholeTileComputeLoop(
-              op, &blackhole_tile_compute_temp_index_);
-          normalized.defined()) {
-        return normalized;
-      }
-    }
-
     // Extract reducer info from annotations
     Map<Var, ReducerInfo> reducer_info;
     if (op->annotations.count(attr::kReducerInfo)) {
@@ -1304,7 +1301,6 @@ private:
   // parameters rather than in memory indices.
   bool in_tma_context_{false};
   int pipelined_depth_{0};
-  int blackhole_tile_compute_temp_index_{0};
 };
 
 namespace transform {

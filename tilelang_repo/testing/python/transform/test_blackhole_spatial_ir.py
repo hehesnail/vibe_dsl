@@ -41,6 +41,7 @@ BLACKHOLE_TILE_COMPUTE_LEAF_OPS = {
     "copy_tile",
     "binary_max_tile",
     "add_tiles",
+    "sub_tiles",
     "mul_tiles",
     "mul_tiles_bcast_cols",
     "add_tiles_bcast_cols",
@@ -158,11 +159,80 @@ def _memory_config_annotation_kernel():
     return main
 
 
+def _elementwise_add_kernel():
+    @T.prim_func
+    def main(
+        A: T.Tensor((32, 32), "bfloat16"),
+        B: T.Tensor((32, 32), "bfloat16"),
+        C: T.Tensor((32, 32), "bfloat16"),
+    ):
+        with T.Kernel(1, 1, threads=128) as (bx, by):
+            A_shared = T.alloc_shared((32, 32), "bfloat16")
+            B_shared = T.alloc_shared((32, 32), "bfloat16")
+            A_local = T.alloc_fragment((32, 32), "bfloat16")
+            B_local = T.alloc_fragment((32, 32), "bfloat16")
+            C_local = T.alloc_fragment((32, 32), "bfloat16")
+
+            T.copy(A, A_shared)
+            T.copy(B, B_shared)
+            T.copy(A_shared, A_local)
+            T.copy(B_shared, B_local)
+            for i, j in T.Parallel(32, 32):
+                C_local[i, j] = A_local[i, j] + B_local[i, j]
+            T.copy(C_local, C)
+
+    return main
+
+
+def _three_input_add_residue_kernel():
+    @T.prim_func
+    def main(
+        A: T.Tensor((32, 32), "bfloat16"),
+        B: T.Tensor((32, 32), "bfloat16"),
+        C: T.Tensor((32, 32), "bfloat16"),
+        D: T.Tensor((32, 32), "bfloat16"),
+    ):
+        with T.Kernel(1, 1, threads=128) as (bx, by):
+            A_shared = T.alloc_shared((32, 32), "bfloat16")
+            B_shared = T.alloc_shared((32, 32), "bfloat16")
+            C_shared = T.alloc_shared((32, 32), "bfloat16")
+            A_local = T.alloc_fragment((32, 32), "bfloat16")
+            B_local = T.alloc_fragment((32, 32), "bfloat16")
+            C_local = T.alloc_fragment((32, 32), "bfloat16")
+            D_local = T.alloc_fragment((32, 32), "bfloat16")
+
+            T.copy(A, A_shared)
+            T.copy(B, B_shared)
+            T.copy(C, C_shared)
+            T.copy(A_shared, A_local)
+            T.copy(B_shared, B_local)
+            T.copy(C_shared, C_local)
+            for i, j in T.Parallel(32, 32):
+                D_local[i, j] = A_local[i, j] + B_local[i, j] + C_local[i, j]
+            T.copy(D_local, D)
+
+    return main
+
+
 def _lower_blackhole_frontend(prim_func):
     target = Target("blackhole")
     mod = tvm.IRModule({"main": prim_func.with_attr("global_symbol", "main")})
     with target:
         return LowerAndLegalize(mod, target)
+
+
+def _prepare_blackhole_layout_inferred_module(prim_func):
+    target = Target("blackhole")
+    mod = tvm.IRModule({"main": prim_func.with_attr("global_symbol", "main")})
+    with target:
+        mod = tvm.tir.transform.BindTarget(target)(mod)
+        mod = tilelang.transform.AddWrapperForSingleBufStore()(mod)
+        mod = tilelang.transform.LegalizeNegativeIndex()(mod)
+        mod = tilelang.transform.InjectAssumes()(mod)
+        mod = tilelang.transform.Simplify()(mod)
+        mod = tilelang.transform.LayoutReducer()(mod)
+        mod = tilelang.transform.LayoutInference()(mod)
+    return mod
 
 
 def _prepare_blackhole_tt_program_module(prim_func):
@@ -1069,6 +1139,7 @@ def test_tile_compute_pattern_table_covers_current_leaf_operation_names():
         "typecast_tile",
         "binary_max_tile",
         "add_tiles",
+        "sub_tiles",
         "mul_tiles",
         "mul_tiles_bcast_cols",
         "add_tiles_bcast_cols",
@@ -1818,6 +1889,28 @@ def test_blackhole_frontend_preserves_reduce_tileop_before_tt_selection():
     assert "tir.call_extern" not in op_names
 
 
+def test_blackhole_tile_compute_normalizes_before_lower_tile_op():
+    mod = _prepare_blackhole_layout_inferred_module(_elementwise_add_kernel())
+    normalized = tilelang.transform.NormalizeBlackholeTileCompute()(mod)
+    normalized_ops = _collect_blackhole_tile_compute_operations(normalized["main"])
+
+    assert "add_tiles" in normalized_ops
+
+    with Target("blackhole"):
+        lowered = tilelang.transform.LowerTileOp()(normalized)
+    lowered_ops = _collect_blackhole_tile_compute_operations(lowered["main"])
+
+    assert "add_tiles" in lowered_ops
+
+
+def test_blackhole_frontend_rejects_compute_residue_after_normalization():
+    with pytest.raises(
+        tvm.TVMError,
+        match="Blackhole tile compute normalization left scalar compute residue",
+    ):
+        _lower_blackhole_frontend(_three_input_add_residue_kernel())
+
+
 def test_blackhole_frontend_normalizes_flash_attention_leaf_tile_compute_before_tt_selection():
     mod = _lower_blackhole_frontend(
         mha_example.flashattn.jit_impl.get_tir(
@@ -1844,6 +1937,40 @@ def test_blackhole_frontend_normalizes_flash_attention_leaf_tile_compute_before_
         "exp2_tile",
         "typecast_tile",
     }.issubset(operations)
+
+
+def test_spatial_plan_derives_layout_specs_for_preserved_flash_leaf_compute():
+    mod = _prepare_blackhole_phase_b_module(
+        mha_example.flashattn.jit_impl.get_tir(
+            1,
+            32,
+            128,
+            128,
+            False,
+            block_M=128,
+            block_N=128,
+            num_stages=1,
+            threads=128,
+        )
+    )
+    plan = mod["main"].attrs["tl.spatial_plan"]
+    layouts = {str(layout.subject): layout for layout in plan.layout_specs}
+
+    for name in ("acc_s", "acc_s_cast", "acc_o"):
+        layout = layouts[name]
+        assert tuple(int(dim) for dim in layout.logical_shape) == (128, 128)
+        assert tuple(int(dim) for dim in layout.local_shape) == (128,)
+        assert int(layout.thread_extent) == 128
+        assert int(layout.replicate_extent) == 1
+        assert len(layout.inverse_logical_index_exprs) == 3
+
+    for name in ("scores_max", "scores_max_prev", "scores_scale", "scores_sum", "logsum"):
+        layout = layouts[name]
+        assert tuple(int(dim) for dim in layout.logical_shape) == (128,)
+        assert tuple(int(dim) for dim in layout.local_shape) == (1,)
+        assert int(layout.thread_extent) == 128
+        assert int(layout.replicate_extent) == 1
+        assert len(layout.inverse_logical_index_exprs) == 2
 
 
 def test_blackhole_frontend_tile_compute_normalization_uses_leaf_operations():
@@ -1924,10 +2051,20 @@ def test_lower_tile_op_has_single_blackhole_tile_compute_normalizer_surface():
         REPO_ROOT
         / "tilelang_repo/src/transform/common/blackhole_tile_compute_normalizer.cc"
     ).read_text()
+    phase_source = (REPO_ROOT / "tilelang_repo/tilelang/engine/phase.py").read_text()
+
+    normalize_index = phase_source.index("NormalizeBlackholeTileCompute()(mod)")
+    validate_index = phase_source.index("ValidateBlackholeTileComputeNormalized()(mod)")
+    lower_tile_index = phase_source.index("LowerTileOp()(mod)")
 
     assert "MakeBlackholeTileComputeCall(" not in lower_tile_source
+    assert "blackhole_tile_compute_normalizer.h" not in lower_tile_source
+    assert "NormalizeBlackholeTileComputeLoop(" not in lower_tile_source
     assert "TryNormalizeBlackholeTileComputeStore(" not in lower_tile_source
     assert "TryNormalizeBlackholeTileComputeLoop(" not in lower_tile_source
+    assert normalize_index < validate_index < lower_tile_index
+    assert phase_source.count("NormalizeBlackholeTileCompute()(mod)") == 1
+    assert phase_source.count("ValidateBlackholeTileComputeNormalized()(mod)") == 1
     assert "class TileComputeIRBuilder" in normalizer_source
     assert "NormalizeBlackholeTileComputeStore(" in normalizer_source
     assert "struct TileComputeRewriteRule" not in normalizer_source

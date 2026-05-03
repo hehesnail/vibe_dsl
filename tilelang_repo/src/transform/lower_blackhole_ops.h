@@ -168,6 +168,7 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
     int64_t row_width = 0;
     bool producer_live = false;
     bool borrowed_live = false;
+    std::string live_identity;
   };
 
   struct ComputeOperandPlanSeed {
@@ -270,6 +271,10 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
    * replace all requirement_index placeholders with the final hardware cb_id.
    */
   int AllocateRequirementIndex(const tvm::tir::Buffer& buffer, CBType type);
+  tvm::ffi::Optional<tvm::tir::Buffer> FindSingleTileComputeDirectCopyTarget(
+      const tvm::tir::Buffer& source) const;
+  tvm::tir::Buffer SelectCBProducerBufferForDramToCB(
+      const tvm::tir::Buffer& source) const;
 
   /*! \brief Load staged CB plans from TTProgram and preserve requirement indices. */
   void LoadSeededCBRequirements(const tvm::tir::PrimFunc& func);
@@ -557,6 +562,12 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
                                             ExactTiledCBValue* value) const;
   bool TryCreateSelectedSourceLiveExactTiledCBValue(const tvm::tir::Buffer& buffer,
                                                     ExactTiledCBValue* value);
+  bool ShouldReleaseBorrowedExactInputAfterUse(
+      const ExactTiledCBValue& value,
+      int current_order_index) const;
+  tvm::tir::Stmt ReleaseExactInputAfterUse(
+      const ExactTiledCBValue& value,
+      int current_order_index);
   ExactTiledCBValue CreateExactInputCBValue(const tvm::tir::Buffer& src,
                                             const std::string& suffix);
   ExactTiledCBValue CreateRowReductionInputCBValue(const tvm::tir::Buffer& src);
@@ -619,6 +630,7 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
                                  FragmentCastMatch* match) const;
   tvm::tir::Stmt LowerExplicitTileComputeCall(const tvm::tir::CallNode* op);
   void LoadTileComputeDAGLoweringPlan(const tvm::tir::PrimFunc& func);
+  void LoadExactOutputLiveFormMarkers(const tvm::tir::Stmt& body);
   void LoadDirectCopySourceBindings(const tvm::tir::PrimFunc& func);
   void RefreshBroadcastColsSourceBuffers();
   bool IsBroadcastColsSourceBuffer(const tvm::tir::Buffer& buffer) const;
@@ -677,12 +689,22 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   bool HasInterveningBufferWrite(const tvm::tir::Buffer& buffer,
                                  int live_order_index,
                                  int current_order_index) const;
+  bool FutureWritePrecedesFutureComputeConsume(const tvm::tir::Buffer& buffer,
+                                               int current_order_index) const;
   int ResolveCurrentBufferTransferOrder(const tvm::tir::Buffer& src,
                                         const tvm::tir::Buffer& dst,
                                         int lower_bound_order_index) const;
   FutureBufferUses ClassifyFutureBufferUses(const tvm::tir::Buffer& buffer,
                                             int current_order_index) const;
   FutureBufferUses ClassifyFutureLiveCBReadsBeforeNextWrite(
+      const tvm::tir::Buffer& buffer,
+      int current_order_index) const;
+  FutureBufferUses ClassifyFutureBufferIdentityReadsBeforeNextWrite(
+      const std::string& buffer_identity,
+      int current_order_index) const;
+  bool BufferIdentityHasWriteAtOrder(const std::string& buffer_identity,
+                                     int order_index) const;
+  bool HasFutureExactLiveFormTileComputeConsume(
       const tvm::tir::Buffer& buffer,
       int current_order_index) const;
   const BlackholeBufferMaterializationFact* FindBufferMaterializationFact(
@@ -709,7 +731,8 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   void FinalizeConsumerBindingABIIndices();
   void FinalizeMaterializationPlanHostBuffers();
   bool ShouldRetainComputeInputBuffer(const tvm::tir::Buffer& buffer,
-                                      int current_order_index) const;
+                                      int current_order_index,
+                                      int consumed_pages) const;
   bool ShouldReacquireComputeInputBuffer(const tvm::tir::Buffer& buffer,
                                          int current_order_index) const;
   bool ShouldPublishBufferResult(const tvm::tir::Buffer& buffer,
@@ -818,10 +841,13 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   std::unordered_map<std::string, int> cb_consumed_compute_input_pages_by_buffer_identity_;
   std::unordered_map<std::string, int> cb_consumed_compute_input_use_count_by_buffer_identity_;
   std::unordered_map<std::string, BlackholeBufferFlowFact> buffer_flow_facts_;
+  std::vector<tvm::tir::Stmt> execution_ordered_stmts_;
   std::unordered_map<std::string, int> buffer_live_form_cb_by_buffer_identity_;
   std::unordered_map<std::string, int> buffer_live_form_order_by_buffer_identity_;
   std::unordered_map<std::string, int> exact_output_live_form_cb_by_buffer_identity_;
   std::unordered_map<std::string, int> exact_output_live_form_order_by_buffer_identity_;
+  std::unordered_map<std::string, ExactTiledCBValue>
+      exact_output_live_form_value_by_buffer_identity_;
   std::unordered_set<std::string> selected_source_live_producer_buffers_;
   std::unordered_set<std::string> seeded_cb_requirement_names_;
   std::vector<SpatialMaterializationBoundaryRef> spatial_materialization_boundaries_;

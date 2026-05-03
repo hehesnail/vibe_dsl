@@ -124,6 +124,8 @@ Do not reintroduce:
 - mailbox publication as an admitted compute-side CB protocol without
   TT-Metal linkability proof
 - stale exact-output live-form aliases after tiled live-form invalidation
+- late accumulator-merge discard paths that try to recover exact-CB queue
+  state after a consumer has already consumed the live form
 
 ## Validation
 
@@ -133,6 +135,9 @@ Required validation covers:
 - materialization plans reference valid live forms and boundaries
 - consumer bindings match admitted source live forms
 - publication protocols match projected CB / sync plans
+- exact-CB consumers release borrowed live pages at the consumption point when
+  no later consumer can legally read that live form; later producers must not
+  repair stale pages with a separate semantic discard path
 - direct runtime rejects unsupported surfaces before execution
 
 Runtime tests are support-surface gates only after the typed plans and

@@ -769,6 +769,13 @@ CBFlowClass DeriveBufferFlowClass(const std::vector<BlackholeBufferFlowEvent>& e
   return CBFlowClass::kStream;
 }
 
+bool IsStructuralBufferFlowWrapper(const tir::Stmt& stmt) {
+  return stmt.as<tir::SeqStmtNode>() || stmt.as<tir::ForNode>() ||
+         stmt.as<tir::AttrStmtNode>() || stmt.as<tir::DeclBufferNode>() ||
+         stmt.as<tir::AllocateNode>() || stmt.as<tir::LetStmtNode>() ||
+         stmt.as<tir::IfThenElseNode>();
+}
+
 std::vector<BlackholeBufferFlowFact> CollectBufferFlowFactsFromBody(const tir::Stmt& body) {
   std::unordered_map<std::string, tir::Buffer> tracked_buffers;
   const std::vector<tir::Stmt> ordered_stmts = CollectExecutionOrderedStmts(body);
@@ -816,6 +823,9 @@ std::vector<BlackholeBufferFlowFact> CollectBufferFlowFactsFromBody(const tir::S
   std::unordered_map<std::string, BlackholeBufferFlowFact> facts_by_buffer;
   for (int order_index = 0; order_index < static_cast<int>(ordered_stmts.size()); ++order_index) {
     const tir::Stmt& stmt = ordered_stmts[order_index];
+    if (IsStructuralBufferFlowWrapper(stmt)) {
+      continue;
+    }
     const auto compute_consumed = CollectComputeConsumedBuffers(stmt);
     for (const auto& [buffer_name, buffer] : tracked_buffers) {
       if (!StmtReferencesBuffer(stmt, buffer)) {

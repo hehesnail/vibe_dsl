@@ -95,6 +95,18 @@ bool ProvenEqual(const PrimExpr& lhs, const PrimExpr& rhs) {
   return tir::is_zero(analyzer.Simplify(lhs - rhs));
 }
 
+bool ProvenEqualArray(const Array<PrimExpr>& lhs, const Array<PrimExpr>& rhs) {
+  if (lhs.size() != rhs.size()) {
+    return false;
+  }
+  for (size_t i = 0; i < lhs.size(); ++i) {
+    if (!ProvenEqual(lhs[i], rhs[i])) {
+      return false;
+    }
+  }
+  return true;
+}
+
 int64_t StaticPositiveIntValue(const PrimExpr& expr) {
   if (const auto* imm = expr.as<IntImmNode>()) {
     return imm->value > 0 ? imm->value : -1;
@@ -170,34 +182,34 @@ PrimExpr MakeFullRegionExpr(const Buffer& buffer, int access_mask) {
   return Call(DataType::Handle(), RegionOp::Get(), args);
 }
 
-bool MatchLoad(const PrimExpr& expr, Buffer* buffer, PrimExpr* index) {
+bool MatchLoadAny(const PrimExpr& expr, Buffer* buffer,
+                  Array<PrimExpr>* indices) {
   const auto* load = expr.as<BufferLoadNode>();
-  if (!load || load->indices.size() != 1U ||
-      !IsBlackholeComputeBuffer(load->buffer)) {
+  if (!load || !IsBlackholeComputeBuffer(load->buffer)) {
     return false;
   }
   if (buffer != nullptr) {
     *buffer = load->buffer;
   }
-  if (index != nullptr) {
-    *index = load->indices[0];
+  if (indices != nullptr) {
+    *indices = load->indices;
   }
   return true;
 }
 
 bool MatchLoadFromBuffer(const PrimExpr& expr, const Buffer& buffer,
-                         const PrimExpr& expected_index) {
+                         const Array<PrimExpr>& expected_indices) {
   Buffer load_buffer;
-  PrimExpr load_index;
-  if (!MatchLoad(expr, &load_buffer, &load_index) ||
+  Array<PrimExpr> load_indices;
+  if (!MatchLoadAny(expr, &load_buffer, &load_indices) ||
       !SameBufferStorage(load_buffer, buffer)) {
     return false;
   }
-  return ProvenEqual(load_index, expected_index);
+  return ProvenEqualArray(load_indices, expected_indices);
 }
 
 bool MatchScaledLoad(const PrimExpr& expr, Buffer* buffer, PrimExpr* scale) {
-  if (MatchLoad(expr, buffer, nullptr)) {
+  if (MatchLoadAny(expr, buffer, nullptr)) {
     *scale = make_const(expr.dtype(), 1.0);
     return true;
   }
@@ -205,11 +217,11 @@ bool MatchScaledLoad(const PrimExpr& expr, Buffer* buffer, PrimExpr* scale) {
   if (!mul) {
     return false;
   }
-  if (MatchLoad(mul->a, buffer, nullptr) && IsLiteralScalarValue(mul->b)) {
+  if (MatchLoadAny(mul->a, buffer, nullptr) && IsLiteralScalarValue(mul->b)) {
     *scale = mul->b;
     return true;
   }
-  if (MatchLoad(mul->b, buffer, nullptr) && IsLiteralScalarValue(mul->a)) {
+  if (MatchLoadAny(mul->b, buffer, nullptr) && IsLiteralScalarValue(mul->a)) {
     *scale = mul->a;
     return true;
   }
@@ -293,6 +305,7 @@ Stmt WrapBlackholeTempBuffers(Stmt body, const std::vector<Buffer>& buffers) {
 struct TileComputeRewriteContext {
   const BufferStoreNode* store{nullptr};
   PrimExpr linear_index;
+  Array<PrimExpr> identity_indices;
   PrimExpr num_elements;
   PrimExpr row_index;
   PrimExpr row_width;
@@ -354,9 +367,9 @@ bool MatchIdentityLoad(const PrimExpr& expr,
                        const TileComputeRewriteContext& ctx,
                        Buffer* buffer) {
   Buffer load_buffer;
-  PrimExpr load_index;
-  if (!MatchLoad(expr, &load_buffer, &load_index) ||
-      !ProvenEqual(load_index, ctx.linear_index)) {
+  Array<PrimExpr> load_indices;
+  if (!MatchLoadAny(expr, &load_buffer, &load_indices) ||
+      !ProvenEqualArray(load_indices, ctx.identity_indices)) {
     return false;
   }
   if (buffer != nullptr) {
@@ -369,12 +382,23 @@ bool MatchBroadcastColsLoad(const PrimExpr& expr,
                             const TileComputeRewriteContext& ctx,
                             Buffer* buffer) {
   Buffer load_buffer;
-  PrimExpr load_index;
-  if (!MatchLoad(expr, &load_buffer, &load_index) ||
+  Array<PrimExpr> load_indices;
+  if (!MatchLoadAny(expr, &load_buffer, &load_indices) ||
       SameBufferStorage(load_buffer, ctx.store->buffer)) {
     return false;
   }
+  if (load_indices.size() != 1U) {
+    return false;
+  }
+  const PrimExpr& load_index = load_indices[0];
   if (IsSingleElementBuffer(load_buffer) && tir::is_zero(load_index)) {
+    if (buffer != nullptr) {
+      *buffer = load_buffer;
+    }
+    return true;
+  }
+  if (ctx.identity_indices.size() == 2U &&
+      ProvenEqual(load_index, ctx.identity_indices[0])) {
     if (buffer != nullptr) {
       *buffer = load_buffer;
     }
@@ -520,10 +544,10 @@ bool EmitTypecastTileIfMatched(const TileComputeRewriteContext& ctx,
                                TileComputeIRBuilder* builder) {
   (void)builder;
   Buffer src;
-  PrimExpr src_index;
+  Array<PrimExpr> src_indices;
   const auto* cast = ctx.store->value.as<CastNode>();
-  if (!cast || !MatchLoad(cast->value, &src, &src_index) ||
-      !ProvenEqual(src_index, ctx.linear_index)) {
+  if (!cast || !MatchLoadAny(cast->value, &src, &src_indices) ||
+      !ProvenEqualArray(src_indices, ctx.identity_indices)) {
     return false;
   }
   match->AddUnary(blackhole_tile_compute_schema::kTypecastTile, src,
@@ -536,10 +560,10 @@ bool EmitCopyTileIfMatched(const TileComputeRewriteContext& ctx,
                            TileComputeIRBuilder* builder) {
   (void)builder;
   Buffer src;
-  PrimExpr src_index;
-  if (!MatchLoad(ctx.store->value, &src, &src_index) ||
+  Array<PrimExpr> src_indices;
+  if (!MatchLoadAny(ctx.store->value, &src, &src_indices) ||
       SameBufferStorage(src, ctx.store->buffer) ||
-      !ProvenEqual(src_index, ctx.linear_index)) {
+      !ProvenEqualArray(src_indices, ctx.identity_indices)) {
     return false;
   }
   match->AddUnary(blackhole_tile_compute_schema::kCopyTile, src,
@@ -554,8 +578,8 @@ bool EmitBinaryMaxTileIfMatched(const TileComputeRewriteContext& ctx,
   auto match_ordered_max = [&](const PrimExpr& lhs,
                                const PrimExpr& rhs) -> bool {
     Buffer rhs_buffer;
-    if (!MatchLoadFromBuffer(lhs, ctx.store->buffer, ctx.linear_index) ||
-        !MatchLoad(rhs, &rhs_buffer, nullptr)) {
+    if (!MatchLoadFromBuffer(lhs, ctx.store->buffer, ctx.identity_indices) ||
+        !MatchLoadAny(rhs, &rhs_buffer, nullptr)) {
       return false;
     }
     match->AddInplaceBinary(blackhole_tile_compute_schema::kBinaryMaxTile,
@@ -585,9 +609,9 @@ bool EmitAddRootTileComputeIfMatched(const TileComputeRewriteContext& ctx,
     }
     Buffer other_mul;
     Buffer add_buffer;
-    if (MatchLoadFromBuffer(mul->a, ctx.store->buffer, ctx.linear_index) &&
-        MatchLoad(mul->b, &other_mul, nullptr) &&
-        MatchLoad(add_expr, &add_buffer, nullptr)) {
+    if (MatchLoadFromBuffer(mul->a, ctx.store->buffer, ctx.identity_indices) &&
+        MatchLoadAny(mul->b, &other_mul, nullptr) &&
+        MatchLoadAny(add_expr, &add_buffer, nullptr)) {
       match->AddInplaceBinary(blackhole_tile_compute_schema::kMulTiles,
                               ctx.store->buffer, other_mul,
                               ctx.num_elements);
@@ -596,9 +620,9 @@ bool EmitAddRootTileComputeIfMatched(const TileComputeRewriteContext& ctx,
                               ctx.num_elements);
       return true;
     }
-    if (MatchLoadFromBuffer(mul->b, ctx.store->buffer, ctx.linear_index) &&
-        MatchLoad(mul->a, &other_mul, nullptr) &&
-        MatchLoad(add_expr, &add_buffer, nullptr)) {
+    if (MatchLoadFromBuffer(mul->b, ctx.store->buffer, ctx.identity_indices) &&
+        MatchLoadAny(mul->a, &other_mul, nullptr) &&
+        MatchLoadAny(add_expr, &add_buffer, nullptr)) {
       match->AddInplaceBinary(blackhole_tile_compute_schema::kMulTiles,
                               ctx.store->buffer, other_mul,
                               ctx.num_elements);
@@ -717,8 +741,8 @@ bool EmitMulRootTileComputeIfMatched(const TileComputeRewriteContext& ctx,
   auto match_ordered_broadcast = [&](const PrimExpr& self_expr,
                                      const PrimExpr& scalar_expr) -> bool {
     Buffer scalar;
-    if (!MatchLoadFromBuffer(self_expr, ctx.store->buffer, ctx.linear_index) ||
-        !MatchLoad(scalar_expr, &scalar, nullptr) ||
+    if (!MatchLoadFromBuffer(self_expr, ctx.store->buffer, ctx.identity_indices) ||
+        !MatchLoadAny(scalar_expr, &scalar, nullptr) ||
         SameBufferStorage(scalar, ctx.store->buffer)) {
       return false;
     }
@@ -793,18 +817,18 @@ bool EmitFillTileIfMatched(const TileComputeRewriteContext& ctx,
 
 Stmt NormalizeBlackholeTileComputeStore(const BufferStoreNode* store,
                                         const PrimExpr& linear_index,
+                                        const Array<PrimExpr>& identity_indices,
                                         const PrimExpr& num_elements,
                                         int* temp_index,
                                         const PrimExpr& row_index = PrimExpr(),
                                         const PrimExpr& row_width = PrimExpr()) {
   if (!store || !IsBlackholeComputeBuffer(store->buffer) ||
-      store->indices.size() != 1U ||
-      !ProvenEqual(store->indices[0], linear_index)) {
+      !ProvenEqualArray(store->indices, identity_indices)) {
     return Stmt();
   }
   TileComputeIRBuilder builder(temp_index);
-  const TileComputeRewriteContext ctx{store, linear_index, num_elements,
-                                      row_index, row_width};
+  const TileComputeRewriteContext ctx{store, linear_index, identity_indices,
+                                      num_elements, row_index, row_width};
 
   auto render_if_matched = [&](auto emit) -> Stmt {
     TileComputeRewriteMatch match;
@@ -850,6 +874,36 @@ Stmt NormalizeBlackholeTileComputeStore(const BufferStoreNode* store,
   return Stmt();
 }
 
+Stmt NormalizeBlackholeTileComputeLoop(const ForNode* op, int* temp_index) {
+  if (const auto* store = op->body.as<BufferStoreNode>()) {
+    if (store->indices.size() == 1U) {
+      return NormalizeBlackholeTileComputeStore(store, store->indices[0],
+                                                store->indices, op->extent,
+                                                temp_index);
+    }
+  }
+  const auto* inner_loop = op->body.as<ForNode>();
+  const auto* inner_store =
+      inner_loop ? inner_loop->body.as<BufferStoreNode>() : nullptr;
+  if (inner_loop && inner_store && inner_store->indices.size() == 1U) {
+    arith::Analyzer analyzer;
+    return NormalizeBlackholeTileComputeStore(
+        inner_store, inner_store->indices[0], inner_store->indices,
+        analyzer.Simplify(op->extent * inner_loop->extent), temp_index,
+        op->loop_var, inner_loop->extent);
+  }
+  if (inner_loop && inner_store && inner_store->indices.size() == 2U) {
+    arith::Analyzer analyzer;
+    const PrimExpr linear_index = analyzer.Simplify(
+        inner_store->indices[0] * inner_loop->extent + inner_store->indices[1]);
+    return NormalizeBlackholeTileComputeStore(
+        inner_store, linear_index, inner_store->indices,
+        analyzer.Simplify(op->extent * inner_loop->extent), temp_index,
+        inner_store->indices[0], inner_loop->extent);
+  }
+  return Stmt();
+}
+
 class BlackholeTileComputeNormalizer : public arith::IRMutatorWithAnalyzer {
  public:
   static PrimFunc Substitute(PrimFunc f) {
@@ -877,27 +931,32 @@ class BlackholeTileComputeNormalizer : public arith::IRMutatorWithAnalyzer {
   }
 };
 
-}  // namespace
-
-Stmt NormalizeBlackholeTileComputeLoop(const ForNode* op, int* temp_index) {
-  if (const auto* store = op->body.as<BufferStoreNode>()) {
-    if (store->indices.size() == 1U) {
-      return NormalizeBlackholeTileComputeStore(store, store->indices[0],
-                                                op->extent, temp_index);
+class BlackholeTileComputeResidueValidator : public StmtExprVisitor {
+ public:
+  static PrimFunc Validate(PrimFunc f) {
+    if (!IsBlackholePrimFunc(f)) {
+      return f;
     }
+    BlackholeTileComputeResidueValidator validator;
+    validator(f->body);
+    return f;
   }
-  const auto* inner_loop = op->body.as<ForNode>();
-  const auto* inner_store =
-      inner_loop ? inner_loop->body.as<BufferStoreNode>() : nullptr;
-  if (inner_loop && inner_store && inner_store->indices.size() == 1U) {
-    arith::Analyzer analyzer;
-    return NormalizeBlackholeTileComputeStore(
-        inner_store, inner_store->indices[0],
-        analyzer.Simplify(op->extent * inner_loop->extent), temp_index,
-        op->loop_var, inner_loop->extent);
+
+ private:
+  void VisitStmt_(const BufferStoreNode* op) final {
+    if (IsBlackholeComputeBuffer(op->buffer)) {
+      LOG(FATAL)
+          << "Blackhole tile compute normalization left scalar compute residue "
+          << "for buffer " << BufferIdentityName(op->buffer)
+          << ". Expressible compute must be represented as explicit "
+          << blackhole_tile_compute_schema::kOpName
+          << " leaf calls before LowerTileOp.";
+    }
+    StmtExprVisitor::VisitStmt_(op);
   }
-  return Stmt();
-}
+};
+
+}  // namespace
 
 namespace transform {
 
@@ -910,10 +969,20 @@ tvm::transform::Pass NormalizeBlackholeTileCompute() {
   return CreatePrimFuncPass(pass_func, 0, "tl.NormalizeBlackholeTileCompute", {});
 }
 
+tvm::transform::Pass ValidateBlackholeTileComputeNormalized() {
+  auto pass_func = [=](PrimFunc f, const IRModule& m, const PassContext& ctx) {
+    return BlackholeTileComputeResidueValidator::Validate(std::move(f));
+  };
+  return CreatePrimFuncPass(pass_func, 0,
+                            "tl.ValidateBlackholeTileComputeNormalized", {});
+}
+
 TVM_FFI_STATIC_INIT_BLOCK() {
   namespace refl = tvm::ffi::reflection;
   refl::GlobalDef().def("tl.transform.NormalizeBlackholeTileCompute",
                         NormalizeBlackholeTileCompute);
+  refl::GlobalDef().def("tl.transform.ValidateBlackholeTileComputeNormalized",
+                        ValidateBlackholeTileComputeNormalized);
 }
 
 }  // namespace transform

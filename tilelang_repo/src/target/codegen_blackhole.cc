@@ -24,6 +24,8 @@
 
 #include "codegen_blackhole.h"
 
+#include <tvm/arith/analyzer.h>
+
 #include <algorithm>
 #include <cstdlib>
 #include <optional>
@@ -87,6 +89,27 @@ const tvm::tir::VarNode* AsHandleVar(const tvm::PrimExpr& expr) {
   return nullptr;
 }
 
+bool SameCodegenStorageVar(const tvm::tir::VarNode* lhs,
+                           const tvm::tir::VarNode* rhs) {
+  if (lhs == rhs) {
+    return true;
+  }
+  if (lhs == nullptr || rhs == nullptr || lhs->name_hint != rhs->name_hint ||
+      lhs->dtype != rhs->dtype) {
+    return false;
+  }
+  const bool lhs_is_ptr = lhs->type_annotation.as<tvm::PointerTypeNode>() != nullptr;
+  const bool rhs_is_ptr = rhs->type_annotation.as<tvm::PointerTypeNode>() != nullptr;
+  if (lhs_is_ptr != rhs_is_ptr) {
+    return false;
+  }
+  if (!lhs_is_ptr) {
+    return true;
+  }
+  return tvm::tir::GetPtrStorageScope(GetRef<tvm::tir::Var>(lhs)) ==
+         tvm::tir::GetPtrStorageScope(GetRef<tvm::tir::Var>(rhs));
+}
+
 bool StmtUsesVar(const tvm::tir::Stmt& stmt, const tvm::tir::VarNode* target) {
   class Visitor final : public tvm::tir::StmtExprVisitor {
    public:
@@ -113,7 +136,54 @@ bool StmtUsesVar(const tvm::tir::Stmt& stmt, const tvm::tir::VarNode* target) {
     }
 
     void VisitExpr_(const tvm::tir::VarNode* op) final {
-      if (op == target_) {
+      if (SameCodegenStorageVar(op, target_)) {
+        found_ = true;
+      }
+    }
+
+    const tvm::tir::VarNode* target_;
+    bool found_{false};
+  };
+
+  return target != nullptr && stmt.defined() && Visitor(target).Check(stmt);
+}
+
+bool StmtUsesVarOutsideDefinitions(const tvm::tir::Stmt& stmt,
+                                   const tvm::tir::VarNode* target) {
+  class Visitor final : public tvm::tir::StmtExprVisitor {
+   public:
+    explicit Visitor(const tvm::tir::VarNode* target) : target_(target) {}
+
+    bool Check(const tvm::tir::Stmt& stmt) {
+      VisitStmt(stmt);
+      return found_;
+    }
+
+   private:
+    void VisitStmt(const tvm::tir::Stmt& stmt) final {
+      if (found_) {
+        return;
+      }
+      tvm::tir::StmtExprVisitor::VisitStmt(stmt);
+    }
+
+    void VisitExpr(const tvm::PrimExpr& expr) final {
+      if (found_) {
+        return;
+      }
+      tvm::tir::StmtExprVisitor::VisitExpr(expr);
+    }
+
+    void VisitStmt_(const tvm::tir::AllocateNode* op) final {
+      VisitStmt(op->body);
+    }
+
+    void VisitStmt_(const tvm::tir::DeclBufferNode* op) final {
+      VisitStmt(op->body);
+    }
+
+    void VisitExpr_(const tvm::tir::VarNode* op) final {
+      if (SameCodegenStorageVar(op, target_)) {
         found_ = true;
       }
     }
@@ -1180,6 +1250,16 @@ void CodeGenBlackhole::VisitExpr_(const tvm::tir::VarNode* op, std::ostream& os)
   if (TryPrintCBBackedHandleVar(op, os)) {
     return;
   }
+  if (auto it = var_idmap_.find(op); it != var_idmap_.end()) {
+    os << it->second;
+    return;
+  }
+  for (const auto& [known_var, known_name] : var_idmap_) {
+    if (SameCodegenStorageVar(op, known_var)) {
+      os << known_name;
+      return;
+    }
+  }
   CodeGenC::VisitExpr_(op, os);
 }
 
@@ -1338,6 +1418,45 @@ void CodeGenBlackhole::VisitStmt_(const tvm::tir::EvaluateNode *op) {
   // Fall back to grandparent class (tvm::codegen::CodeGenC) for non-builtin expressions
   // We need to call the grandparent directly since CodeGenCHost doesn't override VisitStmt_ for EvaluateNode
   tvm::codegen::CodeGenC::VisitStmt_(op);
+}
+
+void CodeGenBlackhole::VisitStmt_(const tvm::tir::ForNode *op) {
+  std::string begin_str = PrintExpr(op->min);
+  PrimExpr end = tvm::tir::is_zero(op->min)
+                     ? op->extent
+                     : arith::Analyzer().Simplify(op->min + op->extent);
+  std::string end_str = PrintExpr(end);
+  std::string step_str = op->step.has_value() ? PrintExpr(*op->step) : "";
+  PrintIndent();
+  std::string vid = AllocVarID(op->loop_var.get());
+  stream << "for (";
+  PrintType(op->loop_var.dtype(), stream);
+  stream << ' ' << vid << " = " << begin_str << "; " << vid << " < " << end_str << "; ";
+  if (step_str.empty()) {
+    stream << "++" << vid;
+  } else {
+    stream << vid << " += " << step_str;
+  }
+  stream << ") {\n";
+
+  std::optional<std::string> prev_var_id;
+  if (auto it = var_idmap_.find(op->loop_var.get()); it != var_idmap_.end()) {
+    prev_var_id = it->second;
+  }
+  var_idmap_[op->loop_var.get()] = vid;
+
+  int for_scope = BeginScope();
+  PrintStmt(op->body);
+  this->EndScope(for_scope);
+
+  if (prev_var_id) {
+    var_idmap_[op->loop_var.get()] = *prev_var_id;
+  } else {
+    var_idmap_.erase(op->loop_var.get());
+  }
+
+  PrintIndent();
+  stream << "}\n";
 }
 
 void CodeGenBlackhole::VisitStmt_(const tvm::tir::AllocateNode *op) {
@@ -1745,6 +1864,86 @@ bool CodeGenBlackhole::HandleBlackholeBuiltin(const tvm::tir::CallNode *op,
   if (op_name.find(prefix) != 0) return false;
 
   std::string builtin_name = op_name.substr(prefix.length());
+  auto skip_current_segment_builtin = [&]() {
+    os << "/* skipped " << op_name << " outside its TT-Metal segment */";
+  };
+  static const std::unordered_set<std::string> kTRISCOnlyBuiltins = {
+      "mm_init",
+      "reconfig_data_format",
+      "mm_init_short",
+      "mm_init_short_with_dt",
+      "matmul_tiles",
+      "tile_regs_acquire",
+      "tile_regs_commit",
+      "tile_regs_wait",
+      "tile_regs_release",
+      "pack_tile",
+      "pack_reconfig_data_format",
+      "copy_tile_to_dst_init_short",
+      "copy_tile_to_dst_init_short_with_dt",
+      "copy_tile",
+      "binary_op_init_common",
+      "unary_op_init_common",
+      "add_tiles_init",
+      "add_tiles",
+      "sub_tiles_init",
+      "sub_tiles",
+      "add_bcast_rows_init_short",
+      "add_bcast_cols_init_short",
+      "add_tiles_bcast_rows",
+      "add_tiles_bcast_cols",
+      "mul_tiles_init",
+      "mul_tiles",
+      "mul_bcast_rows_init_short",
+      "mul_bcast_cols_init_short",
+      "mul_tiles_bcast_rows",
+      "mul_tiles_bcast_cols",
+      "reduce_init",
+      "reduce_tile",
+      "reduce_uninit",
+      "binary_max_tile_init",
+      "binary_max_tile",
+      "div_binary_tile_init",
+      "div_binary_tile",
+      "exp_tile_init",
+      "exp_tile",
+      "exp2_tile_init",
+      "exp2_tile",
+      "recip_tile_init",
+      "recip_tile",
+      "fill_fragment",
+      "add_fragment",
+      "add_fragment_from_cb_front",
+      "pack_untilize_slice",
+      "pack_untilize_tile",
+      "tilize_local_fragment_slice",
+      "tilize_cast_fragment_slice",
+      "pack_fill_fragment_to_tiled_cb",
+      "untilize_cb_front_tile",
+      "untilize_cb_front_tile_fragment",
+      "cast_fragment_slice",
+  };
+  static const std::unordered_set<std::string> kDataMovementOnlyBuiltins = {
+      "noc_async_read",
+      "noc_async_write",
+      "noc_async_read_barrier",
+      "noc_async_write_barrier",
+      "read_tile_to_cb",
+      "read_page_to_cb",
+      "read_bcast_cols_to_cb",
+      "write_tile_from_cb",
+      "write_page_from_cb",
+  };
+  if (core_type_ != CoreType::kTRISC &&
+      kTRISCOnlyBuiltins.count(builtin_name)) {
+    skip_current_segment_builtin();
+    return true;
+  }
+  if (core_type_ == CoreType::kTRISC &&
+      kDataMovementOnlyBuiltins.count(builtin_name)) {
+    skip_current_segment_builtin();
+    return true;
+  }
 
   // Handle each builtin type
   if (builtin_name == "cb_reserve_back") {
@@ -3194,6 +3393,7 @@ void CodeGenBlackhole::PrintPackFillFragmentToTiledCB(const tvm::tir::CallNode* 
     ICHECK(false) << "tl.blackhole.pack_fill_fragment_to_tiled_cb currently admits bf16 or "
                      "float32 publication";
   }
+  MaybeEmitMathWaypoint(os, "FILL");
   os << "{ (void)(";
   PrintExpr(op->args[2], os);
   os << "); (void)(";

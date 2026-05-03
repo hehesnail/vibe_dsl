@@ -383,7 +383,17 @@ void PlanTTKernelABI::ExtractGemmInfo(const CallNode* op) {
     }
     const std::string buffer_identity = BufferIdentityName(buffer);
     CBFlowClass flow_class = CBFlowClass::kStream;
-    if (auto flow_fact_it = buffer_flow_facts_.find(buffer_identity);
+    const BlackholeBufferMaterializationFact* materialization_fact =
+        FindBufferMaterializationFact(buffer);
+    const bool materializes_as_tiled_cb_republish =
+        materialization_fact != nullptr &&
+        materialization_fact->kind == buffer_materialization::kRepublishedLogicalTile &&
+        materialization_fact->bridge_kind == buffer_materialization::kTileNFacesMaterialization &&
+        materialization_fact->execution_protocol == buffer_materialization::kTiledCBRepublish &&
+        materialization_fact->result_live_form == buffer_live_form::kTiledCB;
+    if (materializes_as_tiled_cb_republish) {
+      flow_class = CBFlowClass::kRepublish;
+    } else if (auto flow_fact_it = buffer_flow_facts_.find(buffer_identity);
         flow_fact_it != buffer_flow_facts_.end()) {
       flow_class = flow_fact_it->second.flow_class;
     } else if (auto use_count_it =
@@ -431,6 +441,9 @@ Stmt PlanTTKernelABI::LowerMatmulCallWithFlowAnalysis(
     *consumed_post_merge_cast = false;
   }
   ExtractGemmInfo(op);
+  const int retain_num_m_tiles = CeilDivToInt(gemm_m_, kBlackholeTileRows);
+  const int retain_num_n_tiles = CeilDivToInt(gemm_n_, kBlackholeTileCols);
+  const int retain_num_k_tiles = CeilDivToInt(gemm_k_, kBlackholeTileCols);
 
   bool retain_in0 = false;
   bool retain_in1 = false;
@@ -438,14 +451,16 @@ Stmt PlanTTKernelABI::LowerMatmulCallWithFlowAnalysis(
   bool reacquire_in1 = false;
   if (IsBufferLikeExpr(op->args[0])) {
     const Buffer in0_buffer = ResolvePhysicalComputeBuffer(NormalizeToBufferRegion(op->args[0])->buffer);
-    retain_in0 = ShouldRetainComputeInputBuffer(in0_buffer, current_order_index);
+    retain_in0 = ShouldRetainComputeInputBuffer(in0_buffer, current_order_index,
+                                                retain_num_m_tiles * retain_num_k_tiles);
     if (!retain_in0) {
       reacquire_in0 = ShouldReacquireComputeInputBuffer(in0_buffer, current_order_index);
     }
   }
   if (IsBufferLikeExpr(op->args[1])) {
     const Buffer in1_buffer = ResolvePhysicalComputeBuffer(NormalizeToBufferRegion(op->args[1])->buffer);
-    retain_in1 = ShouldRetainComputeInputBuffer(in1_buffer, current_order_index);
+    retain_in1 = ShouldRetainComputeInputBuffer(in1_buffer, current_order_index,
+                                                retain_num_k_tiles * retain_num_n_tiles);
     if (!retain_in1) {
       reacquire_in1 = ShouldReacquireComputeInputBuffer(in1_buffer, current_order_index);
     }
@@ -458,6 +473,17 @@ Stmt PlanTTKernelABI::LowerMatmulCallWithFlowAnalysis(
     const Buffer out_buffer = ResolvePhysicalComputeBuffer(NormalizeToBufferRegion(op->args[2])->buffer);
     const FutureBufferUses future_uses =
         ClassifyFutureBufferUses(out_buffer, current_order_index);
+    const bool planned_output_cb_compute_consume =
+        gemm_c_req_index_ >= 0 && gemm_c_req_index_ < static_cast<int>(cb_requirements_.size()) &&
+        cb_requirements_.at(gemm_c_req_index_).flow_class == CBFlowClass::kRepublish &&
+        cb_requirements_.at(gemm_c_req_index_).consume_pages_per_event > 0;
+    bool planned_output_tile_compute_consume = false;
+    for (const std::string& identity : CollectBufferFlowIdentities(out_buffer)) {
+      if (tile_compute_input_buffers_.count(identity) != 0U) {
+        planned_output_tile_compute_consume = true;
+        break;
+      }
+    }
     const bool has_zero_preclear = HasZeroFragmentFillFact(out_buffer);
     bool adjacent_post_merge_cast_is_only_compute_consumer = false;
     if (post_merge_cast != nullptr && post_merge_cast_order_index >= 0 &&
@@ -471,9 +497,13 @@ Stmt PlanTTKernelABI::LowerMatmulCallWithFlowAnalysis(
     const bool post_merge_cast_can_consume_live_cb =
         post_merge_cast != nullptr && adjacent_post_merge_cast_is_only_compute_consumer &&
         !has_zero_preclear;
+    const bool future_exact_live_form_compute_consume =
+        HasFutureExactLiveFormTileComputeConsume(out_buffer, current_order_index);
     const bool needs_accumulator_merge =
         FindBufferMaterializationFact(out_buffer) != nullptr ||
-        (future_uses.has_compute_consume && !post_merge_cast_can_consume_live_cb);
+        ((future_uses.has_compute_consume || future_exact_live_form_compute_consume ||
+          planned_output_cb_compute_consume || planned_output_tile_compute_consume) &&
+         !post_merge_cast_can_consume_live_cb);
     ExactTiledCBValue live_accumulator;
     const bool has_live_accumulator =
         !gemm_clear_accum_ && !needs_accumulator_merge &&
@@ -481,9 +511,14 @@ Stmt PlanTTKernelABI::LowerMatmulCallWithFlowAnalysis(
     if (!gemm_clear_accum_ && !needs_accumulator_merge) {
       gemm_clear_accum_ = !has_live_accumulator;
     }
-    publish_out = future_uses.has_compute_consume || future_uses.has_transport_consume;
+    publish_out = future_uses.has_compute_consume || future_uses.has_transport_consume ||
+                  future_exact_live_form_compute_consume || planned_output_cb_compute_consume ||
+                  planned_output_tile_compute_consume;
     publish_transport_out = future_uses.has_transport_consume;
-    preserve_out_local_state = future_uses.has_compute_consume || future_uses.has_reference;
+    preserve_out_local_state = future_uses.has_compute_consume || future_uses.has_reference ||
+                               future_exact_live_form_compute_consume ||
+                               planned_output_cb_compute_consume ||
+                               planned_output_tile_compute_consume;
   }
 
   const bool can_publish_post_merge_cast =
@@ -767,6 +802,15 @@ Stmt PlanTTKernelABI::GenerateMergeFragmentTilesSequence(const Buffer& dst,
   const int tile_elements = (kBlackholeTileRows * kBlackholeTileCols * gemm_c_dtype_.bytes()) /
                             gemm_c_dtype_.bytes();
   const Buffer physical_dst = ResolvePhysicalComputeBuffer(dst);
+  const bool in_place_live_reload_publication =
+      use_live_reload && live_form_cb_id >= 0 && live_form_cb_id == live_reload_cb_id;
+  const bool reserve_live_form_late = in_place_live_reload_publication;
+  if (in_place_live_reload_publication) {
+    ICHECK_EQ(num_c_tiles, 1)
+        << "Blackhole in-place live accumulator publication currently requires a single "
+           "output tile for "
+        << dst_buffer_name;
+  }
   if (!merge_with_zero_reload) {
     if (use_live_reload) {
       ICHECK(live_reload_buffer.defined())
@@ -819,7 +863,7 @@ Stmt PlanTTKernelABI::GenerateMergeFragmentTilesSequence(const Buffer& dst,
   }
   stmts.push_back(MakeBlackholeCall(blackhole_cb_wait_front(),
                                     {IntImm32(partials_cb_id), IntImm32(num_c_tiles)}));
-  if (live_form_cb_id >= 0) {
+  if (live_form_cb_id >= 0 && !reserve_live_form_late) {
     stmts.push_back(MakeBlackholeCall(blackhole_cb_reserve_back(),
                                       {IntImm32(live_form_cb_id), IntImm32(num_c_tiles)}));
   }
@@ -860,6 +904,14 @@ Stmt PlanTTKernelABI::GenerateMergeFragmentTilesSequence(const Buffer& dst,
     stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_commit(), {}));
     stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_wait(), {}));
     if (live_form_cb_id >= 0) {
+      if (in_place_live_reload_publication) {
+        stmts.push_back(MakeBlackholeCall(blackhole_cb_pop_front(),
+                                          {IntImm32(live_reload_cb_id),
+                                           IntImm32(num_c_tiles)}));
+        stmts.push_back(MakeBlackholeCall(blackhole_cb_reserve_back(),
+                                          {IntImm32(live_form_cb_id),
+                                           IntImm32(num_c_tiles)}));
+      }
       stmts.push_back(MakeBlackholeCall(blackhole_pack_reconfig_data_format(),
                                         {IntImm32(live_form_cb_id)}));
       stmts.push_back(MakeBlackholeCall(blackhole_pack_tile(),
@@ -883,7 +935,7 @@ Stmt PlanTTKernelABI::GenerateMergeFragmentTilesSequence(const Buffer& dst,
     stmts.push_back(MakeBlackholeCall(blackhole_cb_pop_front(),
                                       {IntImm32(reload_cb_id), IntImm32(num_c_tiles)}));
   }
-  if (use_live_reload) {
+  if (use_live_reload && !in_place_live_reload_publication) {
     stmts.push_back(MakeBlackholeCall(blackhole_cb_pop_front(),
                                       {IntImm32(live_reload_cb_id),
                                        IntImm32(num_c_tiles)}));
@@ -1030,6 +1082,7 @@ Stmt PlanTTKernelABI::GenerateMatmulSequenceWithPartialReload(int out_req_index,
     live_value.buffer = gemm_c_buffer_;
     live_value.cb_id = out_id;
     live_value.borrowed_live = true;
+    live_value.live_identity = BufferIdentityName(gemm_c_buffer_);
     PopulateExactTiledCBValueShape(gemm_c_buffer_, &live_value);
     body = AttachExactOutputLiveFormMarker(gemm_c_buffer_, live_value, body);
   }
@@ -1133,7 +1186,9 @@ Stmt PlanTTKernelABI::GenerateAccumulatingMatmulSequence(const CallNode* op,
 
   ExactTiledCBValue live_reload_value;
   const bool use_live_reload =
-      !merge_with_zero_reload && TryCreateLiveExactTiledCBValue(gemm_c_buffer_, &live_reload_value);
+      !merge_with_zero_reload &&
+      (TryCreateExactOutputLiveTiledCBValue(gemm_c_buffer_, &live_reload_value) ||
+       TryCreateLiveExactTiledCBValue(gemm_c_buffer_, &live_reload_value));
 
   Buffer reload_buffer;
   int reload_req_index = -1;
@@ -1165,7 +1220,7 @@ Stmt PlanTTKernelABI::GenerateAccumulatingMatmulSequence(const CallNode* op,
     const bool reuse_seeded_source_live_cb =
         use_tiled_cb_live_form && seeded_cb_requirement_names_.count(output_identity) != 0U &&
         gemm_c_req_index_ >= 0 && IsSingleFullTileLogicalMatrix(gemm_c_buffer_) &&
-        (!use_live_reload || gemm_c_req_index_ != live_reload_value.cb_id);
+        (!use_live_reload || num_c_tiles == 1);
     if (reuse_seeded_source_live_cb) {
       live_form_buffer = gemm_c_buffer_;
       live_form_req_index = gemm_c_req_index_;

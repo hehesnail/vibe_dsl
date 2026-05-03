@@ -47,8 +47,13 @@ using tir::Buffer;
 using tir::Call;
 using tir::CallNode;
 using tir::Evaluate;
+using tir::FloorDiv;
+using tir::FloorMod;
+using tir::For;
+using tir::ForKind;
 using tir::SeqStmt;
 using tir::Stmt;
+using tir::Var;
 using tir::builtin::blackhole_add_bcast_cols_init_short;
 using tir::builtin::blackhole_add_tiles;
 using tir::builtin::blackhole_add_tiles_bcast_cols;
@@ -152,6 +157,13 @@ bool IsNegInfValue(const PrimExpr& expr) {
   return IsFloatImmValue(expr, -std::numeric_limits<double>::infinity());
 }
 
+PrimExpr ExactCBReadTileIndex(int num_tiles, const PrimExpr& output_tile) {
+  if (num_tiles <= 1) {
+    return IntImm32(0);
+  }
+  return FloorMod(output_tile, IntImm32(num_tiles));
+}
+
 std::string GetStorageScope(const Buffer& buffer) {
   ffi::String scope = buffer.scope();
   if (scope.length() > 0) {
@@ -198,12 +210,6 @@ class ExactTileComputeEmitter {
     Append(blackhole_cb_pop_front(), {IntImm32(cb_id), IntImm32(num_tiles)});
   }
 
-  void PopIfOwned(int cb_id, int num_tiles, bool borrowed_live) {
-    if (!borrowed_live) {
-      Pop(cb_id, num_tiles);
-    }
-  }
-
   void Push(int cb_id, int num_tiles) {
     Append(blackhole_cb_push_back(), {IntImm32(cb_id), IntImm32(num_tiles)});
   }
@@ -221,19 +227,35 @@ class ExactTileComputeEmitter {
     Append(blackhole_unary_op_init_common(), {IntImm32(input_cb_id), IntImm32(out_cb_id)});
   }
 
-  void PackTile(int out_cb_id, int out_tile) {
+  void PackTile(int out_cb_id, const PrimExpr& out_tile) {
     Append(blackhole_pack_reconfig_data_format(), {IntImm32(out_cb_id)});
-    Append(blackhole_pack_tile(), {IntImm32(0), IntImm32(out_cb_id), IntImm32(out_tile)});
+    Append(blackhole_pack_tile(), {IntImm32(0), IntImm32(out_cb_id), out_tile});
+  }
+
+  void PackTile(int out_cb_id, int out_tile) {
+    PackTile(out_cb_id, IntImm32(out_tile));
   }
 
   template <typename EmitBody>
   void EmitPackedTile(int out_cb_id, int out_tile, EmitBody emit_body) {
+    EmitPackedTile(out_cb_id, IntImm32(out_tile), emit_body);
+  }
+
+  template <typename EmitBody>
+  void EmitPackedTile(int out_cb_id, const PrimExpr& out_tile, EmitBody emit_body) {
     EmitPackedTileBeforePack(out_cb_id, out_tile, emit_body,
                              [](ExactTileComputeEmitter&) {});
   }
 
   template <typename EmitBody, typename EmitBeforePack>
   void EmitPackedTileBeforePack(int out_cb_id, int out_tile, EmitBody emit_body,
+                                EmitBeforePack emit_before_pack) {
+    EmitPackedTileBeforePack(out_cb_id, IntImm32(out_tile), emit_body,
+                             emit_before_pack);
+  }
+
+  template <typename EmitBody, typename EmitBeforePack>
+  void EmitPackedTileBeforePack(int out_cb_id, const PrimExpr& out_tile, EmitBody emit_body,
                                 EmitBeforePack emit_before_pack) {
     Append(blackhole_tile_regs_acquire(), {});
     emit_body(*this);
@@ -242,6 +264,26 @@ class ExactTileComputeEmitter {
     emit_before_pack(*this);
     PackTile(out_cb_id, out_tile);
     Append(blackhole_tile_regs_release(), {});
+  }
+
+  template <typename EmitBody>
+  void EmitPackedTileLoop(int out_cb_id, int num_tiles,
+                          const std::string& loop_var_name, EmitBody emit_body) {
+    if (num_tiles <= 1) {
+      EmitPackedTile(out_cb_id, 0, [&](ExactTileComputeEmitter& tile_emit) {
+        emit_body(tile_emit, IntImm32(0));
+      });
+      return;
+    }
+
+    Var tile(loop_var_name, DataType::Int(32));
+    std::vector<Stmt> loop_stmts;
+    ExactTileComputeEmitter loop_emit(&loop_stmts);
+    loop_emit.EmitPackedTile(out_cb_id, tile, [&](ExactTileComputeEmitter& tile_emit) {
+      emit_body(tile_emit, tile);
+    });
+    stmts_->push_back(For(tile, IntImm32(0), IntImm32(num_tiles), ForKind::kSerial,
+                          SeqStmt::Flatten(loop_stmts)));
   }
 
  private:
@@ -262,8 +304,10 @@ bool PlanTTKernelABI::MatchExplicitTileReduce(const CallNode* op,
   ICHECK_GE(op->args.size(), 5U)
       << "tl.tileop.reduce must carry src, dst, reduce_type, dim, and clear";
 
-  const Buffer logical_src = NormalizeToBufferRegion(op->args[0])->buffer;
-  const Buffer logical_dst = NormalizeToBufferRegion(op->args[1])->buffer;
+  const tir::BufferRegion logical_src_region = NormalizeToBufferRegion(op->args[0]);
+  const tir::BufferRegion logical_dst_region = NormalizeToBufferRegion(op->args[1]);
+  const Buffer logical_src = logical_src_region->buffer;
+  const Buffer logical_dst = logical_dst_region->buffer;
   const Buffer src = ResolvePhysicalComputeBuffer(logical_src);
   const Buffer dst = ResolvePhysicalComputeBuffer(logical_dst);
 
@@ -276,7 +320,22 @@ bool PlanTTKernelABI::MatchExplicitTileReduce(const CallNode* op,
 
   const auto* dim_imm = op->args[3].as<IntImmNode>();
   ICHECK(dim_imm) << "tl.tileop.reduce requires static dim";
-  const std::vector<int64_t> src_shape = GetLogicalBufferShape(src);
+  auto static_region_shape = [](const tir::BufferRegion& region) {
+    std::vector<int64_t> shape;
+    for (const Range& range : region->region) {
+      const auto* extent = range->extent.as<IntImmNode>();
+      if (extent == nullptr || extent->value <= 0) {
+        return std::vector<int64_t>{};
+      }
+      shape.push_back(extent->value);
+    }
+    return shape;
+  };
+
+  std::vector<int64_t> src_shape = static_region_shape(logical_src_region);
+  if (src_shape.empty()) {
+    src_shape = GetLogicalBufferShape(src);
+  }
   ICHECK(!src_shape.empty())
       << "Blackhole explicit tile reduce requires a static logical source shape for "
       << BufferIdentityName(src);
@@ -296,7 +355,10 @@ bool PlanTTKernelABI::MatchExplicitTileReduce(const CallNode* op,
   ICHECK(clear_bool) << "tl.tileop.reduce requires static clear bool";
   const bool clear = clear_bool.value()->value;
 
-  const std::vector<int64_t> dst_shape = GetLogicalBufferShape(dst);
+  std::vector<int64_t> dst_shape = static_region_shape(logical_dst_region);
+  if (dst_shape.empty()) {
+    dst_shape = GetLogicalBufferShape(logical_dst);
+  }
   const int64_t dst_elements =
       dst_shape.empty() ? GetLogicalBufferElementCount(dst)
                         : ComputeStaticElementCount(dst_shape);
@@ -902,6 +964,38 @@ Stmt PlanTTKernelABI::GenerateRowReductionSequence(const RowReductionMatch& matc
         ExactOutputCBTypeForBuffer(match.dst, current_lowering_order_index_));
     reduced = out;
   }
+  auto constrain_reduce_output_shape = [&](ExactTiledCBValue* value) {
+    ICHECK(value != nullptr);
+    const auto* num_elements_imm = match.num_elements.as<IntImmNode>();
+    if (num_elements_imm == nullptr || num_elements_imm->value <= 0) {
+      return;
+    }
+    constexpr int64_t kTileElements = kBlackholeTileRows * kBlackholeTileCols;
+    const int64_t logical_elements = num_elements_imm->value;
+    const int logical_tiles = std::max(1, CeilDivToInt(logical_elements, kTileElements));
+    value->num_elements = logical_elements;
+    value->num_tiles = logical_tiles;
+    value->row_width = 1;
+    if (value->cb_id >= 0) {
+      ICHECK_LT(value->cb_id, static_cast<int>(cb_requirements_.size()));
+      const DataType storage_dtype =
+          value->buffer.defined() ? ExactTiledCBStorageDType(value->buffer->dtype)
+                                  : DataType::BFloat(16);
+      SetRequirementPageLayout(
+          value->cb_id,
+          kBlackholeTileRows * kBlackholeTileCols * storage_dtype.bytes(),
+          logical_tiles);
+      auto& req = cb_requirements_.at(value->cb_id);
+      req.publish_pages_per_event = logical_tiles;
+      req.consume_pages_per_event = logical_tiles;
+    }
+  };
+  constrain_reduce_output_shape(&reduced);
+  if (out.cb_id != reduced.cb_id) {
+    constrain_reduce_output_shape(&out);
+  } else {
+    out = reduced;
+  }
   const bool reuse_reduced_as_output =
       accumulate_existing && out.cb_id == reduced.cb_id;
   ExactTiledCBValue dst_in;
@@ -972,7 +1066,10 @@ Stmt PlanTTKernelABI::GenerateRowReductionSequence(const RowReductionMatch& matc
     emit.Append(blackhole_tile_regs_release(), {});
     emit.Append(blackhole_reduce_uninit(), {StringImm(match.kind), StringImm("row")});
   }
-  emit.PopIfOwned(src_in.cb_id, src_in.num_tiles, src_in.borrowed_live);
+  if (Stmt release = ReleaseExactInputAfterUse(src_in, current_lowering_order_index_);
+      release.defined()) {
+    stmts.push_back(release);
+  }
   emit.Pop(scaler.cb_id, scaler.num_tiles);
   emit.Push(reduced.cb_id, reduced.num_tiles);
   if (accumulate_existing) {
@@ -1022,7 +1119,10 @@ Stmt PlanTTKernelABI::GenerateRowReductionSequence(const RowReductionMatch& matc
         emit.EmitPackedTile(out.cb_id, tile, emit_accumulate_body);
       }
     }
-    emit.PopIfOwned(dst_in.cb_id, dst_in.num_tiles, dst_in.borrowed_live);
+    if (Stmt release = ReleaseExactInputAfterUse(dst_in, current_lowering_order_index_);
+        release.defined()) {
+      stmts.push_back(release);
+    }
     if (!reuse_reduced_as_output) {
       emit.Pop(reduced.cb_id, reduced.num_tiles);
     }
@@ -1075,10 +1175,17 @@ Stmt PlanTTKernelABI::GenerateFillTileSequence(const Buffer& dst, const PrimExpr
   if (const VarNode* data = BufferDataIdentity(dst)) {
     last_fragment_fill_value_by_data_[data] = value;
   }
+  const Buffer physical_dst = ResolvePhysicalComputeBuffer(dst);
+  if (physical_dst.defined() && !physical_dst.same_as(dst)) {
+    if (const VarNode* data = BufferDataIdentity(physical_dst)) {
+      last_fragment_fill_value_by_data_[data] = value;
+    }
+  }
   RecordExactComputeOpPlan("fill", "fill_tile",
                            {{"output", dst, "identity"}});
   return MaybeWrapComputeSegment(MakeBlackholeCall(
-      tir::builtin::blackhole_fill_fragment(), {dst->data, num_elements, value}));
+      tir::builtin::blackhole_fill_fragment(),
+      {physical_dst.defined() ? physical_dst->data : dst->data, num_elements, value}));
 }
 
 Stmt PlanTTKernelABI::GenerateCopyTileSequence(const Buffer& src, const Buffer& dst,
@@ -1147,21 +1254,29 @@ Stmt PlanTTKernelABI::GenerateBinaryMaxTileSequence(const Buffer& dst, const Buf
   emit.Wait(lhs_in.cb_id, lhs_in.num_tiles);
   emit.Wait(rhs_in.cb_id, rhs_in.num_tiles);
   emit.ReconfigDataFormat(lhs_in.cb_id, rhs_in.cb_id);
-  for (int tile = 0; tile < out.num_tiles; ++tile) {
-    emit.EmitPackedTile(out.cb_id, tile, [&](ExactTileComputeEmitter& tile_emit) {
+  emit.EmitPackedTileLoop(out.cb_id, out.num_tiles, "tile",
+                          [&](ExactTileComputeEmitter& tile_emit,
+                              const PrimExpr& tile) {
+      const PrimExpr lhs_tile = ExactCBReadTileIndex(lhs_in.num_tiles, tile);
+      const PrimExpr rhs_tile = ExactCBReadTileIndex(rhs_in.num_tiles, tile);
       tile_emit.Append(blackhole_copy_tile_to_dst_init_short(), {IntImm32(lhs_in.cb_id)});
       tile_emit.Append(blackhole_copy_tile(),
-                       {IntImm32(lhs_in.cb_id), IntImm32(tile), IntImm32(0)});
+                       {IntImm32(lhs_in.cb_id), lhs_tile, IntImm32(0)});
       tile_emit.Append(blackhole_copy_tile_to_dst_init_short(), {IntImm32(rhs_in.cb_id)});
       tile_emit.Append(blackhole_copy_tile(),
-                       {IntImm32(rhs_in.cb_id), IntImm32(tile), IntImm32(1)});
+                       {IntImm32(rhs_in.cb_id), rhs_tile, IntImm32(1)});
       tile_emit.Append(blackhole_binary_max_tile_init(), {});
       tile_emit.Append(blackhole_binary_max_tile(),
                        {IntImm32(0), IntImm32(1), IntImm32(0)});
     });
+  if (Stmt release = ReleaseExactInputAfterUse(lhs_in, current_lowering_order_index_);
+      release.defined()) {
+    stmts.push_back(release);
   }
-  emit.PopIfOwned(lhs_in.cb_id, lhs_in.num_tiles, lhs_in.borrowed_live);
-  emit.PopIfOwned(rhs_in.cb_id, rhs_in.num_tiles, rhs_in.borrowed_live);
+  if (Stmt release = ReleaseExactInputAfterUse(rhs_in, current_lowering_order_index_);
+      release.defined()) {
+    stmts.push_back(release);
+  }
   emit.Push(out.cb_id, out.num_tiles);
   RecordExactOutputLiveForm(dst, out);
   Stmt body = AttachExactOutputLiveFormMarker(dst, out, SeqStmt::Flatten(stmts));
@@ -1198,15 +1313,23 @@ Stmt PlanTTKernelABI::GenerateBinaryTileSequence(const Buffer& dst,
   emit.Wait(rhs_in.cb_id, rhs_in.num_tiles);
   emit.ReconfigDataFormat(lhs_in.cb_id, rhs_in.cb_id);
   emit.Append(init_op, {IntImm32(lhs_in.cb_id), IntImm32(rhs_in.cb_id)});
-  for (int tile = 0; tile < out.num_tiles; ++tile) {
-    emit.EmitPackedTile(out.cb_id, tile, [&](ExactTileComputeEmitter& tile_emit) {
+  emit.EmitPackedTileLoop(out.cb_id, out.num_tiles, "tile",
+                          [&](ExactTileComputeEmitter& tile_emit,
+                              const PrimExpr& tile) {
+      const PrimExpr lhs_tile = ExactCBReadTileIndex(lhs_in.num_tiles, tile);
+      const PrimExpr rhs_tile = ExactCBReadTileIndex(rhs_in.num_tiles, tile);
       tile_emit.Append(tile_op,
                        {IntImm32(lhs_in.cb_id), IntImm32(rhs_in.cb_id),
-                        IntImm32(tile), IntImm32(tile), IntImm32(0)});
+                        lhs_tile, rhs_tile, IntImm32(0)});
     });
+  if (Stmt release = ReleaseExactInputAfterUse(lhs_in, current_lowering_order_index_);
+      release.defined()) {
+    stmts.push_back(release);
   }
-  emit.PopIfOwned(lhs_in.cb_id, lhs_in.num_tiles, lhs_in.borrowed_live);
-  emit.PopIfOwned(rhs_in.cb_id, rhs_in.num_tiles, rhs_in.borrowed_live);
+  if (Stmt release = ReleaseExactInputAfterUse(rhs_in, current_lowering_order_index_);
+      release.defined()) {
+    stmts.push_back(release);
+  }
   emit.Push(out.cb_id, out.num_tiles);
   RecordExactOutputLiveForm(dst, out);
   Stmt body = AttachExactOutputLiveFormMarker(dst, out, SeqStmt::Flatten(stmts));
@@ -1260,16 +1383,26 @@ Stmt PlanTTKernelABI::GenerateBroadcastColsBinaryTileSequence(
   emit.Wait(rhs_in.cb_id, rhs_in.num_tiles);
   emit.ReconfigDataFormat(lhs_in.cb_id, rhs_in.cb_id);
   emit.Append(init_op, {IntImm32(lhs_in.cb_id), IntImm32(rhs_in.cb_id)});
-  for (int tile = 0; tile < out.num_tiles; ++tile) {
-    const int rhs_tile = tile / tiles_per_row;
-    emit.EmitPackedTile(out.cb_id, tile, [&](ExactTileComputeEmitter& tile_emit) {
+  emit.EmitPackedTileLoop(out.cb_id, out.num_tiles, "tile",
+                          [&](ExactTileComputeEmitter& tile_emit,
+                              const PrimExpr& tile) {
+      const PrimExpr lhs_tile = ExactCBReadTileIndex(lhs_in.num_tiles, tile);
+      const PrimExpr rhs_base_tile = tiles_per_row <= 1
+                                        ? tile
+                                        : FloorDiv(tile, IntImm32(tiles_per_row));
+      const PrimExpr rhs_tile = ExactCBReadTileIndex(rhs_in.num_tiles, rhs_base_tile);
       tile_emit.Append(tile_op,
                        {IntImm32(lhs_in.cb_id), IntImm32(rhs_in.cb_id),
-                        IntImm32(tile), IntImm32(rhs_tile), IntImm32(0)});
+                        lhs_tile, rhs_tile, IntImm32(0)});
     });
+  if (Stmt release = ReleaseExactInputAfterUse(lhs_in, current_lowering_order_index_);
+      release.defined()) {
+    stmts.push_back(release);
   }
-  emit.PopIfOwned(lhs_in.cb_id, lhs_in.num_tiles, lhs_in.borrowed_live);
-  emit.PopIfOwned(rhs_in.cb_id, rhs_in.num_tiles, rhs_in.borrowed_live);
+  if (Stmt release = ReleaseExactInputAfterUse(rhs_in, current_lowering_order_index_);
+      release.defined()) {
+    stmts.push_back(release);
+  }
   emit.Push(out.cb_id, out.num_tiles);
   RecordExactOutputLiveForm(dst, out);
   Stmt body = AttachExactOutputLiveFormMarker(dst, out, SeqStmt::Flatten(stmts));
@@ -1300,17 +1433,22 @@ Stmt PlanTTKernelABI::GenerateUnaryTileSequence(
   emit.UnaryOpInitCommon(input_cb.cb_id, out.cb_id);
   emit.Reserve(out.cb_id, out.num_tiles);
   emit.Wait(input_cb.cb_id, input_cb.num_tiles);
-  for (int tile = 0; tile < out.num_tiles; ++tile) {
-    const int input_tile = input_cb.num_tiles == 1 ? 0 : tile % input_cb.num_tiles;
-    emit.EmitPackedTile(out.cb_id, tile, [&](ExactTileComputeEmitter& tile_emit) {
+  emit.EmitPackedTileLoop(out.cb_id, out.num_tiles, "tile",
+                          [&](ExactTileComputeEmitter& tile_emit,
+                              const PrimExpr& tile) {
+      const PrimExpr input_tile = input_cb.num_tiles == 1
+                                      ? IntImm32(0)
+                                      : FloorMod(tile, IntImm32(input_cb.num_tiles));
       tile_emit.Append(blackhole_copy_tile_to_dst_init_short(), {IntImm32(input_cb.cb_id)});
       tile_emit.Append(blackhole_copy_tile(),
-                       {IntImm32(input_cb.cb_id), IntImm32(input_tile), IntImm32(0)});
+                       {IntImm32(input_cb.cb_id), input_tile, IntImm32(0)});
       tile_emit.Append(init_op, {});
       tile_emit.Append(tile_op, {IntImm32(0)});
     });
+  if (Stmt release = ReleaseExactInputAfterUse(input_cb, current_lowering_order_index_);
+      release.defined()) {
+    stmts.push_back(release);
   }
-  emit.PopIfOwned(input_cb.cb_id, input_cb.num_tiles, input_cb.borrowed_live);
   emit.Push(out.cb_id, out.num_tiles);
   RecordExactOutputLiveForm(output, out);
 

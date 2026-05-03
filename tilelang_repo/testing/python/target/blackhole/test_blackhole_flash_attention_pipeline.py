@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 import tilelang
-from tilelang.engine.lower import _align_blackhole_device_symbol, lower
+from tilelang.engine.lower import _align_blackhole_device_symbol, get_device_call, lower
 from tilelang.engine.phase import LowerAndLegalize
 from tilelang.engine.phase import LowerToBlackholePhaseB
 from tilelang.engine.phase import LowerToBlackholeTTProgram
@@ -101,6 +101,148 @@ def _run_flash_attention_tt_target_after_optimize(example_module, *args, **kwarg
         mod = OptimizeForTarget(mod, target)
     mod = _align_blackhole_device_symbol(phase_b_mod, mod)
     return LowerToBlackholeTTProgram(mod)
+
+
+def _run_mha_device_module_to_selected_builtins(*args, **kwargs):
+    target = Target("blackhole")
+    mod = tvm.IRModule({"main": mha_example.flashattn.jit_impl.get_tir(*args, **kwargs)})
+    with target:
+        mod = LowerAndLegalize(mod, target)
+        phase_b_mod = LowerToBlackholePhaseB(mod)
+        mod = OptimizeForTarget(mod, target)
+    device_mod = tvm.tir.transform.Filter(get_device_call(False))(mod)
+    device_mod = _align_blackhole_device_symbol(phase_b_mod, device_mod)
+    for transform in (
+        tilelang.transform.BuildSpatialPlan(),
+        tilelang.transform.ValidateSpatialPlan(),
+        tilelang.transform.SplitBlackholeKernel(),
+        tilelang.transform.PlanTTBlocks(),
+        tilelang.transform.SelectBlackholeTTMetalBuiltins(),
+    ):
+        device_mod = transform(device_mod)
+    return device_mod
+
+
+def _has_allocate_for_buffer(func, buffer_name):
+    found = False
+
+    def visit(node):
+        nonlocal found
+        if found:
+            return
+        if isinstance(node, tvm.tir.Allocate) and str(node.buffer_var.name) == buffer_name:
+            found = True
+
+    tvm.tir.stmt_functor.post_order_visit(func.body, visit)
+    return found
+
+
+def _missing_allocates_for_buffers(func, buffer_names):
+    return {
+        name
+        for name in buffer_names
+        if not _has_allocate_for_buffer(func, name)
+    }
+
+
+def _cb_logical_names(cb_config):
+    names = [str(cb_config["name"])]
+    names.extend(str(name) for name in cb_config.get("requirement_names", []))
+    return names
+
+
+def _find_cb_id_by_logical_prefix(spec, prefix):
+    return next(
+        int(cb["cb_id"])
+        for cb in spec["cb_configs"]
+        if any(name.startswith(prefix) for name in _cb_logical_names(cb))
+    )
+
+
+def _assert_cb_queue_events_do_not_underflow_or_exceed_capacity(spec, kernel_kinds):
+    capacity = {int(config["cb_id"]): int(config["num_pages"]) for config in spec["cb_configs"]}
+    front = {cb_id: 0 for cb_id in capacity}
+    reserved = {cb_id: 0 for cb_id in capacity}
+    kernels_by_kind = {
+        str(kernel["kind"]): str(kernel["source_code"])
+        for kernel in spec["kernels"]
+    }
+    event_pattern = re.compile(
+        r"cb_(reserve_back|push_back|wait_front|pop_front)\((\d+),\s*(\d+)\);"
+    )
+
+    for label in kernel_kinds:
+        source = kernels_by_kind[label]
+        for event in event_pattern.finditer(source):
+            op, cb_text, pages_text = event.groups()
+            cb_id = int(cb_text)
+            pages = int(pages_text)
+            if cb_id not in capacity:
+                continue
+            if op == "reserve_back":
+                assert front[cb_id] + reserved[cb_id] + pages <= capacity[cb_id], (
+                    f"{label}: cb{cb_id} reserve would exceed capacity "
+                    f"{capacity[cb_id]} at source offset {event.start()}"
+                )
+                reserved[cb_id] += pages
+            elif op == "push_back":
+                assert reserved[cb_id] >= pages, (
+                    f"{label}: cb{cb_id} push has only {reserved[cb_id]} reserved pages "
+                    f"at source offset {event.start()}"
+                )
+                reserved[cb_id] -= pages
+                front[cb_id] += pages
+            elif op == "wait_front":
+                assert front[cb_id] >= pages, (
+                    f"{label}: cb{cb_id} wait has only {front[cb_id]} front pages "
+                    f"at source offset {event.start()}"
+                )
+            else:
+                assert front[cb_id] >= pages, (
+                    f"{label}: cb{cb_id} pop has only {front[cb_id]} front pages "
+                    f"at source offset {event.start()}"
+                )
+                front[cb_id] -= pages
+
+
+def _assert_compute_source_does_not_read_dynamic_tiles_from_single_page_cbs(spec):
+    compute_source = str(
+        next(
+            kernel["source_code"]
+            for kernel in spec["kernels"]
+            if str(kernel["kind"]) == "compute"
+        )
+    )
+    single_page_cbs = {
+        int(config["cb_id"])
+        for config in spec["cb_configs"]
+        if int(config["num_pages"]) == 1
+    }
+    assert single_page_cbs
+
+    def assert_static_zero_tile(cb_id, tile_expr, call_text):
+        assert str(tile_expr).strip() == "0", (
+            f"compute source reads dynamic/nonzero tile {tile_expr!r} from "
+            f"single-page cb{cb_id}: {call_text}"
+        )
+
+    for match in re.finditer(r"copy_tile\((\d+),\s*([^,\)]+),\s*\d+\);", compute_source):
+        cb_id = int(match.group(1))
+        if cb_id in single_page_cbs:
+            assert_static_zero_tile(cb_id, match.group(2), match.group(0))
+
+    tile_binary_pattern = re.compile(
+        r"(?:add_tiles|sub_tiles|mul_tiles|"
+        r"mul_tiles_bcast<BroadcastType::COL>|add_tiles_bcast_cols)"
+        r"\((\d+),\s*(\d+),\s*([^,\)]+),\s*([^,\)]+),\s*\d+\);"
+    )
+    for match in tile_binary_pattern.finditer(compute_source):
+        lhs_cb = int(match.group(1))
+        rhs_cb = int(match.group(2))
+        if lhs_cb in single_page_cbs:
+            assert_static_zero_tile(lhs_cb, match.group(3), match.group(0))
+        if rhs_cb in single_page_cbs:
+            assert_static_zero_tile(rhs_cb, match.group(4), match.group(0))
 
 
 def _load_flash_attention_module_with_dtype(module_path, dtype_expr):
@@ -619,6 +761,38 @@ def test_flash_attention_forward_lowers_mha_pipeline_end_to_end():
             target=target,
         )
     assert artifact is not None
+
+
+def test_plan_tt_compute_preserves_acc_allocator_when_redundant_fill_is_pruned():
+    selected = _run_mha_device_module_to_selected_builtins(
+        1,
+        32,
+        256,
+        128,
+        False,
+        block_M=128,
+        block_N=128,
+        num_stages=1,
+        threads=128,
+    )
+
+    expected_compute_resources = {
+        "acc_o",
+        "acc_s",
+        "logsum",
+        "scores_max",
+        "scores_scale",
+    }
+    func = next(iter(selected.functions.values()))
+    assert not _missing_allocates_for_buffers(func, expected_compute_resources)
+
+    planned = tilelang.transform.PlanTTCompute()(selected)
+    func = next(iter(planned.functions.values()))
+
+    assert not _missing_allocates_for_buffers(func, {"acc_o", "acc_s"})
+    assert _missing_allocates_for_buffers(
+        func, {"logsum", "scores_max", "scores_scale"}
+    ) == {"logsum", "scores_max", "scores_scale"}
 
 
 def test_flash_attention_forward_pipeline_omits_legacy_semantic_attrs():
@@ -1426,8 +1600,38 @@ def test_flash_attention_segment_reader_tile_transport_matches_compute_input_con
             for tile_count in re.findall(rf"cb_wait_front\({cb_id},\s*(\d+)\);", compute_source)
         )
 
-    for cb_id in (0, 1, 3):
+    def count_compute_reserved_tiles(cb_id: int) -> int:
+        return sum(
+            int(tile_count)
+            for tile_count in re.findall(rf"cb_reserve_back\({cb_id},\s*(\d+)\);", compute_source)
+        )
+
+    def count_compute_pushed_tiles(cb_id: int) -> int:
+        return sum(
+            int(tile_count)
+            for tile_count in re.findall(rf"cb_push_back\({cb_id},\s*(\d+)\);", compute_source)
+        )
+
+    reader_backed_input_cbs = [
+        int(cb["cb_id"])
+        for cb in spec["cb_configs"]
+        if str(cb["role"]) == "input" and int(cb["initial_reserve_pages"]) == 0
+    ]
+    assert reader_backed_input_cbs
+    for cb_id in reader_backed_input_cbs:
         assert count_reader_reads(cb_id) == count_compute_waited_tiles(cb_id)
+
+    compute_published_input_cbs = [
+        int(cb["cb_id"])
+        for cb in spec["cb_configs"]
+        if str(cb["role"]) == "input" and int(cb["initial_reserve_pages"]) > 0
+    ]
+    for cb_id in compute_published_input_cbs:
+        waited_tiles = count_compute_waited_tiles(cb_id)
+        assert count_reader_reads(cb_id) == 0
+        assert waited_tiles > 0
+        assert count_compute_reserved_tiles(cb_id) == waited_tiles
+        assert count_compute_pushed_tiles(cb_id) == waited_tiles
 
 
 def test_flash_attention_segment_kernels_keep_buffer_runtime_args_role_local():
@@ -1516,7 +1720,6 @@ def test_flash_attention_segment_kernels_do_not_leak_compute_resources_into_writ
     # Fragment state must belong to the compute kernel even when some values are
     # fully CB-backed and no longer need named local arrays in generated source.
     assert "acc_o" in compute_source
-    assert "acc_s_cast" in compute_source
     assert {"acc_o", "scores_max", "acc_s_cast"}.issubset(compute_op_buffers)
 
     # Fragment state must NOT leak into writer kernel
@@ -1644,6 +1847,120 @@ def test_flash_attention_compute_source_derives_grouped_reduce_rows_from_num_ele
     assert "const uint32_t num_rows = num_elements / row_width;" not in compute_source
 
 
+def test_flash_attention_small_compute_source_prunes_dead_acc_fragment_fills():
+    can_run, msg = check_blackhole_codegen_requirements()
+    if not can_run:
+        pytest.skip(f"Blackhole requirements not met: {msg}")
+
+    target = Target("blackhole")
+    with target:
+        artifact = lower(
+            mha_example.flashattn.jit_impl.get_tir(
+                1,
+                1,
+                32,
+                32,
+                False,
+                block_M=32,
+                block_N=32,
+                num_stages=1,
+                threads=128,
+            ),
+            target=target,
+        )
+
+    spec = _extract_blackhole_executable_spec(artifact)
+    compute = next(kernel for kernel in spec["kernels"] if str(kernel["kind"]) == "compute")
+    compute_source = str(compute["source_code"])
+
+    assert "MATH({ float* dst = reinterpret_cast<float*>(" not in compute_source
+    assert "; tilelang_fill_fragment(dst, num_elements, value);" not in compute_source
+    assert "/* scope: blackhole.acc */ float " not in compute_source
+    assert "reinterpret_cast<float*>(acc_o)" not in compute_source
+    assert "reinterpret_cast<float*>(acc_s)" not in compute_source
+    assert "reinterpret_cast<float*>(logsum)" not in compute_source
+    assert "fill_tile(0, static_cast<float>(-inff))" in compute_source
+
+
+def test_flash_attention_small_compute_source_publishes_gemm_output_before_compute_reuse():
+    can_run, msg = check_blackhole_codegen_requirements()
+    if not can_run:
+        pytest.skip(f"Blackhole requirements not met: {msg}")
+
+    bf16_mha_example = _load_flash_attention_module_with_dtype(
+        mha_example.__file__, "T.bfloat16"
+    )
+    target = Target("blackhole")
+    with target:
+        artifact = lower(
+            bf16_mha_example.flashattn.jit_impl.get_tir(
+                1,
+                1,
+                32,
+                32,
+                False,
+                block_M=32,
+                block_N=32,
+                num_stages=1,
+                threads=128,
+            ),
+            target=target,
+        )
+
+    spec = _extract_blackhole_executable_spec(artifact)
+    compute = next(kernel for kernel in spec["kernels"] if str(kernel["kind"]) == "compute")
+    compute_source = str(compute["source_code"])
+    acc_o_cb = _find_cb_id_by_logical_prefix(spec, "acc_o")
+
+    reserve = f"cb_reserve_back({acc_o_cb}, 1);"
+    push = f"cb_push_back({acc_o_cb}, 1);"
+    wait = f"cb_wait_front({acc_o_cb}, 1);"
+    pack_candidates = (
+        f"pack_tile(0, {acc_o_cb});",
+        f"pack_tile(0, {acc_o_cb}, 0);",
+    )
+    pack = next((candidate for candidate in pack_candidates if candidate in compute_source), None)
+
+    assert reserve in compute_source
+    assert pack is not None
+    assert push in compute_source
+    assert wait in compute_source
+    assert compute_source.index(reserve) < compute_source.index(pack)
+    assert compute_source.index(pack) < compute_source.index(push)
+    assert compute_source.index(push) < compute_source.index(wait)
+
+
+def test_flash_attention_small_compute_source_respects_cb_capacity_on_reuse():
+    can_run, msg = check_blackhole_codegen_requirements()
+    if not can_run:
+        pytest.skip(f"Blackhole requirements not met: {msg}")
+
+    bf16_mha_example = _load_flash_attention_module_with_dtype(
+        mha_example.__file__, "T.bfloat16"
+    )
+    target = Target("blackhole")
+    with target:
+        artifact = lower(
+            bf16_mha_example.flashattn.jit_impl.get_tir(
+                1,
+                1,
+                32,
+                32,
+                False,
+                block_M=32,
+                block_N=32,
+                num_stages=1,
+                threads=128,
+            ),
+            target=target,
+        )
+
+    spec = _extract_blackhole_executable_spec(artifact)
+    _assert_cb_queue_events_do_not_underflow_or_exceed_capacity(
+        spec, ("reader", "compute")
+    )
+
+
 def test_flash_attention_compute_source_uses_cb_backed_row_state_fills():
     can_run, msg = check_blackhole_codegen_requirements()
     if not can_run:
@@ -1672,8 +1989,9 @@ def test_flash_attention_compute_source_uses_cb_backed_row_state_fills():
 
     assert "/* scope: blackhole.acc */ float acc_o[128];" in compute_source
     assert "/* scope: blackhole.acc */ float acc_s[128];" in compute_source
-    assert "/* scope: blackhole.acc */ float logsum[1];" in compute_source
+    assert "/* scope: blackhole.acc */ float logsum[1];" not in compute_source
     assert "/* scope: blackhole.acc */ float scores_max[1];" not in compute_source
+    assert "/* scope: blackhole.acc */ float scores_scale" not in compute_source
     assert (
         "MATH({ float* dst = reinterpret_cast<float*>(acc_o); const uint32_t num_elements = 128;"
         in compute_source
@@ -1682,10 +2000,7 @@ def test_flash_attention_compute_source_uses_cb_backed_row_state_fills():
         "MATH({ float* dst = reinterpret_cast<float*>(acc_s); const uint32_t num_elements = 128;"
         in compute_source
     )
-    assert (
-        "MATH({ float* dst = reinterpret_cast<float*>(logsum); const uint32_t num_elements = 1;"
-        in compute_source
-    )
+    assert "MATH({ float* dst = reinterpret_cast<float*>(logsum);" not in compute_source
     assert "fill_tile(0, static_cast<float>(-inff))" in compute_source
     assert "const uint32_t num_elements = 16384; const uint32_t row_width = 128;" in compute_source
 
@@ -1715,13 +2030,18 @@ def test_flash_attention_compute_source_materializes_full_acc_s_matrix_into_tile
     spec = _extract_blackhole_executable_spec(artifact)
     compute = next(kernel for kernel in spec["kernels"] if str(kernel["kind"]) == "compute")
     compute_source = str(compute["source_code"])
+    cb_by_name = {str(cb["name"]): int(cb["cb_id"]) for cb in spec["cb_configs"]}
+    acc_s_cb_id = cb_by_name["acc_s_cast"]
 
     assert re.search(
-        r"dst_bits\[tiled_index\] = tilelang_float_to_half_bits"
+        r"dst_bits\[tiled_index\] = tilelang_float_to_(?:half|bfloat)_bits"
         r"\(static_cast<float>\(src\[src_offset_elements \+ [A-Za-z0-9_]+\]\)\);",
         compute_source,
     )
     assert "const uint32_t num_elements = 16384;" in compute_source
+    assert re.search(rf"cb_reserve_back\({acc_s_cb_id},\s*16\);", compute_source)
+    assert re.search(rf"pack_tile\(0,\s*{acc_s_cb_id},\s*15\);", compute_source)
+    assert re.search(rf"cb_push_back\({acc_s_cb_id},\s*16\);", compute_source)
 
 
 def test_flash_attention_compute_source_keeps_thread_row_offset_shape_in_cast_fragment_slice():
@@ -1783,25 +2103,24 @@ def test_flash_attention_compute_source_publishes_acc_s_cast_cb_before_second_ma
     cb_by_name = {str(cb["name"]): int(cb["cb_id"]) for cb in spec["cb_configs"]}
 
     acc_s_cb_id = cb_by_name["acc_s_cast"]
-    write_ptr = f"tilelang_cb_write_ptr_bytes_direct({acc_s_cb_id})"
-    cast_pos = compute_source.find(write_ptr)
-
     reserve_match = re.search(rf"cb_reserve_back\({acc_s_cb_id}, (\d+)\);", compute_source)
     assert reserve_match is not None
     acc_s_tiles = reserve_match.group(1)
 
-    publish_match = re.search(rf"cb_push_back\({acc_s_cb_id}, \d+\);", compute_source)
+    pack_match = re.search(rf"pack_tile\(0, {acc_s_cb_id}, \d+\);", compute_source)
+    publish_match = re.search(rf"cb_push_back\({acc_s_cb_id}, (\d+)\);", compute_source)
     second_mm_match = re.search(rf"mm_init\({acc_s_cb_id}, \d+, \d+\);", compute_source)
-    wait_match = re.search(rf"cb_wait_front\({acc_s_cb_id},\s*\d+\);", compute_source)
+    wait_match = re.search(rf"cb_wait_front\({acc_s_cb_id},\s*(\d+)\);", compute_source)
     second_mm_issue_match = re.search(rf"matmul_tiles\({acc_s_cb_id}, \d+,", compute_source)
 
-    assert cast_pos != -1
-    assert reserve_match is not None
+    assert pack_match is not None
     assert publish_match is not None
     assert second_mm_match is not None
     assert wait_match is not None
     assert second_mm_issue_match is not None
-    assert reserve_match.start() < cast_pos < publish_match.start() < second_mm_match.start()
+    assert acc_s_tiles == publish_match.group(1) == wait_match.group(1)
+    assert reserve_match.start() < pack_match.start() < publish_match.start()
+    assert publish_match.start() < second_mm_match.start()
     assert second_mm_match.start() < wait_match.start() < second_mm_issue_match.start()
 
 
@@ -1937,8 +2256,10 @@ def test_flash_attention_small_bf16_compute_source_uses_typed_exact_helpers():
     compute = next(kernel for kernel in spec["kernels"] if str(kernel["kind"]) == "compute")
     compute_source = str(compute["source_code"])
 
-    assert "MATH({ float* dst = reinterpret_cast<float*>(acc_s);" in compute_source
-    assert "MATH({ float* dst = reinterpret_cast<float*>(acc_o);" in compute_source
+    assert "MATH({ float* dst = reinterpret_cast<float*>(acc_s);" not in compute_source
+    assert "MATH({ float* dst = reinterpret_cast<float*>(acc_o);" not in compute_source
+    assert "fill_tile(0, static_cast<float>(0.000000e+00f))" in compute_source
+    assert "fill_tile(0, static_cast<float>(-inff))" in compute_source
     assert "reinterpret_cast<const uint32_t*>(acc_s)" not in compute_source
     assert "reinterpret_cast<const uint32_t*>(scores_scale)" not in compute_source
     assert "reinterpret_cast<const uint32_t*>(logsum)" not in compute_source
@@ -2442,23 +2763,178 @@ def test_flash_attention_seq64_bf16_compute_source_accumulates_clear_accum_false
     assert merge_pairs
 
     merge_window_pattern = re.compile(
-        r"add_tiles_init\(\d+, \d+\);.*?add_tiles\(\d+, \d+, 0, 0, 0\);.*?pack_tile\(0, \d+\);",
+        r"add_tiles_init\((\d+), (\d+)\);.*?add_tiles\(\1, \2, 0, 0, 0\);.*?"
+        r"pack_tile\(0, (\d+)(?:, \d+)?\);",
         re.DOTALL,
     )
-    merge_windows = merge_window_pattern.findall(compute_source)
+    merge_windows = list(merge_window_pattern.finditer(compute_source))
     assert merge_windows
-    assert all("tile_regs_commit()" in window for window in merge_windows)
-    assert all("tile_regs_wait()" in window for window in merge_windows)
+    assert all("tile_regs_commit()" in window.group(0) for window in merge_windows)
+    assert all("tile_regs_wait()" in window.group(0) for window in merge_windows)
 
     merge_cb_ids = {cb_id for pair in merge_pairs for cb_id in pair}
+    merge_output_cb_ids = {window.group(3) for window in merge_windows}
     for cb_id in merge_cb_ids:
-        assert f"cb_reserve_back({cb_id}, 1);" in compute_source
-        assert f"cb_push_back({cb_id}, 1);" in compute_source
-        assert f"cb_wait_front({cb_id}, 1);" in compute_source
+        assert re.search(rf"cb_wait_front\({cb_id},\s*\d+\);", compute_source)
+    for cb_id in merge_output_cb_ids:
+        assert re.search(rf"cb_reserve_back\({cb_id},\s*\d+\);", compute_source)
+        assert re.search(rf"cb_push_back\({cb_id},\s*\d+\);", compute_source)
     assert any(f"cb_pop_front({cb_id}, 1);" in compute_source for cb_id in merge_cb_ids)
     assert "tilelang_add_fragment(dst, src, num_elements);" not in compute_source
     assert "tilelang_get_cb_write_ptr_bytes" not in compute_source
     assert "get_tile_address(0)" not in compute_source
+
+
+def test_flash_attention_seq64_bf16_compute_source_keeps_cb_events_queue_consistent():
+    can_run, msg = check_blackhole_codegen_requirements()
+    if not can_run:
+        pytest.skip(f"Blackhole requirements not met: {msg}")
+
+    bf16_mha_example = _load_flash_attention_module_with_dtype(
+        mha_example.__file__, "T.bfloat16"
+    )
+    target = Target("blackhole")
+    with target:
+        artifact = lower(
+            bf16_mha_example.flashattn.jit_impl.get_tir(
+                1,
+                4,
+                64,
+                32,
+                False,
+                block_M=32,
+                block_N=32,
+                num_stages=1,
+                threads=128,
+            ),
+            target=target,
+        )
+
+    spec = _extract_blackhole_executable_spec(artifact)
+    _assert_cb_queue_events_do_not_underflow_or_exceed_capacity(
+        spec, ("reader", "compute")
+    )
+
+
+def test_flash_attention_seq64_bf16_pv_merge_consumes_scaled_acc_o_live_form():
+    can_run, msg = check_blackhole_codegen_requirements()
+    if not can_run:
+        pytest.skip(f"Blackhole requirements not met: {msg}")
+
+    bf16_mha_example = _load_flash_attention_module_with_dtype(
+        mha_example.__file__, "T.bfloat16"
+    )
+    target = Target("blackhole")
+    with target:
+        artifact = lower(
+            bf16_mha_example.flashattn.jit_impl.get_tir(
+                1,
+                4,
+                64,
+                32,
+                False,
+                block_M=32,
+                block_N=32,
+                num_stages=1,
+                threads=128,
+            ),
+            target=target,
+        )
+
+    spec = _extract_blackhole_executable_spec(artifact)
+    compute = next(kernel for kernel in spec["kernels"] if str(kernel["kind"]) == "compute")
+    compute_source = str(compute["source_code"])
+
+    scaled_acc_o_then_pv_merge = re.compile(
+        r"binary_op_init_common\((?P<acc_o>\d+), (?P<scale>\d+), (?P<scaled>\d+)\);"
+        r".*?mul_tiles_bcast<BroadcastType::COL>\((?P=acc_o), (?P=scale), 0, 0, 0\);"
+        r".*?cb_push_back\((?P=scaled), 1\);"
+        r".*?add_tiles_init\((?P=scaled), (?P<partials>\d+)\);"
+        r".*?add_tiles\((?P=scaled), (?P=partials), 0, 0, 0\);",
+        re.DOTALL,
+    )
+
+    assert scaled_acc_o_then_pv_merge.search(compute_source) is not None
+
+
+def test_flash_attention_seq64_bf16_compute_source_uses_static_tile_zero_for_single_page_cb_inputs():
+    can_run, msg = check_blackhole_codegen_requirements()
+    if not can_run:
+        pytest.skip(f"Blackhole requirements not met: {msg}")
+
+    bf16_mha_example = _load_flash_attention_module_with_dtype(
+        mha_example.__file__, "T.bfloat16"
+    )
+    target = Target("blackhole")
+    with target:
+        artifact = lower(
+            bf16_mha_example.flashattn.jit_impl.get_tir(
+                1,
+                4,
+                64,
+                32,
+                False,
+                block_M=32,
+                block_N=32,
+                num_stages=1,
+                threads=128,
+            ),
+            target=target,
+        )
+
+    spec = _extract_blackhole_executable_spec(artifact)
+    _assert_compute_source_does_not_read_dynamic_tiles_from_single_page_cbs(spec)
+
+
+def test_flash_attention_seq64_bf16_compute_source_releases_qk_scores_before_next_scores_publish():
+    can_run, msg = check_blackhole_codegen_requirements()
+    if not can_run:
+        pytest.skip(f"Blackhole requirements not met: {msg}")
+
+    bf16_mha_example = _load_flash_attention_module_with_dtype(
+        mha_example.__file__, "T.bfloat16"
+    )
+    target = Target("blackhole")
+    with target:
+        artifact = lower(
+            bf16_mha_example.flashattn.jit_impl.get_tir(
+                1,
+                1,
+                64,
+                32,
+                False,
+                block_M=32,
+                block_N=32,
+                num_stages=1,
+                threads=128,
+            ),
+            target=target,
+        )
+
+    spec = _extract_blackhole_executable_spec(artifact)
+    compute_source = str(
+        next(
+            kernel["source_code"]
+            for kernel in spec["kernels"]
+            if str(kernel["kind"]) == "compute"
+        )
+    )
+    cb_by_name = {str(cb["name"]): int(cb["cb_id"]) for cb in spec["cb_configs"]}
+    acc_s_cb = cb_by_name["acc_s"]
+
+    scores_reserves = [
+        match.start()
+        for match in re.finditer(rf"cb_reserve_back\({acc_s_cb},\s*1\);", compute_source)
+    ]
+    assert len(scores_reserves) >= 2
+    first_scores_scale_consume = compute_source.find(f"mul_tiles({acc_s_cb},")
+    assert first_scores_scale_consume != -1
+    release_before_second_scores_publish = compute_source.find(
+        f"cb_pop_front({acc_s_cb}, 1);",
+        first_scores_scale_consume,
+        scores_reserves[1],
+    )
+    assert release_before_second_scores_publish != -1
 
 
 def test_flash_attention_small_bf16_metadata_marks_k_materialization_as_transposed():
@@ -2600,11 +3076,21 @@ def test_flash_attention_compute_source_emits_thread_invariant_matmul_pipeline_w
     spec = _extract_blackhole_executable_spec(artifact)
     compute = next(kernel for kernel in spec["kernels"] if str(kernel["kind"]) == "compute")
     compute_source = str(compute["source_code"])
+    cb_by_name = {str(cb["name"]): int(cb["cb_id"]) for cb in spec["cb_configs"]}
+
+    q_cb = cb_by_name["Q_shared"]
+    k_cb = cb_by_name["K_shared"]
+    v_cb = cb_by_name["V_shared"]
+    acc_s_cast_cb = cb_by_name["acc_s_cast"]
 
     tx_loop_pos = compute_source.find("for (int32_t tx = 0; tx < 128; ++tx)")
-    first_mm_match = re.search(r"mm_init\(0, 1, \d+\);", compute_source)
-    second_mm_match = re.search(r"mm_init\(2, 3, \d+\);", compute_source)
-    acc_s_publish_match = re.search(r"cb_push_back\(2,\s*\d+\);", compute_source)
+    first_mm_match = re.search(rf"mm_init\({q_cb}, {k_cb}, \d+\);", compute_source)
+    second_mm_match = re.search(
+        rf"mm_init\({acc_s_cast_cb}, {v_cb}, \d+\);", compute_source
+    )
+    acc_s_publish_match = re.search(
+        rf"cb_push_back\({acc_s_cast_cb},\s*\d+\);", compute_source
+    )
     acc_s_publish_pos = -1 if acc_s_publish_match is None else acc_s_publish_match.start()
     first_mm_pos = -1 if first_mm_match is None else first_mm_match.start()
     second_mm_pos = -1 if second_mm_match is None else second_mm_match.start()
@@ -2648,16 +3134,8 @@ def test_flash_attention_compute_source_keeps_multiphase_acc_cb_layout_for_mha()
         for cb in spec["cb_configs"]
         if str(cb["name"]).startswith("acc_s_fragment_merge_reload")
     ]
-    live_form_cb = next(
-        int(cb["cb_id"])
-        for cb in spec["cb_configs"]
-        if str(cb["name"]).startswith("acc_s_fragment_merge_live_form")
-    )
-    acc_o_live_form_cb = next(
-        int(cb["cb_id"])
-        for cb in spec["cb_configs"]
-        if str(cb["name"]).startswith("acc_o_fragment_merge_live_form")
-    )
+    live_form_cb = _find_cb_id_by_logical_prefix(spec, "acc_s_fragment_merge_live_form")
+    acc_o_live_form_cb = _find_cb_id_by_logical_prefix(spec, "acc_o_fragment_merge_live_form")
 
     assert f"cb_reserve_back({acc_s_cb}, 16);" not in compute_source
     assert f"cb_push_back({acc_s_cb}, 16);" not in compute_source
@@ -2669,7 +3147,7 @@ def test_flash_attention_compute_source_keeps_multiphase_acc_cb_layout_for_mha()
     assert f"cb_push_back({acc_o_live_form_cb}, 1);" not in compute_source
     for reload_cb in reload_cbs:
         assert reload_cb not in (acc_s_cb, acc_o_live_form_cb, live_form_cb)
-    assert live_form_cb not in (acc_s_cb, acc_o_live_form_cb)
+    assert live_form_cb != acc_s_cb
     assert f"cb_reserve_back({live_form_cb}, 16);" in compute_source
     assert f"cb_push_back({live_form_cb}, 16);" in compute_source
     assert "float acc_s[" in compute_source

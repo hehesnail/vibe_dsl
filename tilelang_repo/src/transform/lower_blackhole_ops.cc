@@ -43,6 +43,7 @@
 #include <tvm/tir/stmt_functor.h>
 
 #include <optional>
+#include "tir/transforms/ir_utils.h"
 #include <tvm/tir/transform.h>
 
 #include <algorithm>
@@ -51,6 +52,7 @@
 #include <limits>
 #include <sstream>
 #include <tuple>
+#include <utility>
 
 #include "../tir/builtin_blackhole.h"
 
@@ -394,6 +396,196 @@ using tvm::arith::Analyzer;
 
 static constexpr const char* kBlackholeExactOutputLiveCBAttr =
     "blackhole.exact_output_live_cb";
+static constexpr const char* kBlackholeExactOutputLiveNumTilesAttr =
+    "blackhole.exact_output_live_num_tiles";
+static constexpr const char* kBlackholeExactOutputLiveNumElementsAttr =
+    "blackhole.exact_output_live_num_elements";
+static constexpr const char* kBlackholeExactOutputLiveRowWidthAttr =
+    "blackhole.exact_output_live_row_width";
+
+static bool IsBlackholeExactOutputLiveAttr(const std::string& attr_key) {
+  return attr_key == kBlackholeExactOutputLiveCBAttr ||
+         attr_key == kBlackholeExactOutputLiveNumTilesAttr ||
+         attr_key == kBlackholeExactOutputLiveNumElementsAttr ||
+         attr_key == kBlackholeExactOutputLiveRowWidthAttr;
+}
+
+static bool StmtUsesVarOutsideDefinitionsAndExactLiveAttr(const Stmt& stmt,
+                                                          const VarNode* target) {
+  class Visitor final : public tir::StmtExprVisitor {
+   public:
+    explicit Visitor(const VarNode* target) : target_(target) {}
+
+    bool Check(const Stmt& stmt) {
+      VisitStmt(stmt);
+      return found_;
+    }
+
+   private:
+    void VisitStmt(const Stmt& stmt) final {
+      if (found_) {
+        return;
+      }
+      tir::StmtExprVisitor::VisitStmt(stmt);
+    }
+
+    void VisitExpr(const PrimExpr& expr) final {
+      if (found_) {
+        return;
+      }
+      tir::StmtExprVisitor::VisitExpr(expr);
+    }
+
+    void VisitStmt_(const AttrStmtNode* op) final {
+      if (IsBlackholeExactOutputLiveAttr(op->attr_key)) {
+        VisitStmt(op->body);
+        return;
+      }
+      tir::StmtExprVisitor::VisitStmt_(op);
+    }
+
+    void VisitStmt_(const AllocateNode* op) final {
+      VisitStmt(op->body);
+    }
+
+    void VisitStmt_(const DeclBufferNode* op) final {
+      VisitStmt(op->body);
+    }
+
+    void VisitExpr_(const VarNode* op) final {
+      if (op == target_) {
+        found_ = true;
+      }
+    }
+
+    const VarNode* target_;
+    bool found_{false};
+  };
+
+  return target != nullptr && stmt.defined() && Visitor(target).Check(stmt);
+}
+
+static bool StmtReadsBufferOutsideDefinitionsAndExactLiveAttr(const Stmt& stmt,
+                                                              const Buffer& target) {
+  class Visitor final : public tir::StmtExprVisitor {
+   public:
+    explicit Visitor(const Buffer& target) : target_(target) {}
+
+    bool Check(const Stmt& stmt) {
+      VisitStmt(stmt);
+      return found_;
+    }
+
+   private:
+    bool SameTarget(const Buffer& buffer) const {
+      return target_.defined() && buffer.defined() && SameBufferIdentity(buffer, target_);
+    }
+
+    bool ReadsTargetArg(const PrimExpr& arg) {
+      if (IsBufferLikeExpr(arg)) {
+        BufferRegion region = NormalizeToBufferRegion(arg);
+        return region.defined() && SameTarget(region->buffer);
+      }
+      VisitExpr(arg);
+      return found_;
+    }
+
+    void VisitStmt(const Stmt& stmt) final {
+      if (found_) {
+        return;
+      }
+      tir::StmtExprVisitor::VisitStmt(stmt);
+    }
+
+    void VisitExpr(const PrimExpr& expr) final {
+      if (found_) {
+        return;
+      }
+      tir::StmtExprVisitor::VisitExpr(expr);
+    }
+
+    void VisitStmt_(const AttrStmtNode* op) final {
+      if (IsBlackholeExactOutputLiveAttr(op->attr_key)) {
+        VisitStmt(op->body);
+        return;
+      }
+      tir::StmtExprVisitor::VisitStmt_(op);
+    }
+
+    void VisitStmt_(const AllocateNode* op) final {
+      VisitStmt(op->body);
+    }
+
+    void VisitStmt_(const DeclBufferNode* op) final {
+      VisitStmt(op->body);
+    }
+
+    void VisitStmt_(const BufferStoreNode* op) final {
+      VisitExpr(op->value);
+      for (const PrimExpr& index : op->indices) {
+        VisitExpr(index);
+      }
+    }
+
+    void VisitExpr_(const BufferLoadNode* op) final {
+      if (SameTarget(op->buffer)) {
+        found_ = true;
+        return;
+      }
+      for (const PrimExpr& index : op->indices) {
+        VisitExpr(index);
+      }
+    }
+
+    void VisitExpr_(const CallNode* op) final {
+      std::string op_name;
+      if (op->op->IsInstance<OpNode>()) {
+        op_name = Downcast<Op>(op->op)->name;
+      }
+      auto read_arg = [&](size_t index) {
+        if (index < op->args.size() && ReadsTargetArg(op->args[index])) {
+          found_ = true;
+        }
+      };
+      if (op_name == "tl.blackhole.fill_fragment" ||
+          op_name == "tl.blackhole.pack_fill_fragment_to_tiled_cb" ||
+          op_name == "tl.blackhole.untilize_cb_front_tile_fragment") {
+        for (size_t i = 1; i < op->args.size(); ++i) {
+          read_arg(i);
+          if (found_) {
+            return;
+          }
+        }
+        return;
+      }
+      if (op_name == "tl.blackhole.tilize_local_fragment_slice") {
+        read_arg(0);
+        return;
+      }
+      if (op_name == "tl.blackhole.tilize_cast_fragment_slice") {
+        read_arg(1);
+        return;
+      }
+      if (op_name == "tl.blackhole.add_fragment" ||
+          op_name == "tl.blackhole.add_fragment_from_cb_front") {
+        read_arg(0);
+        read_arg(1);
+        return;
+      }
+      for (size_t i = 0; i < op->args.size(); ++i) {
+        read_arg(i);
+        if (found_) {
+          return;
+        }
+      }
+    }
+
+    Buffer target_;
+    bool found_{false};
+  };
+
+  return target.defined() && stmt.defined() && Visitor(target).Check(stmt);
+}
 
 // Helper to create a call to TT-Metal builtin
 static Stmt MakeBlackholeCall(const Op& op, const std::vector<PrimExpr>& args) {
@@ -714,6 +906,291 @@ static Stmt StripSegmentKindMarkers(const Stmt& body) {
   return SegmentMarkerStripper()(body);
 }
 
+static Array<PrimExpr> FindBlackholeAccAllocationExtents(
+    const Buffer& buffer,
+    const std::unordered_map<std::string, Map<String, Any>>& logical_tile_layout_specs_by_buffer) {
+  const std::string identity = BufferIdentityName(buffer);
+  auto spec_it = logical_tile_layout_specs_by_buffer.find(identity);
+  if (spec_it == logical_tile_layout_specs_by_buffer.end()) {
+    return buffer->shape;
+  }
+  if (auto local_shape = spec_it->second.Get(String(schema_key::kLocalShape))) {
+    Array<PrimExpr> local_extents = Downcast<Array<PrimExpr>>(local_shape.value());
+    if (!local_extents.empty()) {
+      return local_extents;
+    }
+  }
+  return buffer->shape;
+}
+
+static std::string BlackholeAccStorageKey(const VarNode* var) {
+  if (var == nullptr) {
+    return "";
+  }
+  if (var->type_annotation.as<PointerTypeNode>() == nullptr) {
+    return var->name_hint;
+  }
+  const std::string scope = tir::GetPtrStorageScope(GetRef<Var>(var));
+  if (scope != "blackhole.acc") {
+    return "";
+  }
+  return var->name_hint;
+}
+
+static std::string BlackholeAccStorageKey(const Buffer& buffer) {
+  if (!buffer.defined() || std::string(buffer.scope()) != "blackhole.acc") {
+    return "";
+  }
+  return BlackholeAccStorageKey(buffer->data.get());
+}
+
+static Stmt RewrapMissingBlackholeAccDefinitions(
+    const Stmt& original_body, const Stmt& rewritten_body,
+    const std::unordered_map<std::string, Map<String, Any>>& logical_tile_layout_specs_by_buffer) {
+  struct AccDefinition {
+    Var var;
+    DataType dtype;
+    Array<PrimExpr> extents;
+    PrimExpr condition;
+    Map<String, Any> annotations;
+    Buffer buffer;
+    bool has_lexical_allocation{false};
+  };
+
+  std::unordered_map<const VarNode*, size_t> definition_index_by_data;
+  std::unordered_map<std::string, size_t> definition_index_by_storage_key;
+  std::vector<AccDefinition> definitions;
+  auto bind_definition_key = [&](size_t definition_index, const VarNode* data,
+                                 const std::string& storage_key) {
+    if (data != nullptr) {
+      definition_index_by_data[data] = definition_index;
+    }
+    if (!storage_key.empty()) {
+      definition_index_by_storage_key[storage_key] = definition_index;
+    }
+  };
+  auto remember_buffer = [&](const Buffer& buffer) {
+    if (!buffer.defined() || std::string(buffer.scope()) != "blackhole.acc") {
+      return;
+    }
+    const VarNode* data = buffer->data.get();
+    const std::string storage_key = BlackholeAccStorageKey(buffer);
+    auto [it, inserted] = definition_index_by_data.emplace(data, definitions.size());
+    if (inserted) {
+      definitions.push_back(AccDefinition{buffer->data, buffer->dtype,
+                                          FindBlackholeAccAllocationExtents(
+                                              buffer, logical_tile_layout_specs_by_buffer),
+                                          Bool(1),
+                                          Map<String, Any>(), buffer, false});
+      bind_definition_key(it->second, data, storage_key);
+      return;
+    }
+    AccDefinition& definition = definitions[it->second];
+    if (!definition.buffer.defined()) {
+      definition.buffer = buffer;
+    }
+  };
+  auto remember_allocate = [&](const tir::AllocateNode* allocate) {
+    if (allocate == nullptr) {
+      return;
+    }
+    const std::string storage_key = BlackholeAccStorageKey(allocate->buffer_var.get());
+    if (storage_key.empty()) {
+      return;
+    }
+    size_t definition_index = definitions.size();
+    auto definition_it = definition_index_by_data.find(allocate->buffer_var.get());
+    if (definition_it != definition_index_by_data.end()) {
+      definition_index = definition_it->second;
+    } else {
+      auto key_it = definition_index_by_storage_key.find(storage_key);
+      if (key_it != definition_index_by_storage_key.end()) {
+        definition_index = key_it->second;
+      }
+    }
+    if (definition_index >= definitions.size()) {
+      definition_index = definitions.size();
+      definitions.push_back(AccDefinition{allocate->buffer_var, allocate->dtype,
+                                          allocate->extents, allocate->condition,
+                                          allocate->annotations, Buffer(), true});
+    }
+    AccDefinition& definition = definitions[definition_index];
+    definition.var = allocate->buffer_var;
+    definition.dtype = allocate->dtype;
+    definition.extents = allocate->extents;
+    definition.condition = allocate->condition;
+    definition.annotations = allocate->annotations;
+    definition.has_lexical_allocation = true;
+    bind_definition_key(definition_index, allocate->buffer_var.get(), storage_key);
+  };
+  tir::PostOrderVisit(original_body, [&](const ObjectRef& node) {
+    if (const auto* block = node.as<tir::BlockNode>()) {
+      for (const Buffer& buffer : block->alloc_buffers) {
+        remember_buffer(buffer);
+      }
+      return;
+    }
+    if (const auto* decl = node.as<tir::DeclBufferNode>()) {
+      remember_buffer(decl->buffer);
+      return;
+    }
+    if (const auto* store = node.as<tir::BufferStoreNode>()) {
+      remember_buffer(store->buffer);
+      return;
+    }
+    if (const auto* load = node.as<tir::BufferLoadNode>()) {
+      remember_buffer(load->buffer);
+      return;
+    }
+    if (const auto* call = node.as<tir::CallNode>()) {
+      for (const PrimExpr& arg : call->args) {
+        if (!IsBufferLikeExpr(arg)) {
+          continue;
+        }
+        BufferRegion region = NormalizeToBufferRegion(arg);
+        if (region.defined()) {
+          remember_buffer(region->buffer);
+        }
+      }
+      return;
+    }
+    remember_allocate(node.as<tir::AllocateNode>());
+  });
+  if (definitions.empty()) {
+    return rewritten_body;
+  }
+
+  class UnboundAccUseCollector final : public tir::StmtExprVisitor {
+   public:
+    UnboundAccUseCollector(
+        const std::unordered_map<const VarNode*, size_t>& definition_index_by_data,
+        const std::unordered_map<std::string, size_t>& definition_index_by_storage_key,
+        const std::vector<AccDefinition>& definitions,
+        std::unordered_set<size_t>* unbound_definition_indices)
+        : definition_index_by_data_(definition_index_by_data),
+          definition_index_by_storage_key_(definition_index_by_storage_key),
+          definitions_(definitions),
+          unbound_definition_indices_(unbound_definition_indices) {}
+
+    void Check(const Stmt& stmt) { VisitStmt(stmt); }
+
+   private:
+    void PushBinding(const VarNode* data, const std::string& storage_key) {
+      if (data != nullptr) {
+        ++active_data_bindings_[data];
+      }
+      if (!storage_key.empty()) {
+        ++active_storage_bindings_[storage_key];
+      }
+    }
+
+    void PopBinding(const VarNode* data, const std::string& storage_key) {
+      if (data != nullptr) {
+        auto data_it = active_data_bindings_.find(data);
+        ICHECK(data_it != active_data_bindings_.end());
+        if (--data_it->second == 0) {
+          active_data_bindings_.erase(data_it);
+        }
+      }
+      if (!storage_key.empty()) {
+        auto key_it = active_storage_bindings_.find(storage_key);
+        ICHECK(key_it != active_storage_bindings_.end());
+        if (--key_it->second == 0) {
+          active_storage_bindings_.erase(key_it);
+        }
+      }
+    }
+
+    bool HasActiveBinding(const VarNode* data, const std::string& storage_key) const {
+      if (data != nullptr && active_data_bindings_.count(data) != 0U) {
+        return true;
+      }
+      return !storage_key.empty() && active_storage_bindings_.count(storage_key) != 0U;
+    }
+
+    std::optional<size_t> ResolveDefinitionIndex(const VarNode* data,
+                                                 const std::string& storage_key) const {
+      auto data_it = definition_index_by_data_.find(data);
+      if (data_it != definition_index_by_data_.end()) {
+        return data_it->second;
+      }
+      if (!storage_key.empty()) {
+        auto key_it = definition_index_by_storage_key_.find(storage_key);
+        if (key_it != definition_index_by_storage_key_.end()) {
+          return key_it->second;
+        }
+      }
+      return std::nullopt;
+    }
+
+    void VisitStmt_(const tir::AllocateNode* op) final {
+      const std::string storage_key = BlackholeAccStorageKey(op->buffer_var.get());
+      PushBinding(op->buffer_var.get(), storage_key);
+      VisitStmt(op->body);
+      PopBinding(op->buffer_var.get(), storage_key);
+    }
+
+    void VisitStmt_(const tir::DeclBufferNode* op) final {
+      const bool is_acc_buffer =
+          op->buffer.defined() && std::string(op->buffer.scope()) == "blackhole.acc";
+      const VarNode* data = is_acc_buffer ? op->buffer->data.get() : nullptr;
+      const std::string storage_key = is_acc_buffer ? BlackholeAccStorageKey(op->buffer) : "";
+      PushBinding(data, storage_key);
+      VisitStmt(op->body);
+      PopBinding(data, storage_key);
+    }
+
+    void VisitExpr_(const VarNode* op) final {
+      const std::string storage_key = BlackholeAccStorageKey(op);
+      std::optional<size_t> definition_index = ResolveDefinitionIndex(op, storage_key);
+      if (!definition_index.has_value()) {
+        return;
+      }
+      const AccDefinition& definition = definitions_[definition_index.value()];
+      if (HasActiveBinding(op, storage_key)) {
+        return;
+      }
+      // Executable materialization can expose a blackhole.acc Buffer as a
+      // direct builtin handle even when the original TIR carried only a buffer
+      // definition, not a lexical AllocateNode.  That buffer is still explicit
+      // IR state and must be rewrapped before codegen sees the handle.
+      if (!definition.has_lexical_allocation && !definition.buffer.defined()) {
+        return;
+      }
+      unbound_definition_indices_->insert(definition_index.value());
+    }
+
+    const std::unordered_map<const VarNode*, size_t>& definition_index_by_data_;
+    const std::unordered_map<std::string, size_t>& definition_index_by_storage_key_;
+    const std::vector<AccDefinition>& definitions_;
+    std::unordered_set<size_t>* unbound_definition_indices_;
+    std::unordered_map<const VarNode*, int> active_data_bindings_;
+    std::unordered_map<std::string, int> active_storage_bindings_;
+  };
+
+  std::unordered_set<size_t> unbound_definition_indices;
+  UnboundAccUseCollector(definition_index_by_data, definition_index_by_storage_key,
+                         definitions, &unbound_definition_indices)
+      .Check(rewritten_body);
+  if (unbound_definition_indices.empty()) {
+    return rewritten_body;
+  }
+
+  Stmt body = rewritten_body;
+  for (int i = static_cast<int>(definitions.size()) - 1; i >= 0; --i) {
+    const AccDefinition& definition = definitions[i];
+    if (unbound_definition_indices.count(static_cast<size_t>(i)) == 0U) {
+      continue;
+    }
+    if (definition.buffer.defined()) {
+      body = DeclBuffer(definition.buffer, body);
+    }
+    body = Allocate(definition.var, definition.dtype, definition.extents,
+                    definition.condition, body, definition.annotations);
+  }
+  return body;
+}
+
 static Stmt WrapSegmentStmtIfNeeded(const std::string& current_segment_kind,
                                     const std::string& segment_kind,
                                     const Stmt& stmt) {
@@ -743,6 +1220,307 @@ static std::string GetStorageScope(const Buffer& buffer) {
     return std::string(scope);
   }
   return "";
+}
+
+static bool IsNoOpStmt(const Stmt& stmt) {
+  if (!stmt.defined()) {
+    return true;
+  }
+  if (const auto* eval = stmt.as<EvaluateNode>()) {
+    return eval->value.as<IntImmNode>() != nullptr ||
+           eval->value.as<FloatImmNode>() != nullptr;
+  }
+  if (const auto* seq = stmt.as<SeqStmtNode>()) {
+    return std::all_of(seq->seq.begin(), seq->seq.end(),
+                       [](const Stmt& child) { return IsNoOpStmt(child); });
+  }
+  return false;
+}
+
+static bool IsTrackedBlackholeAccVar(
+    const VarNode* var,
+    const std::unordered_set<const VarNode*>& blackhole_acc_data_vars) {
+  if (var == nullptr) {
+    return false;
+  }
+  return blackhole_acc_data_vars.count(var) != 0U ||
+         !BlackholeAccStorageKey(var).empty();
+}
+
+static std::optional<const VarNode*> BlackholeAccDataVarFromExpr(
+    const PrimExpr& expr,
+    const std::unordered_set<const VarNode*>& blackhole_acc_data_vars) {
+  if (const auto* var = expr.as<VarNode>()) {
+    if (IsTrackedBlackholeAccVar(var, blackhole_acc_data_vars)) {
+      return var;
+    }
+  }
+  if (!IsBufferLikeExpr(expr)) {
+    return std::nullopt;
+  }
+  BufferRegion region = NormalizeToBufferRegion(expr);
+  if (!region.defined() || !region->buffer.defined() ||
+      GetStorageScope(region->buffer) != "blackhole.acc") {
+    return std::nullopt;
+  }
+  return region->buffer->data.get();
+}
+
+static std::unordered_set<const VarNode*> CollectBlackholeAccDataVars(const Stmt& body) {
+  std::unordered_set<const VarNode*> vars;
+  tir::PostOrderVisit(body, [&](const ObjectRef& node) {
+    if (const auto* allocate = node.as<AllocateNode>()) {
+      if (!BlackholeAccStorageKey(allocate->buffer_var.get()).empty()) {
+        vars.insert(allocate->buffer_var.get());
+      }
+      return;
+    }
+    if (const auto* decl = node.as<DeclBufferNode>()) {
+      if (decl->buffer.defined() && GetStorageScope(decl->buffer) == "blackhole.acc") {
+        vars.insert(decl->buffer->data.get());
+      }
+      return;
+    }
+    if (const auto* load = node.as<BufferLoadNode>()) {
+      if (load->buffer.defined() && GetStorageScope(load->buffer) == "blackhole.acc") {
+        vars.insert(load->buffer->data.get());
+      }
+      return;
+    }
+    if (const auto* store = node.as<BufferStoreNode>()) {
+      if (store->buffer.defined() && GetStorageScope(store->buffer) == "blackhole.acc") {
+        vars.insert(store->buffer->data.get());
+      }
+      return;
+    }
+    if (const auto* call = node.as<CallNode>()) {
+      for (const PrimExpr& arg : call->args) {
+        std::optional<const VarNode*> data = BlackholeAccDataVarFromExpr(arg, vars);
+        if (data.has_value()) {
+          vars.insert(data.value());
+        }
+      }
+    }
+  });
+  return vars;
+}
+
+static bool IsBlackholeTileComputeFillTile(const CallNode* call) {
+  if (call == nullptr || !call->op->IsInstance<OpNode>() || call->args.size() < 2U) {
+    return false;
+  }
+  const Op call_op = Downcast<Op>(call->op);
+  if (call_op->name != blackhole_tile_compute_schema::kOpName) {
+    return false;
+  }
+  const auto* operation = call->args[0].as<StringImmNode>();
+  return operation != nullptr && operation->value == blackhole_tile_compute_schema::kFillTile;
+}
+
+static bool IsDeadBlackholeAccFillCall(
+    const CallNode* call,
+    const std::unordered_set<const VarNode*>& blackhole_acc_data_vars,
+    const std::unordered_set<const VarNode*>& live_blackhole_acc_data_vars) {
+  if (call == nullptr || !call->op->IsInstance<OpNode>()) {
+    return false;
+  }
+  const Op call_op = Downcast<Op>(call->op);
+  std::optional<const VarNode*> dst_data;
+  if (call_op->name == "tl.blackhole.fill_fragment" && !call->args.empty()) {
+    dst_data = BlackholeAccDataVarFromExpr(call->args[0], blackhole_acc_data_vars);
+  } else if (IsBlackholeTileComputeFillTile(call)) {
+    dst_data = BlackholeAccDataVarFromExpr(call->args[1], blackhole_acc_data_vars);
+  }
+  return dst_data.has_value() &&
+         live_blackhole_acc_data_vars.count(dst_data.value()) == 0U;
+}
+
+class LiveBlackholeAccUseCollector final : public tir::StmtExprVisitor {
+ public:
+  explicit LiveBlackholeAccUseCollector(
+      std::unordered_set<const VarNode*> blackhole_acc_data_vars)
+      : blackhole_acc_data_vars_(std::move(blackhole_acc_data_vars)) {}
+
+  std::unordered_set<const VarNode*> Collect(const Stmt& stmt) {
+    VisitStmt(stmt);
+    return live_blackhole_acc_data_vars_;
+  }
+
+ private:
+  void MarkIfTracked(const VarNode* var) {
+    if (IsTrackedBlackholeAccVar(var, blackhole_acc_data_vars_)) {
+      live_blackhole_acc_data_vars_.insert(var);
+    }
+  }
+
+  void VisitStmt_(const AttrStmtNode* op) final {
+    if (IsBlackholeExactOutputLiveAttr(op->attr_key)) {
+      VisitStmt(op->body);
+      return;
+    }
+    if (const auto* var = op->node.as<VarNode>()) {
+      if (IsTrackedBlackholeAccVar(var, blackhole_acc_data_vars_)) {
+        VisitExpr(op->value);
+        VisitStmt(op->body);
+        return;
+      }
+    }
+    tir::StmtExprVisitor::VisitStmt_(op);
+  }
+
+  void VisitStmt_(const AllocateNode* op) final {
+    VisitExpr(op->condition);
+    VisitStmt(op->body);
+  }
+
+  void VisitStmt_(const DeclBufferNode* op) final {
+    VisitStmt(op->body);
+  }
+
+  void VisitStmt_(const BufferStoreNode* op) final {
+    VisitExpr(op->value);
+    for (const PrimExpr& index : op->indices) {
+      VisitExpr(index);
+    }
+  }
+
+  void VisitExpr_(const BufferLoadNode* op) final {
+    if (op->buffer.defined() && GetStorageScope(op->buffer) == "blackhole.acc") {
+      MarkIfTracked(op->buffer->data.get());
+    }
+    tir::StmtExprVisitor::VisitExpr_(op);
+  }
+
+  void VisitExpr_(const VarNode* op) final {
+    MarkIfTracked(op);
+  }
+
+  void VisitExpr_(const CallNode* op) final {
+    if (op->op->IsInstance<OpNode>()) {
+      const Op call_op = Downcast<Op>(op->op);
+      if (call_op->name == "tl.blackhole.fill_fragment" && !op->args.empty()) {
+        for (size_t i = 1; i < op->args.size(); ++i) {
+          VisitExpr(op->args[i]);
+        }
+        return;
+      }
+      if (IsBlackholeTileComputeFillTile(op)) {
+        VisitExpr(op->args[0]);
+        for (size_t i = 2; i < op->args.size(); ++i) {
+          VisitExpr(op->args[i]);
+        }
+        return;
+      }
+      if (call_op->name == "tl.blackhole.pack_fill_fragment_to_tiled_cb" &&
+          op->args.size() >= 6U) {
+        for (size_t i = 1; i < op->args.size(); ++i) {
+          VisitExpr(op->args[i]);
+        }
+        return;
+      }
+      for (size_t i = 0; i < op->args.size(); ++i) {
+        VisitExpr(op->args[i]);
+      }
+      return;
+    }
+    tir::StmtExprVisitor::VisitExpr_(op);
+  }
+
+  std::unordered_set<const VarNode*> blackhole_acc_data_vars_;
+  std::unordered_set<const VarNode*> live_blackhole_acc_data_vars_;
+};
+
+class DeadBlackholeAccPruner final : public tir::StmtExprMutator {
+ public:
+  DeadBlackholeAccPruner(
+      std::unordered_set<const VarNode*> blackhole_acc_data_vars,
+      std::unordered_set<const VarNode*> live_blackhole_acc_data_vars)
+      : blackhole_acc_data_vars_(std::move(blackhole_acc_data_vars)),
+        live_blackhole_acc_data_vars_(std::move(live_blackhole_acc_data_vars)) {}
+
+ private:
+  bool IsLive(const VarNode* var) const {
+    return IsTrackedBlackholeAccVar(var, blackhole_acc_data_vars_) &&
+           live_blackhole_acc_data_vars_.count(var) != 0U;
+  }
+
+  Stmt VisitStmt_(const SeqStmtNode* op) final {
+    Array<Stmt> rewritten;
+    for (const Stmt& child : op->seq) {
+      Stmt lowered = VisitStmt(child);
+      if (!IsNoOpStmt(lowered)) {
+        rewritten.push_back(lowered);
+      }
+    }
+    if (rewritten.empty()) {
+      return Evaluate(IntImm32(0));
+    }
+    return SeqStmt::Flatten(rewritten);
+  }
+
+  Stmt VisitStmt_(const EvaluateNode* op) final {
+    if (const auto* call = op->value.as<CallNode>()) {
+      if (IsDeadBlackholeAccFillCall(call, blackhole_acc_data_vars_,
+                                     live_blackhole_acc_data_vars_)) {
+        return Evaluate(IntImm32(0));
+      }
+    }
+    return tir::StmtExprMutator::VisitStmt_(op);
+  }
+
+  Stmt VisitStmt_(const AllocateNode* op) final {
+    Stmt body = VisitStmt(op->body);
+    if (IsTrackedBlackholeAccVar(op->buffer_var.get(), blackhole_acc_data_vars_) &&
+        !IsLive(op->buffer_var.get())) {
+      return body;
+    }
+    return Allocate(op->buffer_var, op->dtype, op->extents, op->condition, body,
+                    op->annotations);
+  }
+
+  Stmt VisitStmt_(const DeclBufferNode* op) final {
+    Stmt body = VisitStmt(op->body);
+    if (op->buffer.defined() && GetStorageScope(op->buffer) == "blackhole.acc" &&
+        !IsLive(op->buffer->data.get())) {
+      return body;
+    }
+    return DeclBuffer(op->buffer, body);
+  }
+
+  Stmt VisitStmt_(const BufferStoreNode* op) final {
+    if (op->buffer.defined() && GetStorageScope(op->buffer) == "blackhole.acc" &&
+        !IsLive(op->buffer->data.get())) {
+      return Evaluate(IntImm32(0));
+    }
+    return tir::StmtExprMutator::VisitStmt_(op);
+  }
+
+  Stmt VisitStmt_(const AttrStmtNode* op) final {
+    Stmt body = VisitStmt(op->body);
+    if (IsNoOpStmt(body)) {
+      return body;
+    }
+    if (const auto* var = op->node.as<VarNode>()) {
+      if (IsTrackedBlackholeAccVar(var, blackhole_acc_data_vars_) && !IsLive(var)) {
+        return body;
+      }
+    }
+    return AttrStmt(op->node, op->attr_key, op->value, body);
+  }
+
+  std::unordered_set<const VarNode*> blackhole_acc_data_vars_;
+  std::unordered_set<const VarNode*> live_blackhole_acc_data_vars_;
+};
+
+static Stmt PruneDeadBlackholeAccFragmentFillsAndDefinitions(const Stmt& body) {
+  std::unordered_set<const VarNode*> blackhole_acc_data_vars = CollectBlackholeAccDataVars(body);
+  if (blackhole_acc_data_vars.empty()) {
+    return body;
+  }
+  std::unordered_set<const VarNode*> live_blackhole_acc_data_vars =
+      LiveBlackholeAccUseCollector(blackhole_acc_data_vars).Collect(body);
+  return DeadBlackholeAccPruner(std::move(blackhole_acc_data_vars),
+                                std::move(live_blackhole_acc_data_vars))(body);
 }
 
 PlanTTKernelABI::PlanTTKernelABI() : next_requirement_index_(0) {}
@@ -775,6 +1553,17 @@ PrimFunc PlanTTKernelABI::SelectComputeBuiltins(const PrimFunc& func) {
   active_serial_loop_vars_.clear();
   block_index_vars_.clear();
   block_index_var_names_.clear();
+  cb_consumed_compute_input_pages_by_buffer_identity_.clear();
+  cb_consumed_compute_input_use_count_by_buffer_identity_.clear();
+  buffer_flow_facts_.clear();
+  execution_ordered_stmts_.clear();
+  buffer_live_form_cb_by_buffer_identity_.clear();
+  buffer_live_form_order_by_buffer_identity_.clear();
+  exact_output_live_form_cb_by_buffer_identity_.clear();
+  exact_output_live_form_order_by_buffer_identity_.clear();
+  exact_output_live_form_value_by_buffer_identity_.clear();
+  stmt_order_index_by_node_.clear();
+  current_lowering_order_index_ = -1;
   requires_compute_segment_ = false;
   logical_tile_layout_specs_by_buffer_.clear();
   spatial_materialization_boundaries_.clear();
@@ -799,12 +1588,18 @@ PrimFunc PlanTTKernelABI::SelectComputeBuiltins(const PrimFunc& func) {
   buffer_materialization_facts_by_target_buffer_ =
       BuildBufferMaterializationFactMap(
           lowering_support_facts.buffer_materialization_facts);
+  LoadBufferFlowFacts(lowering_support_facts);
   LoadTileComputeDAGLoweringPlan(func);
   LoadDirectCopySourceBindings(func);
   RefreshBroadcastColsSourceBuffers();
+  execution_ordered_stmts_ = CollectExecutionOrderedStmts(func->body);
+  stmt_order_index_by_node_ = BuildExecutionOrderIndexByStmtNode(func->body);
 
   PrimFunc selected = func;
-  selected.CopyOnWrite()->body = VisitStmt(func->body);
+  Stmt selected_body = VisitStmt(func->body);
+  selected_body = RewrapMissingBlackholeAccDefinitions(
+      func->body, selected_body, logical_tile_layout_specs_by_buffer_);
+  selected.CopyOnWrite()->body = selected_body;
   UpdateCBRequirementDepthsFromLoweredBody(
       &cb_requirements_, selected->body, gemm_a_buffer_name_.empty() ? "fused_dataflow" : "compute");
   select_compute_builtins_only_ = false;
@@ -1047,10 +1842,12 @@ PrimFunc PlanTTKernelABI::Transform(const PrimFunc& func) {
   cb_consumed_compute_input_pages_by_buffer_identity_.clear();
   cb_consumed_compute_input_use_count_by_buffer_identity_.clear();
   buffer_flow_facts_.clear();
+  execution_ordered_stmts_.clear();
   buffer_live_form_cb_by_buffer_identity_.clear();
   buffer_live_form_order_by_buffer_identity_.clear();
   exact_output_live_form_cb_by_buffer_identity_.clear();
   exact_output_live_form_order_by_buffer_identity_.clear();
+  exact_output_live_form_value_by_buffer_identity_.clear();
   selected_source_live_producer_buffers_.clear();
   seeded_cb_requirement_names_.clear();
   stmt_order_index_by_node_.clear();
@@ -1161,7 +1958,9 @@ PrimFunc PlanTTKernelABI::Transform(const PrimFunc& func) {
   LoadBufferFlowFacts(lowering_support_facts);
   LoadDirectCopySourceBindings(func);
   RefreshBroadcastColsSourceBuffers();
+  execution_ordered_stmts_ = CollectExecutionOrderedStmts(func->body);
   stmt_order_index_by_node_ = BuildExecutionOrderIndexByStmtNode(func->body);
+  LoadExactOutputLiveFormMarkers(func->body);
   const std::vector<std::string> expected_unsupported_ops =
       CollectLeafUnsupportedComputeOpsFromBody(func->body);
   // Pre-scan: register GEMM CB requirements first so their indices are stable
@@ -1219,14 +2018,15 @@ PrimFunc PlanTTKernelABI::Transform(const PrimFunc& func) {
       }
       tir::BufferRegion region = NormalizeToBufferRegion(expr);
       if (GetStorageScope(region->buffer) == "blackhole.acc") {
-        const std::string buffer_identity = BufferIdentityName(region->buffer);
-        auto it = cb_consumed_compute_input_pages_by_buffer_identity_.find(buffer_identity);
-        if (it == cb_consumed_compute_input_pages_by_buffer_identity_.end()) {
-          cb_consumed_compute_input_pages_by_buffer_identity_[buffer_identity] = tile_count;
-        } else {
-          it->second = std::max(it->second, tile_count);
+        for (const std::string& buffer_identity : CollectBufferFlowIdentities(region->buffer)) {
+          auto it = cb_consumed_compute_input_pages_by_buffer_identity_.find(buffer_identity);
+          if (it == cb_consumed_compute_input_pages_by_buffer_identity_.end()) {
+            cb_consumed_compute_input_pages_by_buffer_identity_[buffer_identity] = tile_count;
+          } else {
+            it->second = std::max(it->second, tile_count);
+          }
+          cb_consumed_compute_input_use_count_by_buffer_identity_[buffer_identity] += 1;
         }
-        cb_consumed_compute_input_use_count_by_buffer_identity_[buffer_identity] += 1;
       }
     };
     record_gemm_input_tiles(call->args[0], m_tiles * k_tiles);
@@ -1291,7 +2091,11 @@ PrimFunc PlanTTKernelABI::Transform(const PrimFunc& func) {
 
   // Create the final function body without cross-pass segment markers.
   PrimFunc new_func = func;
-  new_func.CopyOnWrite()->body = StripSegmentKindMarkers(body_with_segment_markers);
+  Stmt final_body = StripSegmentKindMarkers(body_with_segment_markers);
+  final_body = RewrapMissingBlackholeAccDefinitions(
+      func->body, final_body, logical_tile_layout_specs_by_buffer_);
+  final_body = PruneDeadBlackholeAccFragmentFillsAndDefinitions(final_body);
+  new_func.CopyOnWrite()->body = final_body;
   StoreAccessorDescriptors(new_func);
   RejectUnsupportedComputeOps(unresolved_unsupported_ops);
 
@@ -1352,13 +2156,19 @@ int PlanTTKernelABI::AllocateRequirementIndex(const Buffer& buffer, CBType type)
   if (it != buffer_to_req_.end()) {
     return bind_existing_requirement(it->second);
   }
+  if (!buffer_identity.empty()) {
+    auto by_identity = buffer_identity_to_req_index_.find(buffer_identity);
+    if (by_identity != buffer_identity_to_req_index_.end()) {
+      return bind_existing_requirement(by_identity->second);
+    }
+  }
   auto by_data = buffer_data_to_req_index_.find(buffer->data.get());
   if (by_data != buffer_data_to_req_index_.end()) {
-    return bind_existing_requirement(by_data->second);
-  }
-  auto by_identity = buffer_identity_to_req_index_.find(buffer_identity);
-  if (by_identity != buffer_identity_to_req_index_.end()) {
-    return bind_existing_requirement(by_identity->second);
+    const CBRequirement& existing_req = cb_requirements_.at(by_data->second);
+    if (buffer_identity.empty() || existing_req.name.empty() ||
+        existing_req.name == buffer_identity) {
+      return bind_existing_requirement(by_data->second);
+    }
   }
 
   const int requirement_index = next_requirement_index_++;
@@ -1519,6 +2329,9 @@ static bool IsPureCopyLoopNest(const Stmt& stmt) {
   }
   if (const auto* allocate = stmt.as<AllocateNode>()) {
     return IsPureCopyLoopNest(allocate->body);
+  }
+  if (const auto* decl_buffer = stmt.as<DeclBufferNode>()) {
+    return IsPureCopyLoopNest(decl_buffer->body);
   }
   if (const auto* if_then_else = stmt.as<IfThenElseNode>()) {
     if (!IsPureCopyLoopNest(if_then_else->then_case)) {
@@ -1723,10 +2536,62 @@ bool HasResidualScalarLoadBroadcast(const Stmt& body) {
 
 // Parse a colon-separated string into fields
 Stmt PlanTTKernelABI::VisitStmt_(const AttrStmtNode* op) {
+  if (op->attr_key == kBlackholeExactOutputLiveNumTilesAttr ||
+      op->attr_key == kBlackholeExactOutputLiveNumElementsAttr ||
+      op->attr_key == kBlackholeExactOutputLiveRowWidthAttr) {
+    Stmt body = VisitStmt(op->body);
+    const auto* value = op->value.as<IntImmNode>();
+    if (value == nullptr) {
+      return body;
+    }
+    auto record_identity = [&](const std::string& identity) {
+      if (identity.empty()) {
+        return;
+      }
+      auto& live_value = exact_output_live_form_value_by_buffer_identity_[identity];
+      if (op->attr_key == kBlackholeExactOutputLiveNumTilesAttr) {
+        live_value.num_tiles = static_cast<int>(value->value);
+      } else if (op->attr_key == kBlackholeExactOutputLiveNumElementsAttr) {
+        live_value.num_elements = value->value;
+      } else {
+        live_value.row_width = value->value;
+      }
+    };
+    if (const auto* identity = op->node.as<StringImmNode>()) {
+      record_identity(identity->value);
+    } else if (const auto* data = op->node.as<VarNode>()) {
+      auto buffer_it = compute_physical_buffers_by_data_.find(data);
+      if (buffer_it != compute_physical_buffers_by_data_.end() &&
+          buffer_it->second.defined()) {
+        record_identity(BufferIdentityName(buffer_it->second));
+      } else {
+        record_identity(data->name_hint);
+      }
+    }
+    return body;
+  }
   if (op->attr_key == kBlackholeExactOutputLiveCBAttr) {
     Stmt body = VisitStmt(op->body);
     const auto* cb_id = op->value.as<IntImmNode>();
     const auto* data = op->node.as<VarNode>();
+    auto record_identity = [&](const std::string& identity) {
+      if (identity.empty() || cb_id == nullptr) {
+        return;
+      }
+      exact_output_live_form_cb_by_buffer_identity_[identity] =
+          static_cast<int>(cb_id->value);
+      exact_output_live_form_value_by_buffer_identity_[identity].cb_id =
+          static_cast<int>(cb_id->value);
+      if (current_lowering_order_index_ >= 0) {
+        exact_output_live_form_order_by_buffer_identity_[identity] =
+            current_lowering_order_index_;
+      }
+    };
+    if (cb_id != nullptr) {
+      if (const auto* identity = op->node.as<StringImmNode>()) {
+        record_identity(identity->value);
+      }
+    }
     if (cb_id != nullptr && data != nullptr) {
       auto buffer_it = compute_physical_buffers_by_data_.find(data);
       if (buffer_it != compute_physical_buffers_by_data_.end() && buffer_it->second.defined()) {
@@ -1734,8 +2599,11 @@ Stmt PlanTTKernelABI::VisitStmt_(const AttrStmtNode* op) {
         live_value.buffer = buffer_it->second;
         live_value.cb_id = static_cast<int>(cb_id->value);
         live_value.borrowed_live = true;
+        live_value.live_identity = BufferIdentityName(buffer_it->second);
         PopulateExactTiledCBValueShape(buffer_it->second, &live_value);
         RecordExactOutputLiveForm(buffer_it->second, live_value);
+      } else {
+        record_identity(data->name_hint);
       }
     }
     return body;
@@ -1787,6 +2655,74 @@ Stmt PlanTTKernelABI::VisitStmt_(const AttrStmtNode* op) {
     return AttrStmt(op->node, op->attr_key, op->value, body);
   }
   return StmtExprMutator::VisitStmt_(op);
+}
+
+void PlanTTKernelABI::LoadExactOutputLiveFormMarkers(const Stmt& body) {
+  auto marker_identity = [&](const AttrStmtNode* attr) -> std::string {
+    if (const auto* identity = attr->node.as<StringImmNode>()) {
+      return identity->value;
+    }
+    if (const auto* data = attr->node.as<VarNode>()) {
+      auto buffer_it = compute_physical_buffers_by_data_.find(data);
+      if (buffer_it != compute_physical_buffers_by_data_.end() &&
+          buffer_it->second.defined()) {
+        return BufferIdentityName(buffer_it->second);
+      }
+      return data->name_hint;
+    }
+    return "";
+  };
+  auto marker_order = [&](const AttrStmtNode* attr) -> int {
+    auto order_it = stmt_order_index_by_node_.find(attr);
+    if (order_it != stmt_order_index_by_node_.end()) {
+      return order_it->second;
+    }
+    int first_body_order = std::numeric_limits<int>::max();
+    tir::PostOrderVisit(attr->body, [&](const ObjectRef& node) {
+      auto body_order_it = stmt_order_index_by_node_.find(node.get());
+      if (body_order_it != stmt_order_index_by_node_.end()) {
+        first_body_order = std::min(first_body_order, body_order_it->second);
+      }
+    });
+    return first_body_order == std::numeric_limits<int>::max() ? -1 : first_body_order;
+  };
+  tir::PostOrderVisit(body, [&](const ObjectRef& node) {
+    const auto* attr = node.as<AttrStmtNode>();
+    if (attr == nullptr || !IsBlackholeExactOutputLiveAttr(attr->attr_key)) {
+      return;
+    }
+    const std::string identity = marker_identity(attr);
+    if (identity.empty()) {
+      return;
+    }
+    const auto* int_value = attr->value.as<IntImmNode>();
+    if (int_value == nullptr) {
+      return;
+    }
+    auto& live_value = exact_output_live_form_value_by_buffer_identity_[identity];
+    if (attr->attr_key == kBlackholeExactOutputLiveCBAttr) {
+      const int cb_id = static_cast<int>(int_value->value);
+      const int order = marker_order(attr);
+      const auto existing_order_it =
+          exact_output_live_form_order_by_buffer_identity_.find(identity);
+      const bool replaces_existing =
+          existing_order_it == exact_output_live_form_order_by_buffer_identity_.end() ||
+          existing_order_it->second < 0 || order < 0 || order >= existing_order_it->second;
+      if (replaces_existing) {
+        exact_output_live_form_cb_by_buffer_identity_[identity] = cb_id;
+        live_value.cb_id = cb_id;
+        if (order >= 0) {
+          exact_output_live_form_order_by_buffer_identity_[identity] = order;
+        }
+      }
+    } else if (attr->attr_key == kBlackholeExactOutputLiveNumTilesAttr) {
+      live_value.num_tiles = static_cast<int>(int_value->value);
+    } else if (attr->attr_key == kBlackholeExactOutputLiveNumElementsAttr) {
+      live_value.num_elements = int_value->value;
+    } else if (attr->attr_key == kBlackholeExactOutputLiveRowWidthAttr) {
+      live_value.row_width = int_value->value;
+    }
+  });
 }
 
 Stmt PlanTTKernelABI::VisitStmt_(const DeclBufferNode* op) {
@@ -1907,6 +2843,63 @@ Stmt PlanTTKernelABI::VisitStmt_(const SeqStmtNode* op) {
       }
       const auto* eval = current.as<EvaluateNode>();
       return eval ? eval->value.as<CallNode>() : nullptr;
+    };
+
+    auto preserve_definition_wrappers_as_noop = [](const Stmt& stmt) -> Stmt {
+      std::vector<std::function<Stmt(Stmt)>> rewrap_stack;
+      bool saw_definition_wrapper = false;
+      Stmt current = stmt;
+      while (true) {
+        if (const auto* attr = current.as<AttrStmtNode>()) {
+          rewrap_stack.push_back(
+              [node = attr->node, attr_key = attr->attr_key, value = attr->value](Stmt body) {
+                return AttrStmt(node, attr_key, value, body);
+              });
+          current = attr->body;
+          continue;
+        }
+        if (const auto* let = current.as<LetStmtNode>()) {
+          rewrap_stack.push_back([var = let->var, value = let->value](Stmt body) {
+            return LetStmt(var, value, body);
+          });
+          current = let->body;
+          continue;
+        }
+        if (const auto* decl = current.as<DeclBufferNode>()) {
+          saw_definition_wrapper = true;
+          rewrap_stack.push_back([buffer = decl->buffer](Stmt body) {
+            return DeclBuffer(buffer, body);
+          });
+          current = decl->body;
+          continue;
+        }
+        if (const auto* allocate = current.as<AllocateNode>()) {
+          saw_definition_wrapper = true;
+          rewrap_stack.push_back([buffer_var = allocate->buffer_var, dtype = allocate->dtype,
+                                  extents = allocate->extents, condition = allocate->condition,
+                                  annotations = allocate->annotations](Stmt body) {
+            return Allocate(buffer_var, dtype, extents, condition, body, annotations);
+          });
+          current = allocate->body;
+          continue;
+        }
+        break;
+      }
+      if (!saw_definition_wrapper) {
+        return Stmt();
+      }
+      Stmt preserved = Evaluate(IntImm32(0));
+      for (auto it = rewrap_stack.rbegin(); it != rewrap_stack.rend(); ++it) {
+        preserved = (*it)(preserved);
+      }
+      return preserved;
+    };
+
+    auto preserve_definitions_or_drop = [&](const Stmt& stmt) {
+      Stmt preserved = preserve_definition_wrappers_as_noop(stmt);
+      if (preserved.defined()) {
+        rewritten.push_back(preserved);
+      }
     };
 
     struct ExplicitFragmentFill {
@@ -2113,6 +3106,106 @@ Stmt PlanTTKernelABI::VisitStmt_(const SeqStmtNode* op) {
       return true;
     };
 
+    auto record_fragment_fill_fact = [&](const ExplicitFragmentFill& fill_match) {
+      if (fill_match.dst.defined()) {
+        ClearSelectedSourceLiveProducer(fill_match.dst);
+        ClearTiledCBLiveFormAliases(fill_match.dst);
+        for (const std::string& identity : CollectBufferFlowIdentities(fill_match.dst)) {
+          last_fragment_fill_value_by_buffer_identity_[identity] = fill_match.value;
+        }
+        if (const VarNode* data = BufferDataIdentity(fill_match.dst)) {
+          last_fragment_fill_value_by_data_[data] = fill_match.value;
+        }
+      }
+      if (fill_match.data != nullptr) {
+        last_fragment_fill_value_by_data_[fill_match.data] = fill_match.value;
+      }
+    };
+
+    auto is_representable_fragment_fill_before_typecast_materialization =
+        [&](const Stmt& fill_stmt, const Stmt& typecast_stmt) -> bool {
+      ExplicitFragmentFill fill_match;
+      if (!match_explicit_fragment_fill(fill_stmt, &fill_match) ||
+          !fill_match.dst.defined()) {
+        return false;
+      }
+
+      const CallNode* typecast_call = unwrap_call(typecast_stmt);
+      FragmentCastMatch cast_match;
+      if (!MatchExplicitTileTypecast(typecast_call, &cast_match) ||
+          !tir::is_zero(cast_match.src_offset) ||
+          !cast_match.dst->dtype.is_bfloat16()) {
+        return false;
+      }
+
+      Buffer fill_dst = ResolvePhysicalComputeBuffer(fill_match.dst);
+      if (!fill_dst.defined()) {
+        fill_dst = fill_match.dst;
+      }
+      if (!SameBufferIdentity(fill_dst, cast_match.src)) {
+        return false;
+      }
+
+      const BlackholeBufferMaterializationFact* fact =
+          FindBufferMaterializationFact(cast_match.dst);
+      if (fact == nullptr ||
+          fact->kind != buffer_materialization::kRepublishedLogicalTile ||
+          fact->bridge_kind != buffer_materialization::kTileNFacesMaterialization ||
+          fact->execution_protocol != buffer_materialization::kTiledCBRepublish) {
+        return false;
+      }
+
+      const auto typecast_order_it = stmt_order_index_by_node_.find(typecast_stmt.get());
+      const int typecast_order_index =
+          typecast_order_it != stmt_order_index_by_node_.end()
+              ? typecast_order_it->second
+              : current_order_index + 1;
+      const int cast_order_index = ResolveCurrentBufferTransferOrder(
+          cast_match.src, cast_match.dst, typecast_order_index);
+      const FutureBufferUses later_uses =
+          ClassifyFutureBufferUses(fill_match.dst, cast_order_index);
+      if (later_uses.has_compute_consume || later_uses.has_transport_consume ||
+          later_uses.has_reference) {
+        return false;
+      }
+
+      record_fragment_fill_fact(fill_match);
+      for (const std::string& identity : CollectBufferFlowIdentities(cast_match.src)) {
+        last_fragment_fill_value_by_buffer_identity_[identity] = fill_match.value;
+      }
+      if (const VarNode* data = BufferDataIdentity(cast_match.src)) {
+        last_fragment_fill_value_by_data_[data] = fill_match.value;
+      }
+      return true;
+    };
+
+    auto is_representable_fragment_fill_before_next_write =
+        [&](const Stmt& fill_stmt, int stmt_index) -> bool {
+      ExplicitFragmentFill fill_match;
+      if (!match_explicit_fragment_fill(fill_stmt, &fill_match) || !fill_match.dst.defined()) {
+        return false;
+      }
+      const Buffer physical_dst = ResolvePhysicalComputeBuffer(fill_match.dst);
+      const Buffer dst = physical_dst.defined() ? physical_dst : fill_match.dst;
+      const std::string scope = GetStorageScope(dst);
+      if (scope != "blackhole.acc" && scope != "local.fragment") {
+        return false;
+      }
+      if (!IsNegInfValue(fill_match.value)) {
+        return false;
+      }
+      const VarNode* data = fill_match.data != nullptr ? fill_match.data : BufferDataIdentity(dst);
+      for (int next_index = stmt_index + 1;
+           next_index < static_cast<int>(op->seq.size()); ++next_index) {
+        if (StmtUsesVarOutsideDefinitionsAndExactLiveAttr(op->seq[next_index], data) ||
+            StmtReadsBufferOutsideDefinitionsAndExactLiveAttr(op->seq[next_index], dst)) {
+          return false;
+        }
+      }
+      record_fragment_fill_fact(fill_match);
+      return true;
+    };
+
     auto is_initial_identity_state_copy_before_clear_row_reduce =
         [&](const Stmt& copy_stmt, const Stmt& fill_stmt, const Stmt& reduce_stmt,
             const Stmt& combine_stmt) -> bool {
@@ -2238,15 +3331,28 @@ Stmt PlanTTKernelABI::VisitStmt_(const SeqStmtNode* op) {
     }
     if (!select_compute_builtins_only_ && i + 1 < static_cast<int>(op->seq.size()) &&
         is_redundant_zero_fill_before_full_overwrite_matmul(op->seq[i], op->seq[i + 1])) {
+      preserve_definitions_or_drop(op->seq[i]);
       continue;
     }
     if (i + 1 < static_cast<int>(op->seq.size()) &&
         is_redundant_identity_fill_before_clear_row_reduce(op->seq[i], op->seq[i + 1])) {
+      preserve_definitions_or_drop(op->seq[i]);
+      continue;
+    }
+    if (!select_compute_builtins_only_ &&
+        i + 1 < static_cast<int>(op->seq.size()) &&
+        is_representable_fragment_fill_before_typecast_materialization(op->seq[i], op->seq[i + 1])) {
+      preserve_definitions_or_drop(op->seq[i]);
+      continue;
+    }
+    if (is_representable_fragment_fill_before_next_write(op->seq[i], i)) {
+      preserve_definitions_or_drop(op->seq[i]);
       continue;
     }
     if (i + 3 < static_cast<int>(op->seq.size()) &&
         is_initial_identity_state_copy_before_clear_row_reduce(
             op->seq[i], op->seq[i + 1], op->seq[i + 2], op->seq[i + 3])) {
+      preserve_definitions_or_drop(op->seq[i]);
       continue;
     }
     rewritten.push_back(VisitStmt(op->seq[i]));
@@ -2281,7 +3387,8 @@ Stmt PlanTTKernelABI::VisitStmt_(const ForNode* op) {
       if (!has_tile_compute_input_use) {
         continue;
       }
-      const int src_cb_id = AllocateRequirementIndex(load->buffer, CBType::kIntermediate);
+      const int src_cb_id =
+          AllocateRequirementIndex(match.store->buffer, CBType::kIntermediate);
       auto& req = cb_requirements_.at(src_cb_id);
       req.lifetime_end = std::max(req.lifetime_end, next_requirement_index_);
       RecordTiledCBLiveFormAliases(match.store->buffer, src_cb_id);

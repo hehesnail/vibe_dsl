@@ -280,6 +280,16 @@ static std::vector<CBConfig> ExtractCBConfig(const tir::PrimFunc& f) {
     if (auto data_format = cb_info.Get("data_format")) {
       config.data_format = Downcast<String>(data_format.value());
     }
+    if (auto requirement_names = cb_info.Get("requirement_names")) {
+      for (const auto& name : Downcast<ffi::Array<ffi::Any>>(requirement_names.value())) {
+        config.requirement_names.push_back(Downcast<String>(name));
+      }
+    }
+    if (auto requirement_indices = cb_info.Get("requirement_indices")) {
+      for (const auto& index : Downcast<ffi::Array<ffi::Any>>(requirement_indices.value())) {
+        config.requirement_indices.push_back(Downcast<Integer>(index).IntValue());
+      }
+    }
 
     ICHECK(has_cb_id) << "Blackhole executable CB config requires explicit cb_id";
     ICHECK(!config.name.empty())
@@ -1836,10 +1846,31 @@ class SegmentBodyExtractor final : public tir::StmtMutator {
   struct ChildSegmentInfo {
     DetectedKind kind = DetectedKind::kNone;
     bool has_blackhole_builtin = false;
+    bool has_reader_anchor = false;
+    bool has_compute_anchor = false;
+    bool has_writer_anchor = false;
     bool has_cb_reserve = false;
     bool has_cb_push = false;
     bool has_cb_wait = false;
     bool has_cb_pop = false;
+
+    bool HasSegmentAnchor() const {
+      return has_reader_anchor || has_compute_anchor || has_writer_anchor;
+    }
+
+    bool Contains(DetectedKind requested) const {
+      switch (requested) {
+        case DetectedKind::kReader:
+          return has_reader_anchor;
+        case DetectedKind::kCompute:
+          return has_compute_anchor;
+        case DetectedKind::kWriter:
+          return has_writer_anchor;
+        case DetectedKind::kNone:
+          return false;
+      }
+      return false;
+    }
   };
 
   static bool IsNoOp(const Stmt& stmt) {
@@ -1872,9 +1903,10 @@ class SegmentBodyExtractor final : public tir::StmtMutator {
     bool has_ambiguous_blackhole_stmt = false;
     for (const Stmt& stmt : op->seq) {
       ChildSegmentInfo info = DetectChildSegmentInfo(stmt);
-      has_segment_anchors = has_segment_anchors || info.kind != DetectedKind::kNone;
+      has_segment_anchors = has_segment_anchors || info.HasSegmentAnchor();
       has_ambiguous_blackhole_stmt =
-          has_ambiguous_blackhole_stmt || (info.kind == DetectedKind::kNone && info.has_blackhole_builtin);
+          has_ambiguous_blackhole_stmt ||
+          (!info.HasSegmentAnchor() && info.has_blackhole_builtin);
       child_info.push_back(info);
     }
 
@@ -1899,14 +1931,16 @@ class SegmentBodyExtractor final : public tir::StmtMutator {
     seq.reserve(op->seq.size());
     for (size_t i = 0; i < op->seq.size(); ++i) {
       const bool keep_segment_stmt =
+          child_info[i].Contains(RequestedSegmentKind()) ||
           child_info[i].kind == RequestedSegmentKind() ||
           (child_info[i].kind == DetectedKind::kNone && retain_unmarked_stmts_);
       if (!keep_segment_stmt) {
         continue;
       }
       const DetectedKind previous_forced_segment_kind = forced_segment_kind_;
-      if (child_info[i].kind == RequestedSegmentKind()) {
-        forced_segment_kind_ = child_info[i].kind;
+      if (child_info[i].Contains(RequestedSegmentKind()) ||
+          child_info[i].kind == RequestedSegmentKind()) {
+        forced_segment_kind_ = RequestedSegmentKind();
       }
       Stmt rewritten = this->VisitStmt(op->seq[i]);
       forced_segment_kind_ = previous_forced_segment_kind;
@@ -1970,11 +2004,11 @@ class SegmentBodyExtractor final : public tir::StmtMutator {
       }
       info.has_blackhole_builtin = true;
       if (SegmentBodyExtractor::IsReaderAnchor(op)) {
-        info.kind = SegmentBodyExtractor::DetectedKind::kReader;
+        info.has_reader_anchor = true;
       } else if (SegmentBodyExtractor::IsWriterAnchor(op)) {
-        info.kind = SegmentBodyExtractor::DetectedKind::kWriter;
+        info.has_writer_anchor = true;
       } else if (SegmentBodyExtractor::IsComputeAnchor(op)) {
-        info.kind = SegmentBodyExtractor::DetectedKind::kCompute;
+        info.has_compute_anchor = true;
       }
       if (op->op.same_as(tir::builtin::blackhole_cb_reserve_back())) {
         info.has_cb_reserve = true;
@@ -1986,6 +2020,18 @@ class SegmentBodyExtractor final : public tir::StmtMutator {
         info.has_cb_pop = true;
       }
     });
+    const int segment_kinds = static_cast<int>(info.has_reader_anchor) +
+                              static_cast<int>(info.has_compute_anchor) +
+                              static_cast<int>(info.has_writer_anchor);
+    if (segment_kinds == 1) {
+      if (info.has_reader_anchor) {
+        info.kind = DetectedKind::kReader;
+      } else if (info.has_compute_anchor) {
+        info.kind = DetectedKind::kCompute;
+      } else if (info.has_writer_anchor) {
+        info.kind = DetectedKind::kWriter;
+      }
+    }
     return info;
   }
 
@@ -3621,7 +3667,6 @@ ffi::Module BuildTileLangBlackhole(IRModule mod, Target target) {
     EnforceExplicitPerWorkAccessDescriptorGate(buffer_info, &spec_it->second);
     EnforceTypedDstCbAccumulationGate(&spec_it->second);
     EnforceExactLiveFormMultiPageRepublishGate(&spec_it->second);
-    EnforceMultiBlockExactCBRepublishGate(&spec_it->second);
     EnforceExplicitBufferRoleSchemaGate(&spec_it->second);
     EnforceStandalonePacrLeafSimulatorGate(&spec_it->second);
   }
@@ -3725,7 +3770,6 @@ ffi::Module BuildTileLangBlackholeWithoutHost(IRModule mod, Target target) {
     EnforceExplicitPerWorkAccessDescriptorGate(buffer_info, &spec_it->second);
     EnforceTypedDstCbAccumulationGate(&spec_it->second);
     EnforceExactLiveFormMultiPageRepublishGate(&spec_it->second);
-    EnforceMultiBlockExactCBRepublishGate(&spec_it->second);
     EnforceExplicitBufferRoleSchemaGate(&spec_it->second);
     EnforceStandalonePacrLeafSimulatorGate(&spec_it->second);
   }

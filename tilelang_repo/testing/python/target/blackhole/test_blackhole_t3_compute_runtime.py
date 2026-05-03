@@ -71,11 +71,20 @@ def _compute_operation_names(executable_spec):
     }
 
 
+def _kernel_source(executable_spec, kind):
+    return next(
+        str(kernel["source_code"])
+        for kernel in executable_spec["kernels"]
+        if str(kernel["kind"]) == kind
+    )
+
+
 def _assert_t3_compute_contract(
     executable_spec,
     *,
     sources,
-    residents,
+    materialized_residents,
+    logical_residents,
     strategy,
     source_region_shape,
     expected_ops,
@@ -84,7 +93,21 @@ def _assert_t3_compute_contract(
     distributions = _distributions_by_buffer(executable_spec)
     reshard_edges = _reshard_edges(executable_spec)
 
-    for source, resident in zip(sources, residents):
+    for resident in logical_residents:
+        assert str(memory_configs[resident]["memory_layout"]) == _strategy_layout(strategy)
+        assert str(memory_configs[resident]["buffer_type"]) == "L1"
+        assert "source_buffer" not in memory_configs[resident]
+        assert str(memory_configs[resident]["shard_distribution_strategy"]) == strategy
+
+        distribution = distributions[resident]
+        assert str(distribution["distribution_kind"]) == "sharded"
+        assert str(distribution["memory_space"]) == "L1"
+        assert str(distribution["sharding_strategy"]) == strategy
+        assert str(distribution["source_region_kind"]) == "none"
+        assert str(distribution["logical_index_mapping"]) == "work_packet_row_major"
+        assert str(distribution["core_local_address_mapping"]) == "l1_shard_linear"
+
+    for source, resident in zip(sources, materialized_residents):
         assert str(memory_configs[source]["memory_layout"]) == "INTERLEAVED"
         assert str(memory_configs[source]["buffer_type"]) == "DRAM"
         assert str(memory_configs[resident]["memory_layout"]) == _strategy_layout(strategy)
@@ -239,6 +262,24 @@ ELEMENTWISE_CHAIN_CASES = [
 ]
 
 
+def test_blackhole_t3_elementwise_chain_rhs_inputs_use_staged_cb_live_form():
+    artifact = _lower_blackhole(
+        _t3_elementwise_chain_kernel(
+            grid_x=1,
+            grid_y=8,
+            strategy="height",
+            tile_m=32,
+            tile_n=32,
+        )
+    )
+    executable_spec = _extract_blackhole_executable_spec(artifact)
+    compute_source = _kernel_source(executable_spec, "compute")
+
+    assert "tilelang_cb_write_ptr_bytes_direct" not in compute_source
+    for rhs_name in ("rhs_b", "rhs_c", "rhs_d", "rhs_e"):
+        assert f"reinterpret_cast<const uint16_t*>({rhs_name})" not in compute_source
+
+
 @pytest.mark.parametrize(
     "case_name,grid_x,grid_y,strategy,tile_m,tile_n",
     ELEMENTWISE_CHAIN_CASES,
@@ -277,7 +318,8 @@ def test_blackhole_t3_sharded_elementwise_chain_bf16_direct_runtime(
     _assert_t3_compute_contract(
         executable_spec,
         sources=["A", "B", "C", "D", "E"],
-        residents=["a_tile", "b_tile", "c_tile", "d_tile", "e_tile"],
+        materialized_residents=["acc", "rhs_b", "rhs_c", "rhs_d", "rhs_e"],
+        logical_residents=["a_tile", "b_tile", "c_tile", "d_tile", "e_tile"],
         strategy=strategy,
         source_region_shape=(tile_m, tile_n),
         expected_ops={"add_tiles", "sub_tiles", "mul_tiles", "recip_tile"},
@@ -340,7 +382,8 @@ def test_blackhole_t3_sharded_elementwise_reduce_mix_bf16_direct_runtime(
     _assert_t3_compute_contract(
         executable_spec,
         sources=["A", "B"],
-        residents=["a_tile", "b_tile"],
+        materialized_residents=["acc", "rhs"],
+        logical_residents=["a_tile", "b_tile"],
         strategy=strategy,
         source_region_shape=(tile_m, tile_n),
         expected_ops={"add_tiles", "reduce_tile", "recip_tile", "mul_tiles_bcast_cols"},

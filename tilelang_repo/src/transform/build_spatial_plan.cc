@@ -599,6 +599,7 @@ class BufferScopeCollector : public tir::StmtExprVisitor {
 struct BufferMetadata {
   std::string scope;
   std::vector<int64_t> shape;
+  std::vector<int64_t> region_shape;
   std::string dtype;
 };
 
@@ -763,7 +764,10 @@ class BufferMetadataCollector : public tir::StmtExprVisitor {
  private:
   void Record(const tir::Buffer& buffer) {
     const std::string name = BufferIdentityName(buffer);
-    if (name.empty() || metadata_by_buffer_.count(name)) {
+    if (name.empty()) {
+      return;
+    }
+    if (metadata_by_buffer_.count(name)) {
       return;
     }
     BufferMetadata metadata;
@@ -773,6 +777,42 @@ class BufferMetadataCollector : public tir::StmtExprVisitor {
       metadata.shape = std::move(shape.value());
     }
     metadata_by_buffer_.emplace(name, std::move(metadata));
+  }
+
+  void RecordRegion(const tir::BufferRegion& region) {
+    if (!region.defined() || !region->buffer.defined()) {
+      return;
+    }
+    Record(region->buffer);
+    const std::string name = BufferIdentityName(region->buffer);
+    if (name.empty()) {
+      return;
+    }
+    auto metadata_it = metadata_by_buffer_.find(name);
+    if (metadata_it == metadata_by_buffer_.end()) {
+      return;
+    }
+    std::vector<int64_t> shape;
+    shape.reserve(region->region.size());
+    for (const Range& range : region->region) {
+      const auto* extent = range->extent.as<IntImmNode>();
+      if (!extent) {
+        return;
+      }
+      shape.push_back(extent->value);
+    }
+    if (shape.size() > metadata_it->second.region_shape.size()) {
+      metadata_it->second.region_shape = std::move(shape);
+    }
+  }
+
+  void VisitExpr_(const tir::CallNode* op) final {
+    for (const PrimExpr& arg : op->args) {
+      if (IsBufferLikeExpr(arg)) {
+        RecordRegion(NormalizeToBufferRegion(arg));
+      }
+    }
+    tir::StmtExprVisitor::VisitExpr_(op);
   }
 
   void VisitExpr_(const tir::BufferLoadNode* op) final {
@@ -799,6 +839,108 @@ class BufferMetadataCollector : public tir::StmtExprVisitor {
 
   std::unordered_map<std::string, BufferMetadata> metadata_by_buffer_;
 };
+
+class ThreadExtentCollector : public tir::StmtExprVisitor {
+ public:
+  PrimExpr Collect(const tir::PrimFunc& func) {
+    thread_idx_x_extent_ = PrimExpr();
+    VisitStmt(func->body);
+    return thread_idx_x_extent_;
+  }
+
+ private:
+  void VisitStmt_(const tir::AttrStmtNode* op) final {
+    if (!thread_idx_x_extent_.defined() &&
+        op->attr_key == tir::attr::thread_extent) {
+      if (const auto* iter = op->node.as<tir::IterVarNode>()) {
+        if (iter->thread_tag == "threadIdx.x") {
+          thread_idx_x_extent_ = op->value;
+        }
+      }
+    }
+    tir::StmtExprVisitor::VisitStmt_(op);
+  }
+
+  PrimExpr thread_idx_x_extent_;
+};
+
+bool IsLocalComputeScope(const std::string& scope) {
+  return scope == "local" || scope == "local.fragment" ||
+         scope == "blackhole.acc";
+}
+
+std::optional<int64_t> StaticIntValue(const PrimExpr& expr) {
+  if (!expr.defined()) {
+    return std::nullopt;
+  }
+  if (const auto* imm = expr.as<IntImmNode>()) {
+    return imm->value;
+  }
+  return std::nullopt;
+}
+
+LogicalTileLayoutInfo DeriveThreadLocalComputeLayout(
+    const BufferMetadata& metadata, const PrimExpr& thread_extent) {
+  LogicalTileLayoutInfo info;
+  if (!thread_extent.defined() || !IsLocalComputeScope(metadata.scope)) {
+    return info;
+  }
+  const std::vector<int64_t>& layout_shape =
+      metadata.region_shape.empty() ? metadata.shape : metadata.region_shape;
+  if (layout_shape.empty()) {
+    return info;
+  }
+  const std::optional<int64_t> maybe_thread_extent = StaticIntValue(thread_extent);
+  int64_t local_elements = 0;
+  if (layout_shape.size() == 1U) {
+    if (maybe_thread_extent && layout_shape[0] == maybe_thread_extent.value()) {
+      local_elements = 1;
+    } else {
+      local_elements = layout_shape[0];
+    }
+  } else if (layout_shape.size() == 2U) {
+    if (maybe_thread_extent) {
+      const int64_t total_elements = layout_shape[0] * layout_shape[1];
+      if (total_elements % maybe_thread_extent.value() == 0) {
+        local_elements = total_elements / maybe_thread_extent.value();
+      }
+    }
+    if (local_elements == 0) {
+      local_elements = layout_shape[1];
+    }
+  } else {
+    return info;
+  }
+  if (local_elements <= 0) {
+    return info;
+  }
+  const PrimExpr local_extent = IntImm(DataType::Int(32), local_elements);
+  const Var local_index("_i", DataType::Int(32));
+  const Var thread_index("_j", DataType::Int(32));
+  info.local_shape.push_back(local_extent);
+  info.thread_extent = thread_extent;
+  info.replicate_extent = IntImm(DataType::Int(32), 1);
+  info.inverse_logical_index_vars.push_back(local_index);
+  info.inverse_logical_index_vars.push_back(thread_index);
+  if (layout_shape.size() == 1U && maybe_thread_extent &&
+      layout_shape[0] == maybe_thread_extent.value()) {
+    info.logical_shape.push_back(thread_extent);
+    info.inverse_logical_index_exprs.push_back(thread_index);
+    info.inverse_logical_index_exprs.push_back(IntImm(DataType::Int(32), 0));
+    return info;
+  }
+  if (layout_shape.size() == 2U) {
+    info.logical_shape.push_back(IntImm(DataType::Int(32), layout_shape[0]));
+    info.logical_shape.push_back(IntImm(DataType::Int(32), layout_shape[1]));
+  } else {
+    info.logical_shape.push_back(thread_extent);
+    info.logical_shape.push_back(local_extent);
+  }
+  info.inverse_logical_index_exprs.push_back(thread_index);
+  info.inverse_logical_index_exprs.push_back(local_index);
+  info.inverse_logical_index_exprs.push_back(IntImm(DataType::Int(32), 0));
+  return info;
+}
 
 constexpr const char* kMemoryConfigMapAttr = "tl.memory_config_map";
 
@@ -1030,6 +1172,11 @@ Array<LayoutSpec> BuildLayoutSpecs(const tir::PrimFunc& func,
   LogicalTileLayoutCollector tile_layout_collector;
   std::unordered_map<std::string, LogicalTileLayoutInfo> tile_layout_by_buffer =
       tile_layout_collector.Collect(func);
+  BufferMetadataCollector metadata_collector;
+  const std::unordered_map<std::string, BufferMetadata> metadata_by_buffer =
+      metadata_collector.Collect(func);
+  ThreadExtentCollector thread_extent_collector;
+  const PrimExpr thread_extent = thread_extent_collector.Collect(func);
   std::unordered_map<std::string, LayoutInfo> layout_info_by_subject;
 
   for (int unit_index = 0; unit_index < static_cast<int>(execution_units.size()); ++unit_index) {
@@ -1075,6 +1222,13 @@ Array<LayoutSpec> BuildLayoutSpecs(const tir::PrimFunc& func,
     LogicalTileLayoutInfo tile_layout =
         tile_layout_it == tile_layout_by_buffer.end() ? LogicalTileLayoutInfo()
                                                       : tile_layout_it->second;
+    if (tile_layout.logical_shape.empty()) {
+      auto metadata_it = metadata_by_buffer.find(subject);
+      if (metadata_it != metadata_by_buffer.end()) {
+        tile_layout =
+            DeriveThreadLocalComputeLayout(metadata_it->second, thread_extent);
+      }
+    }
     layout_specs.push_back(LayoutSpec(
         String("layout_" + subject), String(subject), String(info.scope),
         String(DeriveDistributionKind(info.scope)),
@@ -1096,6 +1250,35 @@ LogicalTileLayoutInfo LogicalTileLayoutInfoFromLayoutSpec(const LayoutSpec& layo
   info.inverse_logical_index_vars = layout_spec->inverse_logical_index_vars;
   info.inverse_logical_index_exprs = layout_spec->inverse_logical_index_exprs;
   return info;
+}
+
+std::optional<int64_t> StaticShapeProduct(const Array<PrimExpr>& shape) {
+  if (shape.empty()) {
+    return std::nullopt;
+  }
+  int64_t product = 1;
+  for (const PrimExpr& dim : shape) {
+    const auto* imm = dim.as<IntImmNode>();
+    if (!imm || imm->value <= 0) {
+      return std::nullopt;
+    }
+    product *= imm->value;
+  }
+  return product;
+}
+
+bool LogicalLayoutDominates(const LogicalTileLayoutInfo& candidate,
+                            const LogicalTileLayoutInfo& current) {
+  if (candidate.logical_shape.empty() || current.logical_shape.empty() ||
+      candidate.logical_shape.size() != current.logical_shape.size()) {
+    return false;
+  }
+  const std::optional<int64_t> candidate_product =
+      StaticShapeProduct(candidate.logical_shape);
+  const std::optional<int64_t> current_product =
+      StaticShapeProduct(current.logical_shape);
+  return candidate_product && current_product &&
+         candidate_product.value() > current_product.value();
 }
 
 Array<LayoutSpec> MergePriorTypedLayoutSpecs(const tir::PrimFunc& func,
@@ -1151,12 +1334,19 @@ Array<LayoutSpec> PropagateLocalValueFlowLayoutSpecs(
         if (source_it == layout_by_subject.end() || target_it == layout_by_subject.end()) {
           continue;
         }
-        if (source_it->second.logical_shape.empty() ||
-            !target_it->second.logical_shape.empty()) {
+        if (!source_it->second.logical_shape.empty() &&
+            (target_it->second.logical_shape.empty() ||
+             LogicalLayoutDominates(source_it->second, target_it->second))) {
+          target_it->second = source_it->second;
+          changed = true;
           continue;
         }
-        target_it->second = source_it->second;
-        changed = true;
+        if (flow.accepts_distributed_slice &&
+            source_it->second.logical_shape.empty() &&
+            !target_it->second.logical_shape.empty()) {
+          source_it->second = target_it->second;
+          changed = true;
+        }
       }
     }
   }

@@ -306,11 +306,21 @@ Stmt PlanTTKernelABI::GenerateFragmentCastSequence(const FragmentCastMatch& matc
         1, cb_requirements_[cb_id].publish_pages_per_event > 0
                ? cb_requirements_[cb_id].publish_pages_per_event
                : cb_requirements_[cb_id].num_pages);
-    const std::string buffer_identity = BufferIdentityName(match.dst);
-    auto it = cb_consumed_compute_input_pages_by_buffer_identity_.find(buffer_identity);
-    if (it != cb_consumed_compute_input_pages_by_buffer_identity_.end() &&
-        cb_requirements_[cb_id].publish_pages_per_event <= 0) {
-      num_pages = std::max(1, it->second);
+    int consumed_compute_input_pages = 0;
+    for (const std::string& buffer_identity : CollectBufferFlowIdentities(match.dst)) {
+      auto it = cb_consumed_compute_input_pages_by_buffer_identity_.find(buffer_identity);
+      if (it != cb_consumed_compute_input_pages_by_buffer_identity_.end()) {
+        consumed_compute_input_pages = std::max(consumed_compute_input_pages, it->second);
+      }
+    }
+    if (consumed_compute_input_pages > 0) {
+      num_pages = std::max(num_pages, consumed_compute_input_pages);
+      auto& req = cb_requirements_[cb_id];
+      SetRequirementPageLayout(cb_id, req.page_size,
+                               std::max(req.num_pages, num_pages));
+      req.publish_pages_per_event = std::max(req.publish_pages_per_event, num_pages);
+      req.consume_pages_per_event =
+          std::max(req.consume_pages_per_event, consumed_compute_input_pages);
     }
     const BlackholeBufferMaterializationFact* fact = FindBufferMaterializationFact(match.dst);
     if (fact != nullptr) {
@@ -430,6 +440,20 @@ Stmt PlanTTKernelABI::GenerateFragmentCastSequence(const FragmentCastMatch& matc
       live_source.cb_id = it->second;
       live_source.borrowed_live = true;
       PopulateExactTiledCBValueShape(match.src, &live_source);
+      auto value_it = exact_output_live_form_value_by_buffer_identity_.find(
+          materialization_fact->source_buffer);
+      if (value_it != exact_output_live_form_value_by_buffer_identity_.end()) {
+        const ExactTiledCBValue& value = value_it->second;
+        if (value.num_tiles > 0) {
+          live_source.num_tiles = value.num_tiles;
+        }
+        if (value.num_elements > 0) {
+          live_source.num_elements = value.num_elements;
+        }
+        if (value.row_width > 0) {
+          live_source.row_width = value.row_width;
+        }
+      }
       return true;
     };
     const bool can_republish_from_live_cb =

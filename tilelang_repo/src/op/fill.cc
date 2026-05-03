@@ -155,6 +155,15 @@ For FillNode::MakeSIMTLoop(arith::Analyzer *analyzer) const {
  * @return Stmt The lowered TIR statement implementing the fill.
  */
 Stmt FillNode::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
+  if (TargetIsBlackhole(T.target) && IsBlackholeComputeBuffer(dst)) {
+    ICHECK(RegionCoversWholeBuffer(dst, region, analyzer))
+        << "Blackhole fill_tile requires full compute-buffer region for "
+        << dst->name;
+    return MakeBlackholeTileComputeCall(
+        blackhole_tile_compute_schema::kFillTile,
+        {MakeBlackholeFullRegionExpr(dst, 2), value,
+         BlackholeBufferElementCount(dst)});
+  }
   if (IsFragmentBuffer(dst)) {
     auto par_op = ParallelOp(MakeSIMTLoop(analyzer));
     par_op->InferLayout({T.target,

@@ -27,12 +27,10 @@
 namespace tvm {
 namespace tl {
 
-tvm::tir::Stmt NormalizeBlackholeTileComputeLoop(
-    const tvm::tir::ForNode* op, int* temp_index);
-
 namespace transform {
 
 tvm::transform::Pass NormalizeBlackholeTileCompute();
+tvm::transform::Pass ValidateBlackholeTileComputeNormalized();
 
 }  // namespace transform
 

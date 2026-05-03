@@ -2131,3 +2131,12 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   Grouped one-dimensional broadcast such as `x[i] / y[i >> k]` is a real
   broadcast-cols structure; derive the grouping from IR shape/index structure,
   not from names.
+- 2026-05-03 flash-attn exact-CB lifetime pattern:
+  multi-block workload tests need both direct runtime correctness and source
+  CB queue replay.  Borrowed exact-CB live forms should be released at the
+  consuming leaf when future-use analysis proves no legal later read before
+  the next write; accumulator merge/codegen must not carry a separate late
+  discard path to repair queue state.  For exact tiled CB inputs with one
+  event page, generated copy/binary/broadcast tile indices must be static 0;
+  dynamic tile variables are only valid after proving the input event has
+  multiple pages.

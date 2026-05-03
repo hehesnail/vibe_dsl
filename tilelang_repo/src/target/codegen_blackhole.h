@@ -75,6 +75,9 @@ class CodeGenBlackhole : public CodeGenCHost {
   // Override EvaluateNode to handle TT-Metal builtin calls as statements
   void VisitStmt_(const tvm::tir::EvaluateNode *op) override;
 
+  // Keep renamed C loop symbols visible to Blackhole builtin argument emission.
+  void VisitStmt_(const tvm::tir::ForNode *op) override;
+
   // Skip C-array allocation for CB-backed shared buffers.
   void VisitStmt_(const tvm::tir::AllocateNode *op) override;
 

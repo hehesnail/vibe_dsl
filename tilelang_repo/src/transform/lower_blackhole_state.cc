@@ -336,8 +336,10 @@ void PlanTTKernelABI::AppendPublishedBufferSourceMaterialization(
 
   const FutureBufferUses future_uses =
       ClassifyFutureLiveCBReadsBeforeNextWrite(src, current_order_index);
+  const FutureBufferUses any_future_uses =
+      ClassifyFutureBufferUses(src, current_order_index);
   if (!future_uses.has_compute_consume && !future_uses.has_transport_consume &&
-      !future_uses.has_reference) {
+      !future_uses.has_reference && !any_future_uses.has_transport_consume) {
     suffix->push_back(
         MakeBlackholeCall(blackhole_cb_pop_front(), {IntImm32(cb_id), IntImm32(num_tiles)}));
     ClearTiledCBLiveFormAliases(src);
@@ -573,6 +575,7 @@ void PlanTTKernelABI::LoadPhysicalComputeBufferBindings(const PrimFunc& func) {
 
   std::unordered_map<const VarNode*, std::vector<Buffer>> buffers_by_data;
   std::unordered_map<std::string, std::vector<Buffer>> buffers_by_identity;
+  std::unordered_map<std::string, std::vector<Buffer>> definition_buffers_by_identity;
 
   auto remember = [&](const Buffer& buffer) {
     if (!buffer.defined() || !IsUnsupportedResidualLocalScope(buffer)) {
@@ -595,14 +598,33 @@ void PlanTTKernelABI::LoadPhysicalComputeBufferBindings(const PrimFunc& func) {
     }
   };
 
+  auto remember_definition = [&](const Buffer& buffer) {
+    remember(buffer);
+    if (!buffer.defined() || !IsUnsupportedResidualLocalScope(buffer)) {
+      return;
+    }
+    const std::string identity = BufferIdentityName(buffer);
+    if (identity.empty()) {
+      return;
+    }
+    auto& group = definition_buffers_by_identity[identity];
+    if (std::find(group.begin(), group.end(), buffer) == group.end()) {
+      group.push_back(buffer);
+    }
+  };
+
   for (const auto& [_, buffer] : func->buffer_map) {
     remember(buffer);
   }
   tir::PostOrderVisit(func->body, [&](const ObjectRef& node) {
     if (const auto* block = node.as<tir::BlockNode>()) {
       for (const Buffer& buffer : block->alloc_buffers) {
-        remember(buffer);
+        remember_definition(buffer);
       }
+      return;
+    }
+    if (const auto* decl = node.as<tir::DeclBufferNode>()) {
+      remember_definition(decl->buffer);
       return;
     }
     if (const auto* store = node.as<tir::BufferStoreNode>()) {
@@ -650,8 +672,63 @@ void PlanTTKernelABI::LoadPhysicalComputeBufferBindings(const PrimFunc& func) {
     return preferred;
   };
 
-  for (const auto& [data, group] : buffers_by_data) {
+  std::unordered_set<std::string> ambiguous_definition_identities;
+  std::unordered_map<std::string, Buffer> preferred_definition_by_identity;
+  for (const auto& [identity, group] : definition_buffers_by_identity) {
+    const VarNode* definition_data = nullptr;
+    bool ambiguous = false;
+    for (const Buffer& buffer : group) {
+      const VarNode* data = BufferDataIdentity(buffer);
+      if (data == nullptr) {
+        ambiguous = true;
+        break;
+      }
+      if (definition_data == nullptr) {
+        definition_data = data;
+        continue;
+      }
+      if (definition_data != data) {
+        ambiguous = true;
+        break;
+      }
+    }
+    if (ambiguous) {
+      ambiguous_definition_identities.insert(identity);
+      continue;
+    }
     Optional<Buffer> preferred = choose_preferred_buffer(group);
+    if (preferred) {
+      preferred_definition_by_identity[identity] = preferred.value();
+    }
+  }
+
+  auto find_definition_for_group = [&](const std::vector<Buffer>& group) -> Optional<Buffer> {
+    Optional<Buffer> selected;
+    for (const Buffer& buffer : group) {
+      const std::string identity = BufferIdentityName(buffer);
+      if (identity.empty() || ambiguous_definition_identities.count(identity)) {
+        continue;
+      }
+      auto definition_it = preferred_definition_by_identity.find(identity);
+      if (definition_it == preferred_definition_by_identity.end()) {
+        continue;
+      }
+      if (!selected) {
+        selected = definition_it->second;
+        continue;
+      }
+      if (!selected.value().same_as(definition_it->second)) {
+        return Optional<Buffer>();
+      }
+    }
+    return selected;
+  };
+
+  for (const auto& [data, group] : buffers_by_data) {
+    Optional<Buffer> preferred = find_definition_for_group(group);
+    if (!preferred) {
+      preferred = choose_preferred_buffer(group);
+    }
     if (!preferred) {
       continue;
     }
@@ -659,7 +736,13 @@ void PlanTTKernelABI::LoadPhysicalComputeBufferBindings(const PrimFunc& func) {
     for (const Buffer& buffer : group) {
       const std::string identity = BufferIdentityName(buffer);
       if (!identity.empty()) {
-        compute_physical_buffers_by_identity_[identity] = preferred.value();
+        auto definition_it = preferred_definition_by_identity.find(identity);
+        if (definition_it != preferred_definition_by_identity.end() &&
+            !ambiguous_definition_identities.count(identity)) {
+          compute_physical_buffers_by_identity_[identity] = definition_it->second;
+        } else {
+          compute_physical_buffers_by_identity_[identity] = preferred.value();
+        }
       }
     }
   }
@@ -667,7 +750,14 @@ void PlanTTKernelABI::LoadPhysicalComputeBufferBindings(const PrimFunc& func) {
     if (compute_physical_buffers_by_identity_.count(identity)) {
       continue;
     }
-    Optional<Buffer> preferred = choose_preferred_buffer(group);
+    Optional<Buffer> preferred;
+    auto definition_it = preferred_definition_by_identity.find(identity);
+    if (definition_it != preferred_definition_by_identity.end() &&
+        !ambiguous_definition_identities.count(identity)) {
+      preferred = definition_it->second;
+    } else {
+      preferred = choose_preferred_buffer(group);
+    }
     if (preferred) {
       compute_physical_buffers_by_identity_[identity] = preferred.value();
     }
@@ -711,6 +801,7 @@ void PlanTTKernelABI::RecordTiledCBLiveFormAliases(const Buffer& buffer, int cb_
       return false;
     }
     exact_output_live_form_cb_by_buffer_identity_.erase(identity);
+    exact_output_live_form_value_by_buffer_identity_.erase(identity);
     if (order_index >= 0) {
       exact_output_live_form_order_by_buffer_identity_[identity] = order_index;
     }
@@ -761,6 +852,7 @@ void PlanTTKernelABI::ClearTiledCBLiveFormIdentity(const std::string& identity) 
     buffer_live_form_order_by_buffer_identity_[identity] = order_index;
   }
   exact_output_live_form_cb_by_buffer_identity_.erase(identity);
+  exact_output_live_form_value_by_buffer_identity_.erase(identity);
   if (order_index >= 0) {
     exact_output_live_form_order_by_buffer_identity_[identity] = order_index;
   }
@@ -918,6 +1010,11 @@ void PlanTTKernelABI::LoadDirectCopySourceBindings(const PrimFunc& func) {
     if (dst.empty() || src.empty() || dst == src) {
       return;
     }
+    const std::string dst_scope = GetStorageScope(store->buffer);
+    if ((dst_scope.empty() || dst_scope == "global") &&
+        IsUnsupportedResidualLocalScope(load->buffer)) {
+      host_buffer_by_compute_operand_buffer_[src] = dst;
+    }
     auto it = direct_copy_source_by_buffer_identity_.find(dst);
     if (it == direct_copy_source_by_buffer_identity_.end()) {
       direct_copy_source_by_buffer_identity_.emplace(dst, src);
@@ -981,6 +1078,25 @@ bool PlanTTKernelABI::IsBroadcastColsSourceCBId(int cb_id) const {
 bool PlanTTKernelABI::TryCreateBroadcastColsSourceLiveExactTiledCBValue(
     const Buffer& buffer, ExactTiledCBValue* value) {
   ICHECK(value != nullptr);
+  auto populate_bcast_source_live_value = [&](int cb_id, bool borrowed_live,
+                                              const std::string& live_identity) {
+    ICHECK_GE(cb_id, 0);
+    ICHECK_LT(cb_id, static_cast<int>(cb_requirements_.size()));
+    const CBRequirement& req = cb_requirements_.at(cb_id);
+    const int event_pages =
+        std::max({1, req.publish_pages_per_event, req.consume_pages_per_event});
+    value->buffer = buffer;
+    value->cb_id = cb_id;
+    value->producer_live = true;
+    value->borrowed_live = borrowed_live;
+    value->live_identity =
+        !live_identity.empty() ? live_identity : BufferIdentityName(buffer);
+    PopulateExactTiledCBValueShape(buffer, value);
+    value->num_tiles = event_pages;
+    value->num_elements = static_cast<int64_t>(event_pages) *
+                          kBlackholeTileRows * kBlackholeTileCols;
+    value->row_width = kBlackholeTileCols;
+  };
   std::vector<std::string> candidates = CollectBufferFlowIdentities(buffer);
   std::unordered_set<std::string> seen(candidates.begin(), candidates.end());
   for (size_t index = 0; index < candidates.size(); ++index) {
@@ -1063,12 +1179,7 @@ bool PlanTTKernelABI::TryCreateBroadcastColsSourceLiveExactTiledCBValue(
     if (has_intervening_identity_write) {
       continue;
     }
-    value->buffer = buffer;
-    value->cb_id = cb_id;
-    value->producer_live = true;
-    value->borrowed_live = true;
-    PopulateExactTiledCBValueShape(buffer, value);
-    RefineExactTiledCBValueShapeFromRequirement(value);
+    populate_bcast_source_live_value(cb_id, /*borrowed_live=*/true, identity);
     return true;
   }
   for (const std::string& identity : producer_candidates) {
@@ -1085,12 +1196,7 @@ bool PlanTTKernelABI::TryCreateBroadcastColsSourceLiveExactTiledCBValue(
         kBlackholeTileRows * kBlackholeTileCols * ExactTiledCBStorageDType(buffer->dtype).bytes()) {
       continue;
     }
-    value->buffer = buffer;
-    value->cb_id = cb_id;
-    value->producer_live = true;
-    value->borrowed_live = false;
-    PopulateExactTiledCBValueShape(buffer, value);
-    RefineExactTiledCBValueShapeFromRequirement(value);
+    populate_bcast_source_live_value(cb_id, /*borrowed_live=*/false, identity);
     return true;
   }
   for (int cb_id = 0; cb_id < static_cast<int>(cb_requirements_.size()); ++cb_id) {
@@ -1103,12 +1209,7 @@ bool PlanTTKernelABI::TryCreateBroadcastColsSourceLiveExactTiledCBValue(
         kBlackholeTileRows * kBlackholeTileCols * ExactTiledCBStorageDType(buffer->dtype).bytes()) {
       continue;
     }
-    value->buffer = buffer;
-    value->cb_id = cb_id;
-    value->producer_live = true;
-    value->borrowed_live = false;
-    PopulateExactTiledCBValueShape(buffer, value);
-    RefineExactTiledCBValueShapeFromRequirement(value);
+    populate_bcast_source_live_value(cb_id, /*borrowed_live=*/false, req.name);
     return true;
   }
   for (const std::string& identity : producer_candidates) {
@@ -1123,12 +1224,7 @@ bool PlanTTKernelABI::TryCreateBroadcastColsSourceLiveExactTiledCBValue(
     auto& req = cb_requirements_.at(cb_id);
     req.publish_pages_per_event = std::max(req.publish_pages_per_event, 1);
     req.consume_pages_per_event = std::max(req.consume_pages_per_event, 1);
-    value->buffer = buffer;
-    value->cb_id = cb_id;
-    value->producer_live = true;
-    value->borrowed_live = false;
-    PopulateExactTiledCBValueShape(buffer, value);
-    RefineExactTiledCBValueShapeFromRequirement(value);
+    populate_bcast_source_live_value(cb_id, /*borrowed_live=*/false, identity);
     return true;
   }
   return false;
@@ -1177,6 +1273,86 @@ bool PlanTTKernelABI::HasInterveningBufferWrite(const Buffer& buffer,
           event.order_index < current_order_index) {
         return true;
       }
+    }
+  }
+  return false;
+}
+
+bool PlanTTKernelABI::FutureWritePrecedesFutureComputeConsume(
+    const Buffer& buffer, int current_order_index) const {
+  if (current_order_index < 0) {
+    return false;
+  }
+  const std::vector<std::string> identity_list = CollectBufferFlowIdentities(buffer);
+  if (identity_list.empty() || execution_ordered_stmts_.empty()) {
+    return false;
+  }
+  const std::unordered_set<std::string> identities(identity_list.begin(), identity_list.end());
+  auto writes_buffer = [&](const Stmt& stmt) {
+    bool writes = false;
+    tir::PostOrderVisit(stmt, [&](const ObjectRef& node) {
+      if (writes) {
+        return;
+      }
+      if (const auto* store = node.as<BufferStoreNode>()) {
+        writes = identities.count(BufferIdentityName(store->buffer)) != 0U;
+        return;
+      }
+      const auto* call = node.as<CallNode>();
+      if (!call || !call->op->IsInstance<OpNode>()) {
+        return;
+      }
+      TileOperator tile_op = ParseOperator(GetRef<Call>(call));
+      if (!tile_op.defined()) {
+        return;
+      }
+      for (const DataflowAccessInfo& access : tile_op->GetDataflowAccessInfo()) {
+        if (access.kind == DataflowAccessKind::kComputeProduce &&
+            identities.count(BufferIdentityName(access.buffer)) != 0U) {
+          writes = true;
+          return;
+        }
+      }
+    });
+    return writes;
+  };
+  auto compute_consumes_buffer = [&](const Stmt& stmt) {
+    bool consumes = false;
+    tir::PostOrderVisit(stmt, [&](const ObjectRef& node) {
+      if (consumes) {
+        return;
+      }
+      const auto* call = node.as<CallNode>();
+      if (!call || !call->op->IsInstance<OpNode>()) {
+        return;
+      }
+      TileOperator tile_op = ParseOperator(GetRef<Call>(call));
+      if (!tile_op.defined()) {
+        return;
+      }
+      for (const DataflowAccessInfo& access : tile_op->GetDataflowAccessInfo()) {
+        if (access.kind == DataflowAccessKind::kComputeConsume &&
+            identities.count(BufferIdentityName(access.buffer)) != 0U) {
+          consumes = true;
+          return;
+        }
+      }
+    });
+    return consumes;
+  };
+
+  for (const Stmt& stmt : execution_ordered_stmts_) {
+    auto order_it = stmt_order_index_by_node_.find(stmt.get());
+    const int order_index =
+        order_it != stmt_order_index_by_node_.end() ? order_it->second : -1;
+    if (order_index <= current_order_index) {
+      continue;
+    }
+    if (writes_buffer(stmt)) {
+      return true;
+    }
+    if (compute_consumes_buffer(stmt)) {
+      return false;
     }
   }
   return false;
@@ -1303,7 +1479,7 @@ PlanTTKernelABI::ClassifyFutureLiveCBReadsBeforeNextWrite(
       if (event.order_index <= current_order_index) {
         continue;
       }
-      if (next_write_order_index >= 0 && event.order_index >= next_write_order_index) {
+      if (next_write_order_index >= 0 && event.order_index > next_write_order_index) {
         continue;
       }
       if (event.kind == BlackholeBufferFlowEventKind::kWrite) {
@@ -1325,9 +1501,112 @@ PlanTTKernelABI::ClassifyFutureLiveCBReadsBeforeNextWrite(
   return uses;
 }
 
+PlanTTKernelABI::FutureBufferUses
+PlanTTKernelABI::ClassifyFutureBufferIdentityReadsBeforeNextWrite(
+    const std::string& buffer_identity, int current_order_index) const {
+  FutureBufferUses uses;
+  if (buffer_identity.empty()) {
+    return uses;
+  }
+  auto it = buffer_flow_facts_.find(buffer_identity);
+  if (it == buffer_flow_facts_.end()) {
+    return uses;
+  }
+  int next_write_order_index = -1;
+  for (const BlackholeBufferFlowEvent& event : it->second.events) {
+    if (event.order_index <= current_order_index) {
+      continue;
+    }
+    if (event.kind == BlackholeBufferFlowEventKind::kWrite &&
+        (next_write_order_index < 0 || event.order_index < next_write_order_index)) {
+      next_write_order_index = event.order_index;
+    }
+  }
+  for (const BlackholeBufferFlowEvent& event : it->second.events) {
+    if (event.order_index <= current_order_index) {
+      continue;
+    }
+    if (next_write_order_index >= 0 && event.order_index > next_write_order_index) {
+      continue;
+    }
+    if (event.kind == BlackholeBufferFlowEventKind::kWrite) {
+      continue;
+    }
+    if (event.kind == BlackholeBufferFlowEventKind::kComputeConsume) {
+      uses.has_compute_consume = true;
+      continue;
+    }
+    if (event.kind == BlackholeBufferFlowEventKind::kTransportConsume) {
+      uses.has_transport_consume = true;
+      continue;
+    }
+    if (event.kind == BlackholeBufferFlowEventKind::kReference) {
+      uses.has_reference = true;
+    }
+  }
+  return uses;
+}
+
+bool PlanTTKernelABI::BufferIdentityHasWriteAtOrder(
+    const std::string& buffer_identity, int order_index) const {
+  if (buffer_identity.empty() || order_index < 0) {
+    return false;
+  }
+  auto it = buffer_flow_facts_.find(buffer_identity);
+  if (it == buffer_flow_facts_.end()) {
+    return false;
+  }
+  for (const BlackholeBufferFlowEvent& event : it->second.events) {
+    if (event.order_index == order_index &&
+        event.kind == BlackholeBufferFlowEventKind::kWrite) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool PlanTTKernelABI::HasFutureExactLiveFormTileComputeConsume(
+    const Buffer& buffer, int current_order_index) const {
+  bool has_seeded_tile_compute_input = false;
+  bool has_future_exact_live_form = false;
+  for (const std::string& identity : CollectBufferFlowIdentities(buffer)) {
+    if (tile_compute_input_buffers_.count(identity) != 0U) {
+      has_seeded_tile_compute_input = true;
+    }
+    auto order_it = exact_output_live_form_order_by_buffer_identity_.find(identity);
+    if (order_it != exact_output_live_form_order_by_buffer_identity_.end() &&
+        (current_order_index < 0 || order_it->second > current_order_index)) {
+      has_future_exact_live_form = true;
+    }
+  }
+  return has_seeded_tile_compute_input && has_future_exact_live_form;
+}
+
 bool PlanTTKernelABI::ShouldRetainComputeInputBuffer(const Buffer& buffer,
-                                                       int current_order_index) const {
-  return ClassifyFutureBufferUses(buffer, current_order_index).has_compute_consume;
+                                                       int current_order_index,
+                                                       int consumed_pages) const {
+  if (FindBufferMaterializationFact(buffer) != nullptr) {
+    return false;
+  }
+  const FutureBufferUses uses = ClassifyFutureBufferUses(buffer, current_order_index);
+  if (!uses.has_compute_consume) {
+    return false;
+  }
+  if (FutureWritePrecedesFutureComputeConsume(buffer, current_order_index)) {
+    return false;
+  }
+  if (consumed_pages <= 0) {
+    return true;
+  }
+  const int64_t total_elements = GetLogicalBufferElementCount(buffer);
+  const int page_size = EstimateCopyPageSize(buffer);
+  if (total_elements <= 0 || page_size <= 0) {
+    return true;
+  }
+  const int64_t dtype_bytes = std::max<int64_t>(1, buffer->dtype.bytes());
+  const int64_t total_bytes = total_elements * dtype_bytes;
+  const int64_t total_pages = (total_bytes + page_size - 1) / page_size;
+  return total_pages <= consumed_pages;
 }
 
 bool PlanTTKernelABI::ShouldReacquireComputeInputBuffer(const Buffer& buffer,

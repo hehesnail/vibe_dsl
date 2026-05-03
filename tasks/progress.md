@@ -8,7 +8,7 @@
 
 ## Status
 
-- Date: `2026-05-02`
+- Date: `2026-05-03`
 - Active task: `T4 External accessor/runtime ABI expansion`
 - Main chain:
   `Normalized Tile TIR -> SpatialPlan -> TTProgram -> ExecutableSpec`
@@ -130,6 +130,27 @@ T4 is complete only when:
 | Unsupported reason | Unsupported forms fail closed with typed diagnostics before source/runtime guessing. |
 
 ## Recent Verification
+
+2026-05-03 UTC flash-attn exact-CB lifetime regression fix:
+
+- `cmake --build build -- -j32` passed.
+- Targeted flash-attn source lifetime gates:
+  `test_flash_attention_small_compute_source_respects_cb_capacity_on_reuse`,
+  `test_flash_attention_seq64_bf16_compute_source_keeps_cb_events_queue_consistent`,
+  `test_flash_attention_seq64_bf16_compute_source_releases_qk_scores_before_next_scores_publish`,
+  `test_flash_attention_seq64_bf16_compute_source_uses_static_tile_zero_for_single_page_cb_inputs`,
+  and `test_flash_attention_seq64_bf16_pv_merge_consumes_scaled_acc_o_live_form`
+  all passed.
+- seq64 direct runtime recovery:
+  `test_blackhole_flash_attention_seq64_mha_bf16_forward_direct_runtime` and
+  `test_blackhole_flash_attention_seq64_gqa_bf16_forward_direct_runtime`
+  both passed.
+- Full flash-attn runtime + pipeline:
+  `pytest -q -vv testing/python/target/blackhole/test_blackhole_flash_attention_runtime.py testing/python/target/blackhole/test_blackhole_flash_attention_pipeline.py --tb=short`
+  passed: `95 passed`.
+- Adjacent compute runtime regression checks:
+  `test_blackhole_t3_compute_runtime.py` passed: `8 passed`;
+  `test_blackhole_leaf_compute_runtime.py` passed: `16 passed, 2 skipped`.
 
 2026-05-02 T3 runtime hardening and adjacent Blackhole regression:
 

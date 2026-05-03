@@ -463,7 +463,7 @@ def test_blackhole_flash_attention_multi_work_item_metadata_exposes_explicit_per
     )
 
 
-def test_blackhole_flash_attention_seq64_bf16_metadata_gates_multi_block_direct_runtime():
+def test_blackhole_flash_attention_seq64_bf16_metadata_admits_multi_block_direct_runtime_contract():
     kernel = blackhole_mha_example.flashattn.jit_impl.get_tir(
         1,
         4,
@@ -479,7 +479,7 @@ def test_blackhole_flash_attention_seq64_bf16_metadata_gates_multi_block_direct_
 
     reasons = [str(reason) for reason in metadata.get("direct_runtime_unsupported_reasons", [])]
     assert not any(MULTI_PAGE_EXACT_CB_REPUBLISH_REASON in reason for reason in reasons)
-    assert any(MULTI_BLOCK_EXACT_CB_REPUBLISH_REASON in reason for reason in reasons)
+    assert not any(MULTI_BLOCK_EXACT_CB_REPUBLISH_REASON in reason for reason in reasons)
 
     cb_by_name = {str(config["name"]): config for config in metadata["cb_configs"]}
     for cb_name in ("K_shared", "V_shared", "acc_s_cast"):

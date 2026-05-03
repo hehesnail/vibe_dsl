@@ -193,6 +193,9 @@ def LowerAndLegalize(mod: IRModule, target: Target) -> IRModule:
     mod = tilelang.transform.LayoutInference()(mod)
     # Visualize the layout
     LayoutVisual(mod)
+    if target.kind.name == "blackhole":
+        mod = tilelang.transform.NormalizeBlackholeTileCompute()(mod)
+        mod = tilelang.transform.ValidateBlackholeTileComputeNormalized()(mod)
     # Lower high-level tile operations to low-level operations
     mod = tilelang.transform.LowerTileOp()(mod)
     # Lower l2 persistent map
@@ -213,8 +216,6 @@ def LowerAndLegalize(mod: IRModule, target: Target) -> IRModule:
     mod = tilelang.transform.Simplify()(mod)
     # Hoist any root-block annotations to PrimFunc attrs if pass is available
     mod = tilelang.transform.HoistNonRestrictParams()(mod)
-    if target.kind.name == "blackhole":
-        mod = tilelang.transform.NormalizeBlackholeTileCompute()(mod)
     return mod
 
 
