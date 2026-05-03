@@ -119,6 +119,27 @@ has source/spec/direct-runtime admission or a precise typed reject.
   work-coarsening plan and source-region/address mapping change together.
 - No distributed mesh/CCL/NoC production claim.
 
+## T5 Landed Surface
+
+The admitted T5 subset is the first static external sharded-L1 GEMM layout:
+
+- external `A`, `B`, and `C` tensors may carry explicit block-sharded L1
+  placement intent when their shard grid is covered by the kernel work
+  mapping;
+- the selected GEMM consumes T4 `TTABIPlan` / `ExecutableSpec`
+  `sharded_accessor_cta` records, including typed accessor offsets/counts,
+  layout, memory space, and buffer distribution fields;
+- direct runtime executes the admitted bf16-input / fp32-output GEMM through
+  `BlackholeModule` using sharded L1 MeshBuffers;
+- an external sharded L1 accessor whose `shard_grid_shape` is not covered by
+  the attached `TTCoreGroup.work_packets` fails in `ValidateTTProgram` with a
+  retile/work-coarsening diagnostic.
+
+The work-mapping reject is intentionally attached to the accessor ABI
+boundary, not to every device-local sharded distribution.  Internal
+materialization records can have different shard-grid mechanics and are not
+runtime-visible external accessor claims.
+
 ## Validation
 
 T4 validation must cover:

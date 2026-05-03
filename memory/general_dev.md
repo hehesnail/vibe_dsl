@@ -2152,3 +2152,14 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   event page, generated copy/binary/broadcast tile indices must be static 0;
   dynamic tile variables are only valid after proving the input event has
   multiple pages.
+- 2026-05-03 T5 sharded GEMM accessor boundary:
+  external sharded-L1 GEMM admission should validate work mapping at
+  `TTABIPlan.accessors`, not at every `TTBufferDistributionPlan`.
+  Runtime-visible sharded accessors can require `shard_grid_shape` to be
+  covered by the attached `TTCoreGroup.work_packets`; otherwise reject with a
+  retile/work-coarsening diagnostic.  Do not use `host_visibility` to decide
+  whether a sharded L1 tensor is external: current static external L1 tensors
+  are still projected as device-local storage, while the external ABI
+  evidence is the accessor record itself.  Device-local flash-attention
+  materialization distributions may have shard-grid mechanics that are not
+  external accessor claims.

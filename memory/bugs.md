@@ -2069,6 +2069,31 @@
     runtime；source queue 绿不等价于数值正确，数值绿也不能证明没有
     latent CB overflow/underflow。
 
+#### Overbroad sharded distribution work-coverage validation rejects device-local materialization
+
+- **症状**:
+  - Adding a T5 check that every sharded `TTBufferDistributionPlan`
+    `shard_grid_shape` be covered by `TTCoreGroup.physical_cores`, then by
+    `work_packets`, rejected existing flash-attn TTProgram tests.
+  - The failing flash-attn plans had device-local materialization
+    distributions with `shard_grid_shape = [3, 11]` but only 32 work packets.
+- **根因**:
+  - The validation was attached to the distribution layer, which also carries
+    internal materialization records.  T5 needed a runtime-visible external
+    accessor contract, not a rule for every device-local sharded buffer.
+  - `host_visibility` was not a reliable external-buffer discriminator for
+    static L1 tensors; the actual external ABI evidence is
+    `TTABIPlan.accessors`.
+- **修法**:
+  - Move the work-coverage guard to `ValidateShardedAccessorWorkMapping` and
+    invoke it only for `TTABIPlan` sharded L1 accessors.
+  - Compare external accessor `shard_grid_shape` against total
+    `TTCoreGroup.work_packets.work_count`, not raw physical core count.
+- **教训**:
+  - Validate runtime-visible ABI contracts at the ABI boundary.  A low-level
+    distribution field can be shared by external buffers and internal
+    materialization mechanics with different legality rules.
+
 ## 3. 环境问题速查
 
 | 问题 | 解决 |

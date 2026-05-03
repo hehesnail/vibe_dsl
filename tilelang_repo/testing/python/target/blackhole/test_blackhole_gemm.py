@@ -352,6 +352,54 @@ def multicore_gemm_kernel(
     return main
 
 
+def external_sharded_l1_gemm_kernel(
+    *,
+    input_grid=(1, 1),
+    input_shard_shape=(32, 128),
+    output_grid=(1, 1),
+    output_shard_shape=(32, 32),
+):
+    @T.prim_func
+    def main(
+        A: T.Tensor((32, 128), "bfloat16"),
+        B: T.Tensor((32, 128), "bfloat16"),
+        C: T.Tensor((32, 32), "float32"),
+    ):
+        with T.Kernel(1, 1) as (bx, by):
+            A_shared = T.alloc_shared((32, 128), "bfloat16")
+            B_shared = T.alloc_shared((32, 128), "bfloat16")
+            C_local = T.alloc_fragment((32, 32), "float32")
+            input_sharded = T.sharded_l1(
+                strategy="block",
+                grid=T.CoreGrid(x=input_grid[0], y=input_grid[1]),
+                shard_shape=input_shard_shape,
+                orientation="row_major",
+                allow_reshard=False,
+            )
+            output_sharded = T.sharded_l1(
+                strategy="block",
+                grid=T.CoreGrid(x=output_grid[0], y=output_grid[1]),
+                shard_shape=output_shard_shape,
+                orientation="row_major",
+                allow_reshard=False,
+            )
+            T.annotate_memory_config(
+                {
+                    A: input_sharded,
+                    B: input_sharded,
+                    A_shared: input_sharded,
+                    B_shared: input_sharded,
+                    C: output_sharded,
+                }
+            )
+            T.copy(A, A_shared)
+            T.copy(B, B_shared)
+            T.gemm(A_shared, B_shared, C_local, transpose_B=True)
+            T.copy(C_local, C)
+
+    return main
+
+
 def test_blackhole_gemm_pipeline_uses_spatial_plan_without_spatial_program():
     kernel = gemm_kernel()
     target = Target("blackhole")
@@ -1497,6 +1545,93 @@ def test_blackhole_gemm_build_rejects_sharded_accessor_schema():
         _rebuild_codegen_module_with_segment_plan(
             artifact, extract_blackhole_segment_plan(richer_func)
         )
+
+
+def test_blackhole_t5_external_sharded_l1_gemm_projects_accessor_contracts():
+    kernel = external_sharded_l1_gemm_kernel()
+    target = Target("blackhole")
+
+    with target:
+        artifact = lower(kernel, target=target)
+
+    device_main = artifact.device_mod["main_kernel"]
+    executable = _extract_materialized_blackhole_executable(device_main)
+    memory_configs = {
+        str(plan["subject"]): plan
+        for plan in executable["tensor_memory_config_plans"]
+    }
+    assert {str(name) for name in memory_configs} >= {"A", "B", "C"}
+    assert str(memory_configs["A"]["memory_layout"]) == "BLOCK_SHARDED"
+    assert str(memory_configs["B"]["memory_layout"]) == "BLOCK_SHARDED"
+    assert str(memory_configs["C"]["memory_layout"]) == "BLOCK_SHARDED"
+    assert str(memory_configs["A"]["buffer_type"]) == "L1"
+    assert str(memory_configs["B"]["buffer_type"]) == "L1"
+    assert str(memory_configs["C"]["buffer_type"]) == "L1"
+
+    sharded_accessors = {}
+    for segment in executable["segment_plan"]:
+        for accessor in segment.get("accessors", []):
+            if str(accessor["buffer"]) in {"A", "B", "C"}:
+                sharded_accessors[str(accessor["buffer"])] = accessor
+    assert set(sharded_accessors) == {"A", "B", "C"}
+    for accessor in sharded_accessors.values():
+        assert str(accessor["layout"]) == "sharded"
+        assert str(accessor["memory_space"]) == "l1"
+        assert int(accessor["compile_time_arg_count"]) > 2
+        assert int(accessor["common_runtime_arg_count"]) == 0
+
+    sharded_specs = {}
+    for segment in executable["segment_plan"]:
+        for spec in segment.get("compile_time_arg_specs", []):
+            if (
+                "buffer" in spec
+                and str(spec["buffer"]) in {"A", "B", "C"}
+                and str(spec["kind"]).endswith("_accessor_cta")
+            ):
+                sharded_specs[str(spec["buffer"])] = spec
+    assert set(sharded_specs) == {"A", "B", "C"}
+    assert all(
+        str(spec["kind"]) == "sharded_accessor_cta"
+        for spec in sharded_specs.values()
+    )
+
+
+def test_blackhole_t5_external_sharded_l1_gemm_rejects_unmapped_shard_grid():
+    kernel = external_sharded_l1_gemm_kernel(
+        input_grid=(2, 1),
+        input_shard_shape=(32, 64),
+    )
+    target = Target("blackhole")
+
+    with pytest.raises(Exception, match="shard_grid_shape.*attached_core_group"):
+        with target:
+            lower(kernel, target=target)
+
+
+def test_blackhole_t5_external_sharded_l1_gemm_direct_runtime_bf16():
+    can_run, msg = check_blackhole_direct_execution_requirements()
+    if not can_run:
+        pytest.skip(f"Blackhole requirements not met: {msg}")
+
+    torch.manual_seed(0)
+    a_torch = torch.randn(32, 128, dtype=torch.bfloat16)
+    b_torch = torch.randn(32, 128, dtype=torch.bfloat16)
+    c_output = torch.zeros(32, 32, dtype=torch.float32)
+    c_ref = torch.matmul(a_torch.float(), b_torch.float().transpose(0, 1))
+
+    target = Target("blackhole")
+    kernel = external_sharded_l1_gemm_kernel()
+    with target:
+        artifact = lower(kernel, target=target)
+
+    artifact.codegen_mod["main"](a_torch, b_torch, c_output)
+    assert_tensors_close_or_dump(
+        c_output,
+        c_ref,
+        atol=2e-1,
+        rtol=2e-1,
+        failure_message="External sharded L1 GEMM direct-call output mismatch",
+    )
 
 
 def test_blackhole_gemm_direct_runtime_rejects_accessor_common_runtime_arg_count():

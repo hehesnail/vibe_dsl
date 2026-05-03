@@ -93,6 +93,23 @@ void ValidatePositiveIntegerArray(const Array<Integer> &values,
   }
 }
 
+int64_t IntegerArrayProduct(const Array<Integer> &values) {
+  int64_t product = 1;
+  for (const Integer &value : values) {
+    product *= value->value;
+  }
+  return product;
+}
+
+int64_t CoreGroupWorkPacketCount(const TTCoreGroup &core_group) {
+  int64_t work_count = 0;
+  for (const Any &item : core_group->work_packets) {
+    Map<String, Any> packet = AsMap(item);
+    work_count += GetIntOrDefault(packet, "work_count", 0);
+  }
+  return work_count;
+}
+
 void ValidateMeshPlan(const TTMeshPlan &mesh_plan) {
   ICHECK(!mesh_plan->name.empty()) << "TTMeshPlan requires name";
   ICHECK(!mesh_plan->mesh_kind.empty()) << "TTMeshPlan requires mesh_kind";
@@ -213,8 +230,9 @@ void ValidateBufferDistributionPlan(
   ICHECK(!plan->host_visibility.empty())
       << "TTBufferDistributionPlan requires host_visibility";
   if (!plan->attached_core_group.empty()) {
-    auto core_group_it = core_group_index_by_name.find(
-        static_cast<std::string>(plan->attached_core_group));
+    const std::string attached_core_group =
+        static_cast<std::string>(plan->attached_core_group);
+    auto core_group_it = core_group_index_by_name.find(attached_core_group);
     ICHECK(core_group_it != core_group_index_by_name.end())
         << "TTBufferDistributionPlan attached_core_group references unknown "
            "core group "
@@ -1091,6 +1109,44 @@ void ValidateAccessor(const TTAccessorSpec &accessor) {
       << "TTABIPlan accessor requires memory_space";
 }
 
+void ValidateShardedAccessorWorkMapping(
+    const TTAccessorSpec &accessor,
+    const std::unordered_map<std::string, TTBufferDistributionPlan>
+        &distribution_by_buffer,
+    const std::unordered_map<std::string, TTCoreGroup> &core_group_by_name) {
+  const std::string accessor_layout = accessor->layout;
+  const std::string accessor_memory_space = accessor->memory_space;
+  if (accessor_layout != "sharded" ||
+      (accessor_memory_space != "l1" && accessor_memory_space != "L1")) {
+    return;
+  }
+  const std::string buffer = accessor->buffer;
+  auto distribution_it = distribution_by_buffer.find(buffer);
+  ICHECK(distribution_it != distribution_by_buffer.end())
+      << "TTABIPlan sharded accessor buffer requires TTBufferDistributionPlan "
+      << buffer;
+  const TTBufferDistributionPlan &distribution = distribution_it->second;
+  ICHECK(distribution->distribution_kind == "sharded")
+      << "TTABIPlan sharded accessor requires sharded TTBufferDistributionPlan "
+      << buffer;
+  auto core_group_it =
+      core_group_by_name.find(str(distribution->attached_core_group));
+  ICHECK(core_group_it != core_group_by_name.end())
+      << "TTABIPlan sharded accessor attached_core_group references unknown "
+         "core group "
+      << distribution->attached_core_group;
+  const int64_t shard_count =
+      IntegerArrayProduct(distribution->shard_grid_shape);
+  const int64_t attached_work_count =
+      CoreGroupWorkPacketCount(core_group_it->second);
+  ICHECK_LE(shard_count, attached_work_count)
+      << "TTABIPlan sharded accessor shard_grid_shape requires "
+         "attached_core_group work_packets to cover every shard; "
+         "retile/work-coarsening plan required: "
+      << shard_count << " shards > " << attached_work_count
+      << " attached work packets";
+}
+
 void ValidateCompileTimeArgSpec(const TTCompileTimeArgSpec &spec) {
   ICHECK(!spec->kind.empty())
       << "TTABIPlan compile_time_arg_spec requires kind";
@@ -1364,15 +1420,18 @@ void CheckTTProgram(
     spatial_layout_subjects.insert(static_cast<std::string>(layout->subject));
   }
   std::unordered_map<std::string, int64_t> core_group_index_by_name;
+  std::unordered_map<std::string, TTCoreGroup> core_group_by_name;
   for (int64_t core_group_index = 0;
        core_group_index < static_cast<int64_t>(program->core_groups.size());
        ++core_group_index) {
     const TTCoreGroup &core_group = program->core_groups[core_group_index];
+    const std::string core_group_name =
+        static_cast<std::string>(core_group->name);
     ICHECK(core_group_index_by_name
-               .emplace(static_cast<std::string>(core_group->name),
-                        core_group_index)
+               .emplace(core_group_name, core_group_index)
                .second)
         << "duplicate TTCoreGroup name " << core_group->name;
+    core_group_by_name.emplace(core_group_name, core_group);
   }
   std::unordered_set<std::string> distributed_buffers;
   std::unordered_set<std::string> required_reshard_edges;
@@ -1595,6 +1654,8 @@ void CheckTTProgram(
       ICHECK(
           distributed_buffers.count(static_cast<std::string>(accessor->buffer)))
           << "TTABIPlan accessor buffer requires TTBufferDistributionPlan";
+      ValidateShardedAccessorWorkMapping(accessor, distribution_by_buffer,
+                                         core_group_by_name);
     }
     for (const TTCompileTimeArgSpec &spec : abi->compile_time_arg_specs) {
       ValidateCompileTimeArgSpec(spec);

@@ -37,6 +37,7 @@
 | `2026-04-29-blackhole-resource-planning-roadmap.md` | Resource planning roadmap；CB/L1 admission、core placement、buffer distribution、later NoC work。 |
 | `2026-05-02-blackhole-tensor-sharding-and-reshard.md` | Tensor/value sharding and explicit reshard design；separates TTNN-style `MemoryConfig` intent from low-level `TTBufferDistributionPlan` address ABI。 |
 | `2026-05-03-blackhole-t4-t5-accessor-and-sharded-gemm.md` | T4 external accessor/runtime ABI expansion and dependent T5 sharded GEMM/layout boundary。 |
+| `2026-05-03-blackhole-t6-topk.md` | T6 standalone value/index selection boundary。 |
 | `blackhole_first_principles_protocol_audit.md` | Historical fake/legacy protocol audit table。 |
 
 ## Stable Architecture Skeleton
@@ -62,8 +63,8 @@ T1 Buffer address ABI execution integration (complete)
   -> T2 Leaf compute / GEMM baseline (complete)
   -> T3 tensor/value sharding and explicit reshard (complete)
   -> T4 external accessor / runtime ABI expansion (complete)
-  -> T5 sharded GEMM / layout variants (active)
-  -> T6 topk
+  -> T5 sharded GEMM / layout variants (complete)
+  -> T6 topk (active)
   -> T7 exact-CB / materialization primitives
   -> T8 grouped / ragged work packets
   -> T9 workload first paths
