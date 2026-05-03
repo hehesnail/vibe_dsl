@@ -770,6 +770,7 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   bool needs_copy_runtime_args_ = false;
   bool requires_compute_segment_ = false;
   bool select_compute_builtins_only_ = false;
+  int64_t logical_grid_z_ = 1;
   tvm::tir::Buffer copy_input_buffer_;
   tvm::tir::Buffer copy_output_buffer_;
   std::string copy_input_buffer_name_;

@@ -91,6 +91,7 @@ CoreAssignment PlanTTCoreGroups::AnalyzeGrid(const PrimFunc& func) {
    public:
     int grid_x = 1;
     int grid_y = 1;
+    int grid_z = 1;
     bool found_grid = false;
 
     void VisitStmt_(const AttrStmtNode* op) final {
@@ -108,6 +109,9 @@ CoreAssignment PlanTTCoreGroups::AnalyzeGrid(const PrimFunc& func) {
         } else if (name == "blockIdx.y" || name == "by") {
           grid_y = static_cast<int>(*extent);
           found_grid = true;
+        } else if (name == "blockIdx.z" || name == "bz") {
+          grid_z = static_cast<int>(*extent);
+          found_grid = true;
         }
       }
       StmtExprVisitor::VisitStmt_(op);
@@ -120,11 +124,13 @@ CoreAssignment PlanTTCoreGroups::AnalyzeGrid(const PrimFunc& func) {
   if (analyzer.found_grid) {
     assignment.grid_x = analyzer.grid_x;
     assignment.grid_y = analyzer.grid_y;
+    assignment.grid_z = analyzer.grid_z;
   }
 
   // Default grid if not found (for simple kernels)
   if (assignment.grid_x <= 0) assignment.grid_x = 1;
   if (assignment.grid_y <= 0) assignment.grid_y = 1;
+  if (assignment.grid_z <= 0) assignment.grid_z = 1;
 
   return assignment;
 }
@@ -153,7 +159,8 @@ void PlanTTCoreGroups::ApplyHardwareModel(
 
 // Calculate work distribution across cores
 void PlanTTCoreGroups::CalculateWorkDistribution(CoreAssignment& assignment) {
-  const int total_work = std::max(1, assignment.grid_x * assignment.grid_y);
+  const int total_work =
+      std::max(1, assignment.grid_x * assignment.grid_y * assignment.grid_z);
   const int available_cores =
       std::max(1, std::min(assignment.available_worker_cores,
                            assignment.core_grid_x * assignment.core_grid_y));
@@ -168,7 +175,8 @@ void PlanTTCoreGroups::CalculateWorkDistribution(CoreAssignment& assignment) {
 RuntimeArgs PlanTTCoreGroups::GetRuntimeArgs(int core_idx) const {
   RuntimeArgs args;
 
-  const int total_work = std::max(1, assignment_.grid_x * assignment_.grid_y);
+  const int total_work =
+      std::max(1, assignment_.grid_x * assignment_.grid_y * assignment_.grid_z);
   const int cores_needed = std::max(1, assignment_.cores_needed);
   if (core_idx < 0 || core_idx >= cores_needed) {
     args.work_offset_linear = 0;

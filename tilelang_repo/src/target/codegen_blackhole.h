@@ -301,6 +301,7 @@ class CodeGenBlackhole : public CodeGenCHost {
   std::string thread_idx_x_expr_;
   int logical_grid_x_{1};
   int logical_grid_y_{1};
+  int logical_grid_z_{1};
   std::string linearization_{"row_major"};
 
   // Default L1 memory alignment

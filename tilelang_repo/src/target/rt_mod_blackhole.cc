@@ -325,6 +325,11 @@ static CorePlan ExtractCorePlan(const tir::PrimFunc& f) {
   } else if (auto v = core_plan.Get("grid_y")) {
     plan.logical_grid_y = Downcast<Integer>(v.value()).IntValue();
   }
+  if (auto v = core_plan.Get("logical_grid_z")) {
+    plan.logical_grid_z = Downcast<Integer>(v.value()).IntValue();
+  } else if (auto v = core_plan.Get("grid_z")) {
+    plan.logical_grid_z = Downcast<Integer>(v.value()).IntValue();
+  }
   if (auto v = core_plan.Get("linearization")) {
     plan.linearization = Downcast<String>(v.value());
   }
@@ -3244,13 +3249,16 @@ static void EnforceProjectedReshardAdmissionGate(ExecutableSpec* spec) {
                                                   : reshard.unsupported_reason));
       return;
     }
-    if (reshard.conversion_kind != "interleaved_to_sharded") {
+    const bool admitted_conversion =
+        reshard.conversion_kind == "interleaved_to_sharded" ||
+        reshard.conversion_kind == "reshard";
+    if (!admitted_conversion) {
       AppendDirectRuntimeUnsupportedReason(
           spec,
           "projected reshard conversion " + reshard.name + " kind " +
               reshard.conversion_kind +
               " is not admitted by direct runtime; current admitted conversion is "
-              "interleaved_to_sharded staged copy");
+              "staged copy into the typed per-work target buffer");
       return;
     }
     if (reshard.materialization_protocol != "staged_copy") {

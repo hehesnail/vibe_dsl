@@ -303,6 +303,8 @@ void ValidateCoreGroup(
       << "TTCoreGroup requires positive logical_grid_x";
   ICHECK_GT(core_group->logical_grid_y, 0)
       << "TTCoreGroup requires positive logical_grid_y";
+  ICHECK_GT(core_group->logical_grid_z, 0)
+      << "TTCoreGroup requires positive logical_grid_z";
   ICHECK(!core_group->physical_cores.empty())
       << "TTCoreGroup requires physical_cores";
   ICHECK(!core_group->work_packets.empty())

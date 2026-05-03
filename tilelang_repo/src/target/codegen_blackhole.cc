@@ -438,6 +438,7 @@ void CodeGenBlackhole::Init(bool output_ssa, bool emit_asserts,
   thread_idx_x_expr_.clear();
   logical_grid_x_ = 1;
   logical_grid_y_ = 1;
+  logical_grid_z_ = 1;
   linearization_ = "row_major";
 }
 
@@ -783,6 +784,7 @@ void CodeGenBlackhole::GenerateGenericKernelMain(const tvm::tir::PrimFunc &f,
 void CodeGenBlackhole::LoadCorePlan(const tvm::tir::PrimFunc &f) {
   logical_grid_x_ = 1;
   logical_grid_y_ = 1;
+  logical_grid_z_ = 1;
   linearization_ = "row_major";
 
   auto core_plan = GetCorePlanForCodegen(f);
@@ -799,6 +801,11 @@ void CodeGenBlackhole::LoadCorePlan(const tvm::tir::PrimFunc &f) {
     logical_grid_y_ = Downcast<tvm::Integer>(v.value()).IntValue();
   } else if (auto v = core_plan.Get("grid_y")) {
     logical_grid_y_ = Downcast<tvm::Integer>(v.value()).IntValue();
+  }
+  if (auto v = core_plan.Get("logical_grid_z")) {
+    logical_grid_z_ = Downcast<tvm::Integer>(v.value()).IntValue();
+  } else if (auto v = core_plan.Get("grid_z")) {
+    logical_grid_z_ = Downcast<tvm::Integer>(v.value()).IntValue();
   }
   if (auto v = core_plan.Get("linearization")) {
     linearization_ = Downcast<tvm::ffi::String>(v.value());
@@ -1020,7 +1027,7 @@ void CodeGenBlackhole::EmitRuntimeArgLoads(const tvm::tir::PrimFunc &f) {
   }
   ICHECK(!runtime_args.empty())
       << "Blackhole codegen requires executable kernel runtime args";
-  if (logical_grid_x_ > 1 || logical_grid_y_ > 1) {
+  if (logical_grid_x_ > 1 || logical_grid_y_ > 1 || logical_grid_z_ > 1) {
     for (const auto& item : runtime_args) {
       auto arg = item.as<tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any>>().value_or(
           tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any>());
@@ -1651,9 +1658,32 @@ void CodeGenBlackhole::BindThreadIndex(const tvm::tir::IterVar &iv) {
           return arg_var;
         }
         if (row_major_grid) {
-          return "(" + arg_var.value() + " / " + std::to_string(logical_grid_x_) + ")";
+          std::string y_expr =
+              "(" + arg_var.value() + " / " + std::to_string(logical_grid_x_) + ")";
+          if (logical_grid_z_ > 1 && logical_grid_y_ > 0) {
+            y_expr = "(" + y_expr + " % " + std::to_string(logical_grid_y_) + ")";
+          }
+          return y_expr;
         }
         return std::string("0 /* explicit_linear_work_descriptor_y */");
+      }
+      if (binding.value_source ==
+          ::tvm::tl::blackhole_runtime_arg_schema::kValueSourceLogicalBlockXYLinear) {
+        if (want_x) {
+          if (row_major_grid) {
+            return "(" + arg_var.value() + " % " + std::to_string(logical_grid_x_) + ")";
+          }
+          return arg_var;
+        }
+        if (row_major_grid) {
+          std::string y_expr =
+              "(" + arg_var.value() + " / " + std::to_string(logical_grid_x_) + ")";
+          if (logical_grid_y_ > 0) {
+            y_expr = "(" + y_expr + " % " + std::to_string(logical_grid_y_) + ")";
+          }
+          return y_expr;
+        }
+        return std::string("0 /* explicit_xy_work_descriptor_y */");
       }
       if (binding.value_source ==
           ::tvm::tl::blackhole_runtime_arg_schema::kValueSourceLogicalBlockX) {
@@ -1698,7 +1728,35 @@ void CodeGenBlackhole::BindThreadIndex(const tvm::tir::IterVar &iv) {
       var_idmap_[iv->var.get()] = "0 /* core_y */";
     }
   } else if (thread_tag == "blockIdx.z") {
-    var_idmap_[iv->var.get()] = "0 /* core_z */";
+    auto k_start_it = runtime_arg_vars_by_kind_.find("k_tile_start_id");
+    auto k_count_it = runtime_arg_vars_by_kind_.find("num_k_tiles");
+    if (k_start_it != runtime_arg_vars_by_kind_.end() &&
+        k_count_it != runtime_arg_vars_by_kind_.end()) {
+      var_idmap_[iv->var.get()] =
+          "(" + k_count_it->second + " == 0 ? 0 : (" + k_start_it->second +
+          " / " + k_count_it->second + "))";
+    } else if (logical_grid_z_ > 1) {
+      std::optional<std::string> linear_work_arg;
+      for (const auto& binding : per_work_arg_bindings_) {
+        if (binding.value_source !=
+            ::tvm::tl::blackhole_runtime_arg_schema::kValueSourceWorkLinearId) {
+          continue;
+        }
+        linear_work_arg = runtime_arg_for_binding(binding);
+        if (linear_work_arg.has_value()) {
+          break;
+        }
+      }
+      if (linear_work_arg.has_value() && row_major_grid) {
+        const int xy_work = std::max(1, logical_grid_x_ * logical_grid_y_);
+        var_idmap_[iv->var.get()] =
+            "(" + linear_work_arg.value() + " / " + std::to_string(xy_work) + ")";
+      } else {
+        var_idmap_[iv->var.get()] = "0 /* core_z */";
+      }
+    } else {
+      var_idmap_[iv->var.get()] = "0 /* core_z */";
+    }
   } else if (thread_tag == "threadIdx.x") {
     // For Blackhole, threadIdx.x could map to worker threads within a core
     // For now, use the variable name directly

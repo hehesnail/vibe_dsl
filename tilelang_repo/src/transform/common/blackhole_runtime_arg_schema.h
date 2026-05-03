@@ -46,6 +46,11 @@ inline constexpr const char* kDescriptorKTileCount = "k_tile_count";
 inline constexpr const char* kValueSourceWorkLinearId = "work_linear_id";
 inline constexpr const char* kValueSourceLogicalBlockX = "logical_block_x";
 inline constexpr const char* kValueSourceLogicalBlockY = "logical_block_y";
+inline constexpr const char* kValueSourceLogicalBlockZ = "logical_block_z";
+inline constexpr const char* kValueSourceLogicalBlockXYLinear =
+    "logical_block_xy_linear";
+inline constexpr const char* kValueSourceLogicalBlockZKTileStart =
+    "logical_block_z_k_tile_start";
 inline constexpr const char* kValueSourceComputeNumKTiles = "compute_op_num_k_tiles";
 inline constexpr const char* kValueSourceComputeLogicalNTiles = "compute_op_logical_n_tiles";
 inline constexpr const char* kValueSourceConstant = "constant";

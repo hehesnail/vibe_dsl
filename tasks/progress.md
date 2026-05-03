@@ -25,17 +25,22 @@ admitted standalone leaf compute families, current-placement GEMM direct
 correctness, static external sharded-L1 GEMM direct correctness for the first
 admitted bf16 layouts including 2x2 multi-core sharded execution and all
 external bf16 input/output tensors, plus a 110-core many-core all-bf16
-sharded execution gate, explicit
+sharded execution gate, plus K-dimension width-sharded bf16 GEMM direct
+runtime correctness through partial-C accumulation across K shards, explicit
 `T.MemoryConfig` / `T.annotate_memory_config` placement intent,
 `TTTensorMemoryConfigPlan`, `TTOpShardingContract`,
 `TTPlacementResolutionPlan`, and `TTReshardPlan` projection for the current
 interleaved-DRAM to resident-L1 staged-copy conversion.
 
-T5 does not claim implicit retile/work-coarsening, production DRAM-sharded
-weights, N-D production cases, mesh/CCL/NoC, or distributed production
-variants.  Those remain later work and must consume the projected
-placement/conversion/accessor records instead of inferring sharding or page
-metadata.
+T5's K-sharded direct-runtime path executes each K shard as a separate
+logical-z wave and uses the direct runtime as the blocking partial-sum
+barrier before writing the final host-visible output. It proves runtime
+correctness for cross-core partial sums, but it does not claim a production
+device-side semaphore/atomic reduce protocol. T5 also does not claim implicit
+retile/work-coarsening, production DRAM-sharded weights, N-D production cases,
+mesh/CCL/NoC, or distributed production variants.  Those remain later work
+and must consume the projected placement/conversion/accessor records instead
+of inferring sharding or page metadata.
 
 The T3 hardening gate for the admitted `interleaved_to_sharded`
 staged-copy conversion now covers large and oversubscribed copy shapes,
@@ -124,7 +129,11 @@ The GEMM source/spec/direct-runtime path consumes T4 `TTABIPlan` /
 `ExecutableSpec` sharded accessor records and direct runtime executes the
 admitted single-core bf16-input / fp32-output case plus the 2x2 multi-core
 bf16-input / fp32-output, 2x2 all-external-bf16, and 110-core many-core
-all-external-bf16 cases through `BlackholeModule`.
+all-external-bf16 cases through `BlackholeModule`. T5 also admits the first
+K-dimension sharded GEMM correctness path: `A` and `B` are width-sharded on
+their K dimension, `T.Kernel(grid_x, grid_y, k_shards)` projects
+`logical_grid_z`, and direct runtime accumulates fp32 partial-C outputs from
+the K-shard waves before returning final `C`.
 
 Unsupported external sharded-L1 GEMM layouts that require a logical work
 mapping change now fail closed from typed records: a runtime-visible sharded
@@ -195,6 +204,26 @@ T6 is complete only when:
   passed: `45 passed, 2 skipped, 17 deselected`.
 - `pytest -q testing/python/transform/test_blackhole_spatial_ir.py`
   passed: `104 passed`.
+
+2026-05-04 UTC T5 K-dimension sharded GEMM partial-sum runtime:
+
+- `cmake --build tilelang_repo/build -- -j32` passed.
+- K-sharded direct-runtime selector:
+  `test_blackhole_t5_external_k_sharded_l1_gemm_direct_runtime_partial_sum_bf16`
+  and
+  `test_blackhole_t5_manycore_external_k_sharded_l1_gemm_direct_runtime_partial_sum_bf16`
+  passed: `2 passed`.
+- T4/T5 targeted selector including existing M/N sharded GEMM gates, all-bf16
+  many-core GEMM, both new K-sharded partial-sum cases, and T4 sharded accessor
+  projection passed: `9 passed`.
+- GEMM non-direct regression subset passed:
+  `46 passed, 1 skipped, 20 deselected`.
+- `pytest -q testing/python/transform/test_blackhole_spatial_ir.py --tb=short`
+  passed: `104 passed`.
+- The K-sharded many-core gate covers `M=320`, `N=352`, `K=512`,
+  `logical_grid = 11 x 10 x 2`, 110 physical worker cores, 220 logical work
+  items, width-sharded A/B K placement, block-sharded C placement, and
+  direct-runtime fp32 partial-C accumulation across the two K shards.
 
 2026-05-03 UTC T5 static external sharded-L1 GEMM:
 

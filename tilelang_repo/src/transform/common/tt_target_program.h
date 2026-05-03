@@ -664,6 +664,7 @@ public:
   ffi::String name;
   int64_t logical_grid_x = 1;
   int64_t logical_grid_y = 1;
+  int64_t logical_grid_z = 1;
   ffi::String linearization;
   ffi::Array<ffi::Any> physical_cores;
   ffi::Array<ffi::Any> work_packets;
@@ -677,7 +678,8 @@ public:
   TVM_DLL TTCoreGroup(ffi::String name, int64_t logical_grid_x,
                       int64_t logical_grid_y, ffi::String linearization,
                       ffi::Array<ffi::Any> physical_cores,
-                      ffi::Array<ffi::Any> work_packets);
+                      ffi::Array<ffi::Any> work_packets,
+                      int64_t logical_grid_z = 1);
   TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(TTCoreGroup, ObjectRef,
                                              TTCoreGroupNode);
 };

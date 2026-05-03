@@ -559,6 +559,7 @@ inline Map<String, Any> EncodeCoreGroup(const TTCoreGroup &core_group) {
   Map<String, Any> item;
   item.Set("logical_grid_x", Integer(core_group->logical_grid_x));
   item.Set("logical_grid_y", Integer(core_group->logical_grid_y));
+  item.Set("logical_grid_z", Integer(core_group->logical_grid_z));
   item.Set("linearization", core_group->linearization);
   item.Set("physical_cores", core_group->physical_cores);
   item.Set("work_packets", core_group->work_packets);

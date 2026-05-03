@@ -580,7 +580,7 @@ Array<TTCoreGroup> BuildCoreGroups(const PlanTTCoreGroups &planner) {
   Array<TTCoreGroup> tt_core_groups;
   tt_core_groups.push_back(TTCoreGroup(
       String("main_core_group"), assignment.grid_x, assignment.grid_y,
-      String("row_major"), physical_cores, work_packets));
+      String("row_major"), physical_cores, work_packets, assignment.grid_z));
   return tt_core_groups;
 }
 
@@ -838,7 +838,8 @@ String CoreGridRequirement(const TTProgramSlices &slices) {
   const TTCoreGroup &core_group = slices.core_groups[0];
   return String("core_group:" + static_cast<std::string>(core_group->name) +
                 ";grid:" + std::to_string(core_group->logical_grid_x) + "x" +
-                std::to_string(core_group->logical_grid_y));
+                std::to_string(core_group->logical_grid_y) + "x" +
+                std::to_string(core_group->logical_grid_z));
 }
 
 String DRAMViewRequirement(const TTProgramSlices &slices) {
@@ -1606,9 +1607,10 @@ int64_t SqueezedShapeRank(const std::vector<int64_t> &tensor_shape,
 }
 
 int64_t StaticShardedAccessorRankFromDistribution(
-    const TTBufferDistributionPlan &distribution) {
-  std::vector<int64_t> tensor_shape =
-      PositiveIntegerVectorFromShape(distribution->logical_shape);
+    const TTBufferDistributionPlan &distribution,
+    const Array<PrimExpr> &logical_shape) {
+  std::vector<int64_t> tensor_shape = PositiveIntegerVectorFromShape(
+      logical_shape.empty() ? distribution->logical_shape : logical_shape);
   std::vector<int64_t> shard_shape =
       PositiveIntegerVector(distribution->shard_shape);
   if (tensor_shape.empty() || shard_shape.empty()) {
@@ -1628,9 +1630,11 @@ int64_t StaticShardedAccessorRankFromDistribution(
 }
 
 int64_t AccessorCompileTimeArgCountFromDistribution(
-    const TTBufferDistributionPlan &distribution) {
+    const TTBufferDistributionPlan &distribution,
+    const Array<PrimExpr> &logical_shape = Array<PrimExpr>{}) {
   if (distribution->distribution_kind == "sharded") {
-    const int64_t rank = StaticShardedAccessorRankFromDistribution(distribution);
+    const int64_t rank =
+        StaticShardedAccessorRankFromDistribution(distribution, logical_shape);
     const int64_t banks = PositiveProduct(distribution->shard_grid_shape);
     if (rank <= 0 || banks <= 0) {
       return 0;
@@ -1739,9 +1743,18 @@ Array<TTAccessorSpec> RewriteAccessorSpecsForDistributions(
 
 Array<TTABIPlan> RewriteABIPlansForBufferDistributions(
     const Array<TTABIPlan> &abi_plans,
-    const Array<TTBufferDistributionPlan> &buffer_distribution_plans) {
+    const Array<TTBufferDistributionPlan> &buffer_distribution_plans,
+    const Array<TTTensorMemoryConfigPlan> &tensor_memory_config_plans) {
   const auto distribution_by_buffer =
       BuildDistributionByBuffer(buffer_distribution_plans);
+  std::unordered_map<std::string, Array<PrimExpr>> logical_shape_by_buffer;
+  for (const TTTensorMemoryConfigPlan &memory_config :
+       tensor_memory_config_plans) {
+    if (!memory_config->logical_shape.empty()) {
+      logical_shape_by_buffer.emplace(str(memory_config->subject),
+                                      memory_config->logical_shape);
+    }
+  }
   Array<TTABIPlan> rewritten_abis;
   for (const TTABIPlan &abi : abi_plans) {
     std::vector<TTCompileTimeArgSpec> ordered_specs(
@@ -1766,8 +1779,14 @@ Array<TTABIPlan> RewriteABIPlansForBufferDistributions(
           str(spec->kind) == "sharded_accessor_cta" ||
           str(spec->kind) == "page_indexed_accessor_cta";
       if (is_accessor && distribution_it != distribution_by_buffer.end()) {
+        Array<PrimExpr> logical_shape;
+        auto logical_shape_it = logical_shape_by_buffer.find(str(spec->buffer));
+        if (logical_shape_it != logical_shape_by_buffer.end()) {
+          logical_shape = logical_shape_it->second;
+        }
         const int64_t count =
-            AccessorCompileTimeArgCountFromDistribution(distribution_it->second);
+            AccessorCompileTimeArgCountFromDistribution(distribution_it->second,
+                                                        logical_shape);
         ICHECK_GT(count, 0)
             << "BuildTTProgram requires positive accessor compile-time count "
                "for buffer "
@@ -1997,6 +2016,29 @@ std::string ReshardConversionKind(const TTTensorMemoryConfigPlan &source,
   return "unsupported";
 }
 
+bool IsShardedTensorMemoryLayoutName(const std::string &layout) {
+  return layout == "HEIGHT_SHARDED" || layout == "WIDTH_SHARDED" ||
+         layout == "BLOCK_SHARDED";
+}
+
+bool IsAdmittedRuntimeReshardConversion(
+    const std::string &conversion_kind,
+    const TTTensorMemoryConfigPlan &source,
+    const TTTensorMemoryConfigPlan &target,
+    const TTBufferDistributionPlan &target_distribution) {
+  if (conversion_kind == "interleaved_to_sharded") {
+    return true;
+  }
+  if (conversion_kind != "reshard") {
+    return false;
+  }
+  return IsShardedTensorMemoryLayoutName(str(source->memory_layout)) &&
+         IsShardedTensorMemoryLayoutName(str(target->memory_layout)) &&
+         str(source->buffer_type) == "L1" && str(target->buffer_type) == "L1" &&
+         str(target_distribution->source_region_kind) == "per_work_tile" &&
+         !target_distribution->source_region_shape.empty();
+}
+
 Array<TTReshardPlan> BuildReshardPlans(
     const Array<TTBufferDistributionPlan> &buffer_distribution_plans,
     const Array<TTTensorMemoryConfigPlan> &tensor_memory_config_plans,
@@ -2058,7 +2100,8 @@ Array<TTReshardPlan> BuildReshardPlans(
       required_cb_plan_indices = materialization->required_cb_plan_indices;
       required_sync_plan_indices = materialization->required_sync_plan_indices;
     }
-    const bool admitted = conversion_kind == "interleaved_to_sharded";
+    const bool admitted = IsAdmittedRuntimeReshardConversion(
+        conversion_kind, source_config, target_config, distribution);
     if (admitted && materialization_protocol.empty()) {
       materialization_protocol = String("staged_copy");
     }
@@ -2294,10 +2337,11 @@ tvm::transform::Pass PlanTTABI() {
       slices.dst_layout_plans = BuildDstLayoutPlans(slices.abi_plans);
       slices.buffer_distribution_plans =
           BuildBufferDistributionPlans(spatial_plan, slices, func.value());
-      slices.abi_plans = RewriteABIPlansForBufferDistributions(
-          slices.abi_plans, slices.buffer_distribution_plans);
       slices.tensor_memory_config_plans =
           BuildTensorMemoryConfigPlans(spatial_plan, slices.buffer_distribution_plans);
+      slices.abi_plans = RewriteABIPlansForBufferDistributions(
+          slices.abi_plans, slices.buffer_distribution_plans,
+          slices.tensor_memory_config_plans);
       slices.op_sharding_contracts = BuildOpShardingContracts(
           slices.compute_op_plans, slices.tensor_memory_config_plans);
       slices.placement_resolution_plans = BuildPlacementResolutionPlans(

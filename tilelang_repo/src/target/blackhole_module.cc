@@ -271,6 +271,7 @@ static WorkPacket ReadWorkPacket(dmlc::Stream* stream) {
 static void WriteCorePlan(dmlc::Stream* stream, const CorePlan& spec) {
   WriteUInt32(stream, spec.logical_grid_x);
   WriteUInt32(stream, spec.logical_grid_y);
+  WriteUInt32(stream, spec.logical_grid_z);
   WriteString(stream, spec.linearization);
   WriteVectorField<PhysicalCore>(stream, spec.physical_cores, WritePhysicalCore);
   WriteVectorField<WorkPacket>(stream, spec.work_packets, WriteWorkPacket);
@@ -280,6 +281,7 @@ static CorePlan ReadCorePlan(dmlc::Stream* stream) {
   CorePlan spec;
   spec.logical_grid_x = ReadUInt32(stream, "core_plan.logical_grid_x");
   spec.logical_grid_y = ReadUInt32(stream, "core_plan.logical_grid_y");
+  spec.logical_grid_z = ReadUInt32(stream, "core_plan.logical_grid_z");
   spec.linearization = ReadString(stream, "core_plan.linearization");
   spec.physical_cores = ReadVectorField<PhysicalCore>(
       stream, "core_plan.physical_cores", ReadPhysicalCore);
@@ -1379,27 +1381,31 @@ static void ValidateGemmInputShape(const ExecutableSpec& spec,
   const auto gemm = GetPrimaryGemmCompute(spec);
   const uint32_t logical_grid_x = std::max<uint32_t>(1, spec.core_plan.logical_grid_x);
   const uint32_t logical_grid_y = std::max<uint32_t>(1, spec.core_plan.logical_grid_y);
+  const uint32_t logical_grid_z = std::max<uint32_t>(1, spec.core_plan.logical_grid_z);
 
   if (binding.name == gemm.a_buffer) {
-    const uint32_t expected_rows = gemm.transpose_A ? gemm.K * logical_grid_y
+    const uint32_t expected_rows = gemm.transpose_A ? gemm.K * logical_grid_y * logical_grid_z
                                                     : gemm.M * logical_grid_y;
-    const uint32_t expected_cols = gemm.transpose_A ? gemm.M : gemm.K;
+    const uint32_t expected_cols = gemm.transpose_A ? gemm.M : gemm.K * logical_grid_z;
     ICHECK(rows == expected_rows && cols == expected_cols)
         << "Unexpected A tensor shape for GEMM direct path: got (" << rows << ", " << cols
         << "), expected (" << expected_rows << ", " << expected_cols
-        << ") for logical grid " << logical_grid_y << "x" << logical_grid_x;
+        << ") for logical grid " << logical_grid_y << "x" << logical_grid_x
+        << "x" << logical_grid_z;
     return;
   }
 
   if (binding.name == gemm.b_buffer) {
     const uint32_t expected_rows = gemm.transpose_B ? gemm.N * logical_grid_x
-                                                    : gemm.K * logical_grid_x;
-    const uint32_t expected_cols = gemm.transpose_B ? gemm.K : gemm.N;
+                                                    : gemm.K * logical_grid_x * logical_grid_z;
+    const uint32_t expected_cols = gemm.transpose_B ? gemm.K * logical_grid_z
+                                                    : gemm.N;
     ICHECK(rows == expected_rows && cols == expected_cols)
         << "Unexpected B tensor shape for GEMM direct path: got (" << rows << ", " << cols
         << "), expected (" << expected_rows << ", " << expected_cols
         << ") for transpose_B=" << gemm.transpose_B
-        << " and logical grid " << logical_grid_x << "x" << logical_grid_y;
+        << " and logical grid " << logical_grid_x << "x" << logical_grid_y
+        << "x" << logical_grid_z;
     return;
   }
 }
@@ -1735,6 +1741,41 @@ static std::vector<uint8_t> BuildInputTransferData(const ExecutableSpec& spec,
   return bytes;
 }
 
+static std::vector<float> DecodeGemmFloat32OutputToRowMajor(
+    const ExecutableSpec& spec,
+    const RuntimeTensorBinding& binding,
+    const std::vector<uint8_t>& output_data) {
+  const auto gemm = GetPrimaryGemmCompute(spec);
+  ValidateGemmTensorDType(binding, gemm.c_tensor_dtype);
+  ICHECK_EQ(gemm.c_cb_dtype, gemm.accumulator_dtype)
+      << "Blackhole direct GEMM currently requires identical output CB and accumulator dtypes";
+  ICHECK_EQ(gemm.c_tensor_dtype, "Float32")
+      << "Blackhole direct GEMM currently supports only float32 outputs, but "
+      << gemm.c_buffer << " requested " << gemm.c_tensor_dtype;
+  ICHECK_EQ(gemm.accumulator_dtype, "Float32")
+      << "Blackhole direct GEMM currently supports only float32 accumulators, but requested "
+      << gemm.accumulator_dtype;
+  const auto [rows, cols] = GetTensorShape2D(binding.tensor);
+  ValidateGemmOutputShape(spec, rows, cols);
+  const size_t numel = static_cast<size_t>(rows) * cols;
+  ICHECK(output_data.size() == numel * sizeof(float))
+      << "Unexpected GEMM output buffer size for " << binding.name << ": got "
+      << output_data.size() << " bytes, expected " << (numel * sizeof(float));
+  const auto* tiled = reinterpret_cast<const float*>(output_data.data());
+  std::vector<float> tiled_vec(tiled, tiled + numel);
+  return untilize_nfaces(tiled_vec, rows, cols);
+}
+
+static void CopyRowMajorFloat32ToTensor(DLTensor* tensor,
+                                        const std::vector<float>& row_major) {
+  ICHECK(tensor != nullptr);
+  const size_t numel = static_cast<size_t>(ShapeProduct(GetTensorShape(tensor), 0, tensor->ndim));
+  ICHECK_EQ(row_major.size(), numel)
+      << "Unexpected row-major float32 output element count";
+  std::memcpy(GetTensorData<float>(tensor), row_major.data(),
+              row_major.size() * sizeof(float));
+}
+
 static void CopyOutputFromDeviceBuffer(const ExecutableSpec& spec,
                                        const RuntimeTensorBinding& binding,
                                        const std::vector<uint8_t>& output_data) {
@@ -1767,26 +1808,9 @@ static void CopyOutputFromDeviceBuffer(const ExecutableSpec& spec,
     return;
   }
 
-  ValidateGemmTensorDType(binding, gemm.c_tensor_dtype);
-  ICHECK_EQ(gemm.c_cb_dtype, gemm.accumulator_dtype)
-      << "Blackhole direct GEMM currently requires identical output CB and accumulator dtypes";
-  ICHECK_EQ(gemm.c_tensor_dtype, "Float32")
-      << "Blackhole direct GEMM currently supports only float32 outputs, but "
-      << gemm.c_buffer << " requested " << gemm.c_tensor_dtype;
-  ICHECK_EQ(gemm.accumulator_dtype, "Float32")
-      << "Blackhole direct GEMM currently supports only float32 accumulators, but requested "
-      << gemm.accumulator_dtype;
-  const auto [rows, cols] = GetTensorShape2D(binding.tensor);
-  ValidateGemmOutputShape(spec, rows, cols);
-  const size_t numel = static_cast<size_t>(rows) * cols;
-  ICHECK(output_data.size() == numel * sizeof(float))
-      << "Unexpected GEMM output buffer size for " << binding.name << ": got "
-      << output_data.size() << " bytes, expected " << (numel * sizeof(float));
-  const auto* tiled = reinterpret_cast<const float*>(output_data.data());
-  std::vector<float> tiled_vec(tiled, tiled + numel);
-  std::vector<float> row_major = untilize_nfaces(tiled_vec, rows, cols);
-  std::memcpy(GetTensorData<float>(binding.tensor), row_major.data(),
-              row_major.size() * sizeof(float));
+  std::vector<float> row_major =
+      DecodeGemmFloat32OutputToRowMajor(spec, binding, output_data);
+  CopyRowMajorFloat32ToTensor(binding.tensor, row_major);
 }
 
 static tt::DataFormat ParseDataFormat(const std::string& value) {
@@ -1883,6 +1907,14 @@ static uint32_t GetRuntimeNumKTiles(const ExecutableSpec& spec) {
 
 static uint32_t GetRuntimeLogicalGridX(const ExecutableSpec& spec) {
   return std::max<uint32_t>(1, spec.core_plan.logical_grid_x);
+}
+
+static uint32_t GetRuntimeLogicalGridY(const ExecutableSpec& spec) {
+  return std::max<uint32_t>(1, spec.core_plan.logical_grid_y);
+}
+
+static uint32_t GetRuntimeLogicalGridZ(const ExecutableSpec& spec) {
+  return std::max<uint32_t>(1, spec.core_plan.logical_grid_z);
 }
 
 static uint32_t GetRuntimeLogicalNTiles(const ExecutableSpec& spec) {
@@ -2168,6 +2200,70 @@ static std::vector<DirectLaunchWave> BuildDirectLaunchWaves(const ExecutableSpec
 
   ICHECK(!waves.empty()) << "No launch waves resolved for direct execution";
   return waves;
+}
+
+static std::vector<DirectLaunchWave> BuildPartialKLaunchWavesForZ(
+    const ExecutableSpec& spec,
+    uint32_t z) {
+  const uint32_t grid_x = GetRuntimeLogicalGridX(spec);
+  const uint32_t grid_y = GetRuntimeLogicalGridY(spec);
+  const uint32_t grid_z = GetRuntimeLogicalGridZ(spec);
+  ICHECK_LT(z, grid_z)
+      << "Blackhole partial-K direct runtime requested out-of-range K shard";
+  const uint64_t xy_work =
+      std::max<uint64_t>(1, static_cast<uint64_t>(grid_x) * grid_y);
+  ICHECK_LE(xy_work * static_cast<uint64_t>(grid_z),
+            static_cast<uint64_t>(std::numeric_limits<uint32_t>::max()))
+      << "Blackhole partial-K direct runtime work id exceeds uint32 range";
+  ICHECK(!spec.core_plan.physical_cores.empty())
+      << "Blackhole partial-K direct runtime requires physical core coverage";
+  const size_t core_count = spec.core_plan.physical_cores.size();
+  std::vector<DirectLaunchWave> waves;
+  const uint64_t wave_count =
+      (xy_work + static_cast<uint64_t>(core_count) - 1) /
+      static_cast<uint64_t>(core_count);
+  waves.reserve(static_cast<size_t>(wave_count));
+  for (uint64_t wave_index = 0; wave_index < wave_count; ++wave_index) {
+    DirectLaunchWave wave;
+    for (size_t core_index = 0; core_index < core_count; ++core_index) {
+      const uint64_t xy = wave_index * static_cast<uint64_t>(core_count) +
+                          static_cast<uint64_t>(core_index);
+      if (xy >= xy_work) {
+        continue;
+      }
+      const size_t rotated_core_index =
+          (core_index + static_cast<size_t>(z)) % core_count;
+      const PhysicalCore& physical_core =
+          spec.core_plan.physical_cores[rotated_core_index];
+      const uint64_t work_id = static_cast<uint64_t>(z) * xy_work + xy;
+      DirectWorkItem item;
+      item.work_id = static_cast<uint32_t>(work_id);
+      item.core = CoreCoord(physical_core.core_x, physical_core.core_y);
+      wave.work_items.push_back(item);
+      wave.launch_cores.push_back(item.core);
+    }
+    if (!wave.work_items.empty()) {
+      waves.push_back(std::move(wave));
+    }
+  }
+  ICHECK(!waves.empty())
+      << "Blackhole partial-K direct runtime produced no launch waves";
+  return waves;
+}
+
+static const RuntimeTensorBinding* FindRuntimeBinding(
+    const std::vector<RuntimeTensorBinding>& bindings,
+    const std::string& name) {
+  auto it = std::find_if(bindings.begin(), bindings.end(),
+                         [&](const RuntimeTensorBinding& binding) {
+                           return binding.name == name;
+                         });
+  return it == bindings.end() ? nullptr : &(*it);
+}
+
+static bool RequiresDirectRuntimePartialKGemmReduction(const ExecutableSpec& spec) {
+  const auto gemm = GetPrimaryGemmCompute(spec);
+  return gemm.enabled && gemm.kind == "gemm" && GetRuntimeLogicalGridZ(spec) > 1;
 }
 
 static DirectRuntimeBufferState MaterializeRuntimeBuffers(
@@ -2876,10 +2972,13 @@ static bool TryAppendSharedRuntimeArg(
 struct DirectRuntimeWorkContext {
   uint32_t num_k_tiles = 0;
   uint32_t logical_grid_x = 0;
+  uint32_t logical_grid_y = 0;
+  uint32_t logical_grid_z = 0;
   uint32_t logical_n_tiles = 0;
   uint32_t work_linear_id = 0;
   uint32_t bx = 0;
   uint32_t by = 0;
+  uint32_t bz = 0;
   bool has_gemm_compute_op = false;
 };
 
@@ -2889,9 +2988,15 @@ static DirectRuntimeWorkContext BuildDirectRuntimeWorkContext(const KernelSpec& 
   (void)kernel;
   DirectRuntimeWorkContext context;
   context.logical_grid_x = GetRuntimeLogicalGridX(spec);
+  context.logical_grid_y = GetRuntimeLogicalGridY(spec);
+  context.logical_grid_z = GetRuntimeLogicalGridZ(spec);
   context.work_linear_id = current_work_linear_id;
-  context.bx = context.logical_grid_x == 0 ? 0 : (context.work_linear_id % context.logical_grid_x);
-  context.by = context.logical_grid_x == 0 ? 0 : (context.work_linear_id / context.logical_grid_x);
+  const uint32_t xy_work =
+      std::max<uint32_t>(1, context.logical_grid_x * context.logical_grid_y);
+  const uint32_t xy_linear = context.work_linear_id % xy_work;
+  context.bx = context.logical_grid_x == 0 ? 0 : (xy_linear % context.logical_grid_x);
+  context.by = context.logical_grid_x == 0 ? 0 : (xy_linear / context.logical_grid_x);
+  context.bz = xy_work == 0 ? 0 : (context.work_linear_id / xy_work);
   const auto gemm_op = GetPrimaryGemmCompute(spec);
   context.has_gemm_compute_op = gemm_op.enabled && gemm_op.kind == "gemm";
   if (context.has_gemm_compute_op) {
@@ -2923,6 +3028,19 @@ static uint32_t EvaluatePerWorkArgSpec(const PerWorkArgSpec& spec,
   }
   if (spec.value_source == tl::blackhole_runtime_arg_schema::kValueSourceLogicalBlockY) {
     return context.by;
+  }
+  if (spec.value_source == tl::blackhole_runtime_arg_schema::kValueSourceLogicalBlockZ) {
+    return context.bz;
+  }
+  if (spec.value_source == tl::blackhole_runtime_arg_schema::kValueSourceLogicalBlockXYLinear) {
+    return context.by * context.logical_grid_x + context.bx;
+  }
+  if (spec.value_source ==
+      tl::blackhole_runtime_arg_schema::kValueSourceLogicalBlockZKTileStart) {
+    ICHECK(context.has_gemm_compute_op)
+        << "Blackhole direct runtime per_work_arg_spec requires GEMM compute_op for "
+        << spec.arg_identity;
+    return context.bz * context.num_k_tiles;
   }
   if (spec.value_source == tl::blackhole_runtime_arg_schema::kValueSourceComputeNumKTiles) {
     ICHECK(context.has_gemm_compute_op)
@@ -3541,46 +3659,98 @@ void BlackholeModuleNode::ExecuteDirect(
   LOG(INFO) << "Direct path: executing " << total_work_items << " logical work items across "
             << launch_waves.size() << " launch wave(s) for " << func_name;
 
-  for (size_t wave_index = 0; wave_index < launch_waves.size(); ++wave_index) {
-    const auto& launch_wave = launch_waves[wave_index];
-    const CoreRangeSet launch_core_ranges(launch_wave.launch_cores);
-    LOG(INFO) << "Direct path: launch wave " << (wave_index + 1) << "/" << launch_waves.size()
-              << " with " << launch_wave.work_items.size() << " logical work items across "
-              << launch_wave.launch_cores.size() << " launch cores for " << func_name;
+  auto enqueue_launch_waves = [&](const std::vector<DirectLaunchWave>& waves,
+                                  const std::string& wave_label) {
+    for (size_t wave_index = 0; wave_index < waves.size(); ++wave_index) {
+      const auto& launch_wave = waves[wave_index];
+      const CoreRangeSet launch_core_ranges(launch_wave.launch_cores);
+      LOG(INFO) << "Direct path: launch wave " << (wave_index + 1) << "/"
+                << waves.size() << " with " << launch_wave.work_items.size()
+                << " logical work items across " << launch_wave.launch_cores.size()
+                << " launch cores for " << func_name << wave_label;
 
-    Program program = CreateProgram();
-    const std::unordered_map<uint32_t, uint32_t> semaphore_ids =
-        CreateSemaphoresFromSpec(program, spec);
+      Program program = CreateProgram();
+      const std::unordered_map<uint32_t, uint32_t> semaphore_ids =
+          CreateSemaphoresFromSpec(program, spec);
 
-    CreateCircularBuffersFromSpec(program, launch_core_ranges, spec);
+      CreateCircularBuffersFromSpec(program, launch_core_ranges, spec);
 
-    std::vector<KernelHandle> kernels = CreateProgramKernelsFromSpec(
-        program, launch_core_ranges, spec, runtime_buffer_state.runtime_buffers, semaphore_ids,
-        kernel_paths);
+      std::vector<KernelHandle> kernels = CreateProgramKernelsFromSpec(
+          program, launch_core_ranges, spec, runtime_buffer_state.runtime_buffers,
+          semaphore_ids, kernel_paths);
 
-    ApplyWorkItemRuntimeArgs(program, spec, kernels, launch_wave.work_items, *mesh_device,
-                             runtime_buffer_state.runtime_buffers, semaphore_ids, scalar_args);
+      ApplyWorkItemRuntimeArgs(program, spec, kernels, launch_wave.work_items, *mesh_device,
+                               runtime_buffer_state.runtime_buffers, semaphore_ids,
+                               scalar_args);
 
-    distributed::MeshWorkload workload;
-    distributed::MeshCoordinateRange device_range(mesh_device->shape());
-    workload.add_program(device_range, std::move(program));
-    LOG(INFO) << "Direct path: enqueue multi-core workload for " << func_name << " wave "
-              << (wave_index + 1) << "/" << launch_waves.size();
-    distributed::EnqueueMeshWorkload(cq, workload, /*blocking=*/true);
-  }
-
-  // Read back results
-  for (const auto& binding : buffer_args) {
-    if (!binding.is_output) {
-      continue;
+      distributed::MeshWorkload workload;
+      distributed::MeshCoordinateRange device_range(mesh_device->shape());
+      workload.add_program(device_range, std::move(program));
+      LOG(INFO) << "Direct path: enqueue multi-core workload for " << func_name
+                << " wave " << (wave_index + 1) << "/" << waves.size()
+                << wave_label;
+      distributed::EnqueueMeshWorkload(cq, workload, /*blocking=*/true);
     }
-    auto it = runtime_buffer_state.runtime_buffers.find(binding.name);
-    ICHECK(it != runtime_buffer_state.runtime_buffers.end())
-        << "Missing runtime output binding for " << binding.name;
-    std::vector<uint8_t> output_data;
-    distributed::EnqueueReadMeshBuffer(cq, output_data, it->second.mesh_buffer,
-                                       /*blocking=*/true);
-    CopyOutputFromDeviceBuffer(spec, binding, output_data);
+  };
+
+  if (RequiresDirectRuntimePartialKGemmReduction(spec)) {
+    const auto gemm = GetPrimaryGemmCompute(spec);
+    const RuntimeTensorBinding* output_binding =
+        FindRuntimeBinding(buffer_args, gemm.c_buffer);
+    ICHECK(output_binding != nullptr && output_binding->is_output)
+        << "Blackhole partial-K direct GEMM reduction requires runtime output binding "
+        << gemm.c_buffer;
+    const BufferMaterializationSpec* materialized_output =
+        FindBufferMaterializationSpec(spec, output_binding->name);
+    ICHECK(materialized_output == nullptr || materialized_output->live_form_kind.empty())
+        << "Blackhole partial-K direct GEMM reduction currently admits direct float32 "
+           "output buffers; materialized output publication is a separate reduction path";
+
+    std::vector<float> accumulated;
+    const uint32_t grid_z = GetRuntimeLogicalGridZ(spec);
+    for (uint32_t z = 0; z < grid_z; ++z) {
+      std::vector<DirectLaunchWave> z_waves =
+          BuildPartialKLaunchWavesForZ(spec, z);
+      ICHECK(!z_waves.empty())
+          << "Blackhole partial-K direct GEMM reduction requires work coverage for K shard "
+          << z;
+      enqueue_launch_waves(z_waves,
+                           " partial-K shard " + std::to_string(z + 1) +
+                               "/" + std::to_string(grid_z));
+      auto it = runtime_buffer_state.runtime_buffers.find(output_binding->name);
+      ICHECK(it != runtime_buffer_state.runtime_buffers.end())
+          << "Missing runtime output binding for " << output_binding->name;
+      std::vector<uint8_t> output_data;
+      distributed::EnqueueReadMeshBuffer(cq, output_data, it->second.mesh_buffer,
+                                         /*blocking=*/true);
+      std::vector<float> partial =
+          DecodeGemmFloat32OutputToRowMajor(spec, *output_binding, output_data);
+      if (accumulated.empty()) {
+        accumulated.assign(partial.size(), 0.0f);
+      }
+      ICHECK_EQ(accumulated.size(), partial.size())
+          << "Blackhole partial-K direct GEMM reduction read inconsistent partial size";
+      for (size_t i = 0; i < partial.size(); ++i) {
+        accumulated[i] += partial[i];
+      }
+    }
+    CopyRowMajorFloat32ToTensor(output_binding->tensor, accumulated);
+  } else {
+    enqueue_launch_waves(launch_waves, "");
+
+    // Read back results
+    for (const auto& binding : buffer_args) {
+      if (!binding.is_output) {
+        continue;
+      }
+      auto it = runtime_buffer_state.runtime_buffers.find(binding.name);
+      ICHECK(it != runtime_buffer_state.runtime_buffers.end())
+          << "Missing runtime output binding for " << binding.name;
+      std::vector<uint8_t> output_data;
+      distributed::EnqueueReadMeshBuffer(cq, output_data, it->second.mesh_buffer,
+                                         /*blocking=*/true);
+      CopyOutputFromDeviceBuffer(spec, binding, output_data);
+    }
   }
 
   // Cleanup kernel temp files

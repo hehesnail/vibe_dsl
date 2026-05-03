@@ -1818,6 +1818,7 @@ PrimFunc PlanTTKernelABI::Transform(const PrimFunc& func) {
   saw_copy_op_ = false;
   needs_copy_runtime_args_ = false;
   requires_compute_segment_ = false;
+  logical_grid_z_ = 1;
   copy_input_buffer_ = Buffer();
   copy_output_buffer_ = Buffer();
   copy_input_buffer_name_.clear();
@@ -1939,6 +1940,12 @@ PrimFunc PlanTTKernelABI::Transform(const PrimFunc& func) {
   gemm_a_dtype_ = DataType::Void();
   gemm_b_dtype_ = DataType::Void();
   gemm_c_dtype_ = DataType::Void();
+  if (auto staged_program = func->GetAttr<TTProgram>(attr::kTLTTProgram)) {
+    if (!staged_program.value()->core_groups.empty()) {
+      logical_grid_z_ =
+          std::max<int64_t>(1, staged_program.value()->core_groups[0]->logical_grid_z);
+    }
+  }
   LoadSeededCBRequirements(func);
   LoadSeededComputeOpPlans(func);
   auto maybe_spatial_plan = func->GetAttr<SpatialPlan>(attr::kTLSpatialPlan);

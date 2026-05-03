@@ -1248,7 +1248,10 @@ void PlanTTKernelABI::StoreAccessorDescriptors(PrimFunc &func) {
         upsert_spec(MakePerWorkArgSpec(
             "k_tile_start_id", runtime_arg_identity_for_kind("k_tile_start_id"),
             blackhole_runtime_arg_schema::kDescriptorKTileStart,
-            blackhole_runtime_arg_schema::kValueSourceConstant, "", 0));
+            logical_grid_z_ > 1
+                ? blackhole_runtime_arg_schema::kValueSourceLogicalBlockZKTileStart
+                : blackhole_runtime_arg_schema::kValueSourceConstant,
+            "", 0));
       }
       if (runtime_args_contain_kind("num_k_tiles")) {
         upsert_spec(MakePerWorkArgSpec(
@@ -1266,7 +1269,9 @@ void PlanTTKernelABI::StoreAccessorDescriptors(PrimFunc &func) {
             "output_tile_start_id",
             runtime_arg_identity_for_kind("output_tile_start_id"),
             blackhole_runtime_arg_schema::kDescriptorTileStart,
-            blackhole_runtime_arg_schema::kValueSourceWorkLinearId,
+            logical_grid_z_ > 1
+                ? blackhole_runtime_arg_schema::kValueSourceLogicalBlockXYLinear
+                : blackhole_runtime_arg_schema::kValueSourceWorkLinearId,
             gemm_c_buffer_name_));
       }
       if (runtime_args_contain_kind("output_tile_num_tiles")) {

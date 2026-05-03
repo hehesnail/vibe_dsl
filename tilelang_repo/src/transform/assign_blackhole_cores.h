@@ -49,14 +49,14 @@ struct CoreCoord {
  * \brief Core assignment configuration for a kernel
  */
 struct CoreAssignment {
-  int grid_x, grid_y;           // T.Kernel grid dimensions
+  int grid_x, grid_y, grid_z;   // T.Kernel grid dimensions
   int core_grid_x, core_grid_y; // Blackhole logical worker grid
   int available_worker_cores;   // Usable logical worker cores
   int work_per_core;            // Work items per core
   int cores_needed;             // Total cores needed
 
   CoreAssignment()
-      : grid_x(1), grid_y(1), core_grid_x(11), core_grid_y(10),
+      : grid_x(1), grid_y(1), grid_z(1), core_grid_x(11), core_grid_y(10),
         available_worker_cores(110), work_per_core(1), cores_needed(1) {}
 };
 

@@ -2156,6 +2156,41 @@
   - 多 core sharding 测试不能只用方形小 grid；至少要覆盖硬件 grid 的
     非方形边界，否则 operand-to-axis 错误会被对称 shape 掩盖。
 
+#### T5 K-sharded GEMM exposed missing logical-z and writer xy mapping
+
+- **症状**:
+  - K 维 sharding case 最初只能作为 reject。改成 runtime correctness 后，
+    projection 先缺 `logical_grid_z`，随后 A/B width-sharded accessor
+    compile-time ABI 报 `expected 7, materialized 9`。
+  - ABI count 修正后 direct runtime 能执行完两个 K shard，但输出只在一个
+    tile 附近正确，整体 max diff 很大。
+- **根因**:
+  - core assignment / `TTCoreGroup` / `ExecutableSpec` 原先只保存
+    `grid_x/grid_y`，第三个 `T.Kernel` 维度没有进入 leaf/runtime
+    contract。
+  - sharded accessor count 推导只看 `TTBufferDistributionPlan.logical_shape`；
+    对显式 external placement intent，真实 tensor logical shape 在
+    `TTTensorMemoryConfigPlan` 中，K-width sharding 的 TT-Metal
+    TensorAccessorArgs 因此被低估。
+  - writer 的 per-work arg 已经被设成 `logical_block_xy_linear`，但 codegen
+    没把这个 value source 还原成 `blockIdx.x/y`，导致 partial-K writer
+    退回 `0 /* core_x/y */` 并把所有 partial 写到 tile 0。
+- **修法**:
+  - `logical_grid_z` 进入 core assignment、`TTCoreGroup`、projection、
+    serialization、codegen 和 direct-runtime work context。
+  - sharded accessor count 从 `TTTensorMemoryConfigPlan.logical_shape` 和
+    `TTBufferDistributionPlan.shard_shape/shard_grid_shape` 一起推导。
+  - direct runtime 对 partial-K GEMM 按 K shard 构造 z-wave，执行每个
+    shard 的 xy work 后 blocking read fp32 partial C，并在 host 侧累加。
+  - codegen 支持 `logical_block_xy_linear` 的 x/y 反解，writer 使用正确
+    output tile。
+- **教训**:
+  - K sharding 的测试必须真的让 A/B 在 K 维 width-sharded，并验证
+    `logical_grid_z > 1` 和 final correctness。多 core M/N sharding 不等价
+    于 cross-core partial sum。
+  - direct-runtime host-side partial accumulation 是 runtime correctness
+    protocol；不要把它表述成 device-side reduce/synchronization 已经完成。
+
 ## 3. 环境问题速查
 
 | 问题 | 解决 |

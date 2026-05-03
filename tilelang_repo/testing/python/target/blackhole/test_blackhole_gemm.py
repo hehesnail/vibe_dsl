@@ -486,6 +486,83 @@ def external_sharded_l1_multicore_gemm_kernel(
     return main
 
 
+def external_k_sharded_l1_gemm_kernel(
+    *,
+    M: int = 64,
+    N: int = 64,
+    K: int = 128,
+    tile_m: int = 32,
+    tile_n: int = 32,
+    k_shards: int = 2,
+):
+    grid_x = N // tile_n
+    grid_y = M // tile_m
+    k_shard = K // k_shards
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((M, K), "bfloat16"),
+        B: T.Tensor((N, K), "bfloat16"),
+        C: T.Tensor((M, N), "float32"),
+    ):
+        with T.Kernel(grid_x, grid_y, k_shards) as (bx, by, bk):
+            A_shared = T.alloc_shared((tile_m, k_shard), "bfloat16")
+            B_shared = T.alloc_shared((tile_n, k_shard), "bfloat16")
+            C_local = T.alloc_fragment((tile_m, tile_n), "float32")
+            A_k_sharded = T.sharded_l1(
+                strategy="width",
+                grid=T.CoreGrid(x=k_shards, y=1),
+                shard_shape=(M, k_shard),
+                orientation="row_major",
+                allow_reshard=False,
+            )
+            B_k_sharded = T.sharded_l1(
+                strategy="width",
+                grid=T.CoreGrid(x=k_shards, y=1),
+                shard_shape=(N, k_shard),
+                orientation="row_major",
+                allow_reshard=False,
+            )
+            C_sharded = T.sharded_l1(
+                strategy="block",
+                grid=T.CoreGrid(x=grid_x, y=grid_y),
+                shard_shape=(tile_m, tile_n),
+                orientation="row_major",
+                allow_reshard=False,
+            )
+            T.annotate_memory_config(
+                {
+                    A: A_k_sharded,
+                    B: B_k_sharded,
+                    C: C_sharded,
+                }
+            )
+            T.copy(
+                A[
+                    by * tile_m : (by + 1) * tile_m,
+                    bk * k_shard : (bk + 1) * k_shard,
+                ],
+                A_shared,
+            )
+            T.copy(
+                B[
+                    bx * tile_n : (bx + 1) * tile_n,
+                    bk * k_shard : (bk + 1) * k_shard,
+                ],
+                B_shared,
+            )
+            T.gemm(A_shared, B_shared, C_local, transpose_B=True)
+            T.copy(
+                C_local,
+                C[
+                    by * tile_m : (by + 1) * tile_m,
+                    bx * tile_n : (bx + 1) * tile_n,
+                ],
+            )
+
+    return main
+
+
 def _assert_t5_multicore_external_sharded_accessor_contract(
     device_main,
     *,
@@ -1892,6 +1969,110 @@ def test_blackhole_t5_manycore_external_sharded_l1_gemm_direct_runtime_all_bf16(
         rtol=2e-1,
         failure_message=(
             "Manycore all-bf16 external sharded L1 GEMM direct-call output mismatch"
+        ),
+    )
+
+
+def test_blackhole_t5_external_k_sharded_l1_gemm_direct_runtime_partial_sum_bf16():
+    can_run, msg = check_blackhole_direct_execution_requirements()
+    if not can_run:
+        pytest.skip(f"Blackhole requirements not met: {msg}")
+
+    m, n, k = 64, 64, 128
+    torch.manual_seed(3)
+    a_torch = torch.randn(m, k, dtype=torch.bfloat16)
+    b_torch = torch.randn(n, k, dtype=torch.bfloat16)
+    c_output = torch.zeros(m, n, dtype=torch.float32)
+    c_ref = torch.matmul(a_torch.float(), b_torch.float().transpose(0, 1))
+
+    target = Target("blackhole")
+    kernel = external_k_sharded_l1_gemm_kernel(M=m, N=n, K=k, k_shards=2)
+    with target:
+        artifact = lower(kernel, target=target)
+
+    device_main = artifact.device_mod["main_kernel"]
+    executable = _extract_materialized_blackhole_executable(device_main)
+    core_plan = executable["core_plan"]
+    assert int(core_plan["logical_grid_x"]) == 2
+    assert int(core_plan["logical_grid_y"]) == 2
+    assert int(core_plan["logical_grid_z"]) == 2
+    sharded_accessors = {}
+    for segment in executable["segment_plan"]:
+        for accessor in segment.get("accessors", []):
+            if str(accessor["buffer"]) in {"A", "B", "C"}:
+                sharded_accessors[str(accessor["buffer"])] = accessor
+    assert set(sharded_accessors) == {"A", "B", "C"}
+    assert all(
+        str(accessor["layout"]) == "sharded"
+        for accessor in sharded_accessors.values()
+    )
+    assert {
+        name: int(accessor["compile_time_arg_count"])
+        for name, accessor in sharded_accessors.items()
+    } == {"A": 9, "B": 9, "C": 8}
+
+    reasons = _direct_runtime_unsupported_reasons(artifact)
+    assert reasons == []
+
+    artifact.codegen_mod["main"](a_torch, b_torch, c_output)
+    assert_tensors_close_or_dump(
+        c_output,
+        c_ref,
+        atol=2e-1,
+        rtol=2e-1,
+        failure_message=(
+            "K-sharded external L1 GEMM partial-sum direct-call output mismatch"
+        ),
+    )
+
+
+def test_blackhole_t5_manycore_external_k_sharded_l1_gemm_direct_runtime_partial_sum_bf16():
+    can_run, msg = check_blackhole_direct_execution_requirements()
+    if not can_run:
+        pytest.skip(f"Blackhole requirements not met: {msg}")
+
+    m, n, k = 320, 352, 512
+    torch.manual_seed(4)
+    a_torch = torch.randn(m, k, dtype=torch.bfloat16)
+    b_torch = torch.randn(n, k, dtype=torch.bfloat16)
+    c_output = torch.zeros(m, n, dtype=torch.float32)
+    c_ref = torch.matmul(a_torch.float(), b_torch.float().transpose(0, 1))
+
+    target = Target("blackhole")
+    kernel = external_k_sharded_l1_gemm_kernel(M=m, N=n, K=k, k_shards=2)
+    with target:
+        artifact = lower(kernel, target=target)
+
+    device_main = artifact.device_mod["main_kernel"]
+    executable = _extract_materialized_blackhole_executable(device_main)
+    core_plan = executable["core_plan"]
+    assert int(core_plan["logical_grid_x"]) == 11
+    assert int(core_plan["logical_grid_y"]) == 10
+    assert int(core_plan["logical_grid_z"]) == 2
+    assert len(core_plan["physical_cores"]) == 110
+    assert sum(int(packet["work_count"]) for packet in core_plan["work_packets"]) == 220
+
+    sharded_accessors = {}
+    for segment in executable["segment_plan"]:
+        for accessor in segment.get("accessors", []):
+            if str(accessor["buffer"]) in {"A", "B", "C"}:
+                sharded_accessors[str(accessor["buffer"])] = accessor
+    assert {
+        name: int(accessor["compile_time_arg_count"])
+        for name, accessor in sharded_accessors.items()
+    } == {"A": 9, "B": 9, "C": 61}
+
+    reasons = _direct_runtime_unsupported_reasons(artifact)
+    assert reasons == []
+
+    artifact.codegen_mod["main"](a_torch, b_torch, c_output)
+    assert_tensors_close_or_dump(
+        c_output,
+        c_ref,
+        atol=5e-1,
+        rtol=2e-1,
+        failure_message=(
+            "Manycore K-sharded external L1 GEMM partial-sum direct-call output mismatch"
         ),
     )
 

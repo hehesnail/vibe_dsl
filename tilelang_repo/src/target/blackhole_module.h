@@ -102,6 +102,7 @@ struct WorkPacket {
 struct CorePlan {
   uint32_t logical_grid_x = 1;
   uint32_t logical_grid_y = 1;
+  uint32_t logical_grid_z = 1;
   std::string linearization = "row_major";
   std::vector<PhysicalCore> physical_cores;
   std::vector<WorkPacket> work_packets;
@@ -110,6 +111,7 @@ struct CorePlan {
     writer->BeginObject();
     writer->WriteObjectKeyValue("logical_grid_x", static_cast<int64_t>(logical_grid_x));
     writer->WriteObjectKeyValue("logical_grid_y", static_cast<int64_t>(logical_grid_y));
+    writer->WriteObjectKeyValue("logical_grid_z", static_cast<int64_t>(logical_grid_z));
     writer->WriteObjectKeyValue("linearization", linearization);
     writer->WriteObjectKeyValue("physical_cores", physical_cores);
     writer->WriteObjectKeyValue("work_packets", work_packets);

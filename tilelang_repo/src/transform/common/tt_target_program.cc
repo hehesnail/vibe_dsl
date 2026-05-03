@@ -876,6 +876,7 @@ void TTCoreGroupNode::RegisterReflection() {
       .def_ro("name", &TTCoreGroupNode::name)
       .def_ro("logical_grid_x", &TTCoreGroupNode::logical_grid_x)
       .def_ro("logical_grid_y", &TTCoreGroupNode::logical_grid_y)
+      .def_ro("logical_grid_z", &TTCoreGroupNode::logical_grid_z)
       .def_ro("linearization", &TTCoreGroupNode::linearization)
       .def_ro("physical_cores", &TTCoreGroupNode::physical_cores)
       .def_ro("work_packets", &TTCoreGroupNode::work_packets);
@@ -884,11 +885,13 @@ void TTCoreGroupNode::RegisterReflection() {
 TTCoreGroup::TTCoreGroup(ffi::String name, int64_t logical_grid_x,
                          int64_t logical_grid_y, ffi::String linearization,
                          ffi::Array<ffi::Any> physical_cores,
-                         ffi::Array<ffi::Any> work_packets) {
+                         ffi::Array<ffi::Any> work_packets,
+                         int64_t logical_grid_z) {
   auto n = ffi::make_object<TTCoreGroupNode>();
   n->name = std::move(name);
   n->logical_grid_x = logical_grid_x;
   n->logical_grid_y = logical_grid_y;
+  n->logical_grid_z = logical_grid_z;
   n->linearization = std::move(linearization);
   n->physical_cores = std::move(physical_cores);
   n->work_packets = std::move(work_packets);
