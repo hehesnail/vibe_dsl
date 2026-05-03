@@ -147,10 +147,12 @@ The admitted T5 subset is the first static external sharded-L1 GEMM layout:
 - the first K-dimension sharded GEMM direct-runtime path represents A/B
   placement as width-sharded L1 over their K dimension, projects
   `logical_grid_z` from `T.Kernel(grid_x, grid_y, k_shards)`, uses
-  per-work `bk` to read the correct K slice, and accumulates each K shard's
-  fp32 partial C in direct runtime before returning the final C tensor.  This
-  is a runtime correctness barrier for cross-core partial sums, not a
-  production device-side semaphore/atomic reduce protocol;
+  per-work `bk` to read the correct K slice, rotates each logical-z wave across
+  physical cores, and uses a device-side TT-Metal tile-add reduction program to
+  merge later K-shard partial-C scratch tiles into the first wave's final `C`
+  buffer before host readback.  This is a runtime-issued device reduction with
+  blocking wave barriers, not a production single-launch semaphore/atomic
+  reduce protocol;
 - an external sharded L1 accessor whose `shard_grid_shape` is not covered by
   the attached `TTCoreGroup.work_packets` fails in `ValidateTTProgram` with a
   retile/work-coarsening diagnostic.

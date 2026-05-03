@@ -1966,6 +1966,14 @@ static std::vector<uint32_t> BuildRuntimeArgsFromSpec(
     const std::unordered_map<std::string, RuntimeBufferBinding>& buffer_bindings,
     const std::unordered_map<uint32_t, uint32_t>& semaphore_ids,
     const std::vector<uint32_t>& scalar_args);
+static void AppendAccessorCompileTimeArgsFromBuffer(
+    const std::string& buffer_name,
+    uint32_t expected_count,
+    uint32_t args_config_bits,
+    const std::string& layout,
+    const std::string& memory_space,
+    const std::unordered_map<std::string, RuntimeBufferBinding>& buffer_bindings,
+    std::vector<uint32_t>* compile_time_args);
 
 struct DirectWorkItem {
   uint32_t work_id;
@@ -2328,6 +2336,288 @@ static std::vector<std::string> WriteKernelSourceFiles(const ExecutableSpec& spe
     kernel_paths.push_back(kernel_path);
   }
   return kernel_paths;
+}
+
+struct PartialKReductionKernelPaths {
+  std::string reader;
+  std::string compute;
+  std::string writer;
+};
+
+static std::string PartialKReductionReaderSource(uint32_t partial_accessor_offset,
+                                                 uint32_t tile_bytes) {
+  std::ostringstream os;
+  os << "#include <cstdint>\n";
+  os << "#include \"api/dataflow/dataflow_api.h\"\n";
+  os << "#include \"experimental/circular_buffer.h\"\n";
+  os << "#include \"experimental/tensor.h\"\n\n";
+  os << "void kernel_main() {\n";
+  os << "  uint32_t final_addr = get_arg_val<uint32_t>(0);\n";
+  os << "  uint32_t partial_addr = get_arg_val<uint32_t>(1);\n";
+  os << "  uint32_t output_tile_start_id = get_arg_val<uint32_t>(2);\n";
+  os << "  const uint32_t tile_index = output_tile_start_id;\n";
+  os << "  const uint32_t tile_bytes = " << tile_bytes << ";\n";
+  os << "  cb_reserve_back(0, 1);\n";
+  os << "  { const uint32_t cb_l1_addr = get_write_ptr(0);";
+  os << " constexpr auto final_accessor_args = TensorAccessorArgs<0>();";
+  os << " const auto final_gen = TensorAccessor(final_accessor_args, final_addr, tile_bytes);";
+  os << " noc_async_read_tile(tile_index, final_gen, cb_l1_addr);";
+  os << " noc_async_read_barrier(); }\n";
+  os << "  cb_push_back(0, 1);\n";
+  os << "  cb_reserve_back(1, 1);\n";
+  os << "  { const uint32_t cb_l1_addr = get_write_ptr(1);";
+  os << " constexpr auto partial_accessor_args = TensorAccessorArgs<"
+     << partial_accessor_offset << ">();";
+  os << " const auto partial_gen = TensorAccessor(partial_accessor_args, partial_addr, tile_bytes);";
+  os << " noc_async_read_tile(tile_index, partial_gen, cb_l1_addr);";
+  os << " noc_async_read_barrier(); }\n";
+  os << "  cb_push_back(1, 1);\n";
+  os << "}\n";
+  return os.str();
+}
+
+static std::string PartialKReductionComputeSource() {
+  std::ostringstream os;
+  os << "#include <cstdint>\n";
+  os << "#include \"api/compute/pack.h\"\n";
+  os << "#include \"api/compute/reconfig_data_format.h\"\n";
+  os << "#include \"api/compute/eltwise_binary.h\"\n";
+  os << "#include \"api/compute/compute_kernel_api.h\"\n";
+  os << "#include \"experimental/circular_buffer.h\"\n\n";
+  os << "void kernel_main() {\n";
+  os << "  reconfig_data_format(0, 1);\n";
+  os << "  pack_reconfig_data_format<true>(16);\n";
+  os << "  add_tiles_init(0, 1);\n";
+  os << "  cb_wait_front(0, 1);\n";
+  os << "  cb_wait_front(1, 1);\n";
+  os << "  tile_regs_acquire();\n";
+  os << "  add_tiles(0, 1, 0, 0, 0);\n";
+  os << "  tile_regs_commit();\n";
+  os << "  tile_regs_wait();\n";
+  os << "  cb_reserve_back(16, 1);\n";
+  os << "  pack_tile(0, 16);\n";
+  os << "  cb_push_back(16, 1);\n";
+  os << "  tile_regs_release();\n";
+  os << "  cb_pop_front(0, 1);\n";
+  os << "  cb_pop_front(1, 1);\n";
+  os << "}\n";
+  return os.str();
+}
+
+static std::string PartialKReductionWriterSource(uint32_t tile_bytes) {
+  std::ostringstream os;
+  os << "#include <cstdint>\n";
+  os << "#include \"api/dataflow/dataflow_api.h\"\n";
+  os << "#include \"experimental/circular_buffer.h\"\n";
+  os << "#include \"experimental/tensor.h\"\n\n";
+  os << "void kernel_main() {\n";
+  os << "  uint32_t final_addr = get_arg_val<uint32_t>(0);\n";
+  os << "  uint32_t output_tile_start_id = get_arg_val<uint32_t>(1);\n";
+  os << "  const uint32_t tile_index = output_tile_start_id;\n";
+  os << "  const uint32_t tile_bytes = " << tile_bytes << ";\n";
+  os << "  cb_wait_front(16, 1);\n";
+  os << "  { const uint32_t cb_l1_addr = get_read_ptr(16);";
+  os << " constexpr auto final_accessor_args = TensorAccessorArgs<0>();";
+  os << " const auto final_gen = TensorAccessor(final_accessor_args, final_addr, tile_bytes);";
+  os << " noc_async_write_tile(tile_index, final_gen, cb_l1_addr);";
+  os << " noc_async_write_barrier(); }\n";
+  os << "  cb_pop_front(16, 1);\n";
+  os << "}\n";
+  return os.str();
+}
+
+static PartialKReductionKernelPaths WritePartialKReductionKernelSourceFiles(
+    const std::string& func_name,
+    const std::string& tmp_dir,
+    uint32_t accessor_count,
+    uint32_t tile_bytes) {
+  PartialKReductionKernelPaths paths;
+  paths.reader = tmp_dir + "/" + func_name + "_partial_k_reduce_reader.cpp";
+  paths.compute = tmp_dir + "/" + func_name + "_partial_k_reduce_compute.cpp";
+  paths.writer = tmp_dir + "/" + func_name + "_partial_k_reduce_writer.cpp";
+  {
+    std::ofstream ofs(paths.reader);
+    if (!ofs) {
+      LOG(FATAL) << "Failed to write partial-K reduction reader: " << paths.reader;
+    }
+    ofs << PartialKReductionReaderSource(accessor_count, tile_bytes);
+  }
+  {
+    std::ofstream ofs(paths.compute);
+    if (!ofs) {
+      LOG(FATAL) << "Failed to write partial-K reduction compute: " << paths.compute;
+    }
+    ofs << PartialKReductionComputeSource();
+  }
+  {
+    std::ofstream ofs(paths.writer);
+    if (!ofs) {
+      LOG(FATAL) << "Failed to write partial-K reduction writer: " << paths.writer;
+    }
+    ofs << PartialKReductionWriterSource(tile_bytes);
+  }
+  return paths;
+}
+
+static const AccessorSpec* FindRuntimeAccessorSpec(const ExecutableSpec& spec,
+                                                   const std::string& buffer_name) {
+  for (const KernelSpec& kernel : spec.kernels) {
+    for (const AccessorSpec& accessor : kernel.accessors) {
+      if (accessor.buffer == buffer_name) {
+        return &accessor;
+      }
+    }
+  }
+  return nullptr;
+}
+
+static RuntimeBufferBinding CreatePartialKOutputBuffer(
+    distributed::MeshDevice* mesh_device,
+    const ExecutableSpec& spec,
+    const RuntimeTensorBinding& output_binding) {
+  ICHECK(mesh_device != nullptr);
+  ICHECK(output_binding.tensor != nullptr);
+  const size_t tensor_size = GetDataSize(*output_binding.tensor);
+  const auto& materialization = ResolveBufferMaterializationSpec(spec, output_binding.name);
+  const BufferDistributionSpec* distribution =
+      FindRuntimeBufferDistributionSpec(spec, output_binding.name);
+  const bool is_static_sharded_l1 = IsStaticShardedL1RuntimeBuffer(distribution);
+  distributed::DeviceLocalBufferConfig device_config{
+      .page_size = materialization.transport_page_size_bytes,
+      .buffer_type = is_static_sharded_l1 ? BufferType::L1 : BufferType::DRAM};
+  if (is_static_sharded_l1) {
+    ICHECK(distribution != nullptr);
+    device_config.sharding_args = BuildStaticShardedL1BufferShardingArgs(
+        *distribution, output_binding.tensor, materialization.transport_page_size_bytes);
+  }
+  distributed::ReplicatedBufferConfig buffer_config{.size = tensor_size};
+  auto mesh_buffer =
+      distributed::MeshBuffer::create(buffer_config, device_config, mesh_device);
+  return RuntimeBufferBinding{.mesh_buffer = mesh_buffer,
+                              .size_bytes = tensor_size,
+                              .is_output = true};
+}
+
+static void CreatePartialKReductionCircularBuffers(
+    Program& program,
+    const CoreRangeSet& launch_core_ranges,
+    uint32_t tile_bytes) {
+  CircularBufferConfig input0_config(tile_bytes, {{0, tt::DataFormat::Float32}});
+  input0_config.set_page_size(0, tile_bytes);
+  CreateCircularBuffer(program, launch_core_ranges, input0_config);
+
+  CircularBufferConfig input1_config(tile_bytes, {{1, tt::DataFormat::Float32}});
+  input1_config.set_page_size(1, tile_bytes);
+  CreateCircularBuffer(program, launch_core_ranges, input1_config);
+
+  CircularBufferConfig output_config(tile_bytes, {{16, tt::DataFormat::Float32}});
+  output_config.set_page_size(16, tile_bytes);
+  CreateCircularBuffer(program, launch_core_ranges, output_config);
+}
+
+static std::vector<uint32_t> BuildPartialKReductionReaderCompileArgs(
+    const AccessorSpec& output_accessor,
+    const std::string& output_name,
+    const RuntimeBufferBinding& final_binding,
+    const RuntimeBufferBinding& partial_binding) {
+  std::unordered_map<std::string, RuntimeBufferBinding> bindings;
+  bindings.emplace(output_name, final_binding);
+  const std::string partial_name = output_name + "__partial_k";
+  bindings.emplace(partial_name, partial_binding);
+
+  std::vector<uint32_t> compile_args;
+  AppendAccessorCompileTimeArgsFromBuffer(
+      output_name, output_accessor.compile_time_arg_count,
+      output_accessor.args_config_bits, output_accessor.layout,
+      output_accessor.memory_space, bindings, &compile_args);
+  AppendAccessorCompileTimeArgsFromBuffer(
+      partial_name, output_accessor.compile_time_arg_count,
+      output_accessor.args_config_bits, output_accessor.layout,
+      output_accessor.memory_space, bindings, &compile_args);
+  return compile_args;
+}
+
+static std::vector<uint32_t> BuildPartialKReductionWriterCompileArgs(
+    const AccessorSpec& output_accessor,
+    const std::string& output_name,
+    const RuntimeBufferBinding& final_binding) {
+  std::unordered_map<std::string, RuntimeBufferBinding> bindings;
+  bindings.emplace(output_name, final_binding);
+  std::vector<uint32_t> compile_args;
+  AppendAccessorCompileTimeArgsFromBuffer(
+      output_name, output_accessor.compile_time_arg_count,
+      output_accessor.args_config_bits, output_accessor.layout,
+      output_accessor.memory_space, bindings, &compile_args);
+  return compile_args;
+}
+
+static void EnqueuePartialKDeviceReduction(
+    distributed::MeshCommandQueue& cq,
+    distributed::MeshDevice& mesh_device,
+    const ExecutableSpec& spec,
+    const std::string& func_name,
+    const DirectLaunchWave& launch_wave,
+    const PartialKReductionKernelPaths& kernel_paths,
+    const RuntimeTensorBinding& output_binding,
+    const RuntimeBufferBinding& final_binding,
+    const RuntimeBufferBinding& partial_binding,
+    const AccessorSpec& output_accessor,
+    uint32_t tile_bytes) {
+  const CoreRangeSet launch_core_ranges(launch_wave.launch_cores);
+  Program program = CreateProgram();
+  CreatePartialKReductionCircularBuffers(program, launch_core_ranges, tile_bytes);
+
+  const std::vector<uint32_t> reader_compile_args =
+      BuildPartialKReductionReaderCompileArgs(
+          output_accessor, output_binding.name, final_binding, partial_binding);
+  const std::vector<uint32_t> writer_compile_args =
+      BuildPartialKReductionWriterCompileArgs(
+          output_accessor, output_binding.name, final_binding);
+
+  KernelHandle reader = CreateKernel(
+      program, kernel_paths.reader, launch_core_ranges,
+      DataMovementConfig{.processor = DataMovementProcessor::RISCV_0,
+                         .noc = NOC::RISCV_0_default,
+                         .compile_args = reader_compile_args});
+  KernelHandle compute = CreateKernel(
+      program, kernel_paths.compute, launch_core_ranges,
+      ComputeConfig{.math_fidelity = MathFidelity::HiFi4,
+                    .fp32_dest_acc_en = true,
+                    .dst_full_sync_en = false,
+                    .unpack_to_dest_mode = {},
+                    .bfp8_pack_precise = false,
+                    .math_approx_mode = false,
+                    .compile_args = {},
+                    .defines = {},
+                    .named_compile_args = {}});
+  (void)compute;
+  KernelHandle writer = CreateKernel(
+      program, kernel_paths.writer, launch_core_ranges,
+      DataMovementConfig{.processor = DataMovementProcessor::RISCV_1,
+                         .noc = NOC::RISCV_1_default,
+                         .compile_args = writer_compile_args});
+
+  const uint32_t final_addr =
+      static_cast<uint32_t>(final_binding.mesh_buffer->address() & 0xFFFFFFFF);
+  const uint32_t partial_addr =
+      static_cast<uint32_t>(partial_binding.mesh_buffer->address() & 0xFFFFFFFF);
+  const uint32_t xy_work = std::max<uint32_t>(
+      1, GetRuntimeLogicalGridX(spec) * GetRuntimeLogicalGridY(spec));
+  for (const DirectWorkItem& item : launch_wave.work_items) {
+    const uint32_t output_tile_start_id = item.work_id % xy_work;
+    SetRuntimeArgs(program, reader, item.core,
+                   {final_addr, partial_addr, output_tile_start_id});
+    SetRuntimeArgs(program, writer, item.core,
+                   {final_addr, output_tile_start_id});
+  }
+
+  distributed::MeshWorkload workload;
+  distributed::MeshCoordinateRange device_range(mesh_device.shape());
+  workload.add_program(device_range, std::move(program));
+  LOG(INFO) << "Direct path: enqueue device partial-K reduction for " << func_name
+            << " with " << launch_wave.work_items.size()
+            << " logical output tile(s)";
+  distributed::EnqueueMeshWorkload(cq, workload, /*blocking=*/true);
 }
 
 static std::vector<KernelHandle> CreateProgramKernelsFromSpec(
@@ -3660,7 +3950,9 @@ void BlackholeModuleNode::ExecuteDirect(
             << launch_waves.size() << " launch wave(s) for " << func_name;
 
   auto enqueue_launch_waves = [&](const std::vector<DirectLaunchWave>& waves,
-                                  const std::string& wave_label) {
+                                  const std::string& wave_label,
+                                  const std::unordered_map<std::string, RuntimeBufferBinding>&
+                                      runtime_buffers) {
     for (size_t wave_index = 0; wave_index < waves.size(); ++wave_index) {
       const auto& launch_wave = waves[wave_index];
       const CoreRangeSet launch_core_ranges(launch_wave.launch_cores);
@@ -3676,12 +3968,11 @@ void BlackholeModuleNode::ExecuteDirect(
       CreateCircularBuffersFromSpec(program, launch_core_ranges, spec);
 
       std::vector<KernelHandle> kernels = CreateProgramKernelsFromSpec(
-          program, launch_core_ranges, spec, runtime_buffer_state.runtime_buffers,
-          semaphore_ids, kernel_paths);
+          program, launch_core_ranges, spec, runtime_buffers, semaphore_ids,
+          kernel_paths);
 
       ApplyWorkItemRuntimeArgs(program, spec, kernels, launch_wave.work_items, *mesh_device,
-                               runtime_buffer_state.runtime_buffers, semaphore_ids,
-                               scalar_args);
+                               runtime_buffers, semaphore_ids, scalar_args);
 
       distributed::MeshWorkload workload;
       distributed::MeshCoordinateRange device_range(mesh_device->shape());
@@ -3695,6 +3986,12 @@ void BlackholeModuleNode::ExecuteDirect(
 
   if (RequiresDirectRuntimePartialKGemmReduction(spec)) {
     const auto gemm = GetPrimaryGemmCompute(spec);
+    ICHECK_EQ(gemm.c_tensor_dtype, "Float32")
+        << "Blackhole partial-K direct GEMM device reduction currently requires float32 output tensors";
+    ICHECK_EQ(gemm.c_cb_dtype, "Float32")
+        << "Blackhole partial-K direct GEMM device reduction currently requires float32 output CBs";
+    ICHECK_EQ(gemm.accumulator_dtype, "Float32")
+        << "Blackhole partial-K direct GEMM device reduction currently requires float32 accumulators";
     const RuntimeTensorBinding* output_binding =
         FindRuntimeBinding(buffer_args, gemm.c_buffer);
     ICHECK(output_binding != nullptr && output_binding->is_output)
@@ -3705,8 +4002,33 @@ void BlackholeModuleNode::ExecuteDirect(
     ICHECK(materialized_output == nullptr || materialized_output->live_form_kind.empty())
         << "Blackhole partial-K direct GEMM reduction currently admits direct float32 "
            "output buffers; materialized output publication is a separate reduction path";
+    const AccessorSpec* output_accessor =
+        FindRuntimeAccessorSpec(spec, output_binding->name);
+    ICHECK(output_accessor != nullptr)
+        << "Blackhole partial-K direct GEMM reduction requires output accessor for "
+        << output_binding->name;
+    ICHECK_EQ(output_accessor->layout, "sharded")
+        << "Blackhole partial-K direct GEMM reduction currently requires sharded output accessor";
+    ICHECK_EQ(output_accessor->memory_space, "l1")
+        << "Blackhole partial-K direct GEMM reduction currently requires L1 output accessor";
+    const auto& output_materialization =
+        ResolveBufferMaterializationSpec(spec, output_binding->name);
+    ICHECK_GT(output_materialization.transport_page_size_bytes, 0U)
+        << "Blackhole partial-K direct GEMM reduction requires output tile page size";
+    ICHECK_GT(output_accessor->compile_time_arg_count, 0U)
+        << "Blackhole partial-K direct GEMM reduction requires static output accessor metadata";
 
-    std::vector<float> accumulated;
+    RuntimeBufferBinding partial_output_binding =
+        CreatePartialKOutputBuffer(mesh_device.get(), spec, *output_binding);
+    auto final_it = runtime_buffer_state.runtime_buffers.find(output_binding->name);
+    ICHECK(final_it != runtime_buffer_state.runtime_buffers.end())
+        << "Missing runtime output binding for " << output_binding->name;
+    const RuntimeBufferBinding& final_output_binding = final_it->second;
+    const PartialKReductionKernelPaths reduction_kernel_paths =
+        WritePartialKReductionKernelSourceFiles(
+            func_name, tmp_dir, output_accessor->compile_time_arg_count,
+            output_materialization.transport_page_size_bytes);
+
     const uint32_t grid_z = GetRuntimeLogicalGridZ(spec);
     for (uint32_t z = 0; z < grid_z; ++z) {
       std::vector<DirectLaunchWave> z_waves =
@@ -3714,29 +4036,34 @@ void BlackholeModuleNode::ExecuteDirect(
       ICHECK(!z_waves.empty())
           << "Blackhole partial-K direct GEMM reduction requires work coverage for K shard "
           << z;
+      std::unordered_map<std::string, RuntimeBufferBinding> z_runtime_buffers =
+          runtime_buffer_state.runtime_buffers;
+      if (z > 0) {
+        z_runtime_buffers[output_binding->name] = partial_output_binding;
+      }
       enqueue_launch_waves(z_waves,
                            " partial-K shard " + std::to_string(z + 1) +
-                               "/" + std::to_string(grid_z));
-      auto it = runtime_buffer_state.runtime_buffers.find(output_binding->name);
-      ICHECK(it != runtime_buffer_state.runtime_buffers.end())
-          << "Missing runtime output binding for " << output_binding->name;
-      std::vector<uint8_t> output_data;
-      distributed::EnqueueReadMeshBuffer(cq, output_data, it->second.mesh_buffer,
-                                         /*blocking=*/true);
-      std::vector<float> partial =
-          DecodeGemmFloat32OutputToRowMajor(spec, *output_binding, output_data);
-      if (accumulated.empty()) {
-        accumulated.assign(partial.size(), 0.0f);
+                               "/" + std::to_string(grid_z),
+                           z_runtime_buffers);
+      if (z == 0) {
+        continue;
       }
-      ICHECK_EQ(accumulated.size(), partial.size())
-          << "Blackhole partial-K direct GEMM reduction read inconsistent partial size";
-      for (size_t i = 0; i < partial.size(); ++i) {
-        accumulated[i] += partial[i];
+      for (const DirectLaunchWave& reduction_wave : z_waves) {
+        EnqueuePartialKDeviceReduction(
+            cq, *mesh_device, spec, func_name, reduction_wave,
+            reduction_kernel_paths, *output_binding, final_output_binding,
+            partial_output_binding, *output_accessor,
+            output_materialization.transport_page_size_bytes);
       }
     }
-    CopyRowMajorFloat32ToTensor(output_binding->tensor, accumulated);
+    std::vector<uint8_t> output_data;
+    auto final_mesh_buffer = final_output_binding.mesh_buffer;
+    distributed::EnqueueReadMeshBuffer(cq, output_data,
+                                       final_mesh_buffer,
+                                       /*blocking=*/true);
+    CopyOutputFromDeviceBuffer(spec, *output_binding, output_data);
   } else {
-    enqueue_launch_waves(launch_waves, "");
+    enqueue_launch_waves(launch_waves, "", runtime_buffer_state.runtime_buffers);
 
     // Read back results
     for (const auto& binding : buffer_args) {

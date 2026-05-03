@@ -26,17 +26,22 @@ correctness, static external sharded-L1 GEMM direct correctness for the first
 admitted bf16 layouts including 2x2 multi-core sharded execution and all
 external bf16 input/output tensors, plus a 110-core many-core all-bf16
 sharded execution gate, plus K-dimension width-sharded bf16 GEMM direct
-runtime correctness through partial-C accumulation across K shards, explicit
+runtime correctness through device-side partial-C reduction across K shards,
+explicit
 `T.MemoryConfig` / `T.annotate_memory_config` placement intent,
 `TTTensorMemoryConfigPlan`, `TTOpShardingContract`,
 `TTPlacementResolutionPlan`, and `TTReshardPlan` projection for the current
 interleaved-DRAM to resident-L1 staged-copy conversion.
 
 T5's K-sharded direct-runtime path executes each K shard as a separate
-logical-z wave and uses the direct runtime as the blocking partial-sum
-barrier before writing the final host-visible output. It proves runtime
-correctness for cross-core partial sums, but it does not claim a production
-device-side semaphore/atomic reduce protocol. T5 also does not claim implicit
+logical-z wave and uses the direct runtime as the blocking partial-sum barrier.
+The first `bk` wave writes final `C`; later `bk` waves write a partial-C scratch
+buffer, then a runtime-issued TT-Metal tile-add reduction program reads final
+and partial `C` through sharded accessors and writes the reduced tile back to
+final `C`. The host only reads the final output after device reductions finish.
+This proves direct-runtime correctness for cross-core partial sums, but it does
+not claim a production single-launch semaphore/atomic reduce protocol. T5 also
+does not claim implicit
 retile/work-coarsening, production DRAM-sharded weights, N-D production cases,
 mesh/CCL/NoC, or distributed production variants.  Those remain later work
 and must consume the projected placement/conversion/accessor records instead
@@ -132,8 +137,9 @@ bf16-input / fp32-output, 2x2 all-external-bf16, and 110-core many-core
 all-external-bf16 cases through `BlackholeModule`. T5 also admits the first
 K-dimension sharded GEMM correctness path: `A` and `B` are width-sharded on
 their K dimension, `T.Kernel(grid_x, grid_y, k_shards)` projects
-`logical_grid_z`, and direct runtime accumulates fp32 partial-C outputs from
-the K-shard waves before returning final `C`.
+`logical_grid_z`, direct runtime maps each K shard to a logical-z wave, and a
+device-side tile-add reduction program merges fp32 partial-C scratch output
+into final `C` before host readback.
 
 Unsupported external sharded-L1 GEMM layouts that require a logical work
 mapping change now fail closed from typed records: a runtime-visible sharded
@@ -205,7 +211,7 @@ T6 is complete only when:
 - `pytest -q testing/python/transform/test_blackhole_spatial_ir.py`
   passed: `104 passed`.
 
-2026-05-04 UTC T5 K-dimension sharded GEMM partial-sum runtime:
+2026-05-04 UTC T5 K-dimension sharded GEMM device partial-sum runtime:
 
 - `cmake --build tilelang_repo/build -- -j32` passed.
 - K-sharded direct-runtime selector:
@@ -223,7 +229,7 @@ T6 is complete only when:
 - The K-sharded many-core gate covers `M=320`, `N=352`, `K=512`,
   `logical_grid = 11 x 10 x 2`, 110 physical worker cores, 220 logical work
   items, width-sharded A/B K placement, block-sharded C placement, and
-  direct-runtime fp32 partial-C accumulation across the two K shards.
+  direct-runtime device-side fp32 partial-C reduction across the two K shards.
 
 2026-05-03 UTC T5 static external sharded-L1 GEMM:
 

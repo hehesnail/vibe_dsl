@@ -2180,16 +2180,19 @@
     serialization、codegen 和 direct-runtime work context。
   - sharded accessor count 从 `TTTensorMemoryConfigPlan.logical_shape` 和
     `TTBufferDistributionPlan.shard_shape/shard_grid_shape` 一起推导。
-  - direct runtime 对 partial-K GEMM 按 K shard 构造 z-wave，执行每个
-    shard 的 xy work 后 blocking read fp32 partial C，并在 host 侧累加。
+  - direct runtime 对 partial-K GEMM 按 K shard 构造 z-wave，`bk=0` 写
+    final `C`，后续 shard 写 partial-C scratch，然后用 runtime-issued
+    TT-Metal tile-add reduction program 在设备端把 partial `C` 合进 final
+    `C`。
   - codegen 支持 `logical_block_xy_linear` 的 x/y 反解，writer 使用正确
     output tile。
 - **教训**:
   - K sharding 的测试必须真的让 A/B 在 K 维 width-sharded，并验证
     `logical_grid_z > 1` 和 final correctness。多 core M/N sharding 不等价
     于 cross-core partial sum。
-  - direct-runtime host-side partial accumulation 是 runtime correctness
-    protocol；不要把它表述成 device-side reduce/synchronization 已经完成。
+  - direct-runtime device-side partial reduction 目前依赖 blocking z-wave /
+    reduction wave barriers；不要把它表述成 production single-launch
+    semaphore/atomic reduce 已经完成。
 
 ## 3. 环境问题速查
 

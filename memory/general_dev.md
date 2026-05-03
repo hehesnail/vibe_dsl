@@ -2186,10 +2186,12 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   `T.Kernel(grid_x, grid_y, k_shards)` project `logical_grid_z`; merely using
   more M/N cores does not exercise cross-core partial sums.  The direct
   runtime correctness path can use each `bk` as a separate blocking z-wave:
-  run the xy work for one K shard, read the fp32 partial C, accumulate on the
-  host, then continue with the next K shard.  This is a valid direct-runtime
-  correctness barrier, but it should not be documented as a production
-  device-side semaphore/atomic reduce protocol.
+  run the xy work for one K shard, have `bk=0` write final `C`, have later
+  shards write partial-C scratch, and enqueue a TT-Metal tile-add reduction
+  program that reads final/partial `C` via sharded accessors and writes final
+  `C` back on device.  Host readback happens only after the device reductions.
+  This is a valid direct-runtime correctness barrier, but it should not be
+  documented as a production single-launch semaphore/atomic reduce protocol.
   Codegen for writer kernels must understand `logical_block_xy_linear` as
   both `blockIdx.x = xy % grid_x` and `blockIdx.y = (xy / grid_x) % grid_y`;
   otherwise partial-K writers can silently write every partial to tile 0 even
