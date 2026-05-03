@@ -55,6 +55,10 @@ An external accessor is admitted only when the executable record states:
 selected `args_config_bits` and buffer distribution.  Multiple accessors in a
 kernel must have non-overlapping offsets that match the TIR builtin
 `accessor_slot` operands.
+For static sharded L1 buffers, this count is the TT-Metal
+`TensorAccessorArgs` count after `BufferDistributionSpec` converts tensor and
+shard shapes into tile-page space and squeezes adjacent dimensions.  It is not
+the raw shard-grid rank.
 
 Unsupported cases fail from executable records before source/runtime guessing.
 Initial direct-runtime support may admit a narrower static-metadata subset,
@@ -129,8 +133,15 @@ The admitted T5 subset is the first static external sharded-L1 GEMM layout:
 - the selected GEMM consumes T4 `TTABIPlan` / `ExecutableSpec`
   `sharded_accessor_cta` records, including typed accessor offsets/counts,
   layout, memory space, and buffer distribution fields;
-- direct runtime executes the admitted bf16-input / fp32-output GEMM through
-  `BlackholeModule` using sharded L1 MeshBuffers;
+- direct runtime executes the admitted single-core bf16-input / fp32-output
+  GEMM and the hardened 2x2 multi-core GEMM through `BlackholeModule` using
+  sharded L1 MeshBuffers.  The 2x2 case covers `A` and `B` height-sharded L1
+  inputs and a block-sharded L1 output.  It runs both bf16-input /
+  fp32-output and all external bf16 input/output tensors;
+- all-external-bf16 output uses the explicit preclear plus
+  `clear_accum = false` post-merge cast path so the materialized bf16 tile is
+  published with `publication_protocol = pack_tile`, not an unadmitted
+  compute-thread mailbox/tilize cast path;
 - an external sharded L1 accessor whose `shard_grid_shape` is not covered by
   the attached `TTCoreGroup.work_packets` fails in `ValidateTTProgram` with a
   retile/work-coarsening diagnostic.
@@ -156,6 +167,8 @@ T5 validation must cover:
 
 - GEMM placement-contract tests for admitted input/output memory configs
 - source/spec tests proving GEMM accessor records match placement decisions
-- direct-runtime bf16 correctness for the first admitted sharded layout
+- direct-runtime bf16 correctness for the first admitted sharded layout,
+  including multi-core sharded execution and all external bf16 input/output
+  coverage
 - typed rejects for unsupported placement, conversion, page-shape, retile, or
   work-coarsening combinations

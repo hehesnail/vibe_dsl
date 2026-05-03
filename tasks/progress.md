@@ -8,7 +8,7 @@
 
 ## Status
 
-- Date: `2026-05-03`
+- Date: `2026-05-04`
 - Active task: `T6 topk`
 - Main chain:
   `Normalized Tile TIR -> SpatialPlan -> TTProgram -> ExecutableSpec`
@@ -18,12 +18,13 @@
 The current admitted direct-runtime surface is T1's buffer-address ABI, the
 completed T2 current-placement compute baseline, T3's first explicit
 placement / reshard projection surface, T4's external accessor ABI
-expansion, and T5's first admitted static sharded-L1 GEMM layout:
+expansion, and T5's hardened admitted static sharded-L1 GEMM layout:
 interleaved DRAM runtime buffers, staged-copy resident L1 / CB-backed views,
 the admitted 64B page-indexed copy path, static external sharded L1 accessors,
 admitted standalone leaf compute families, current-placement GEMM direct
 correctness, static external sharded-L1 GEMM direct correctness for the first
-admitted bf16 layout, explicit
+admitted bf16 layouts including 2x2 multi-core sharded execution and all
+external bf16 input/output tensors, explicit
 `T.MemoryConfig` / `T.annotate_memory_config` placement intent,
 `TTTensorMemoryConfigPlan`, `TTOpShardingContract`,
 `TTPlacementResolutionPlan`, and `TTReshardPlan` projection for the current
@@ -120,7 +121,9 @@ External `A`, `B`, and `C` tensors can carry explicit block-sharded L1
 placement intent when the shard grid is covered by the kernel work mapping.
 The GEMM source/spec/direct-runtime path consumes T4 `TTABIPlan` /
 `ExecutableSpec` sharded accessor records and direct runtime executes the
-admitted bf16-input / fp32-output case through `BlackholeModule`.
+admitted single-core bf16-input / fp32-output case plus the 2x2 multi-core
+bf16-input / fp32-output and all external bf16 cases through
+`BlackholeModule`.
 
 Unsupported external sharded-L1 GEMM layouts that require a logical work
 mapping change now fail closed from typed records: a runtime-visible sharded
@@ -168,6 +171,24 @@ T6 is complete only when:
 | Unsupported reason | Unsupported forms fail closed with typed diagnostics before source/runtime guessing. |
 
 ## Recent Verification
+
+2026-05-04 UTC T5 multi-core/all-bf16 sharded GEMM hardening:
+
+- `cmake --build build -- -j32` passed.
+- TT-Sim T5/T4 targeted selector:
+  `test_blackhole_t5_external_sharded_l1_gemm_projects_accessor_contracts`,
+  `test_blackhole_t5_external_sharded_l1_gemm_rejects_unmapped_shard_grid`,
+  `test_blackhole_t5_external_sharded_l1_gemm_direct_runtime_bf16`,
+  `test_blackhole_t5_multicore_external_sharded_l1_gemm_direct_runtime_bf16`,
+  `test_blackhole_t5_multicore_external_sharded_l1_gemm_direct_runtime_all_bf16`,
+  and
+  `test_blackhole_t4_external_sharded_l1_accessor_projects_from_memory_config`
+  passed: `6 passed`.
+- GEMM non-direct regression subset:
+  `pytest -q testing/python/target/blackhole/test_blackhole_gemm.py -k 'not direct_runtime and not direct_call and not gemm_basic and not multicore' --tb=short`
+  passed: `45 passed, 2 skipped, 17 deselected`.
+- `pytest -q testing/python/transform/test_blackhole_spatial_ir.py`
+  passed: `104 passed`.
 
 2026-05-03 UTC T5 static external sharded-L1 GEMM:
 
@@ -333,7 +354,9 @@ Large tasks must land through these smaller checkpoints.
   accessors whose shard grid is not covered by work packets now reject with a
   typed retile/work-coarsening diagnostic.
 - T5.3 First sharded GEMM correctness (complete):
-  direct correctness for the first admitted sharded layout variant.
+  direct correctness for the first admitted sharded layout variant, including
+  single-core, 2x2 multi-core, bf16-input / fp32-output, and all external
+  bf16 input/output coverage.
 
 ### T7 Exact-CB / Materialization Primitives
 

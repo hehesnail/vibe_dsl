@@ -1502,19 +1502,135 @@ int64_t PositiveProduct(const Array<Integer> &values) {
   return product;
 }
 
+std::vector<int64_t> PositiveIntegerVector(const Array<Integer> &values) {
+  std::vector<int64_t> result;
+  result.reserve(values.size());
+  for (const Integer &value : values) {
+    if (value->value <= 0) {
+      return {};
+    }
+    result.push_back(value->value);
+  }
+  return result;
+}
+
+std::vector<int64_t> PositiveIntegerVectorFromShape(
+    const ffi::Array<PrimExpr> &shape) {
+  std::vector<int64_t> result;
+  result.reserve(shape.size());
+  for (const PrimExpr &extent : shape) {
+    auto maybe_extent = ConstIntValue(extent);
+    if (!maybe_extent || maybe_extent.value() <= 0) {
+      return {};
+    }
+    result.push_back(maybe_extent.value());
+  }
+  return result;
+}
+
+int64_t CeilDivPositive(int64_t value, int64_t divisor) {
+  ICHECK_GT(value, 0);
+  ICHECK_GT(divisor, 0);
+  return (value + divisor - 1) / divisor;
+}
+
+std::vector<int64_t> ConvertShapeToTilePages(std::vector<int64_t> shape) {
+  constexpr int64_t kTileRows = 32;
+  constexpr int64_t kTileCols = 32;
+  if (!shape.empty()) {
+    shape.back() = CeilDivPositive(shape.back(), kTileCols);
+  }
+  if (shape.size() >= 2) {
+    shape[shape.size() - 2] =
+        CeilDivPositive(shape[shape.size() - 2], kTileRows);
+  }
+  return shape;
+}
+
+int64_t SqueezedShapeRank(const std::vector<int64_t> &tensor_shape,
+                          const std::vector<int64_t> &shard_shape) {
+  if (tensor_shape.empty() || shard_shape.empty() ||
+      tensor_shape.size() < shard_shape.size()) {
+    return 0;
+  }
+  int64_t tensor_volume = 1;
+  for (int64_t dim : tensor_shape) {
+    tensor_volume *= dim;
+  }
+  int64_t shard_volume = 1;
+  for (int64_t dim : shard_shape) {
+    shard_volume *= dim;
+  }
+
+  std::vector<int64_t> squeezed_tensor_shape;
+  std::vector<int64_t> squeezed_shard_shape;
+  bool matching_dims_sequence = false;
+  bool last_dim_divisible = false;
+  int64_t current_tensor_volume = 1;
+  int64_t current_shard_volume = 1;
+  for (int64_t offset = 1; offset <= static_cast<int64_t>(shard_shape.size());
+       ++offset) {
+    const int64_t tensor_size = tensor_shape[tensor_shape.size() - offset];
+    const int64_t shard_size = shard_shape[shard_shape.size() - offset];
+    bool should_merge_dims = false;
+    if (offset > 1) {
+      should_merge_dims =
+          matching_dims_sequence || (shard_size == 1 && last_dim_divisible);
+    }
+    if (should_merge_dims) {
+      ICHECK(!squeezed_tensor_shape.empty());
+      ICHECK(!squeezed_shard_shape.empty());
+      squeezed_tensor_shape.back() *= tensor_size;
+      squeezed_shard_shape.back() *= shard_size;
+    } else {
+      squeezed_tensor_shape.push_back(tensor_size);
+      squeezed_shard_shape.push_back(shard_size);
+      matching_dims_sequence = true;
+    }
+    matching_dims_sequence &= tensor_size == shard_size;
+    last_dim_divisible = tensor_size % shard_size == 0;
+
+    current_tensor_volume *= tensor_size;
+    current_shard_volume *= shard_size;
+    if (current_tensor_volume == tensor_volume &&
+        current_shard_volume == shard_volume) {
+      break;
+    }
+  }
+  for (int64_t offset = static_cast<int64_t>(shard_shape.size()) + 1;
+       offset <= static_cast<int64_t>(tensor_shape.size()); ++offset) {
+    ICHECK(!squeezed_tensor_shape.empty());
+    squeezed_tensor_shape.back() *= tensor_shape[tensor_shape.size() - offset];
+  }
+  return static_cast<int64_t>(squeezed_tensor_shape.size());
+}
+
+int64_t StaticShardedAccessorRankFromDistribution(
+    const TTBufferDistributionPlan &distribution) {
+  std::vector<int64_t> tensor_shape =
+      PositiveIntegerVectorFromShape(distribution->logical_shape);
+  std::vector<int64_t> shard_shape =
+      PositiveIntegerVector(distribution->shard_shape);
+  if (tensor_shape.empty() || shard_shape.empty()) {
+    return std::min<int64_t>(
+        static_cast<int64_t>(distribution->shard_shape.size()), 1);
+  }
+  // TensorAccessorArgs uses TT-Metal's page-space BufferDistributionSpec,
+  // whose constructor squeezes adjacent dimensions before emitting rank.
+  const int64_t squeezed_rank = SqueezedShapeRank(
+      ConvertShapeToTilePages(std::move(tensor_shape)),
+      ConvertShapeToTilePages(std::move(shard_shape)));
+  if (squeezed_rank > 0) {
+    return squeezed_rank;
+  }
+  return std::min<int64_t>(
+      static_cast<int64_t>(distribution->shard_shape.size()), 1);
+}
+
 int64_t AccessorCompileTimeArgCountFromDistribution(
     const TTBufferDistributionPlan &distribution) {
   if (distribution->distribution_kind == "sharded") {
-    int64_t rank = 0;
-    for (const Integer &dim : distribution->shard_grid_shape) {
-      if (dim->value > 1) {
-        ++rank;
-      }
-    }
-    if (rank == 0) {
-      rank = std::min<int64_t>(
-          static_cast<int64_t>(distribution->shard_shape.size()), 1);
-    }
+    const int64_t rank = StaticShardedAccessorRankFromDistribution(distribution);
     const int64_t banks = PositiveProduct(distribution->shard_grid_shape);
     if (rank <= 0 || banks <= 0) {
       return 0;

@@ -2163,3 +2163,14 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   evidence is the accessor record itself.  Device-local flash-attention
   materialization distributions may have shard-grid mechanics that are not
   external accessor claims.
+- 2026-05-04 T5 static sharded-L1 TensorAccessor ABI:
+  `compile_time_arg_count` for sharded accessors must mirror TT-Metal
+  `TensorAccessorArgs`, not the raw shard-grid rank.  TT-Metal first converts
+  tensor/shard shape to tile-page space and `BufferDistributionSpec` squeezes
+  adjacent dimensions; a 2x2 block-sharded 64x64 output can therefore emit a
+  rank-1 accessor with count 8, while 1x2 height-sharded 64x128 operands emit
+  count 7.  For all-external-bf16 GEMM output, use the explicit preclear +
+  `clear_accum=False` post-merge cast path so the bf16 fragment is published
+  with `pack_tile`; direct `fp32 fragment -> bf16 output` creates an
+  unsupported compute cast, and an ordinary fragment-cast materialization can
+  hit the direct-runtime `cb_republish` gate.

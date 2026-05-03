@@ -2094,6 +2094,46 @@
     distribution field can be shared by external buffers and internal
     materialization mechanics with different legality rules.
 
+#### T5 multi-core sharded GEMM exposed TensorAccessor rank and bf16 publish gaps
+
+- **症状**:
+  - 2x2 multi-core external sharded-L1 GEMM 的 fp32-output direct runtime
+    先在 C accessor 上报
+    `expected 10, materialized 8`；把 rank/shard_shape 计数硬减后又在
+    A/B 上报 `expected 6, materialized 7`。
+  - all-external-bf16 variant 如果直接把 fp32 accumulator copy 到 bf16
+    output，会在 `PlanTTCompute` 因残留 `cast` 被拒；如果显式
+    `fp32 fragment -> bf16 fragment -> C`，但不走 post-merge pack publish，
+    direct runtime 会报
+    `thread-distributed cb_republish materialization is not admitted`。
+- **根因**:
+  - TileLang 侧用 shard-grid 的非 1 维度数估算
+    `TensorAccessorArgs` rank；TT-Metal 实际在
+    `BufferDistributionSpec::from_shard_spec` 中先转 tile pages，再调用
+    `squeeze_shape_ranks`。因此 2x2 block-sharded 输出在 accessor ABI 中
+    可以是 rank 1。
+  - all-bf16 输出不是 writer 可隐式兜底的 cast。要被当前 direct runtime
+    接收，post-GEMM bf16 cast 必须被 GEMM lowering 识别为 post-merge
+    publish，并用 `pack_tile` 发布。
+- **修法**:
+  - `BuildTTProgram` 的 sharded accessor count 改为按 tile-page shape
+    squeeze 后的 rank 计算：static args 为
+    `args_config + aligned_page_size + rank + num_banks + tensor_shape +
+    shard_shape + packed_bank_coords`。
+  - T5 测试增加 64x64x128、2x2 work grid 的 external sharded-L1 GEMM：
+    A/B height-sharded，C block-sharded，并断言 A/B/C accessor counts 为
+    7/7/8。
+  - all-external-bf16 case 使用 `T.clear(C_local)` +
+    `T.gemm(..., clear_accum=False)` + post-merge cast 到 bf16 fragment，
+    并断言 materialization `publication_protocol = pack_tile`。
+- **教训**:
+  - sharded accessor ABI 的 rank 是 TT-Metal page-space rank，不是硬件
+    core-grid rank。测试必须覆盖 multi-core block sharding，否则 1x1 /
+    1D shape 会把这个问题藏住。
+  - "全 bf16" runtime correctness 要检查外部 ABI dtype 和 materialization
+    protocol；只看输出 dtype 或 projection metadata 容易漏掉 direct runtime
+    还未接收的 cast/publication path。
+
 ## 3. 环境问题速查
 
 | 问题 | 解决 |
