@@ -871,6 +871,7 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
                                 const std::vector<ComputeOperandPlanSeed>& operands);
   void RecordIndexTableAddressing(const std::string& index_buffer,
                                   const tvm::tir::BufferLoadNode* table_load);
+  tvm::PrimExpr NormalizeRuntimeTileStartScale(const tvm::PrimExpr& expr) const;
 
   // StmtExprMutator overrides
   tvm::tir::Stmt VisitStmt_(const tvm::tir::AttrStmtNode* op) override;
@@ -914,6 +915,8 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   std::string segment_row_count_index_buffer_name_;
   std::string segment_row_subject_buffer_name_;
   std::unordered_set<std::string> segment_row_shared_buffer_names_;
+  std::unordered_map<std::string, int64_t> runtime_arg_tile_start_scale_by_name_;
+  std::unordered_map<const tvm::tir::VarNode*, int64_t> runtime_arg_tile_start_scale_by_var_;
   std::unordered_map<std::string, std::string> host_buffer_by_compute_operand_buffer_;
   std::unordered_map<std::string, std::string> direct_copy_source_by_buffer_identity_;
   std::unordered_map<std::string, tvm::tir::Buffer> buffer_by_identity_;

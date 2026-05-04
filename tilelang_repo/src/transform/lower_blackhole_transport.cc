@@ -35,6 +35,7 @@
 #include <algorithm>
 #include <functional>
 #include <optional>
+#include <utility>
 #include <vector>
 
 #include "../tir/builtin_blackhole.h"
@@ -792,6 +793,43 @@ void CollectConjuncts(const PrimExpr& expr, std::vector<PrimExpr>* conjuncts) {
   conjuncts->push_back(expr);
 }
 
+std::optional<std::string> RuntimeArgU32Name(const PrimExpr& expr) {
+  const PrimExpr stripped = StripCasts(expr);
+  const auto* call = stripped.as<tir::CallNode>();
+  if (call == nullptr || !call->op.same_as(blackhole_runtime_arg_u32()) ||
+      call->args.size() != 1U) {
+    return std::nullopt;
+  }
+  const auto* name = call->args[0].as<tir::StringImmNode>();
+  if (name == nullptr) {
+    return std::nullopt;
+  }
+  return name->value;
+}
+
+std::optional<std::pair<std::string, int64_t>> RuntimeArgTimesInt(
+    const PrimExpr& expr) {
+  const PrimExpr stripped = StripCasts(expr);
+  if (std::optional<std::string> arg_name = RuntimeArgU32Name(stripped)) {
+    return std::make_pair(arg_name.value(), 1);
+  }
+  const auto* mul = stripped.as<tir::MulNode>();
+  if (mul == nullptr) {
+    return std::nullopt;
+  }
+  if (std::optional<std::string> arg_name = RuntimeArgU32Name(mul->a)) {
+    if (const auto* factor = StripCasts(mul->b).as<tir::IntImmNode>()) {
+      return std::make_pair(arg_name.value(), factor->value);
+    }
+  }
+  if (std::optional<std::string> arg_name = RuntimeArgU32Name(mul->b)) {
+    if (const auto* factor = StripCasts(mul->a).as<tir::IntImmNode>()) {
+      return std::make_pair(arg_name.value(), factor->value);
+    }
+  }
+  return std::nullopt;
+}
+
 bool PlanTTKernelABI::IsCopyOperation(const BufferStoreNode* op) const {
   if (const auto* load = GetCopyLoad(op)) {
     if (op->buffer.same_as(load->buffer)) {
@@ -1056,9 +1094,59 @@ PrimExpr PlanTTKernelABI::InferCopyTileIndex(const BufferStoreNode* op,
   const StagedCopyTransportGeometry geometry = BuildStagedCopyTransportGeometry(
       shared_buffer, shared_rows, shared_cols, global_info.global_rows, global_info.global_cols,
       use_page_transport);
-  return LinearizeStagedCopyTransportIndex(
+  return NormalizeRuntimeTileStartScale(LinearizeStagedCopyTransportIndex(
       &analyzer, global_info.base_row, global_info.base_col, global_info.outer_slice_index,
-      geometry);
+      geometry));
+}
+
+PrimExpr PlanTTKernelABI::NormalizeRuntimeTileStartScale(const PrimExpr& expr) const {
+  auto normalize_var_scale = [&](const PrimExpr& current) -> std::optional<PrimExpr> {
+    const PrimExpr stripped = StripCasts(current);
+    if (const auto* var = stripped.as<tir::VarNode>()) {
+      auto scale_it = runtime_arg_tile_start_scale_by_var_.find(var);
+      if (scale_it != runtime_arg_tile_start_scale_by_var_.end() &&
+          scale_it->second == 1) {
+        return GetRef<Var>(var);
+      }
+      return std::nullopt;
+    }
+    const auto* mul = stripped.as<tir::MulNode>();
+    if (mul == nullptr) {
+      return std::nullopt;
+    }
+    auto match_scaled_var = [&](const PrimExpr& maybe_var,
+                                const PrimExpr& maybe_factor) -> std::optional<PrimExpr> {
+      const auto* var = StripCasts(maybe_var).as<tir::VarNode>();
+      const auto* factor = StripCasts(maybe_factor).as<tir::IntImmNode>();
+      if (var == nullptr || factor == nullptr) {
+        return std::nullopt;
+      }
+      auto scale_it = runtime_arg_tile_start_scale_by_var_.find(var);
+      if (scale_it != runtime_arg_tile_start_scale_by_var_.end() &&
+          scale_it->second == factor->value && factor->value > 0) {
+        return GetRef<Var>(var);
+      }
+      return std::nullopt;
+    };
+    if (std::optional<PrimExpr> normalized =
+            match_scaled_var(mul->a, mul->b)) {
+      return normalized;
+    }
+    return match_scaled_var(mul->b, mul->a);
+  };
+  if (std::optional<PrimExpr> normalized = normalize_var_scale(expr)) {
+    return normalized.value();
+  }
+  if (std::optional<std::pair<std::string, int64_t>> scaled =
+          RuntimeArgTimesInt(expr)) {
+    auto scale_it = runtime_arg_tile_start_scale_by_name_.find(scaled->first);
+    if (scale_it != runtime_arg_tile_start_scale_by_name_.end() &&
+        scale_it->second == scaled->second && scaled->second > 0) {
+      return Call(DataType::UInt(32), blackhole_runtime_arg_u32(),
+                  {StringImm(scaled->first)});
+    }
+  }
+  return expr;
 }
 
 PrimExpr PlanTTKernelABI::InferStagedCopyBaseTileIndex(
@@ -1112,8 +1200,9 @@ PrimExpr PlanTTKernelABI::InferStagedCopyBaseTileIndex(
       UseStagedCopyPageTransportForShape(shared_rows, shared_cols));
   const PrimExpr transport_row = transpose_b_reader ? global_info.base_col : global_info.base_row;
   const PrimExpr transport_col = transpose_b_reader ? global_info.base_row : global_info.base_col;
-  return LinearizeStagedCopyTransportIndex(&analyzer, transport_row, transport_col,
-                                           global_info.outer_slice_index, geometry);
+  return NormalizeRuntimeTileStartScale(
+      LinearizeStagedCopyTransportIndex(&analyzer, transport_row, transport_col,
+                                        global_info.outer_slice_index, geometry));
 }
 
 const BufferStoreNode* PlanTTKernelABI::FindNestedCopyStore(

@@ -1334,6 +1334,37 @@ def block_indexed_2d_staged_copy_kernel(
     raise ValueError(f"Unsupported block_indexed_2d_staged_copy_kernel dtype: {dtype}")
 
 
+def block_indexed_2tile_staged_copy_kernel(
+    grid_x: int,
+    source_blocks: int,
+    block_tiles: int = 2,
+    tile_m: int = 32,
+    tile_n: int = 32,
+    dtype: str = "bfloat16",
+):
+    """Define a copy kernel whose input block spans multiple contiguous tiles."""
+    source_m = source_blocks * block_tiles * tile_m
+    output_m = grid_x * block_tiles * tile_m
+    block_m = block_tiles * tile_m
+
+    if dtype == "bfloat16":
+        @T.prim_func
+        def main(
+            A: T.Tensor((source_m, tile_n), "bfloat16"),
+            BlockIndices: T.Tensor((grid_x,), "int32"),
+            B: T.Tensor((output_m, tile_n), "bfloat16"),
+        ):
+            with T.Kernel(grid_x, 1) as (bx, by):
+                A_shared = T.alloc_shared((block_m, tile_n), "bfloat16")
+                block_id = BlockIndices[bx]
+                T.copy(A[block_id * block_m, 0], A_shared)
+                T.copy(A_shared, B[bx * block_m, 0])
+
+        return main
+
+    raise ValueError(f"Unsupported block_indexed_2tile_staged_copy_kernel dtype: {dtype}")
+
+
 def ragged_row_masked_staged_copy_kernel(
     grid_x: int,
     tile_m: int = 32,

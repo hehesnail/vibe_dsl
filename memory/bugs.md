@@ -2657,6 +2657,32 @@
   - T8 indexed/ragged/segmented aggregate selectors including the paged case
     reported `14 passed`.
 
+### Scaled indexed block copies double-applied the table scale in source
+
+- **症状**:
+  - A two-tile block-indexed copy projected A `tile_start` with
+    `index_value_scale=2`, but generated source read
+    `a_tile_start_id * 2` and `a_tile_start_id * 2 + 1`.
+  - Direct runtime already scaled the table value before passing
+    `a_tile_start_id`, so source and runtime disagreed on whether the arg was
+    a block id or a tile id.
+- **根因**:
+  - The table coefficient was correctly derived from `AccessRegion` evidence
+    and stored on `TTPerWorkArgSpec`, but source tile-index inference still
+    evaluated the original TIR block-id expression under the Let-bound runtime
+    arg variable.
+  - That left the descriptor scale as owner truth for runtime while source
+    kept an implicit copy of the same scale in the address expression.
+- **修法**:
+  - Record the TIR-derived tile scale as pass-local mechanics on the
+    runtime-arg Let variable.
+  - Normalize base tile-index expressions such as `block_id * 2` back to
+    `block_id` when `block_id` is bound to a scaled tile-start runtime arg.
+- **验证**:
+  - Focused scaled-block structure/runtime selectors reported `2 passed`.
+  - T8 indexed/ragged/segmented aggregate selectors including scaled-block and
+    paged cases reported `16 passed`.
+
 ## 3. 环境问题速查
 
 | 问题 | 解决 |

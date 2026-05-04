@@ -13,6 +13,7 @@ from tvm.tir import stmt_functor
 from .common import (
     assert_tensors_close_or_dump,
     check_blackhole_direct_execution_requirements,
+    block_indexed_2tile_staged_copy_kernel,
     block_indexed_2d_staged_copy_kernel,
     block_indexed_staged_copy_kernel,
     extract_blackhole_cb_configs,
@@ -808,6 +809,45 @@ def test_blackhole_module_direct_call_block_indexed_2d_copy_uses_table_addressin
         atol=1e-3,
         rtol=1e-3,
         failure_message="2D block-indexed direct-call output mismatch",
+    )
+
+
+def test_blackhole_module_direct_call_block_indexed_2tile_copy_uses_scaled_table():
+    can_run, msg = check_blackhole_direct_execution_requirements()
+    if not can_run:
+        pytest.skip(f"Blackhole requirements not met: {msg}")
+
+    grid_x, source_blocks, block_tiles = 3, 4, 2
+    a_torch = _bf16_matrix(source_blocks * block_tiles * 32, 32)
+    block_indices = torch.tensor([2, 0, 3], dtype=torch.int32)
+    b_output = torch.zeros((grid_x * block_tiles * 32, 32), dtype=torch.bfloat16)
+    b_ref = torch.cat(
+        [
+            a_torch[
+                int(block) * block_tiles * 32 : (int(block) + 1) * block_tiles * 32,
+                :,
+            ]
+            for block in block_indices
+        ],
+        dim=0,
+    )
+
+    target = Target("blackhole")
+    kernel = block_indexed_2tile_staged_copy_kernel(
+        grid_x=grid_x,
+        source_blocks=source_blocks,
+        block_tiles=block_tiles,
+    )
+    with target:
+        artifact = lower(kernel, target=target)
+
+    artifact.codegen_mod["main"](a_torch, block_indices, b_output)
+    assert_tensors_close_or_dump(
+        b_output,
+        b_ref,
+        atol=1e-3,
+        rtol=1e-3,
+        failure_message="2-tile block-indexed direct-call output mismatch",
     )
 
 

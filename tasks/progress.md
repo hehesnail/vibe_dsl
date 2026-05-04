@@ -23,7 +23,7 @@
 | T6 `topk` | Complete | Existing-TIR row-wise value/index selection runs through direct runtime for fp32 and bf16 values with exact `int32` indices, without a frontend topk op or selection plan. |
 | T7 Exact-CB / materialization primitives | Complete | Exact-CB materialization is admitted through typed live-form/materialization/consumer-binding records, including GEMM post-merge `pack_tile`, source-live `cb_republish`, and seq64 bf16 flash-attn exact-CB partial-combine direct runtime correctness. |
 | T7.5 Exact-CB liveness / allocation cutover | Complete | Covered exact-CB resident tiles use typed TTProgram/ExecutableSpec lifecycle, allocation, and release records; old loop-carried owner maps, materialization-pop fallback, and full-tile/slice ambiguity are fail-closed or deleted from the active path. |
-| T8 Irregular work domains / indexed access | Implementation | Grid-indexed, one-dimensional and launch-axis two-dimensional table-indexed tile descriptors, first predicate-derived ragged row bounds, copy-shaped paged `cache_seqlens`, and first non-uniform segmented row ranges carry TIR-derived evidence through TT per-work descriptors and direct runtime; broader indexed block/page traversal and workload-level ragged/grouped gates remain open. |
+| T8 Irregular work domains / indexed access | Implementation | Grid-indexed, one-dimensional and launch-axis two-dimensional table-indexed tile descriptors, scaled contiguous indexed-block copies, first predicate-derived ragged row bounds, copy-shaped paged `cache_seqlens`, and first non-uniform segmented row ranges carry TIR-derived evidence through TT per-work descriptors and direct runtime; broader sparse/page traversal and workload-level ragged/grouped gates remain open. |
 | T9 Workload first paths | Queued | Workload checkpoints decomposed into admitted primitive surfaces with direct-runtime correctness. |
 | T10 Distributed production variants | Queued | Mesh, CCL, NoC/multicast/global scheduling, distributed workload correctness, and production partial-K reduction protocol. |
 
@@ -146,8 +146,8 @@ Every active implementation task uses this acceptance table.
 ### T8 Irregular Work / Indexed Access
 
 - Indexed block/page traversal beyond the admitted launch-axis table-backed
-  per-work tile-start cases, where `BufferLoad` / `BufferStore` indices use an
-  operand such as `block_indices`.
+  and contiguous scaled-block cases, where `BufferLoad` / `BufferStore`
+  indices use operands such as sparse `block_indices`.
 - Broader ragged token/page forms beyond the admitted one-dimensional row-count
   and copy-shaped paged `cache_seqlens` predicate slices.
 - Broader segmented/grouped workload use beyond the admitted row-segment copy,
@@ -193,6 +193,25 @@ Each checkpoint needs its own direct-runtime correctness proof:
   `M=320`, `N=352`, `K>=512`, `logical_grid=11x10x2` or larger.
 
 ## Recent Verification
+
+2026-05-05 UTC T8 scaled indexed-block checkpoint:
+
+- `cmake --build build -j32` passed.
+- Minimal two-tile block-indexed staged copy now admits a table value as a
+  contiguous block id rather than a single tile id.  The A tile-start
+  descriptor carries `value_source=index_table`, `index_buffer=BlockIndices`,
+  and `index_value_scale=2`.
+- Direct runtime scales the table value to a tile start before passing
+  `a_tile_start_id`; source lowering consumes that runtime arg as the base
+  tile id and emits the second subtile as `a_tile_start_id + 1`, not
+  `a_tile_start_id * 2 + 1`.
+- Focused selectors
+  `test_blackhole_block_indexed_2tile_copy_scales_index_table_descriptor`
+  and
+  `test_blackhole_module_direct_call_block_indexed_2tile_copy_uses_scaled_table`
+  reported `2 passed`.
+- T8 indexed/ragged/segmented aggregate selectors including the scaled-block
+  and paged cases reported `16 passed`.
 
 2026-05-05 UTC T8 paged ragged cache-length checkpoint:
 

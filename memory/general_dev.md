@@ -2381,6 +2381,13 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   directly.  Direct runtime should materialize the table as a normal named
   input buffer, evaluate the per-work arg from host-side table data, and check
   the result against the target buffer's typed page count.
+- 2026-05-05 T8 scaled indexed-block descriptors:
+  If a table value is a block id and the TIR row expression scales it by a
+  whole number of 32-row tiles, keep the scale on the typed descriptor
+  (`index_value_scale=block_rows/32`).  Direct runtime should pass the scaled
+  tile start, and source tile-index inference should consume that runtime arg
+  as tile units.  Do not multiply `a_tile_start_id` by the same scale again in
+  generated source.
 - 2026-05-05 T8 ragged row-bound descriptors:
   Predicate-derived row bounds should be represented as typed per-work args
   (`descriptor_kind=valid_rows`, `value_source=index_table`) when a TIR

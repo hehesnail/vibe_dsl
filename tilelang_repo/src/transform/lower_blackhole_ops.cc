@@ -1862,6 +1862,8 @@ PrimFunc PlanTTKernelABI::Transform(const PrimFunc& func) {
   segment_row_count_index_buffer_name_.clear();
   segment_row_subject_buffer_name_.clear();
   segment_row_shared_buffer_names_.clear();
+  runtime_arg_tile_start_scale_by_name_.clear();
+  runtime_arg_tile_start_scale_by_var_.clear();
   host_buffer_by_compute_operand_buffer_.clear();
   direct_copy_source_by_buffer_identity_.clear();
   buffer_by_identity_.clear();
@@ -3124,6 +3126,13 @@ Stmt PlanTTKernelABI::VisitStmt_(const LetStmtNode* op) {
       segment_row_start_index_buffer_name_ = index_buffer;
       needs_segment_row_start_arg_ = true;
       arg_name = "a_segment_row_start";
+    } else if (coefficient.has_value() &&
+               coefficient.value() > 0 &&
+               coefficient.value() % kBlackholeTileRows == 0) {
+      runtime_arg_tile_start_scale_by_name_[arg_name] =
+          coefficient.value() / kBlackholeTileRows;
+      runtime_arg_tile_start_scale_by_var_[op->var.get()] =
+          coefficient.value() / kBlackholeTileRows;
     }
     PrimExpr per_work_table_value =
         Call(op->var.dtype(), blackhole_runtime_arg_u32(), {StringImm(arg_name)});

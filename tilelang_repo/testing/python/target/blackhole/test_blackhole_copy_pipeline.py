@@ -23,6 +23,7 @@ from .common import (
     extract_blackhole_segment_plan,
     extract_blackhole_total_l1_bytes,
     extract_blackhole_work_per_core,
+    block_indexed_2tile_staged_copy_kernel,
     block_indexed_2d_staged_copy_kernel,
     block_indexed_staged_copy_kernel,
     find_loop_annotation,
@@ -1288,6 +1289,39 @@ def test_blackhole_block_indexed_2d_copy_per_work_spec_carries_table_addressing(
     assert str(materializations["BlockIndices"]["layout"]) == "page_indexed"
     assert str(materializations["BlockIndices"]["memory_space"]) == "dram"
     assert int(materializations["BlockIndices"]["transport_page_size"]) == 4
+
+
+def test_blackhole_block_indexed_2tile_copy_scales_index_table_descriptor():
+    target = Target("blackhole")
+    with target:
+        artifact = lower(
+            block_indexed_2tile_staged_copy_kernel(
+                grid_x=3,
+                source_blocks=4,
+            ),
+            target=target,
+        )
+
+    executable_spec = _extract_blackhole_executable_spec(artifact)
+    kernel_spec = _require_blackhole_kernel(
+        executable_spec["kernels"], kind="fused_dataflow", core_type="brisc"
+    )
+    source = str(kernel_spec["source_code"])
+    assert "a_tile_start_id = get_arg_val<uint32_t>" in source
+    assert "BlockIndices" not in source
+    assert "a_tile_start_id + 1" in source
+
+    descriptors = {
+        (str(spec.get("buffer", "")), str(spec["descriptor_kind"])): spec
+        for spec in executable_spec["per_work_arg_specs"]
+    }
+
+    a_tile_start = descriptors[("A", "tile_start")]
+    assert str(a_tile_start["value_source"]) == "index_table"
+    assert str(a_tile_start["index_buffer"]) == "BlockIndices"
+    assert int(a_tile_start["index_value_scale"]) == 2
+    assert str(a_tile_start["access_region"])
+    assert int(a_tile_start["access_region_index"]) >= 0
 
 
 def test_blackhole_ragged_row_copy_uses_valid_rows_index_table_descriptor():

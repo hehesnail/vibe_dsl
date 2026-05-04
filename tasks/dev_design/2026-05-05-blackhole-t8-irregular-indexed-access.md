@@ -297,6 +297,12 @@ Implemented:
 - The two-dimensional case is covered by direct-runtime correctness and by a
   serialized-module round trip, so `BlackholeModule` save/load preserves the
   table addressing contract.
+- A minimal multi-tile indexed block copy is admitted for contiguous block
+  traversal.  When the TIR source row expression uses
+  `BlockIndices[bx] * block_rows + row`, the A tile-start descriptor carries
+  `index_value_scale=block_rows / 32`, direct runtime passes the scaled tile
+  start, and source lowering consumes that runtime arg as the base tile id
+  for each subtile instead of multiplying it by the block scale again.
 
 2026-05-05 ragged row-bound slice status:
 
@@ -364,8 +370,8 @@ Implemented:
 
 Still open for T8:
 
-- broader indexed block/page traversal beyond launch-axis addressed per-work
-  tile-start tables.
+- broader indexed block/page traversal beyond the admitted launch-axis table
+  addressing and contiguous scaled-block copy slices.
 - broader ragged token/page forms beyond the admitted row-count and
   copy-shaped paged cache-length predicate slices.
 
