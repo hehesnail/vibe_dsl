@@ -935,6 +935,7 @@ void PlanTTKernelABI::StoreSegmentPlan(PrimFunc &func) {
       !needs_ragged_page_index_arg_ &&
       !needs_segment_row_start_arg_ &&
       !needs_segment_row_count_arg_ &&
+      indexed_tile_start_runtime_args_.empty() &&
       !requires_compute_segment_) {
     segment_plan_ = Array<Any>();
     return;
@@ -963,14 +964,23 @@ void PlanTTKernelABI::StoreSegmentPlan(PrimFunc &func) {
           "a_segment_row_count", "a_segment_row_count", "uint32"));
     }
   };
+  auto append_indexed_tile_start_runtime_args = [&](Array<Any>* runtime_args) {
+    for (const IndexedTileStartRuntimeArg &arg :
+         indexed_tile_start_runtime_args_) {
+      runtime_args->push_back(
+          MakeRuntimeArg(arg.arg_name, arg.arg_name, "uint32"));
+    }
+  };
   if (segment_kinds.empty()) {
     Map<String, Any> kernel;
     kernel.Set("name", String("main"));
     kernel.Set("kind", String("fused_dataflow"));
     kernel.Set("core_type", String("brisc"));
     if (needs_ragged_row_bound_arg_ || needs_ragged_page_index_arg_ ||
-        needs_segment_row_start_arg_ || needs_segment_row_count_arg_) {
+        needs_segment_row_start_arg_ || needs_segment_row_count_arg_ ||
+        !indexed_tile_start_runtime_args_.empty()) {
       Array<Any> runtime_args;
+      append_indexed_tile_start_runtime_args(&runtime_args);
       append_row_bound_runtime_args(&runtime_args);
       kernel.Set("runtime_args", runtime_args);
     }
@@ -983,8 +993,10 @@ void PlanTTKernelABI::StoreSegmentPlan(PrimFunc &func) {
       kernel.Set("core_type", String(CoreTypeForSegmentKind(kind)));
       if (kind == "fused_dataflow" &&
           (needs_ragged_row_bound_arg_ || needs_segment_row_start_arg_ ||
-           needs_ragged_page_index_arg_ || needs_segment_row_count_arg_)) {
+           needs_ragged_page_index_arg_ || needs_segment_row_count_arg_ ||
+           !indexed_tile_start_runtime_args_.empty())) {
         Array<Any> runtime_args;
+        append_indexed_tile_start_runtime_args(&runtime_args);
         append_row_bound_runtime_args(&runtime_args);
         kernel.Set("runtime_args", runtime_args);
       }
@@ -1218,15 +1230,24 @@ void PlanTTKernelABI::StoreAccessorDescriptors(PrimFunc &func) {
       int64_t index_value_scale = spec->index_value_scale;
       std::vector<int64_t> index_table_shape;
       std::vector<std::string> index_table_index_sources;
+      for (const Integer &extent : spec->index_table_shape) {
+        index_table_shape.push_back(extent.IntValue());
+      }
+      for (const String &source : spec->index_table_index_sources) {
+        index_table_index_sources.push_back(static_cast<std::string>(source));
+      }
       if (static_cast<std::string>(spec->descriptor_kind) ==
               blackhole_runtime_arg_schema::kDescriptorTileStart &&
           !region->index_buffer.empty()) {
         value_source = blackhole_runtime_arg_schema::kValueSourceIndexTable;
-        index_buffer = region->index_buffer;
-        index_value_scale = region->index_value_scale;
+        if (index_buffer.empty()) {
+          index_buffer = region->index_buffer;
+          index_value_scale = region->index_value_scale;
+        }
       }
       auto addressing_it = index_table_addressing_by_buffer_.find(index_buffer);
-      if (addressing_it != index_table_addressing_by_buffer_.end()) {
+      if (index_table_shape.empty() &&
+          addressing_it != index_table_addressing_by_buffer_.end()) {
         index_table_shape = addressing_it->second.shape;
         index_table_index_sources = addressing_it->second.index_sources;
       }
@@ -1261,6 +1282,19 @@ void PlanTTKernelABI::StoreAccessorDescriptors(PrimFunc &func) {
             blackhole_runtime_arg_schema::kDescriptorTileStart,
             blackhole_runtime_arg_schema::kValueSourceWorkLinearId,
             copy_input_buffer_name));
+      }
+      for (const IndexedTileStartRuntimeArg &arg :
+           indexed_tile_start_runtime_args_) {
+        if (!runtime_args_contain_kind(arg.arg_name.c_str())) {
+          continue;
+        }
+        upsert_spec(MakePerWorkArgSpec(
+            arg.arg_name, runtime_arg_identity_for_kind(arg.arg_name.c_str()),
+            blackhole_runtime_arg_schema::kDescriptorTileStart,
+            blackhole_runtime_arg_schema::kValueSourceIndexTable,
+            copy_input_buffer_name, 0, "", -1, arg.index_buffer,
+            arg.index_value_scale, arg.addressing.shape,
+            arg.addressing.index_sources));
       }
       if (runtime_args_contain_kind("a_tile_num_tiles")) {
         upsert_spec(MakePerWorkArgSpec(

@@ -212,6 +212,16 @@ fallback only when the descriptor has no table-address fields; a descriptor
 that contains `index_table_shape` / `index_table_index_sources` must not
 reinterpret the table by flattened launch order.
 
+Sparse traversal can require more than one table-derived tile start inside the
+same logical work item.  The durable representation is still
+`TTPerWorkArgSpec`: each independent TIR table load that drives a distinct
+source tile start gets its own runtime arg identity, e.g.
+`a_tile_start_id`, `a_tile_start_id_1`, with its own table addressing fields.
+Constant table dimensions are represented as descriptor literals such as
+`constant:0` / `constant:1`, not recovered from source text or buffer names.
+Source code consumes only those runtime args; direct runtime evaluates each
+one from the projected descriptor and current work context.
+
 ## Validation Plan
 
 Structure:
@@ -303,6 +313,15 @@ Implemented:
   `index_value_scale=block_rows / 32`, direct runtime passes the scaled tile
   start, and source lowering consumes that runtime arg as the base tile id
   for each subtile instead of multiplying it by the block scale again.
+- A minimal sparse two-entry indexed traversal is admitted for one work item
+  reading two independently indexed source tiles.  `BlockIndices[bx, 0]` and
+  `BlockIndices[bx, 1]` lower to separate A tile-start runtime args
+  `a_tile_start_id` and `a_tile_start_id_1`; each descriptor carries
+  `index_table_shape=[grid_x, 2]` and its own
+  `index_table_index_sources`, using `constant:0` / `constant:1` for the
+  literal table dimension.  Source consumes the two projected runtime args and
+  emits no raw index-table read; direct runtime evaluates each arg from the
+  descriptor.
 
 2026-05-05 ragged row-bound slice status:
 
@@ -371,7 +390,7 @@ Implemented:
 Still open for T8:
 
 - broader indexed block/page traversal beyond the admitted launch-axis table
-  addressing and contiguous scaled-block copy slices.
+  addressing, contiguous scaled-block copy, and two-entry sparse copy slices.
 - broader ragged token/page forms beyond the admitted row-count and
   copy-shaped paged cache-length predicate slices.
 

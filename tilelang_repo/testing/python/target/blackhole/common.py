@@ -1365,6 +1365,39 @@ def block_indexed_2tile_staged_copy_kernel(
     raise ValueError(f"Unsupported block_indexed_2tile_staged_copy_kernel dtype: {dtype}")
 
 
+def block_indexed_sparse_2tile_staged_copy_kernel(
+    grid_x: int,
+    source_tiles: int,
+    tile_m: int = 32,
+    tile_n: int = 32,
+    dtype: str = "bfloat16",
+):
+    """Define a copy kernel whose two input tiles are independently table-indexed."""
+    source_m = source_tiles * tile_m
+    output_m = grid_x * 2 * tile_m
+
+    if dtype == "bfloat16":
+        @T.prim_func
+        def main(
+            A: T.Tensor((source_m, tile_n), "bfloat16"),
+            BlockIndices: T.Tensor((grid_x, 2), "int32"),
+            B: T.Tensor((output_m, tile_n), "bfloat16"),
+        ):
+            with T.Kernel(grid_x, 1) as (bx, by):
+                A0_shared = T.alloc_shared((tile_m, tile_n), "bfloat16")
+                A1_shared = T.alloc_shared((tile_m, tile_n), "bfloat16")
+                tile0 = BlockIndices[bx, 0]
+                tile1 = BlockIndices[bx, 1]
+                T.copy(A[tile0 * tile_m, 0], A0_shared)
+                T.copy(A[tile1 * tile_m, 0], A1_shared)
+                T.copy(A0_shared, B[bx * 2 * tile_m, 0])
+                T.copy(A1_shared, B[(bx * 2 + 1) * tile_m, 0])
+
+        return main
+
+    raise ValueError(f"Unsupported block_indexed_sparse_2tile_staged_copy_kernel dtype: {dtype}")
+
+
 def ragged_row_masked_staged_copy_kernel(
     grid_x: int,
     tile_m: int = 32,

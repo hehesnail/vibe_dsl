@@ -195,6 +195,11 @@
   `index_table_shape` plus launch-axis `index_table_index_sources` so
   direct runtime and serialization consume the same TIR-derived addressing
   contract.
+- Multiple table-backed tile starts in one work item are not one logical
+  `a_tile_start_id`.  Allocate one runtime arg identity per independent TIR
+  table load that drives a tile start, and put the table shape/index sources
+  on each `TTPerWorkArgSpec`; literal table dimensions belong in descriptor
+  sources such as `constant:0`, not in source/runtime name recovery.
 - For loop-carried exact-CB source rendering, keep the cursor singular and
   lifecycle-backed.  The old shape with separate `identity -> cb` and
   `identity -> buffer` maps plus a completed-state set allowed source lowering

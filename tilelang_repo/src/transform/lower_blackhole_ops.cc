@@ -1569,6 +1569,7 @@ PrimFunc PlanTTKernelABI::SelectComputeBuiltins(const PrimFunc& func) {
   block_index_var_names_.clear();
   block_index_source_by_var_.clear();
   index_table_addressing_by_buffer_.clear();
+  indexed_tile_start_runtime_args_.clear();
   cb_consumed_compute_input_pages_by_buffer_identity_.clear();
   cb_consumed_compute_input_use_count_by_buffer_identity_.clear();
   buffer_flow_facts_.clear();
@@ -1864,6 +1865,7 @@ PrimFunc PlanTTKernelABI::Transform(const PrimFunc& func) {
   segment_row_shared_buffer_names_.clear();
   runtime_arg_tile_start_scale_by_name_.clear();
   runtime_arg_tile_start_scale_by_var_.clear();
+  indexed_tile_start_runtime_args_.clear();
   host_buffer_by_compute_operand_buffer_.clear();
   direct_copy_source_by_buffer_identity_.clear();
   buffer_by_identity_.clear();
@@ -2953,26 +2955,33 @@ Stmt PlanTTKernelABI::VisitStmt_(const AllocateNode* op) {
   return StmtExprMutator::VisitStmt_(op);
 }
 
-void PlanTTKernelABI::RecordIndexTableAddressing(
-    const std::string& index_buffer, const BufferLoadNode* table_load) {
-  if (index_buffer.empty() || table_load == nullptr) {
-    return;
+std::optional<PlanTTKernelABI::IndexTableAddressing>
+PlanTTKernelABI::ExtractIndexTableAddressing(
+    const BufferLoadNode* table_load) const {
+  if (table_load == nullptr) {
+    return std::nullopt;
   }
   IndexTableAddressing addressing;
   addressing.shape.reserve(table_load->buffer->shape.size());
   for (const PrimExpr& dim : table_load->buffer->shape) {
     const auto* extent = dim.as<IntImmNode>();
     if (extent == nullptr || extent->value <= 0) {
-      return;
+      return std::nullopt;
     }
     addressing.shape.push_back(extent->value);
   }
   if (addressing.shape.size() != table_load->indices.size()) {
-    return;
+    return std::nullopt;
   }
   auto index_source = [&](PrimExpr expr) -> std::string {
     while (const auto* cast = expr.as<CastNode>()) {
       expr = cast->value;
+    }
+    if (const auto* imm = expr.as<IntImmNode>()) {
+      if (imm->value < 0) {
+        return "";
+      }
+      return "constant:" + std::to_string(imm->value);
     }
     const auto* var = expr.as<VarNode>();
     if (var == nullptr) {
@@ -2988,19 +2997,64 @@ void PlanTTKernelABI::RecordIndexTableAddressing(
   for (const PrimExpr& index : table_load->indices) {
     std::string source = index_source(index);
     if (source.empty()) {
-      return;
+      return std::nullopt;
     }
     addressing.index_sources.push_back(std::move(source));
   }
-  auto it = index_table_addressing_by_buffer_.find(index_buffer);
-  if (it != index_table_addressing_by_buffer_.end()) {
-    ICHECK(it->second.shape == addressing.shape &&
-           it->second.index_sources == addressing.index_sources)
-        << "Blackhole index table " << index_buffer
-        << " has inconsistent TIR table addressing evidence";
+  return addressing;
+}
+
+void PlanTTKernelABI::RecordIndexTableAddressing(
+    const std::string& index_buffer, const BufferLoadNode* table_load) {
+  if (index_buffer.empty() || table_load == nullptr) {
     return;
   }
-  index_table_addressing_by_buffer_[index_buffer] = std::move(addressing);
+  std::optional<IndexTableAddressing> addressing =
+      ExtractIndexTableAddressing(table_load);
+  if (!addressing.has_value()) {
+    return;
+  }
+  auto it = index_table_addressing_by_buffer_.find(index_buffer);
+  if (it != index_table_addressing_by_buffer_.end()) {
+    if (it->second.shape == addressing->shape &&
+        it->second.index_sources == addressing->index_sources) {
+      return;
+    }
+    // Multiple independent table loads can address different columns of the
+    // same table inside one work item.  Those loads are represented by
+    // per-arg addressing records instead of the legacy buffer-wide cache.
+    return;
+  }
+  index_table_addressing_by_buffer_[index_buffer] = std::move(addressing.value());
+}
+
+std::string PlanTTKernelABI::GetOrCreateIndexedTileStartRuntimeArg(
+    const std::string& index_buffer,
+    const IndexTableAddressing& addressing,
+    int64_t index_value_scale) {
+  ICHECK(!index_buffer.empty())
+      << "Blackhole indexed tile-start runtime arg requires index table buffer";
+  ICHECK_GT(index_value_scale, 0)
+      << "Blackhole indexed tile-start runtime arg requires positive value scale";
+  for (const IndexedTileStartRuntimeArg& existing :
+       indexed_tile_start_runtime_args_) {
+    if (existing.index_buffer == index_buffer &&
+        existing.index_value_scale == index_value_scale &&
+        existing.addressing.shape == addressing.shape &&
+        existing.addressing.index_sources == addressing.index_sources) {
+      return existing.arg_name;
+    }
+  }
+  IndexedTileStartRuntimeArg arg;
+  arg.arg_name = indexed_tile_start_runtime_args_.empty()
+                     ? "a_tile_start_id"
+                     : "a_tile_start_id_" +
+                           std::to_string(indexed_tile_start_runtime_args_.size());
+  arg.index_buffer = index_buffer;
+  arg.index_value_scale = index_value_scale;
+  arg.addressing = addressing;
+  indexed_tile_start_runtime_args_.push_back(std::move(arg));
+  return indexed_tile_start_runtime_args_.back().arg_name;
 }
 
 Stmt PlanTTKernelABI::VisitStmt_(const LetStmtNode* op) {
@@ -3129,6 +3183,14 @@ Stmt PlanTTKernelABI::VisitStmt_(const LetStmtNode* op) {
     } else if (coefficient.has_value() &&
                coefficient.value() > 0 &&
                coefficient.value() % kBlackholeTileRows == 0) {
+      std::optional<IndexTableAddressing> addressing =
+          ExtractIndexTableAddressing(table_load);
+      ICHECK(addressing.has_value())
+          << "Blackhole table-backed tile-start requires explicit index-table "
+          << "addressing evidence";
+      arg_name = GetOrCreateIndexedTileStartRuntimeArg(
+          index_buffer, addressing.value(),
+          coefficient.value() / kBlackholeTileRows);
       runtime_arg_tile_start_scale_by_name_[arg_name] =
           coefficient.value() / kBlackholeTileRows;
       runtime_arg_tile_start_scale_by_var_[op->var.get()] =

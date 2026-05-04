@@ -3502,6 +3502,23 @@ static const PerWorkArgSpec* FindPerWorkArgSpec(const std::vector<PerWorkArgSpec
 
 static uint32_t EvaluateIndexTableSource(const std::string& source,
                                          const DirectRuntimeWorkContext& context) {
+  constexpr const char* kConstantPrefix = "constant:";
+  if (source.rfind(kConstantPrefix, 0) == 0) {
+    const std::string literal = source.substr(std::strlen(kConstantPrefix));
+    ICHECK(!literal.empty())
+        << "Blackhole direct runtime index_table constant source requires a value";
+    uint64_t value = 0;
+    for (char ch : literal) {
+      ICHECK(std::isdigit(static_cast<unsigned char>(ch)))
+          << "Blackhole direct runtime index_table constant source must be unsigned: "
+          << source;
+      value = value * 10 + static_cast<uint64_t>(ch - '0');
+      ICHECK_LE(value, static_cast<uint64_t>(std::numeric_limits<uint32_t>::max()))
+          << "Blackhole direct runtime index_table constant source overflow: "
+          << source;
+    }
+    return static_cast<uint32_t>(value);
+  }
   if (source == tl::blackhole_runtime_arg_schema::kValueSourceWorkLinearId) {
     return context.work_linear_id;
   }

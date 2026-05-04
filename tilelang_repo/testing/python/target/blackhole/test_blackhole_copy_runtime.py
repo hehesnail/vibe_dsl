@@ -15,6 +15,7 @@ from .common import (
     check_blackhole_direct_execution_requirements,
     block_indexed_2tile_staged_copy_kernel,
     block_indexed_2d_staged_copy_kernel,
+    block_indexed_sparse_2tile_staged_copy_kernel,
     block_indexed_staged_copy_kernel,
     extract_blackhole_cb_configs,
     extract_blackhole_total_l1_bytes,
@@ -848,6 +849,50 @@ def test_blackhole_module_direct_call_block_indexed_2tile_copy_uses_scaled_table
         atol=1e-3,
         rtol=1e-3,
         failure_message="2-tile block-indexed direct-call output mismatch",
+    )
+
+
+def test_blackhole_module_direct_call_sparse_2tile_copy_uses_two_table_entries():
+    can_run, msg = check_blackhole_direct_execution_requirements()
+    if not can_run:
+        pytest.skip(f"Blackhole requirements not met: {msg}")
+
+    grid_x, source_tiles = 3, 6
+    a_torch = _bf16_matrix(source_tiles * 32, 32)
+    block_indices = torch.tensor(
+        [
+            [4, 1],
+            [2, 5],
+            [0, 3],
+        ],
+        dtype=torch.int32,
+    )
+    b_output = torch.zeros((grid_x * 2 * 32, 32), dtype=torch.bfloat16)
+    b_ref = torch.zeros_like(b_output)
+    for bx in range(grid_x):
+        out_start = bx * 2 * 32
+        for local_tile in range(2):
+            tile = int(block_indices[bx, local_tile])
+            b_ref[
+                out_start + local_tile * 32 : out_start + (local_tile + 1) * 32,
+                :,
+            ] = a_torch[tile * 32 : (tile + 1) * 32, :]
+
+    target = Target("blackhole")
+    kernel = block_indexed_sparse_2tile_staged_copy_kernel(
+        grid_x=grid_x,
+        source_tiles=source_tiles,
+    )
+    with target:
+        artifact = lower(kernel, target=target)
+
+    artifact.codegen_mod["main"](a_torch, block_indices, b_output)
+    assert_tensors_close_or_dump(
+        b_output,
+        b_ref,
+        atol=1e-3,
+        rtol=1e-3,
+        failure_message="Sparse 2-tile block-indexed direct-call output mismatch",
     )
 
 

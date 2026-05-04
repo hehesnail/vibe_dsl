@@ -2670,7 +2670,11 @@ static bool PerWorkArgSpecsContainArgIdentity(const std::vector<PerWorkArgSpec>&
 }
 
 static bool RuntimeArgKindRequiresExplicitPerWorkBinding(std::string_view kind) {
-  return kind == "a_tile_start_id" || kind == "a_tile_num_tiles" ||
+  auto is_a_tile_start_kind = [](std::string_view candidate) {
+    return candidate == "a_tile_start_id" ||
+           candidate.rfind("a_tile_start_id_", 0) == 0;
+  };
+  return is_a_tile_start_kind(kind) || kind == "a_tile_num_tiles" ||
          kind == "a_tile_stride" || kind == "b_tile_start_id" ||
          kind == "b_tile_num_tiles" || kind == "b_tile_stride" ||
          kind == "output_tile_start_id" || kind == "output_tile_num_tiles" ||
@@ -3015,15 +3019,7 @@ static void EnforceExplicitPerWorkAccessDescriptorGate(
         }
 
         for (const auto& arg : runtime_args) {
-          if (arg.kind == "a_tile_start_id" || arg.kind == "a_tile_num_tiles" ||
-              arg.kind == "a_tile_stride" || arg.kind == "b_tile_start_id" ||
-              arg.kind == "b_tile_num_tiles" || arg.kind == "b_tile_stride" ||
-              arg.kind == "output_tile_start_id" || arg.kind == "output_tile_num_tiles" ||
-              arg.kind == "output_tile_stride" || arg.kind == "k_tile_start_id" ||
-              arg.kind == "num_k_tiles" || arg.kind == "a_valid_rows" ||
-              arg.kind == "a_ragged_page_index" ||
-              arg.kind == "a_segment_row_start" ||
-              arg.kind == "a_segment_row_count") {
+          if (RuntimeArgKindRequiresExplicitPerWorkBinding(arg.kind)) {
             if (arg.identity.empty() ||
                 !PerWorkArgSpecsContainArgIdentity(per_work_arg_specs, arg.identity)) {
               return true;

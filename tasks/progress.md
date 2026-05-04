@@ -23,7 +23,7 @@
 | T6 `topk` | Complete | Existing-TIR row-wise value/index selection runs through direct runtime for fp32 and bf16 values with exact `int32` indices, without a frontend topk op or selection plan. |
 | T7 Exact-CB / materialization primitives | Complete | Exact-CB materialization is admitted through typed live-form/materialization/consumer-binding records, including GEMM post-merge `pack_tile`, source-live `cb_republish`, and seq64 bf16 flash-attn exact-CB partial-combine direct runtime correctness. |
 | T7.5 Exact-CB liveness / allocation cutover | Complete | Covered exact-CB resident tiles use typed TTProgram/ExecutableSpec lifecycle, allocation, and release records; old loop-carried owner maps, materialization-pop fallback, and full-tile/slice ambiguity are fail-closed or deleted from the active path. |
-| T8 Irregular work domains / indexed access | Implementation | Grid-indexed, one-dimensional and launch-axis two-dimensional table-indexed tile descriptors, scaled contiguous indexed-block copies, first predicate-derived ragged row bounds, copy-shaped paged `cache_seqlens`, and first non-uniform segmented row ranges carry TIR-derived evidence through TT per-work descriptors and direct runtime; broader sparse/page traversal and workload-level ragged/grouped gates remain open. |
+| T8 Irregular work domains / indexed access | Implementation | Grid-indexed, one-dimensional and launch-axis two-dimensional table-indexed tile descriptors, scaled contiguous indexed-block copies, first sparse two-entry indexed traversal, first predicate-derived ragged row bounds, copy-shaped paged `cache_seqlens`, and first non-uniform segmented row ranges carry TIR-derived evidence through TT per-work descriptors and direct runtime; broader sparse/page traversal and workload-level ragged/grouped gates remain open. |
 | T9 Workload first paths | Queued | Workload checkpoints decomposed into admitted primitive surfaces with direct-runtime correctness. |
 | T10 Distributed production variants | Queued | Mesh, CCL, NoC/multicast/global scheduling, distributed workload correctness, and production partial-K reduction protocol. |
 
@@ -145,9 +145,9 @@ Every active implementation task uses this acceptance table.
 
 ### T8 Irregular Work / Indexed Access
 
-- Indexed block/page traversal beyond the admitted launch-axis table-backed
-  and contiguous scaled-block cases, where `BufferLoad` / `BufferStore`
-  indices use operands such as sparse `block_indices`.
+- Indexed block/page traversal beyond the admitted launch-axis table-backed,
+  contiguous scaled-block, and two-entry sparse cases, where `BufferLoad` /
+  `BufferStore` indices use operands such as broader sparse `block_indices`.
 - Broader ragged token/page forms beyond the admitted one-dimensional row-count
   and copy-shaped paged `cache_seqlens` predicate slices.
 - Broader segmented/grouped workload use beyond the admitted row-segment copy,
@@ -193,6 +193,26 @@ Each checkpoint needs its own direct-runtime correctness proof:
   `M=320`, `N=352`, `K>=512`, `logical_grid=11x10x2` or larger.
 
 ## Recent Verification
+
+2026-05-05 UTC T8 sparse two-entry indexed traversal checkpoint:
+
+- `cmake --build build -j32` passed.
+- Minimal same-work sparse indexed copy now admits two independent table-derived
+  A tile starts.  `BlockIndices[bx, 0]` lowers to `a_tile_start_id` and
+  `BlockIndices[bx, 1]` lowers to `a_tile_start_id_1`.
+- Each A tile-start descriptor carries `value_source=index_table`,
+  `index_buffer=BlockIndices`, `index_table_shape=[3,2]`, and distinct
+  `index_table_index_sources` ending in `constant:0` / `constant:1`.
+- Source consumes the projected runtime args and emits no raw `BlockIndices`
+  load.  Direct runtime evaluates the two per-work args from the typed
+  descriptors and copies non-contiguous bf16 tiles into compact output order.
+- Focused selectors
+  `test_blackhole_sparse_2tile_copy_uses_two_index_table_tile_start_descriptors`
+  and
+  `test_blackhole_module_direct_call_sparse_2tile_copy_uses_two_table_entries`
+  reported `2 passed`.
+- T8 indexed/ragged/segmented aggregate selectors including the sparse case
+  reported `18 passed`.
 
 2026-05-05 UTC T8 scaled indexed-block checkpoint:
 

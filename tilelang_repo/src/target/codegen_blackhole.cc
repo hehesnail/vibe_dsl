@@ -53,6 +53,10 @@ bool IsBufferAddressRuntimeArgKind(const std::string& kind) {
          kind == "output_buffer_addr32" || kind == "output_buffer_addr";
 }
 
+bool IsATileStartRuntimeArgKind(const std::string& kind) {
+  return kind == "a_tile_start_id" || kind.rfind("a_tile_start_id_", 0) == 0;
+}
+
 std::string RequireStringImm(const tvm::PrimExpr& expr, const char* op_name,
                              const char* arg_name) {
   const auto* value = expr.as<tvm::tir::StringImmNode>();
@@ -1408,7 +1412,7 @@ void CodeGenBlackhole::EmitRuntimeArgLoads(const tvm::tir::PrimFunc &f) {
         arg_identity = Downcast<tvm::ffi::String>(v.value());
       }
       const bool requires_explicit_per_work_binding =
-          arg_kind == "a_tile_start_id" || arg_kind == "a_tile_num_tiles" ||
+          IsATileStartRuntimeArgKind(arg_kind) || arg_kind == "a_tile_num_tiles" ||
           arg_kind == "a_tile_stride" || arg_kind == "b_tile_start_id" ||
           arg_kind == "b_tile_num_tiles" || arg_kind == "b_tile_stride" ||
           arg_kind == "output_tile_start_id" || arg_kind == "output_tile_num_tiles" ||
