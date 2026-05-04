@@ -471,17 +471,15 @@ Required negative gates:
 - Seq64 remains the positive direct-runtime correctness gate; the simulator
   gate is intentionally scoped to loop-carried input exact-CB backedge release,
   so accumulator-only loop state is not rejected.
-- T7.5 is not complete until remaining borrowed exact-input last-use release
-  decisions are also driven by the allocator/release surface instead of local
-  source helper decisions.
+- Borrowed exact-input last-use release decisions are driven by the
+  allocator/release surface instead of local source helper decisions.
 - 2026-05-05 follow-up: borrowed exact-input last-use rendering no longer
   calls `ShouldReleaseBorrowedExactInputAfterUse` or passes a local
   `should_release` boolean into release-event recording.  The source renderer
   consumes an optional typed release event produced through a release-policy
-  helper.  Temporary owned exact inputs and some materialization pops can still
-  render a local consume pop when no cross-boundary live value exists; those
-  are outside the borrowed last-use cutover and remain deletion targets where
-  they cross materialization / loop / transport boundaries.
+  helper.  Temporary owned exact inputs can still render a local consume pop
+  when no cross-boundary live value exists; cross-boundary exact-CB
+  materialization pops are not allowed to use that fallback.
 - 2026-05-05 follow-up: validator rejects loop-carried exact-CB values whose
   live interval lacks live-in/live-out evidence, and rejects overlapping
   exact-CB virtual intervals that share one physical CB.  The interference
@@ -491,6 +489,18 @@ Required negative gates:
   producer/use evidence for virtual-value begin/end, and `PlanTTCBAlloc`
   incorporates exact-CB interval bounds into requirement lifetime before
   assigning physical CB IDs.
+- 2026-05-05 completion follow-up: exact-CB materialization with
+  `pop_front=true` now requires a typed `TTExactCBReleaseEvent` and fails
+  closed if release lookup cannot resolve the materialized logical live value.
+  Loop-carried exact-CB output materialization binds the destination buffer's
+  logical identity before release lookup, so it does not fall back to an
+  ephemeral local buffer identity.  `ValidateTTProgram` also rejects a
+  full-logical-tile consumer bound to a `thread_distributed_slice` live form.
+- 2026-05-05 completion verification: the T7.5 selector reported
+  `10 passed, 3 skipped`.  The three skips remain the typed TT-Sim
+  `tensix_execute_pacr: count=1` capability boundary for seq128/256/512 after
+  source/spec admission; seq64 remains the positive direct-runtime correctness
+  gate.
 
 ## Completion Criteria
 

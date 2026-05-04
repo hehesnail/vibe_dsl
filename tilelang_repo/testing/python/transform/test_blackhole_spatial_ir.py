@@ -897,21 +897,28 @@ def _rebuild_tt_materialization_plan(
 def _rebuild_tt_consumer_binding_plan(
     plan,
     *,
+    source_live_form=None,
     live_value_edge=None,
     live_value_edge_index=None,
+    accepts_distributed_slice=None,
+    requires_full_logical_tile=None,
 ):
     make_tt_consumer_binding_plan = tvm.get_global_func("tl.TTConsumerBindingPlan")
     return make_tt_consumer_binding_plan(
         str(plan.name),
         str(plan.consumer_kernel),
         str(plan.consumer_op_kind),
-        str(plan.source_live_form),
+        str(plan.source_live_form) if source_live_form is None else source_live_form,
         str(plan.live_value_edge) if live_value_edge is None else live_value_edge,
         int(plan.live_value_edge_index)
         if live_value_edge_index is None
         else live_value_edge_index,
-        bool(plan.accepts_distributed_slice),
-        bool(plan.requires_full_logical_tile),
+        bool(plan.accepts_distributed_slice)
+        if accepts_distributed_slice is None
+        else accepts_distributed_slice,
+        bool(plan.requires_full_logical_tile)
+        if requires_full_logical_tile is None
+        else requires_full_logical_tile,
         int(plan.abi_plan_index),
         str(plan.target_buffer),
         str(plan.materialization_plan),
@@ -1228,6 +1235,14 @@ def test_exact_cb_release_source_does_not_keep_local_last_use_fallback():
         *source_paths,
     )
     assert hits == []
+
+
+def test_exact_cb_materialization_pop_requires_typed_release_event():
+    source = (
+        REPO_ROOT / "tilelang_repo/src/transform/lower_blackhole_exact_cb.cc"
+    ).read_text()
+
+    assert "blackhole_cb_pop_front(), {IntImm32(cb_value.cb_id)" not in source
 
 
 def test_tile_compute_pattern_table_covers_current_leaf_operation_names():
@@ -3882,6 +3897,41 @@ def test_algorithmic_live_form_solver_uses_boundary_coverage_for_consumer_bindin
     )
     assert bool(binding.accepts_distributed_slice) is False
     assert bool(binding.requires_full_logical_tile) is True
+
+
+def test_validate_tt_program_rejects_full_tile_consumer_bound_to_slice_live_form():
+    mod = _prepare_blackhole_tt_program_module(fragment_fill_cast_publish_kernel())
+    main = mod["main"]
+    tt_program = main.attrs["tl.tt_program"]
+    live_form_by_name = {str(plan.name): plan for plan in tt_program.live_form_plans}
+    binding_index, binding = next(
+        (index, plan)
+        for index, plan in enumerate(tt_program.consumer_binding_plans)
+        if bool(plan.accepts_distributed_slice)
+        and not bool(plan.requires_full_logical_tile)
+        and str(live_form_by_name[str(plan.source_live_form)].physical_form)
+        == "thread_distributed_slice"
+    )
+    consumer_binding_plans = list(tt_program.consumer_binding_plans)
+    consumer_binding_plans[binding_index] = _rebuild_tt_consumer_binding_plan(
+        binding,
+        accepts_distributed_slice=False,
+        requires_full_logical_tile=True,
+    )
+    broken = tvm.IRModule(
+        {
+            "main": main.with_attr(
+                "tl.tt_program",
+                _rebuild_tt_program(
+                    tt_program, consumer_binding_plans=consumer_binding_plans
+                ),
+            )
+        },
+        global_infos=mod.global_infos,
+    )
+
+    with pytest.raises(Exception, match="full logical tile.*distributed slice"):
+        tilelang.transform.ValidateTTProgram()(broken)
 
 
 def test_algorithmic_live_form_solver_owns_tt_live_form_decision_literals():

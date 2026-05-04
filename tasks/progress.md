@@ -7,8 +7,7 @@
 ## Status
 
 - Date: `2026-05-05`
-- Active task: Exact-CB liveness/resource-allocation design and cutover;
-  next queued lane remains `T8 Irregular work domains / indexed access`
+- Active task: `T8 Irregular work domains / indexed access`
 - Main chain:
   `Normalized Tile TIR -> SpatialPlan -> TTProgram -> ExecutableSpec`
 
@@ -23,8 +22,8 @@
 | T5 Sharded GEMM / layout variants | Complete | First static external sharded-L1 GEMM layouts pass direct runtime, including single-core, 2x2 multi-core, 110-core many-core all-bf16, and first K-dimension partial-sum correctness path. |
 | T6 `topk` | Complete | Existing-TIR row-wise value/index selection runs through direct runtime for fp32 and bf16 values with exact `int32` indices, without a frontend topk op or selection plan. |
 | T7 Exact-CB / materialization primitives | Complete | Exact-CB materialization is admitted through typed live-form/materialization/consumer-binding records, including GEMM post-merge `pack_tile`, source-live `cb_republish`, and seq64 bf16 flash-attn exact-CB partial-combine direct runtime correctness. |
-| T7.5 Exact-CB liveness / allocation cutover | Implementation | Exact-CB resident tiles now project typed TTProgram/ExecutableSpec lifecycle records for the covered flash loop-carried surface; the old loop-carried cb/buffer twin maps and completed-state set are removed from the active source path. |
-| T8 Irregular work domains / indexed access | Queued | TIR-derived segmented, ragged, and indexed addressing evidence; no workload metadata registry. |
+| T7.5 Exact-CB liveness / allocation cutover | Complete | Covered exact-CB resident tiles use typed TTProgram/ExecutableSpec lifecycle, allocation, and release records; old loop-carried owner maps, materialization-pop fallback, and full-tile/slice ambiguity are fail-closed or deleted from the active path. |
+| T8 Irregular work domains / indexed access | Implementation | TIR-derived segmented, ragged, and indexed addressing evidence; no workload metadata registry. |
 | T9 Workload first paths | Queued | Workload checkpoints decomposed into admitted primitive surfaces with direct-runtime correctness. |
 | T10 Distributed production variants | Queued | Mesh, CCL, NoC/multicast/global scheduling, distributed workload correctness, and production partial-K reduction protocol. |
 
@@ -42,13 +41,13 @@
 - For T6-T10, validators and projection tests are support evidence only.
   An admitted positive path must execute through `BlackholeModule` under the
   repository TT-Sim setup and compare device output against a host reference.
-- Larger flash-attn shapes exposed that exact-CB resident values still need a
-  real liveness/resource-allocation cutover.
-  The design contract is
+- Larger flash-attn shapes exposed the exact-CB resident lifecycle/resource
+  allocation boundary that T7.5 cut over for the covered surface.
+  The design contract remains
   `tasks/dev_design/2026-05-05-blackhole-exact-cb-liveness-allocation.md`.
   Covered exact-CB paths must use TTProgram lifecycle/allocation records for
-  physical CB choice and release events; the old source-emitter map/fallback
-  lifecycle route is a deletion target, not a compatibility path.
+  physical CB choice and release events; old source-emitter map/fallback
+  lifecycle routes are not compatibility paths.
 
 ## Completed Task: T6 `topk`
 
@@ -102,6 +101,33 @@ Wider workload surfaces that reuse these primitives remain in later lanes:
 T8 derives irregular/ragged/indexed work from TIR, T9 admits workload-first
 paths, and T10 owns production distributed / fused partial-reduction protocols.
 
+## Completed Task: T7.5 Exact-CB Liveness / Allocation Cutover
+
+T7.5 moved the covered flash exact-CB resident surface from emitter-local
+lifetime repair to typed TTProgram / ExecutableSpec lifecycle records.
+
+The completed subset covers:
+
+- exact-CB virtual values, use events, live intervals, physical CB allocation,
+  and release events for the covered loop-carried flash surface;
+- source rendering of `cb_wait_front`, `cb_push_back`, and `cb_pop_front`
+  through lifecycle/release records instead of loop-carried cb/buffer twin maps
+  or completed-state recovery;
+- borrowed exact-input last-use rendering through the release-policy helper,
+  without the old local `ShouldRelease...` path;
+- materialization with `pop_front=true` failing closed unless a typed
+  `TTExactCBReleaseEvent` exists;
+- validator rejects for missing loop-carried exit evidence, overlapping
+  exact-CB intervals sharing a physical CB, and full-logical-tile consumers
+  bound to `thread_distributed_slice` live forms;
+- seq64 bf16 flash-attn exact-CB partial-combine direct runtime correctness,
+  plus seq128/256/512 source/spec admission that skips only on the typed
+  TT-Sim `tensix_execute_pacr: count=1` capability boundary.
+
+T8 owns deriving irregular/ragged/indexed work domains from TIR and making that
+evidence drive source/runtime addressing.  T9/T10 own workload-first and
+distributed production variants.
+
 ## Required Verification
 
 Every active implementation task uses this acceptance table.
@@ -116,26 +142,6 @@ Every active implementation task uses this acceptance table.
 | Unsupported reason | Unsupported forms fail closed with typed diagnostics before source/runtime guessing. |
 
 ## Remaining Runtime Correctness Gates
-
-### T7.5 Exact-CB Liveness / Allocation Cutover
-
-- TTProgram carries exact-CB virtual values, live intervals, loop-carried
-  backedge/exit evidence, physical CB allocation, and release events for the
-  covered exact-CB surface.
-- Source emission consumes lifecycle/release records for `cb_wait_front`,
-  `cb_push_back`, and `cb_pop_front`; local source helpers do not decide last
-  use or repair loop-carried state with buffer-name maps.
-- Covered old paths are deleted from the active chain:
-  map-based loop-carried exact-CB owner truth and completed loop-carried state
-  recovery are removed.  Non-loop borrowed exact-input last-use source
-  rendering no longer calls the old local `ShouldRelease...` path; it consumes
-  typed release events from the release-policy helper.  Loop-carried exit
-  evidence and physical-CB interval interference are now validator gates.
-  Remaining materialization-pop fallback and the full-tile-only-slice negative
-  gate still block marking T7.5 complete.
-- Flash-attn bf16 direct-runtime gates cover seq64 regression plus seqlen 128,
-  256, and 512, or fail only from a typed simulator capability boundary after
-  source/spec admission is proven.
 
 ### T8 Irregular Work / Indexed Access
 
@@ -187,7 +193,7 @@ Each checkpoint needs its own direct-runtime correctness proof:
 
 ## Recent Verification
 
-2026-05-05 UTC T7.5 exact-CB liveness/allocation checkpoint:
+2026-05-05 UTC T7.5 exact-CB liveness/allocation completion:
 
 - `cmake --build build -j32` passed.
 - Old loop-carried source fallback symbols were removed from active source:
@@ -197,14 +203,16 @@ Each checkpoint needs its own direct-runtime correctness proof:
   `tilelang_repo/src/transform`, `tilelang_repo/src/target`, or tests.
 - Structure/runtime selector passed:
   `testing/python/transform/test_blackhole_spatial_ir.py::test_exact_cb_release_source_does_not_keep_local_last_use_fallback`,
+  `testing/python/transform/test_blackhole_spatial_ir.py::test_exact_cb_materialization_pop_requires_typed_release_event`,
   `testing/python/transform/test_blackhole_spatial_ir.py::test_validate_tt_program_consumes_exact_cb_lifecycle_records`,
   `testing/python/transform/test_blackhole_spatial_ir.py::test_validate_tt_program_rejects_loop_carried_exact_cb_without_exit_evidence`,
   `testing/python/transform/test_blackhole_spatial_ir.py::test_validate_tt_program_rejects_interfering_exact_cb_intervals_sharing_cb`,
+  `testing/python/transform/test_blackhole_spatial_ir.py::test_validate_tt_program_rejects_full_tile_consumer_bound_to_slice_live_form`,
   `testing/python/target/blackhole/test_blackhole_flash_attention_runtime.py::test_blackhole_t7_seq64_mha_bf16_exact_cb_partial_combine_direct_runtime`,
   `test_blackhole_flash_attention_extended_seq_metadata_carries_loop_carried_exact_cb`,
   and
   `test_blackhole_flash_attention_extended_seq_mha_bf16_forward_direct_runtime`
-  reported `8 passed, 3 skipped`.
+  reported `10 passed, 3 skipped`.
 - The physical-CB interference gate first exposed a real positive-path bug:
   exact-CB virtual intervals were using merged requirement lifetime as their
   begin point, so later versions on the same requirement appeared live from
@@ -215,6 +223,12 @@ Each checkpoint needs its own direct-runtime correctness proof:
   loop-carried input exact-CB backedge release is admitted in source/spec, but
   current TT-Sim reports `tensix_execute_pacr: count=1` for the compute-side
   pack path.  Seq64 remains a positive direct-runtime correctness gate.
+- Materialization `pop_front=true` now requires a typed
+  `TTExactCBReleaseEvent`; the old local
+  `blackhole_cb_pop_front(cb_value.cb_id, cb_value.num_tiles)` fallback is
+  absent from `lower_blackhole_exact_cb.cc`.
+- Full-logical-tile consumer bindings now reject
+  `thread_distributed_slice` live forms in `ValidateTTProgram`.
 - `git diff --check` passed.
 
 2026-05-04 UTC T6/T7 completion verification:

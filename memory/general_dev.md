@@ -195,6 +195,15 @@
   to rebuild ownership independently.  The current safer shape is one
   `LoopCarriedExactCBState` cursor whose writes go through the typed lifecycle
   helper, with completed state stored on that cursor.
+- Exact-CB materialization that pops a CB page must resolve to a typed
+  `TTExactCBReleaseEvent`; falling back to `cb_value.cb_id` / `num_tiles`
+  recreates local lifetime ownership in source emission.  When materializing a
+  loop-carried exact-CB output, bind the materialized value to the destination
+  logical identity before release lookup so allocator records, not ephemeral
+  local buffers, choose the pop event.
+- A full-logical-tile consumer cannot bind a `thread_distributed_slice` live
+  form.  If the IR only proves slice coverage, either materialize a full-tile
+  live form through a typed plan or reject before source/runtime.
 - CB page 需求和 L1 buffer placement 要分开：
   `page_size`
   /

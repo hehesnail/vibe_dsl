@@ -2430,9 +2430,36 @@
   - Keep the validator gate: overlapping exact-CB virtual intervals may not
     share one physical CB.
 - **验证**:
-  - T7.5 selector reported `8 passed, 3 skipped`: the skips remain the typed
-    TT-Sim `tensix_execute_pacr: count=1` boundary for seq128/256/512, while
-    seq64 direct runtime passed.
+  - Final T7.5 selector reported `10 passed, 3 skipped`: the skips remain the
+    typed TT-Sim `tensix_execute_pacr: count=1` boundary for seq128/256/512,
+    while seq64 direct runtime passed.
+
+### exact-CB materialization-pop fallback hid missing logical release identity
+
+- **症状**:
+  - Removing the local materialization fallback
+    `blackhole_cb_pop_front(cb_value.cb_id, cb_value.num_tiles)` exposed
+    failures in flash-attn loop-carried materialization: source lowering could
+    not find a typed release event and hit
+    `Exact-CB materialization pop requires a typed release event`.
+- **根因**:
+  - The materialized loop-carried exact-CB output reached
+    `MaterializeExactTiledCBToLocalBuffer` without a stable logical
+    `live_identity`, so release lookup used an ephemeral local buffer identity
+    rather than the TTProgram exact-CB virtual value / allocation record.
+- **修法**:
+  - `MaterializeLoopCarriedExactOutput` now binds the exact-CB value to the
+    destination buffer identity before materialization.
+  - `MaterializeExactTiledCBToLocalBuffer(..., pop_front=true)` requires a
+    typed `TTExactCBReleaseEvent` and no longer emits a local fallback pop.
+  - `ValidateTTProgram` rejects full-logical-tile consumers bound to
+    `thread_distributed_slice` live forms so after-loop full-tile consumers
+    cannot silently consume partial slice coverage.
+- **验证**:
+  - T7.5 selector reported `10 passed, 3 skipped`: the new structure gates
+    cover materialization-pop fallback deletion and full-tile/slice rejection;
+    the skips remain the typed TT-Sim `tensix_execute_pacr: count=1` boundary
+    for seq128/256/512 after source/spec admission.
 
 ## 3. 环境问题速查
 

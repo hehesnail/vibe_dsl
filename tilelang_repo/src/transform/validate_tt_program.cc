@@ -1262,6 +1262,10 @@ void ValidateConsumerBindingPlans(
     const TTProgram &program,
     const std::unordered_set<std::string> &live_form_names,
     int64_t abi_plan_count) {
+  std::unordered_map<std::string, TTLiveFormPlan> live_form_by_name;
+  for (const TTLiveFormPlan &live_form : program->live_form_plans) {
+    live_form_by_name.emplace(str(live_form->name), live_form);
+  }
   for (const TTConsumerBindingPlan &plan : program->consumer_binding_plans) {
     ICHECK(!plan->name.empty()) << "TTConsumerBindingPlan requires name";
     ICHECK(!plan->consumer_kernel.empty())
@@ -1285,6 +1289,19 @@ void ValidateConsumerBindingPlans(
         << "TTConsumerBindingPlan must declare whether the consumer accepts a "
            "distributed slice "
            "or requires a full logical tile";
+    auto source_live_form_it =
+        live_form_by_name.find(str(plan->source_live_form));
+    ICHECK(source_live_form_it != live_form_by_name.end())
+        << "TTConsumerBindingPlan source_live_form missing matching "
+           "TTLiveFormPlan";
+    if (plan->requires_full_logical_tile) {
+      const TTLiveFormPlan &source_live_form = source_live_form_it->second;
+      ICHECK_NE(source_live_form->physical_form,
+                ffi::String("thread_distributed_slice"))
+          << "TTConsumerBindingPlan full logical tile consumer cannot bind "
+             "distributed slice live form "
+          << source_live_form->name;
+    }
   }
 }
 

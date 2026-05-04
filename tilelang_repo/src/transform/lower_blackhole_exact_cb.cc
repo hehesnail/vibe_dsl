@@ -1238,15 +1238,12 @@ Stmt PlanTTKernelABI::MaterializeExactTiledCBToLocalBuffer(const Buffer& dst,
           pop_front ? ExactCBReleasePolicy::kAlways
                     : ExactCBReleasePolicy::kNever);
   if (pop_front) {
-    if (release_event) {
-      stmts.push_back(MakeBlackholeCall(
-          blackhole_cb_pop_front(),
-          {IntImm32(static_cast<int>(release_event.value()->cb_plan_index)),
-           IntImm32(static_cast<int>(release_event.value()->page_count))}));
-    } else {
-      stmts.push_back(MakeBlackholeCall(
-          blackhole_cb_pop_front(), {IntImm32(cb_value.cb_id), IntImm32(cb_value.num_tiles)}));
-    }
+    ICHECK(release_event)
+        << "Exact-CB materialization pop requires a typed release event";
+    stmts.push_back(MakeBlackholeCall(
+        blackhole_cb_pop_front(),
+        {IntImm32(static_cast<int>(release_event.value()->cb_plan_index)),
+         IntImm32(static_cast<int>(release_event.value()->page_count))}));
   }
   return SeqStmt::Flatten(stmts);
 }

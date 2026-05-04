@@ -3870,7 +3870,15 @@ Stmt PlanTTKernelABI::MaterializeLoopCarriedExactOutput(
   ClearSelectedSourceLiveProducer(dst);
   ClearTiledCBLiveFormAliases(dst);
   MarkLocalOnlyLiveFormAliases(dst);
-  Stmt materialize = MaterializeExactTiledCBToLocalBuffer(dst, cb_value, /*pop_front=*/true);
+  ExactTiledCBValue materialized_value = cb_value;
+  if (materialized_value.live_identity.empty()) {
+    materialized_value.live_identity = BufferIdentityName(dst);
+  }
+  if (!materialized_value.buffer.defined()) {
+    materialized_value.buffer = dst;
+  }
+  Stmt materialize =
+      MaterializeExactTiledCBToLocalBuffer(dst, materialized_value, /*pop_front=*/true);
   ClearTiledCBLiveFormAliases(dst);
   MarkLocalOnlyLiveFormAliases(dst);
   return materialize;
