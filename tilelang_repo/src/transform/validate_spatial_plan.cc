@@ -368,6 +368,19 @@ void ValidateAccessRegions(const SpatialPlan& plan) {
         << "AccessRegion " << region->name << " requires lower_bounds/extents alignment";
     ICHECK_EQ(region->strides.size(), region->extents.size())
         << "AccessRegion " << region->name << " requires strides/extents alignment";
+    if (!region->index_exprs.empty()) {
+      ICHECK_EQ(region->index_exprs.size(), region->extents.size())
+          << "AccessRegion " << region->name
+          << " index_exprs must match logical_rank/extents";
+      ICHECK(!region->loop_vars.empty())
+          << "AccessRegion " << region->name
+          << " indexed access requires loop_vars evidence";
+    }
+    if (IsOneOf(str(region->coverage_kind), {"slice", "row_slice", "grouped_slice"})) {
+      ICHECK_EQ(region->index_exprs.size(), region->extents.size())
+          << "AccessRegion " << region->name
+          << " slice coverage requires index_exprs matching logical_rank";
+    }
     if (str(region->coverage_kind) == "scalar") {
       ICHECK_EQ(region->logical_rank, 0)
           << "AccessRegion " << region->name << " scalar coverage requires rank 0";

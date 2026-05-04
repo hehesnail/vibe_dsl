@@ -73,6 +73,78 @@ Stmt MakeBlackholeCall(const Op& op, const std::vector<PrimExpr>& args) {
   return Evaluate(Call(DataType::Int(32), op, args));
 }
 
+struct IndexTableEvidence {
+  std::string buffer;
+  int64_t coefficient = 0;
+  bool valid = true;
+};
+
+void AccumulateIndexTableCoefficient(const PrimExpr& expr, int64_t sign,
+                                     IndexTableEvidence* evidence) {
+  if (!expr.defined() || evidence == nullptr || !evidence->valid) {
+    return;
+  }
+  if (const auto* cast = expr.as<tir::CastNode>()) {
+    AccumulateIndexTableCoefficient(cast->value, sign, evidence);
+    return;
+  }
+  if (const auto* add = expr.as<tir::AddNode>()) {
+    AccumulateIndexTableCoefficient(add->a, sign, evidence);
+    AccumulateIndexTableCoefficient(add->b, sign, evidence);
+    return;
+  }
+  if (const auto* sub = expr.as<tir::SubNode>()) {
+    AccumulateIndexTableCoefficient(sub->a, sign, evidence);
+    AccumulateIndexTableCoefficient(sub->b, -sign, evidence);
+    return;
+  }
+  if (const auto* mul = expr.as<tir::MulNode>()) {
+    if (const auto* lhs = mul->a.as<tir::IntImmNode>()) {
+      AccumulateIndexTableCoefficient(mul->b, sign * lhs->value, evidence);
+      return;
+    }
+    if (const auto* rhs = mul->b.as<tir::IntImmNode>()) {
+      AccumulateIndexTableCoefficient(mul->a, sign * rhs->value, evidence);
+      return;
+    }
+  }
+  if (const auto* load = expr.as<tir::BufferLoadNode>()) {
+    const std::string buffer = BufferIdentityName(load->buffer);
+    if (buffer.empty()) {
+      evidence->valid = false;
+      return;
+    }
+    if (!evidence->buffer.empty() && evidence->buffer != buffer) {
+      evidence->valid = false;
+      return;
+    }
+    evidence->buffer = buffer;
+    evidence->coefficient += sign;
+    return;
+  }
+}
+
+std::pair<std::string, int64_t> DeriveIndexTableDescriptor(
+    const AccessRegion& region) {
+  if (region->index_exprs.empty() || region->access_kind != "read") {
+    return {"", 1};
+  }
+  IndexTableEvidence evidence;
+  AccumulateIndexTableCoefficient(region->index_exprs[0], 1, &evidence);
+  if (!evidence.valid || evidence.buffer.empty() ||
+      evidence.buffer == static_cast<std::string>(region->subject) ||
+      evidence.coefficient <= 0) {
+    return {"", 1};
+  }
+  if (evidence.coefficient == 1) {
+    return {evidence.buffer, 1};
+  }
+  if (evidence.coefficient % kBlackholeTileRows != 0) {
+    return {"", 1};
+  }
+  return {evidence.buffer, evidence.coefficient / kBlackholeTileRows};
+}
+
 PrimExpr IntImm32(int value) {
   return IntImm(DataType::Int(32), value);
 }
@@ -244,6 +316,43 @@ void PlanTTKernelABI::LoadSpatialLiveValueBoundaries(const SpatialPlan& plan) {
     record_subject_lifetime(source->subject, boundary->event_lifetime_kind);
     record_subject_lifetime(target->subject, boundary->event_lifetime_kind);
   }
+}
+
+void PlanTTKernelABI::LoadSpatialAccessRegions(const SpatialPlan& plan) {
+  spatial_access_regions_.clear();
+  spatial_access_region_position_by_subject_access_.clear();
+  for (int64_t i = 0; i < static_cast<int64_t>(plan->access_regions.size()); ++i) {
+    const AccessRegion& region = plan->access_regions[i];
+    const std::string subject = static_cast<std::string>(region->subject);
+    const std::string access_kind = static_cast<std::string>(region->access_kind);
+    if (subject.empty() || access_kind.empty()) {
+      continue;
+    }
+    const std::string key = subject + "|" + access_kind;
+    if (spatial_access_region_position_by_subject_access_.count(key)) {
+      continue;
+    }
+    const auto [index_buffer, index_value_scale] =
+        DeriveIndexTableDescriptor(region);
+    spatial_access_region_position_by_subject_access_[key] =
+        spatial_access_regions_.size();
+    spatial_access_regions_.push_back(SpatialAccessRegionRef{
+        static_cast<std::string>(region->name), i, subject, access_kind,
+        index_buffer, index_value_scale});
+  }
+}
+
+const PlanTTKernelABI::SpatialAccessRegionRef*
+PlanTTKernelABI::FindSpatialAccessRegionRef(
+    const std::string& subject,
+    const std::string& access_kind) const {
+  const std::string key = subject + "|" + access_kind;
+  auto it = spatial_access_region_position_by_subject_access_.find(key);
+  if (it == spatial_access_region_position_by_subject_access_.end()) {
+    return nullptr;
+  }
+  ICHECK_LT(it->second, spatial_access_regions_.size());
+  return &spatial_access_regions_[it->second];
 }
 
 std::optional<PlanTTKernelABI::SpatialLiveValueRef>

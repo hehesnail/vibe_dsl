@@ -415,6 +415,10 @@ static void WritePerWorkArgSpec(dmlc::Stream* stream, const PerWorkArgSpec& spec
   WriteString(stream, spec.descriptor_kind);
   WriteString(stream, spec.value_source);
   WriteUInt32(stream, spec.constant_value);
+  WriteString(stream, spec.access_region);
+  WriteInt64(stream, spec.access_region_index);
+  WriteString(stream, spec.index_buffer);
+  WriteInt64(stream, spec.index_value_scale);
 }
 
 static PerWorkArgSpec ReadPerWorkArgSpec(dmlc::Stream* stream) {
@@ -425,6 +429,10 @@ static PerWorkArgSpec ReadPerWorkArgSpec(dmlc::Stream* stream) {
   spec.descriptor_kind = ReadString(stream, "per_work_arg.descriptor_kind");
   spec.value_source = ReadString(stream, "per_work_arg.value_source");
   spec.constant_value = ReadUInt32(stream, "per_work_arg.constant_value");
+  spec.access_region = ReadString(stream, "per_work_arg.access_region");
+  spec.access_region_index = ReadInt64(stream, "per_work_arg.access_region_index");
+  spec.index_buffer = ReadString(stream, "per_work_arg.index_buffer");
+  spec.index_value_scale = ReadInt64(stream, "per_work_arg.index_value_scale");
   return spec;
 }
 
@@ -2112,7 +2120,9 @@ static void CreateCircularBuffersFromSpec(
 struct RuntimeBufferBinding {
   std::shared_ptr<distributed::MeshBuffer> mesh_buffer;
   size_t size_bytes{0};
+  uint32_t transport_page_size_bytes{0};
   bool is_output{false};
+  std::vector<uint8_t> host_data;
 };
 
 static KernelHandle CreateKernelFromSpec(
@@ -2467,17 +2477,20 @@ static DirectRuntimeBufferState MaterializeRuntimeBuffers(
     distributed::ReplicatedBufferConfig buffer_config{.size = tensor_size};
     auto mesh_buffer =
         distributed::MeshBuffer::create(buffer_config, dram_config, mesh_device);
+    std::vector<uint8_t> initial_data = BuildInputTransferData(spec, binding);
     state.runtime_buffers.emplace(binding.name, RuntimeBufferBinding{
                                                 .mesh_buffer = mesh_buffer,
                                                 .size_bytes = tensor_size,
+                                                .transport_page_size_bytes =
+                                                    materialization.transport_page_size_bytes,
                                                 .is_output = binding.is_output,
+                                                .host_data = initial_data,
                                             });
     if (binding.is_output) {
       state.ordered_output_names.push_back(binding.name);
     } else {
       state.input_names.push_back(binding.name);
     }
-    std::vector<uint8_t> initial_data = BuildInputTransferData(spec, binding);
     EnqueueWriteMeshBuffer(cq, mesh_buffer, initial_data, /*blocking=*/true);
   }
   if (!output_names.empty()) {
@@ -2662,6 +2675,8 @@ static RuntimeBufferBinding CreatePartialKOutputBuffer(
       distributed::MeshBuffer::create(buffer_config, device_config, mesh_device);
   return RuntimeBufferBinding{.mesh_buffer = mesh_buffer,
                               .size_bytes = tensor_size,
+                              .transport_page_size_bytes =
+                                  materialization.transport_page_size_bytes,
                               .is_output = true};
 }
 
@@ -3476,7 +3491,9 @@ static const PerWorkArgSpec* FindPerWorkArgSpec(const std::vector<PerWorkArgSpec
 }
 
 static uint32_t EvaluatePerWorkArgSpec(const PerWorkArgSpec& spec,
-                                       const DirectRuntimeWorkContext& context) {
+                                       const DirectRuntimeWorkContext& context,
+                                       const std::unordered_map<std::string, RuntimeBufferBinding>&
+                                           buffer_bindings) {
   if (spec.value_source == tl::blackhole_runtime_arg_schema::kValueSourceWorkLinearId) {
     return context.work_linear_id;
   }
@@ -3514,6 +3531,51 @@ static uint32_t EvaluatePerWorkArgSpec(const PerWorkArgSpec& spec,
   if (spec.value_source == tl::blackhole_runtime_arg_schema::kValueSourceConstant) {
     return spec.constant_value;
   }
+  if (spec.value_source == tl::blackhole_runtime_arg_schema::kValueSourceIndexTable) {
+    ICHECK(!spec.index_buffer.empty())
+        << "Blackhole direct runtime index_table per_work_arg_spec requires index_buffer for "
+        << spec.arg_identity;
+    auto table_it = buffer_bindings.find(spec.index_buffer);
+    ICHECK(table_it != buffer_bindings.end())
+        << "Blackhole direct runtime index_table per_work_arg_spec references missing buffer "
+        << spec.index_buffer;
+    const RuntimeBufferBinding& table = table_it->second;
+    const size_t byte_offset = static_cast<size_t>(context.work_linear_id) * sizeof(int32_t);
+    ICHECK_LE(byte_offset + sizeof(int32_t), table.host_data.size())
+        << "Blackhole direct runtime index_table per_work_arg_spec out of bounds for "
+        << spec.arg_identity << ": work_linear_id=" << context.work_linear_id
+        << ", index_buffer=" << spec.index_buffer;
+    int32_t table_value = 0;
+    std::memcpy(&table_value, table.host_data.data() + byte_offset, sizeof(int32_t));
+    ICHECK_GE(table_value, 0)
+        << "Blackhole direct runtime index_table per_work_arg_spec requires non-negative "
+        << "table value for " << spec.arg_identity;
+    const uint64_t scaled =
+        static_cast<uint64_t>(table_value) * static_cast<uint64_t>(spec.index_value_scale);
+    ICHECK_LE(scaled, std::numeric_limits<uint32_t>::max())
+        << "Blackhole direct runtime index_table per_work_arg_spec overflow for "
+        << spec.arg_identity;
+    if (spec.descriptor_kind ==
+            tl::blackhole_runtime_arg_schema::kDescriptorTileStart &&
+        !spec.buffer.empty()) {
+      auto target_it = buffer_bindings.find(spec.buffer);
+      ICHECK(target_it != buffer_bindings.end())
+          << "Blackhole direct runtime index_table per_work_arg_spec references missing "
+          << "target buffer " << spec.buffer << " for " << spec.arg_identity;
+      const RuntimeBufferBinding& target = target_it->second;
+      ICHECK_GT(target.transport_page_size_bytes, 0U)
+          << "Blackhole direct runtime index_table tile_start requires transport page size "
+          << "for target buffer " << spec.buffer;
+      const uint64_t max_pages =
+          static_cast<uint64_t>(target.size_bytes) /
+          static_cast<uint64_t>(target.transport_page_size_bytes);
+      ICHECK_LT(scaled, max_pages)
+          << "Blackhole direct runtime index_table tile_start out of bounds for "
+          << spec.arg_identity << ": tile_start=" << scaled
+          << ", target_buffer=" << spec.buffer << ", max_pages=" << max_pages;
+    }
+    return static_cast<uint32_t>(scaled);
+  }
   LOG(FATAL) << "Unsupported Blackhole per_work_arg_spec value_source " << spec.value_source
              << " for arg " << spec.arg_identity;
   return 0;
@@ -3523,6 +3585,8 @@ static bool TryAppendPerWorkRuntimeArg(const KernelSpec& kernel,
                                        const KernelArgSpec& arg_spec,
                                        const std::vector<PerWorkArgSpec>& per_work_arg_specs,
                                        const DirectRuntimeWorkContext& context,
+                                       const std::unordered_map<std::string, RuntimeBufferBinding>&
+                                           buffer_bindings,
                                        size_t* scalar_index,
                                        const std::vector<uint32_t>& scalar_args,
                                        std::vector<uint32_t>* args) {
@@ -3533,7 +3597,7 @@ static bool TryAppendPerWorkRuntimeArg(const KernelSpec& kernel,
     return true;
   }
   if (const PerWorkArgSpec* spec = FindPerWorkArgSpec(per_work_arg_specs, arg_spec)) {
-    args->push_back(EvaluatePerWorkArgSpec(*spec, context));
+    args->push_back(EvaluatePerWorkArgSpec(*spec, context, buffer_bindings));
     return true;
   }
   if (arg_spec.kind == "scalar_u32") {
@@ -3584,7 +3648,7 @@ static std::vector<uint32_t> BuildRuntimeArgsFromSpec(
       continue;
     }
     if (!TryAppendPerWorkRuntimeArg(kernel, arg_spec, kernel.per_work_arg_specs, context,
-                                    &scalar_index, scalar_args,
+                                    buffer_bindings, &scalar_index, scalar_args,
                                     &args)) {
       LOG(FATAL) << "Unsupported runtime arg kind: " << arg_spec.kind;
     }
@@ -4286,6 +4350,20 @@ void BlackholeWrappedFunc::operator()(ffi::PackedArgs args, ffi::Any* rv,
   };
   append_buffer_contract(info_.runtime_args);
   append_buffer_contract(info_.common_runtime_args);
+  for (const auto& per_work_arg : info_.per_work_arg_specs) {
+    if (per_work_arg.value_source !=
+        tl::blackhole_runtime_arg_schema::kValueSourceIndexTable) {
+      continue;
+    }
+    ICHECK(!per_work_arg.index_buffer.empty())
+        << "Blackhole direct runtime index_table per-work binding requires index_buffer for "
+        << per_work_arg.arg_identity;
+    auto [it, inserted] =
+        buffer_is_output_by_name.emplace(per_work_arg.index_buffer, false);
+    ICHECK(inserted || !it->second)
+        << "Blackhole direct runtime index_table buffer cannot also be an output buffer: "
+        << per_work_arg.index_buffer;
+  }
   ICHECK(!buffer_is_output_by_name.empty())
       << "Blackhole direct runtime requires explicit buffer role schema";
 

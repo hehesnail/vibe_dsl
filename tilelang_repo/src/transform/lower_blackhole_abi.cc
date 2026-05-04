@@ -625,11 +625,17 @@ static TTPerWorkArgSpec MakePerWorkArgSpec(const std::string &arg_kind,
                                            const std::string &descriptor_kind,
                                            const std::string &value_source,
                                            const std::string &buffer = "",
-                                           uint32_t constant_value = 0) {
+                                           uint32_t constant_value = 0,
+                                           const std::string &access_region = "",
+                                           int64_t access_region_index = -1,
+                                           const std::string &index_buffer = "",
+                                           int64_t index_value_scale = 1) {
   return TTPerWorkArgSpec(String(arg_kind), String(arg_identity),
                           String(buffer), String(descriptor_kind),
                           String(value_source),
-                          static_cast<int64_t>(constant_value));
+                          static_cast<int64_t>(constant_value),
+                          String(access_region), access_region_index,
+                          String(index_buffer), index_value_scale);
 }
 
 static TTKernelLaunchSpec MakeLaunchSpec(const std::string &core_type,
@@ -1131,7 +1137,51 @@ void PlanTTKernelABI::StoreAccessorDescriptors(PrimFunc &func) {
     auto runtime_args_contain_kind = [&](const char *arg_kind) {
       return !runtime_arg_identity_for_kind(arg_kind).empty();
     };
-    auto upsert_spec = [&](const TTPerWorkArgSpec &spec) {
+    auto inferred_access_kind_for_spec =
+        [&](const TTPerWorkArgSpec &spec) -> std::string {
+      const std::string arg_kind = static_cast<std::string>(spec->arg_kind);
+      if (arg_kind.rfind("output_", 0) == 0 || kind == "writer") {
+        return "write";
+      }
+      if (kind == "reader" || kind == "fused_dataflow") {
+        return "read";
+      }
+      return "";
+    };
+    auto attach_access_region_evidence =
+        [&](const TTPerWorkArgSpec &spec) -> TTPerWorkArgSpec {
+      if (!spec->access_region.empty()) {
+        return spec;
+      }
+      const std::string buffer = static_cast<std::string>(spec->buffer);
+      const std::string access_kind = inferred_access_kind_for_spec(spec);
+      if (buffer.empty() || access_kind.empty()) {
+        return spec;
+      }
+      const SpatialAccessRegionRef *region =
+          FindSpatialAccessRegionRef(buffer, access_kind);
+      if (region == nullptr) {
+        return spec;
+      }
+      std::string value_source = static_cast<std::string>(spec->value_source);
+      std::string index_buffer;
+      int64_t index_value_scale = 1;
+      if (static_cast<std::string>(spec->descriptor_kind) ==
+              blackhole_runtime_arg_schema::kDescriptorTileStart &&
+          !region->index_buffer.empty()) {
+        value_source = blackhole_runtime_arg_schema::kValueSourceIndexTable;
+        index_buffer = region->index_buffer;
+        index_value_scale = region->index_value_scale;
+      }
+      return MakePerWorkArgSpec(
+          static_cast<std::string>(spec->arg_kind),
+          static_cast<std::string>(spec->arg_identity),
+          static_cast<std::string>(spec->descriptor_kind), value_source, buffer,
+          static_cast<uint32_t>(spec->constant_value), region->name,
+          region->index, index_buffer, index_value_scale);
+    };
+    auto upsert_spec = [&](const TTPerWorkArgSpec &raw_spec) {
+      const TTPerWorkArgSpec spec = attach_access_region_evidence(raw_spec);
       const std::string arg_identity =
           static_cast<std::string>(spec->arg_identity);
       for (int i = 0; i < per_work_arg_specs.size(); ++i) {

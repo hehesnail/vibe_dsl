@@ -946,6 +946,18 @@ static std::vector<PerWorkArgSpec> ExtractPerWorkArgSpecsFromArray(
     if (auto v = spec_info.Get(::tvm::tl::blackhole_runtime_arg_schema::kConstantValue)) {
       spec.constant_value = static_cast<uint32_t>(Downcast<Integer>(v.value()).IntValue());
     }
+    if (auto v = spec_info.Get(::tvm::tl::blackhole_runtime_arg_schema::kAccessRegion)) {
+      spec.access_region = Downcast<String>(v.value());
+    }
+    if (auto v = spec_info.Get(::tvm::tl::blackhole_runtime_arg_schema::kAccessRegionIndex)) {
+      spec.access_region_index = Downcast<Integer>(v.value())->value;
+    }
+    if (auto v = spec_info.Get(::tvm::tl::blackhole_runtime_arg_schema::kIndexBuffer)) {
+      spec.index_buffer = Downcast<String>(v.value());
+    }
+    if (auto v = spec_info.Get(::tvm::tl::blackhole_runtime_arg_schema::kIndexValueScale)) {
+      spec.index_value_scale = Downcast<Integer>(v.value())->value;
+    }
     ICHECK(!spec.arg_identity.empty())
         << "Blackhole per-work descriptor requires explicit arg_identity";
     ICHECK(!spec.descriptor_kind.empty())
@@ -954,6 +966,14 @@ static std::vector<PerWorkArgSpec> ExtractPerWorkArgSpecsFromArray(
     ICHECK(!spec.value_source.empty())
         << "Blackhole per-work descriptor for " << spec.arg_identity
         << " requires value_source";
+    if (spec.value_source == ::tvm::tl::blackhole_runtime_arg_schema::kValueSourceIndexTable) {
+      ICHECK(!spec.index_buffer.empty())
+          << "Blackhole index_table per-work descriptor for "
+          << spec.arg_identity << " requires index_buffer";
+      ICHECK_GT(spec.index_value_scale, 0)
+          << "Blackhole index_table per-work descriptor for "
+          << spec.arg_identity << " requires positive index_value_scale";
+    }
     per_work_arg_specs.push_back(std::move(spec));
   }
   return per_work_arg_specs;
@@ -2499,6 +2519,22 @@ static ffi::Array<ffi::Any> EncodePerWorkArgSpecs(
       spec_info.Set(::tvm::tl::blackhole_runtime_arg_schema::kConstantValue,
                     Integer(static_cast<int>(spec.constant_value)));
     }
+    if (spec.value_source ==
+        ::tvm::tl::blackhole_runtime_arg_schema::kValueSourceIndexTable) {
+      ICHECK(!spec.index_buffer.empty())
+          << "Blackhole index_table per-work descriptor metadata requires index_buffer for "
+          << spec.arg_identity;
+      spec_info.Set(::tvm::tl::blackhole_runtime_arg_schema::kIndexBuffer,
+                    ffi::String(spec.index_buffer));
+      spec_info.Set(::tvm::tl::blackhole_runtime_arg_schema::kIndexValueScale,
+                    Integer(spec.index_value_scale));
+    }
+    if (!spec.access_region.empty()) {
+      spec_info.Set(::tvm::tl::blackhole_runtime_arg_schema::kAccessRegion,
+                    ffi::String(spec.access_region));
+      spec_info.Set(::tvm::tl::blackhole_runtime_arg_schema::kAccessRegionIndex,
+                    Integer(spec.access_region_index));
+    }
     encoded.push_back(spec_info);
   }
   return encoded;
@@ -2554,6 +2590,14 @@ static uint32_t ChooseBufferMaterializationPageSize(const ExecutableSpec& spec,
       }
       record_page_size(compile_time_arg_spec.transport_page_size_bytes,
                        "compile_time_arg_spec");
+    }
+    for (const auto& per_work_arg_spec : kernel.per_work_arg_specs) {
+      if (per_work_arg_spec.value_source !=
+              ::tvm::tl::blackhole_runtime_arg_schema::kValueSourceIndexTable ||
+          per_work_arg_spec.index_buffer != buffer_name) {
+        continue;
+      }
+      record_page_size(sizeof(int32_t), "index_table_per_work_arg");
     }
   }
   if (inferred_page_size != 0) {
@@ -3122,8 +3166,28 @@ static void EnforceExplicitBufferRoleSchemaGate(ExecutableSpec* spec) {
       bound_buffer_names.insert(arg.buffer);
     }
   };
+  auto record_per_work_index_tables =
+      [&](const std::vector<PerWorkArgSpec>& per_work_arg_specs) {
+    for (const auto& arg : per_work_arg_specs) {
+      if (arg.value_source !=
+          ::tvm::tl::blackhole_runtime_arg_schema::kValueSourceIndexTable) {
+        continue;
+      }
+      if (arg.index_buffer.empty()) {
+        missing_buffer_name = true;
+        continue;
+      }
+      bound_buffer_names.insert(arg.index_buffer);
+    }
+  };
   record_args(spec->runtime_args);
   record_args(spec->common_runtime_args);
+  record_per_work_index_tables(spec->per_work_arg_specs);
+  for (const auto& kernel : spec->kernels) {
+    record_args(kernel.runtime_args);
+    record_args(kernel.common_runtime_args);
+    record_per_work_index_tables(kernel.per_work_arg_specs);
+  }
 
   if (missing_buffer_name || bound_buffer_names.empty()) {
     AppendDirectRuntimeUnsupportedReason(
@@ -3578,6 +3642,16 @@ static void PopulateBufferMaterializationSpecs(
       register_buffer(compile_time_arg_spec.buffer, compile_time_arg_spec.layout,
                       compile_time_arg_spec.memory_space, compile_time_arg_spec.host_axis_order,
                       compile_time_arg_spec.transpose_2d);
+    }
+    for (const auto& per_work_arg_spec : kernel.per_work_arg_specs) {
+      if (per_work_arg_spec.value_source !=
+          ::tvm::tl::blackhole_runtime_arg_schema::kValueSourceIndexTable) {
+        continue;
+      }
+      ICHECK(!per_work_arg_spec.index_buffer.empty())
+          << "Blackhole index_table per-work descriptor requires index_buffer for "
+          << per_work_arg_spec.arg_identity;
+      register_buffer(per_work_arg_spec.index_buffer, "page_indexed", "dram");
     }
   }
 

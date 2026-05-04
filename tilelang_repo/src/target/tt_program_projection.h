@@ -664,6 +664,21 @@ EncodePerWorkArgSpecs(const Array<TTPerWorkArgSpec> &per_work_arg_specs) {
       item.Set(::tvm::tl::blackhole_runtime_arg_schema::kConstantValue,
                Integer(spec->constant_value));
     }
+    if (spec->value_source ==
+        ::tvm::tl::blackhole_runtime_arg_schema::kValueSourceIndexTable) {
+      ICHECK(!spec->index_buffer.empty())
+          << "TTPerWorkArgSpec index_table value_source requires index_buffer";
+      item.Set(::tvm::tl::blackhole_runtime_arg_schema::kIndexBuffer,
+               spec->index_buffer);
+      item.Set(::tvm::tl::blackhole_runtime_arg_schema::kIndexValueScale,
+               Integer(spec->index_value_scale));
+    }
+    if (!spec->access_region.empty()) {
+      item.Set(::tvm::tl::blackhole_runtime_arg_schema::kAccessRegion,
+               spec->access_region);
+      item.Set(::tvm::tl::blackhole_runtime_arg_schema::kAccessRegionIndex,
+               Integer(spec->access_region_index));
+    }
     encoded.push_back(item);
   }
   return encoded;

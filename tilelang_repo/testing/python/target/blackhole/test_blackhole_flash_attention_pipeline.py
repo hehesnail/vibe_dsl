@@ -3081,19 +3081,30 @@ def test_flash_attention_compute_source_emits_thread_invariant_matmul_pipeline_w
     q_cb = cb_by_name["Q_shared"]
     k_cb = cb_by_name["K_shared"]
     v_cb = cb_by_name["V_shared"]
-    acc_s_cast_cb = cb_by_name["acc_s_cast"]
+    acc_s_cast_cbs = [
+        int(cb["cb_id"])
+        for cb in spec["cb_configs"]
+        if any(name.startswith("acc_s_cast") for name in _cb_logical_names(cb))
+    ]
 
     tx_loop_pos = compute_source.find("for (int32_t tx = 0; tx < 128; ++tx)")
     first_mm_match = re.search(rf"mm_init\({q_cb}, {k_cb}, \d+\);", compute_source)
-    second_mm_match = re.search(
-        rf"mm_init\({acc_s_cast_cb}, {v_cb}, \d+\);", compute_source
-    )
-    acc_s_publish_match = re.search(
-        rf"cb_push_back\({acc_s_cast_cb},\s*\d+\);", compute_source
-    )
-    acc_s_publish_pos = -1 if acc_s_publish_match is None else acc_s_publish_match.start()
     first_mm_pos = -1 if first_mm_match is None else first_mm_match.start()
-    second_mm_pos = -1 if second_mm_match is None else second_mm_match.start()
+    acc_s_publish_pos = -1
+    second_mm_pos = -1
+    for acc_s_cast_cb in acc_s_cast_cbs:
+        second_mm_match = re.search(
+            rf"mm_init\({acc_s_cast_cb}, {v_cb}, \d+\);", compute_source
+        )
+        acc_s_publish_match = re.search(
+            rf"cb_push_back\({acc_s_cast_cb},\s*\d+\);", compute_source
+        )
+        if second_mm_match is None or acc_s_publish_match is None:
+            continue
+        if acc_s_publish_match.start() < second_mm_match.start():
+            acc_s_publish_pos = acc_s_publish_match.start()
+            second_mm_pos = second_mm_match.start()
+            break
 
     assert tx_loop_pos == -1
     assert first_mm_pos != -1

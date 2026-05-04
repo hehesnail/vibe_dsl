@@ -197,6 +197,12 @@ def tt_per_work_arg_specs_to_list(per_work_arg_specs):
             item["buffer"] = str(spec.buffer)
         if str(spec.value_source) == "constant":
             item["constant_value"] = int(spec.constant_value)
+        if getattr(spec, "access_region", None) is not None and str(spec.access_region):
+            item["access_region"] = str(spec.access_region)
+            item["access_region_index"] = int(spec.access_region_index)
+        if getattr(spec, "index_buffer", None) is not None and str(spec.index_buffer):
+            item["index_buffer"] = str(spec.index_buffer)
+            item["index_value_scale"] = int(spec.index_value_scale)
         encoded.append(item)
     return encoded
 
@@ -241,17 +247,55 @@ def make_tt_compute_config(compute_config):
 
 def make_tt_per_work_arg_specs(per_work_arg_specs):
     make = tilelang.tvm.get_global_func("tl.TTPerWorkArgSpec")
-    return [
-        make(
-            str(item.get("arg_kind", "")),
-            str(item.get("arg_identity", "")),
-            str(item.get("buffer", "")),
-            str(item.get("descriptor_kind", "")),
-            str(item.get("value_source", "")),
-            int(item.get("constant_value", 0)),
+    make_with_access_region = tilelang.tvm.get_global_func(
+        "tl.TTPerWorkArgSpecWithAccessRegion"
+    )
+    make_with_index_table = tilelang.tvm.get_global_func(
+        "tl.TTPerWorkArgSpecWithIndexTable"
+    )
+    result = []
+    for item in tt_per_work_arg_specs_to_list(per_work_arg_specs):
+        if item.get("index_buffer"):
+            result.append(
+                make_with_index_table(
+                    str(item.get("arg_kind", "")),
+                    str(item.get("arg_identity", "")),
+                    str(item.get("buffer", "")),
+                    str(item.get("descriptor_kind", "")),
+                    str(item.get("value_source", "")),
+                    int(item.get("constant_value", 0)),
+                    str(item.get("access_region", "")),
+                    int(item.get("access_region_index", -1)),
+                    str(item.get("index_buffer", "")),
+                    int(item.get("index_value_scale", 1)),
+                )
+            )
+            continue
+        if item.get("access_region"):
+            result.append(
+                make_with_access_region(
+                    str(item.get("arg_kind", "")),
+                    str(item.get("arg_identity", "")),
+                    str(item.get("buffer", "")),
+                    str(item.get("descriptor_kind", "")),
+                    str(item.get("value_source", "")),
+                    int(item.get("constant_value", 0)),
+                    str(item.get("access_region", "")),
+                    int(item.get("access_region_index", -1)),
+                )
+            )
+            continue
+        result.append(
+            make(
+                str(item.get("arg_kind", "")),
+                str(item.get("arg_identity", "")),
+                str(item.get("buffer", "")),
+                str(item.get("descriptor_kind", "")),
+                str(item.get("value_source", "")),
+                int(item.get("constant_value", 0)),
+            )
         )
-        for item in tt_per_work_arg_specs_to_list(per_work_arg_specs)
-    ]
+    return result
 
 
 def tt_runtime_arg_specs_to_list(runtime_args):
@@ -988,6 +1032,11 @@ def rebuild_tt_program(
     live_form_plans=None,
     materialization_plans=None,
     consumer_binding_plans=None,
+    exact_cb_virtual_values=None,
+    exact_cb_use_events=None,
+    exact_cb_live_intervals=None,
+    exact_cb_allocations=None,
+    exact_cb_release_events=None,
     resource_demands=None,
     resource_pressure_reports=None,
     abi_plans=None,
@@ -1043,6 +1092,21 @@ def rebuild_tt_program(
         list(program.consumer_binding_plans)
         if consumer_binding_plans is None
         else consumer_binding_plans,
+        list(program.exact_cb_virtual_values)
+        if exact_cb_virtual_values is None
+        else exact_cb_virtual_values,
+        list(program.exact_cb_use_events)
+        if exact_cb_use_events is None
+        else exact_cb_use_events,
+        list(program.exact_cb_live_intervals)
+        if exact_cb_live_intervals is None
+        else exact_cb_live_intervals,
+        list(program.exact_cb_allocations)
+        if exact_cb_allocations is None
+        else exact_cb_allocations,
+        list(program.exact_cb_release_events)
+        if exact_cb_release_events is None
+        else exact_cb_release_events,
         list(program.resource_demands)
         if resource_demands is None
         else resource_demands,
@@ -1173,6 +1237,35 @@ def grid_indexed_staged_copy_kernel(
         return main
 
     raise ValueError(f"Unsupported grid_indexed_staged_copy_kernel dtype: {dtype}")
+
+
+def block_indexed_staged_copy_kernel(
+    grid_x: int,
+    source_tiles: int,
+    tile_m: int = 32,
+    tile_n: int = 32,
+    dtype: str = "bfloat16",
+):
+    """Define a copy kernel whose input tile comes from a per-work int32 table."""
+    source_m = source_tiles * tile_m
+    output_m = grid_x * tile_m
+
+    if dtype == "bfloat16":
+        @T.prim_func
+        def main(
+            A: T.Tensor((source_m, tile_n), "bfloat16"),
+            BlockIndices: T.Tensor((grid_x,), "int32"),
+            B: T.Tensor((output_m, tile_n), "bfloat16"),
+        ):
+            with T.Kernel(grid_x, 1) as (bx, by):
+                A_shared = T.alloc_shared((tile_m, tile_n), "bfloat16")
+                tile_id = BlockIndices[bx]
+                T.copy(A[tile_id * tile_m, 0], A_shared)
+                T.copy(A_shared, B[bx * tile_m, 0])
+
+        return main
+
+    raise ValueError(f"Unsupported block_indexed_staged_copy_kernel dtype: {dtype}")
 
 
 def staged_stick_copy_kernel(

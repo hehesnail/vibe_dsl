@@ -1362,6 +1362,9 @@ void CodeGenBlackhole::EmitRuntimeArgLoads(const tvm::tir::PrimFunc &f) {
     if (auto v = spec.Get(::tvm::tl::blackhole_runtime_arg_schema::kArgIdentity)) {
       binding.arg_identity = Downcast<tvm::ffi::String>(v.value());
     }
+    if (auto v = spec.Get(::tvm::tl::blackhole_runtime_arg_schema::kBuffer)) {
+      binding.buffer = Downcast<tvm::ffi::String>(v.value());
+    }
     if (auto v = spec.Get(::tvm::tl::blackhole_runtime_arg_schema::kDescriptorKind)) {
       binding.descriptor_kind = Downcast<tvm::ffi::String>(v.value());
     }
@@ -1370,6 +1373,12 @@ void CodeGenBlackhole::EmitRuntimeArgLoads(const tvm::tir::PrimFunc &f) {
     }
     if (auto v = spec.Get(::tvm::tl::blackhole_runtime_arg_schema::kConstantValue)) {
       binding.constant_value = Downcast<tvm::Integer>(v.value()).IntValue();
+    }
+    if (auto v = spec.Get(::tvm::tl::blackhole_runtime_arg_schema::kIndexBuffer)) {
+      binding.index_buffer = Downcast<tvm::ffi::String>(v.value());
+    }
+    if (auto v = spec.Get(::tvm::tl::blackhole_runtime_arg_schema::kIndexValueScale)) {
+      binding.index_value_scale = Downcast<tvm::Integer>(v.value()).IntValue();
     }
     ICHECK(!binding.arg_identity.empty())
         << "Blackhole codegen requires per-work descriptor arg_identity";
@@ -1904,7 +1913,8 @@ void CodeGenBlackhole::VisitStmt_(const tvm::tir::AllocateNode *op) {
       scope == "blackhole.acc" && core_type_ == CoreType::kTRISC;
   const bool cb_backed_accumulator =
       compute_local_fragment_storage &&
-      cb_id_by_requirement_name_.find(op->buffer_var->name_hint) != cb_id_by_requirement_name_.end();
+      cb_initial_reserve_pages_by_requirement_name_.find(op->buffer_var->name_hint) !=
+          cb_initial_reserve_pages_by_requirement_name_.end();
 
   if (runtime_managed_storage || (scope == "blackhole.acc" && !compute_local_fragment_storage)) {
     // Blackhole shared / CB allocations are runtime/device-managed
@@ -1934,11 +1944,7 @@ void CodeGenBlackhole::VisitStmt_(const tvm::tir::AllocateNode *op) {
     const int allocation_pages = std::max<int>(
         1, static_cast<int>((allocation_bytes + page_size - 1) / page_size));
     const int initial_reserve_pages =
-        cb_initial_reserve_pages_by_requirement_name_.count(op->buffer_var->name_hint)
-            ? cb_initial_reserve_pages_by_requirement_name_.at(op->buffer_var->name_hint)
-            : (cb_publish_pages_by_requirement_name_.count(op->buffer_var->name_hint)
-                   ? cb_publish_pages_by_requirement_name_.at(op->buffer_var->name_hint)
-                   : std::min(num_pages, allocation_pages));
+        cb_initial_reserve_pages_by_requirement_name_.at(op->buffer_var->name_hint);
 
     std::ostringstream dtype_os;
     PrintType(op->dtype, dtype_os);

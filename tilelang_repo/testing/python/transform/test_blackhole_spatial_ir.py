@@ -2544,6 +2544,27 @@ def test_algorithmic_access_region_covers_copy_unit_reads_and_writes():
             assert (str(unit.name), str(subject), "write") in by_unit_subject_kind
 
 
+def test_t8_spatial_plan_records_grid_indexed_access_exprs():
+    mod = _prepare_blackhole_phase_b_module(grid_indexed_staged_copy_kernel(3, 2))
+    plan = mod["main"].attrs["tl.spatial_plan"]
+
+    regions = {
+        (str(region.subject), str(region.access_kind)): region
+        for region in plan.access_regions
+    }
+    a_read = regions[("A", "read")]
+    b_write = regions[("B", "write")]
+
+    for region in (a_read, b_write):
+        assert str(region.coverage_kind) == "slice"
+        assert str(region.predicate_kind) == "unconditional"
+        assert len(region.index_exprs) == int(region.logical_rank)
+        assert len(region.loop_vars) >= 2
+        expr_text = " ".join(str(expr) for expr in region.index_exprs)
+        assert "bx" in expr_text
+        assert "by" in expr_text
+
+
 def test_task1_spatial_plan_exposes_logical_live_value_boundaries():
     mod = _prepare_blackhole_phase_b_module(staged_copy_kernel(tile_rows=1, tile_cols=1))
     plan = mod["main"].attrs["tl.spatial_plan"]
@@ -3727,6 +3748,31 @@ def test_algorithmic_validate_spatial_plan_rejects_missing_access_region():
         tilelang.transform.ValidateSpatialPlan()(broken)
 
 
+def test_t8_validate_spatial_plan_rejects_slice_region_without_index_exprs():
+    mod = _prepare_blackhole_phase_b_module(grid_indexed_staged_copy_kernel(3, 2))
+    main = mod["main"]
+    plan = main.attrs["tl.spatial_plan"]
+    region_index, region = next(
+        (index, item)
+        for index, item in enumerate(plan.access_regions)
+        if str(item.subject) == "A" and str(item.access_kind) == "read"
+    )
+    access_regions = list(plan.access_regions)
+    access_regions[region_index] = _rebuild_access_region(
+        region,
+        coverage_kind="slice",
+        index_exprs=[],
+    )
+    invalid_plan = _rebuild_spatial_plan(plan, access_regions=access_regions)
+    func = main.with_attr("tl.spatial_plan", invalid_plan).without_attr(
+        "tl.spatial_plan_validated"
+    )
+    broken = tvm.IRModule({"main": func}, global_infos=mod.global_infos)
+
+    with pytest.raises(Exception, match="AccessRegion.*index_exprs"):
+        tilelang.transform.ValidateSpatialPlan()(broken)
+
+
 def test_algorithmic_validate_spatial_plan_rejects_invalid_dependence_component_edge():
     mod = _prepare_blackhole_phase_b_module(
         gqa_example.flashattn.jit_impl.get_tir(
@@ -3897,6 +3943,25 @@ def test_algorithmic_live_form_solver_uses_boundary_coverage_for_consumer_bindin
     )
     assert bool(binding.accepts_distributed_slice) is False
     assert bool(binding.requires_full_logical_tile) is True
+
+
+def test_t8_tt_per_work_descriptors_reference_spatial_access_region_evidence():
+    mod = _prepare_blackhole_tt_program_module(grid_indexed_staged_copy_kernel(3, 2))
+    main = mod["main"]
+    plan = main.attrs["tl.spatial_plan"]
+    tt_program = main.attrs["tl.tt_program"]
+    region_names = {str(region.name) for region in plan.access_regions}
+
+    tile_start_specs = [
+        spec
+        for kernel in tt_program.kernels
+        for spec in kernel.per_work_arg_specs
+        if str(spec.descriptor_kind) == "tile_start"
+    ]
+
+    assert tile_start_specs
+    assert all(str(spec.access_region) in region_names for spec in tile_start_specs)
+    assert all(int(spec.access_region_index) >= 0 for spec in tile_start_specs)
 
 
 def test_validate_tt_program_rejects_full_tile_consumer_bound_to_slice_live_form():

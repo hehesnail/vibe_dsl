@@ -525,9 +525,6 @@ Stmt PlanTTKernelABI::LowerMatmulCallWithFlowAnalysis(
     const bool post_merge_cast_can_consume_live_cb =
         post_merge_cast != nullptr && adjacent_post_merge_cast_is_only_compute_consumer &&
         !has_zero_preclear;
-    const bool active_loop_local_accumulator =
-        !gemm_clear_accum_ && GetStorageScope(out_buffer) == "blackhole.acc" &&
-        !active_loop_carried_buffer_identity_stack_.empty();
     bool active_loop_carried_state_output = false;
     if (!active_loop_carried_buffer_identity_stack_.empty()) {
       for (const std::string& identity : output_identities) {
@@ -540,7 +537,7 @@ Stmt PlanTTKernelABI::LowerMatmulCallWithFlowAnalysis(
     const bool loop_carried_output =
         IsActiveLoopCarriedBuffer(out_buffer) ||
         (logical_out_buffer.defined() && IsActiveLoopCarriedBuffer(logical_out_buffer)) ||
-        active_loop_local_accumulator || active_loop_carried_state_output;
+        active_loop_carried_state_output;
     const bool future_exact_live_form_compute_consume =
         HasFutureExactLiveFormTileComputeConsume(out_buffer, current_order_index);
     const bool needs_post_merge_cast_materialization = post_merge_cast != nullptr && has_zero_preclear;
@@ -618,9 +615,21 @@ Stmt PlanTTKernelABI::GenerateMatmulSequence(const CallNode* op,
        ShouldMaterializeLoopCarriedExactOutput(logical_gemm_c_buffer)) ||
       (!gemm_clear_accum_ && preserve_out_local_state &&
        GetStorageScope(gemm_c_buffer_) == "blackhole.acc" &&
-       !active_loop_carried_buffer_identity_stack_.empty());
+       (IsActiveLoopCarriedBuffer(gemm_c_buffer_) ||
+        (logical_gemm_c_buffer.defined() &&
+         IsActiveLoopCarriedBuffer(logical_gemm_c_buffer))));
+  const int num_m_tiles = CeilDivToInt(gemm_m_, kBlackholeTileRows);
+  const int num_n_tiles = CeilDivToInt(gemm_n_, kBlackholeTileCols);
+  const int num_c_tiles = num_m_tiles * num_n_tiles;
+  const int64_t c_logical_elements = GetLogicalBufferElementCount(gemm_c_buffer_);
+  const bool has_initial_local_fragment_state = HasZeroFragmentFillFact(gemm_c_buffer_);
+  const bool can_reload_loop_carried_local_state =
+      !gemm_clear_accum_ && output_loop_carried && has_initial_local_fragment_state &&
+      preserve_out_local_state && GetStorageScope(gemm_c_buffer_) == "blackhole.acc" &&
+      GetLogicalBufferTileCount(gemm_c_buffer_) == num_c_tiles &&
+      c_logical_elements == static_cast<int64_t>(gemm_m_) * gemm_n_;
   const bool merge_with_zero_reload =
-      !gemm_clear_accum_ && HasZeroFragmentFillFact(gemm_c_buffer_) && !output_loop_carried;
+      !gemm_clear_accum_ && has_initial_local_fragment_state && !output_loop_carried;
   InvalidateLastFragmentFillValue(gemm_c_buffer_);
   if (logical_gemm_c_buffer.defined()) {
     InvalidateLastFragmentFillValue(logical_gemm_c_buffer);
@@ -631,7 +640,8 @@ Stmt PlanTTKernelABI::GenerateMatmulSequence(const CallNode* op,
         GenerateAccumulatingMatmulSequence(op, retain_in0, retain_in1, publish_transport_out,
                                            preserve_out_local_state, reacquire_in0, reacquire_in1,
                                            post_merge_cast, post_merge_cast_order_index,
-                                           merge_with_zero_reload);
+                                           merge_with_zero_reload,
+                                           can_reload_loop_carried_local_state);
     if (logical_gemm_c_buffer.defined() && preserve_out_local_state) {
       ExactTiledCBValue live_value;
       if (TryCreateLiveExactTiledCBValue(gemm_c_buffer_, &live_value)) {
@@ -875,14 +885,18 @@ Stmt PlanTTKernelABI::GenerateMergeFragmentTilesSequence(const Buffer& dst,
                                                            int materialized_cast_cb_id,
                                                            bool merge_with_zero_reload,
                                                            int live_reload_cb_id,
-                                                           const Buffer& live_reload_buffer) {
+                                                           const Buffer& live_reload_buffer,
+                                                           bool reload_from_loop_carried_local_state) {
   InvalidateLastFragmentFillValue(dst);
   const std::string dst_buffer_name = BufferIdentityName(dst);
   const bool use_live_reload = !merge_with_zero_reload && live_reload_cb_id >= 0;
+  const bool use_loop_carried_local_reload =
+      !merge_with_zero_reload && !use_live_reload && reload_from_loop_carried_local_state;
   const BlackholeBufferMaterializationFact* fact = FindBufferMaterializationFact(dst);
-  if (!merge_with_zero_reload && !use_live_reload) {
+  if (!merge_with_zero_reload && !use_live_reload && !use_loop_carried_local_reload) {
     ICHECK(fact != nullptr)
-        << "PlanTTKernelABI requires buffer materialization fact or exact live-CB state for "
+        << "PlanTTKernelABI requires buffer materialization fact, exact live-CB state, "
+           "or typed loop-carried local state for "
            "merge_fragment_tiles destination "
         << dst_buffer_name;
   }
@@ -1287,7 +1301,8 @@ Stmt PlanTTKernelABI::GenerateAccumulatingMatmulSequence(const CallNode* op,
                                                            bool reacquire_in1,
                                                            const FragmentCastMatch* post_merge_cast,
                                                            int post_merge_cast_order_index,
-                                                           bool merge_with_zero_reload) {
+                                                           bool merge_with_zero_reload,
+                                                           bool reload_from_loop_carried_local_state) {
   ICHECK(op != nullptr);
   ICHECK(IsUnsupportedResidualLocalScope(gemm_c_buffer_))
       << "Blackhole clear_accum=false lowering currently requires a compute-local accumulator "
@@ -1366,6 +1381,9 @@ Stmt PlanTTKernelABI::GenerateAccumulatingMatmulSequence(const CallNode* op,
       (preserve_out_local_state && local_only_output_state) ||
       (preserve_out_local_state && GetStorageScope(gemm_c_buffer_) == "blackhole.acc" &&
        !active_loop_carried_buffer_identity_stack_.empty() &&
+       (IsActiveLoopCarriedBuffer(gemm_c_buffer_) ||
+        (logical_gemm_c_buffer.defined() &&
+         IsActiveLoopCarriedBuffer(logical_gemm_c_buffer))) &&
        !IsSingleFullTileLogicalMatrix(gemm_c_buffer_));
   int loop_carried_live_form_req_index = -1;
   Buffer loop_carried_live_form_buffer;
@@ -1493,7 +1511,8 @@ Stmt PlanTTKernelABI::GenerateAccumulatingMatmulSequence(const CallNode* op,
       (publish_transport_out && !reuse_loop_carried_live_form_cb) ? gemm_c_req_index_ : -1,
       materialized_cast_req_index,
       merge_with_zero_reload, use_live_reload ? live_reload_value.cb_id : -1,
-      use_live_reload ? live_reload_value.buffer : Buffer()));
+      use_live_reload ? live_reload_value.buffer : Buffer(),
+      reload_from_loop_carried_local_state));
   if (materialize_live_form_to_local_state && !use_tiled_cb_live_form) {
     ClearSelectedSourceLiveProducer(gemm_c_buffer_);
     ClearTiledCBLiveFormAliases(gemm_c_buffer_);

@@ -23,7 +23,7 @@
 | T6 `topk` | Complete | Existing-TIR row-wise value/index selection runs through direct runtime for fp32 and bf16 values with exact `int32` indices, without a frontend topk op or selection plan. |
 | T7 Exact-CB / materialization primitives | Complete | Exact-CB materialization is admitted through typed live-form/materialization/consumer-binding records, including GEMM post-merge `pack_tile`, source-live `cb_republish`, and seq64 bf16 flash-attn exact-CB partial-combine direct runtime correctness. |
 | T7.5 Exact-CB liveness / allocation cutover | Complete | Covered exact-CB resident tiles use typed TTProgram/ExecutableSpec lifecycle, allocation, and release records; old loop-carried owner maps, materialization-pop fallback, and full-tile/slice ambiguity are fail-closed or deleted from the active path. |
-| T8 Irregular work domains / indexed access | Implementation | TIR-derived segmented, ragged, and indexed addressing evidence; no workload metadata registry. |
+| T8 Irregular work domains / indexed access | Implementation | Grid-indexed and first one-dimensional table-indexed per-work tile descriptors carry TIR-derived AccessRegion evidence through TT per-work descriptors and direct runtime; segmented and ragged gates remain open. |
 | T9 Workload first paths | Queued | Workload checkpoints decomposed into admitted primitive surfaces with direct-runtime correctness. |
 | T10 Distributed production variants | Queued | Mesh, CCL, NoC/multicast/global scheduling, distributed workload correctness, and production partial-K reduction protocol. |
 
@@ -149,7 +149,8 @@ Every active implementation task uses this acceptance table.
   non-uniform groups and operands such as `group_sizes` / `group_offsets`.
 - Ragged bounds from TIR predicates and operands such as `cache_seqlens`,
   proving invalid rows/tokens are skipped.
-- Indexed block traversal where `BufferLoad` / `BufferStore` indices use an
+- Indexed block traversal beyond the admitted one-dimensional table-backed
+  per-work tile-start case, where `BufferLoad` / `BufferStore` indices use an
   operand such as `block_indices`.
 - In every case, the derived evidence must drive source/runtime addressing.
   Projection-only tests do not complete T8.
@@ -192,6 +193,95 @@ Each checkpoint needs its own direct-runtime correctness proof:
   `M=320`, `N=352`, `K>=512`, `logical_grid=11x10x2` or larger.
 
 ## Recent Verification
+
+2026-05-05 UTC T8 table-indexed per-work checkpoint:
+
+- `cmake --build build -j32` passed.
+- Minimal `BlockIndices[bx]` staged copy now lowers to a table-backed
+  `TTPerWorkArgSpec`: `value_source=index_table`,
+  `index_buffer=BlockIndices`, `index_value_scale=1`, with the A tile-start
+  descriptor pointing back to SpatialPlan `AccessRegion` evidence.
+- Device source consumes `runtime_arg_u32("a_tile_start_id")` and no longer
+  emits a raw source-time `BufferLoad` from `BlockIndices`.
+- Executable materialization registers the index table as a page-indexed DRAM
+  input buffer with 4-byte pages, and direct runtime evaluates per-work tile
+  starts from host-side table data.
+- Direct runtime now rejects out-of-range table tile starts from typed
+  materialization page bounds instead of relying on source-side guard recovery.
+- Copy structure/runtime selectors passed:
+  `test_blackhole_grid_indexed_copy_per_work_specs_expose_typed_descriptors`,
+  `test_blackhole_block_indexed_copy_per_work_spec_uses_index_table_descriptor`,
+  `test_blackhole_module_direct_call_grid_indexed_copy_multicore_launch`,
+  `test_blackhole_module_direct_call_block_indexed_copy_uses_index_table`,
+  and
+  `test_blackhole_module_direct_call_block_indexed_copy_rejects_out_of_range_index_table`
+  reported `5 passed`.
+- Flash extended-sequence gate
+  `test_blackhole_flash_attention_extended_seq_metadata_carries_loop_carried_exact_cb`
+  passed for `seq_len=128,256,512`; the corresponding direct-runtime selector
+  still reports the typed TT-Sim boundary and skipped for those three shapes.
+- Regression selectors
+  `test_flash_attention_segment_writer_block_indices_follow_per_work_value_source`
+  and `testing/python/target/blackhole/test_blackhole_topk_runtime.py`
+  reported `5 passed`.
+- This checkpoint does not complete T8.  Segmented/grouped dispatch and ragged
+  predicate-derived bounds remain open.
+
+2026-05-05 UTC T8 / larger-flash regression checkpoint:
+
+- `cmake --build build -j32` passed.
+- Larger flash shapes no longer fail source/spec admission on constant
+  full-tile `AccessRegion` evidence or clear-accum=false accumulator reload:
+  rank-aligned `index_exprs` are treated as indexed evidence only when the
+  access expression contains an actual index variable, and loop-carried local
+  accumulator reload is admitted only from typed loop-carried evidence plus a
+  full static local state shape.
+- Source codegen now backs `blackhole.acc` stack allocations with a CB only
+  when TTProgram projected explicit `initial_reserve_pages`; metadata-only
+  CB configs no longer turn local accumulators such as `acc_s` / `acc_o` into
+  shared physical CB write pointers.
+- The original GQA larger-shape regression
+  `testing/python/target/blackhole/test_blackhole_flash_attention_pipeline.py::test_flash_attention_segment_writer_block_indices_follow_per_work_value_source`
+  passed.
+- Flash larger-shape metadata gate
+  `testing/python/target/blackhole/test_blackhole_flash_attention_runtime.py::test_blackhole_flash_attention_extended_seq_metadata_carries_loop_carried_exact_cb`
+  passed for `seq_len=128,256,512`.
+- The corresponding direct-runtime selector for `seq_len=128,256,512` still
+  skips at the typed TT-Sim boundary:
+  `loop-carried exact-CB backedge direct runtime is gated:
+  TT-Sim reports tensix_execute_pacr: count=1`.
+- Flash source/lifecycle selector covering accumulator merge, queue
+  consistency, PV merge, output staging, and multiphase CB layout reported
+  `8 passed`.
+- Seq64 bf16 MHA flash direct-runtime correctness
+  `test_blackhole_flash_attention_seq64_mha_bf16_forward_direct_runtime`
+  passed.
+- T8 grid-indexed structure/pipeline/runtime selector reported `9 passed`.
+- `git diff --check` passed.
+
+2026-05-05 UTC T8 irregular/indexed first-slice checkpoint:
+
+- `cmake --build build -j32` passed.
+- `AccessRegion` now records concrete `BufferLoad` / `BufferStore`
+  `index_exprs`, participating loop/launch vars, and guarded/unconditional
+  predicate kind for the admitted grid-indexed slice.
+- `TTPerWorkArgSpec` / executable per-work descriptors now carry
+  `access_region` and `access_region_index` evidence for tile descriptors
+  derived from indexed access.
+- Structure/pipeline/runtime selector passed:
+  `testing/python/transform/test_blackhole_spatial_ir.py::test_algorithmic_access_region_covers_copy_unit_reads_and_writes`,
+  `test_t8_spatial_plan_records_grid_indexed_access_exprs`,
+  `test_t8_validate_spatial_plan_rejects_slice_region_without_index_exprs`,
+  `test_t8_tt_per_work_descriptors_reference_spatial_access_region_evidence`,
+  `testing/python/target/blackhole/test_blackhole_copy_pipeline.py::test_blackhole_grid_indexed_copy_per_work_specs_expose_typed_descriptors`,
+  `test_blackhole_grid_indexed_copy_build_rejects_top_level_per_work_payload_fallback`,
+  `test_blackhole_grid_indexed_copy_rejects_per_work_arg_kind_fallback_without_identity`,
+  `testing/python/target/blackhole/test_blackhole_copy_runtime.py::test_blackhole_module_direct_call_grid_indexed_copy_multicore_launch`,
+  and
+  `test_blackhole_module_direct_call_grid_indexed_copy_worker_semaphore_handshake`
+  reported `9 passed`.
+- This checkpoint does not complete T8.  Segmented/grouped dispatch, ragged
+  bounds, and table-indexed block traversal still need source/runtime gates.
 
 2026-05-05 UTC T7.5 exact-CB liveness/allocation completion:
 

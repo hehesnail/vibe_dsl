@@ -1717,6 +1717,22 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   validator 要求 unit/subject/kind/coverage
   与 execution unit read/write 对齐。
   Phase A 不改变 TTProgram 或 source generation 行为。
+- 2026-05-05 T8 first slice 后，`AccessRegion`
+  不再只是 read/write/full-shape coverage：
+  grid-indexed per-work tile access 会记录实际
+  `BufferLoad` / `BufferStore`
+  `index_exprs`、参与的 loop / launch vars、
+  以及 guarded / unconditional predicate kind。
+  对 `slice` / `row_slice` / `grouped_slice`
+  coverage，validator 要求 `index_exprs`
+  与 logical rank 对齐。
+  `TTPerWorkArgSpec`
+  会把 per-work tile descriptor 回指到
+  `access_region` / `access_region_index`，
+  这样 source/runtime 地址 descriptor 可以追溯到
+  SpatialPlan evidence，而不是默认从
+  `work_linear_id`
+  或 generated source 重新恢复。
 - 2026-04-28 Algorithmic generalization Phase B
   已添加 shared `spatial_dependence_graph` helper。
   `BuildSpatialPlan` 现在从 typed `AccessRegion`
@@ -2329,3 +2345,33 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   real physical-CB interference.  Feed typed exact-CB interval bounds into
   `PlanTTCBAlloc` before physical CB assignment, then validate that two
   overlapping virtual intervals never share one physical CB.
+- 2026-05-05 T8 indexed evidence boundary:
+  Do not treat rank-aligned constant indices as indexed access evidence.
+  `AccessRegion.index_exprs` should carry indexed semantics only when the TIR
+  `BufferLoad` / `BufferStore` expression contains a real participating index
+  variable.  Constant full-tile accesses such as `[0, 0]` are still useful
+  coverage evidence, but they must not force downstream `loop_vars` or
+  indexed descriptor admission.
+- 2026-05-05 loop-carried accumulator reload:
+  For clear-accum=false GEMM in a structured loop, loop-carried status must
+  come from read-before-write over real TIR / exact-CB leaf accesses.  A
+  `blackhole.acc` destination may reload from local state without a
+  materialization fact only when the loop-carried evidence is present, an
+  initial local fragment state exists, and the logical tile count / element
+  count matches the GEMM output tile set.
+- 2026-05-05 CB-backed `blackhole.acc` codegen:
+  A CB config is not enough to source-render a local accumulator as
+  `tilelang_cb_write_ptr_bytes_direct(cb_id)`.  Only an explicit
+  `initial_reserve_pages` projection may CB-back a `blackhole.acc` allocation;
+  otherwise source codegen must keep it as compute-local stack storage.  This
+  prevents metadata-only requirements such as `acc_s` / `acc_o` from sharing a
+  physical CB write pointer after allocator reuse.
+- 2026-05-05 T8 table-indexed per-work descriptors:
+  A table-derived tile start should be represented as a typed
+  `TTPerWorkArgSpec` with `value_source=index_table`, `index_buffer`, and
+  `index_value_scale`, linked back to the SpatialPlan `AccessRegion`.
+  Source should consume the ordinary tile-start runtime arg
+  (`runtime_arg_u32("a_tile_start_id")`) and must not read the index table
+  directly.  Direct runtime should materialize the table as a normal named
+  input buffer, evaluate the per-work arg from host-side table data, and check
+  the result against the target buffer's typed page count.

@@ -59,6 +59,8 @@
 namespace tvm {
 namespace tl {
 
+static bool IsCopyLoadValueForPureCopy(const PrimExpr& expr);
+
 static std::string DataTypeToDataFormatForBlackhole(DataType dtype) {
   if (dtype.is_bfloat16()) return "Float16_b";
   if (dtype.is_float16()) return "Float16";
@@ -375,6 +377,7 @@ using tir::builtin::blackhole_read_tile_to_cb;
 using tir::builtin::blackhole_read_page_to_cb;
 using tir::builtin::blackhole_write_tile_from_cb;
 using tir::builtin::blackhole_write_page_from_cb;
+using tir::builtin::blackhole_runtime_arg_u32;
 using tir::builtin::blackhole_pack_untilize_slice;
 using tir::builtin::blackhole_pack_untilize_tile;
 using tir::builtin::blackhole_tilize_local_fragment_slice;
@@ -785,7 +788,7 @@ static bool HasComputeSegmentRequirement(const Stmt& body) {
     if (!store || !IsUnsupportedResidualLocalScope(store->buffer)) {
       return;
     }
-    if (!store->value.as<BufferLoadNode>()) {
+    if (!IsCopyLoadValueForPureCopy(store->value)) {
       found = true;
     }
   });
@@ -1583,6 +1586,8 @@ PrimFunc PlanTTKernelABI::SelectComputeBuiltins(const PrimFunc& func) {
   logical_tile_layout_specs_by_buffer_.clear();
   spatial_materialization_boundaries_.clear();
   spatial_materialization_boundary_position_by_index_.clear();
+  spatial_access_regions_.clear();
+  spatial_access_region_position_by_subject_access_.clear();
   spatial_live_value_by_subject_.clear();
   spatial_lifetime_kind_by_subject_.clear();
   buffer_materialization_facts_by_target_buffer_.clear();
@@ -1597,6 +1602,7 @@ PrimFunc PlanTTKernelABI::SelectComputeBuiltins(const PrimFunc& func) {
   ICHECK(maybe_spatial_plan)
       << "PlanTTKernelABI requires tl.spatial_plan; run BuildSpatialPlan before lowering";
   LoadSpatialLiveValueBoundaries(maybe_spatial_plan.value());
+  LoadSpatialAccessRegions(maybe_spatial_plan.value());
   const BlackholeLoweringSupportFacts lowering_support_facts =
       BuildLoweringSupportFactsFromAnalysis(func);
   LoadLogicalBufferShapes(func, lowering_support_facts, maybe_spatial_plan.value());
@@ -1958,6 +1964,8 @@ PrimFunc PlanTTKernelABI::Transform(const PrimFunc& func) {
   logical_tile_layout_specs_by_buffer_.clear();
   spatial_materialization_boundaries_.clear();
   spatial_materialization_boundary_position_by_index_.clear();
+  spatial_access_regions_.clear();
+  spatial_access_region_position_by_subject_access_.clear();
   buffer_materialization_facts_by_target_buffer_.clear();
   gemm_input_buffer_num_tiles_.clear();
   gemm_transpose_a_ = false;
@@ -1985,6 +1993,7 @@ PrimFunc PlanTTKernelABI::Transform(const PrimFunc& func) {
   ICHECK(maybe_spatial_plan)
       << "PlanTTKernelABI requires tl.spatial_plan; run BuildSpatialPlan before lowering";
   LoadSpatialLiveValueBoundaries(maybe_spatial_plan.value());
+  LoadSpatialAccessRegions(maybe_spatial_plan.value());
   const BlackholeLoweringSupportFacts lowering_support_facts =
       BuildLoweringSupportFactsFromAnalysis(func);
   LoadLogicalBufferShapes(func, lowering_support_facts, maybe_spatial_plan.value());
@@ -2360,6 +2369,56 @@ bool PlanTTKernelABI::IsClearOperation(const CallNode* op) const {
 
 // Detect copy operation using buffer scopes
 // Determine copy direction
+static bool IsZeroFillValueForPureCopy(const PrimExpr& expr) {
+  if (tir::is_zero(expr)) {
+    return true;
+  }
+  if (const auto* float_imm = expr.as<FloatImmNode>()) {
+    return float_imm->value == 0.0;
+  }
+  if (const auto* cast = expr.as<CastNode>()) {
+    return IsZeroFillValueForPureCopy(cast->value);
+  }
+  return false;
+}
+
+static bool IsIfThenElseCallForPureCopy(const CallNode* call) {
+  if (call == nullptr || call->args.size() != 3U) {
+    return false;
+  }
+  if (call->op.same_as(tir::builtin::if_then_else())) {
+    return true;
+  }
+  if (const auto* op = call->op.as<OpNode>()) {
+    return op->name == "tir.if_then_else";
+  }
+  return false;
+}
+
+static bool IsGuardedCopyLoadValueForPureCopy(const PrimExpr& true_value,
+                                              const PrimExpr& false_value) {
+  return (true_value.as<BufferLoadNode>() &&
+          IsZeroFillValueForPureCopy(false_value)) ||
+         (false_value.as<BufferLoadNode>() &&
+          IsZeroFillValueForPureCopy(true_value));
+}
+
+static bool IsCopyLoadValueForPureCopy(const PrimExpr& expr) {
+  if (expr.as<BufferLoadNode>()) {
+    return true;
+  }
+  if (const auto* select = expr.as<SelectNode>()) {
+    return IsGuardedCopyLoadValueForPureCopy(select->true_value,
+                                             select->false_value);
+  }
+  if (const auto* call = expr.as<CallNode>()) {
+    if (IsIfThenElseCallForPureCopy(call)) {
+      return IsGuardedCopyLoadValueForPureCopy(call->args[1], call->args[2]);
+    }
+  }
+  return false;
+}
+
 static bool IsPureCopyLoopNest(const Stmt& stmt) {
   if (const auto* loop = stmt.as<ForNode>()) {
     return IsPureCopyLoopNest(loop->body);
@@ -2392,7 +2451,7 @@ static bool IsPureCopyLoopNest(const Stmt& stmt) {
     return true;
   }
   if (const auto* store = stmt.as<BufferStoreNode>()) {
-    return store->value.as<BufferLoadNode>() != nullptr;
+    return IsCopyLoadValueForPureCopy(store->value);
   }
   return false;
 }
@@ -2852,6 +2911,59 @@ Stmt PlanTTKernelABI::VisitStmt_(const DeclBufferNode* op) {
 }
 
 Stmt PlanTTKernelABI::VisitStmt_(const AllocateNode* op) {
+  return StmtExprMutator::VisitStmt_(op);
+}
+
+Stmt PlanTTKernelABI::VisitStmt_(const LetStmtNode* op) {
+  auto expr_uses_var = [](const PrimExpr& expr, const VarNode* var) {
+    bool found = false;
+    tir::PostOrderVisit(expr, [&](const ObjectRef& node) {
+      if (found) {
+        return;
+      }
+      if (const auto* candidate = node.as<VarNode>()) {
+        found = candidate == var;
+      }
+    });
+    return found;
+  };
+  auto body_uses_let_var_for_copy_index = [&](const Stmt& body) {
+    bool found = false;
+    tir::PostOrderVisit(body, [&](const ObjectRef& node) {
+      if (found) {
+        return;
+      }
+      const auto* store = node.as<BufferStoreNode>();
+      if (store == nullptr) {
+        return;
+      }
+      const BufferLoadNode* load = GetCopyLoad(store);
+      if (load == nullptr) {
+        return;
+      }
+      for (const PrimExpr& index : load->indices) {
+        if (expr_uses_var(index, op->var.get())) {
+          found = true;
+          return;
+        }
+      }
+    });
+    return found;
+  };
+
+  const auto* table_load = op->value.as<BufferLoadNode>();
+  if (!select_compute_builtins_only_ && table_load != nullptr &&
+      table_load->buffer->dtype.is_int() && table_load->buffer->dtype.bits() == 32 &&
+      GetStorageScope(table_load->buffer) == "global" &&
+      body_uses_let_var_for_copy_index(op->body)) {
+    PrimExpr per_work_tile_start =
+        Call(op->var.dtype(), blackhole_runtime_arg_u32(),
+             {StringImm("a_tile_start_id")});
+    Stmt rewritten =
+        LetStmt(op->var, per_work_tile_start, op->body, op->span);
+    return StmtExprMutator::VisitStmt_(rewritten.as<LetStmtNode>());
+  }
+
   return StmtExprMutator::VisitStmt_(op);
 }
 
@@ -3594,6 +3706,18 @@ std::unordered_set<std::string> PlanTTKernelABI::CollectLoopCarriedBufferIdentit
           record_buffer_arg_(op, 1, /*is_write=*/false);
           record_buffer_arg_(op, 0, /*is_write=*/true);
           handled = true;
+        } else if (call_op.same_as(blackhole_tilize_cast_fragment_slice()) &&
+                   op->args.size() >= 2U) {
+          record_buffer_arg_(op, 1, /*is_write=*/false);
+          handled = true;
+        } else if (call_op.same_as(blackhole_tilize_local_fragment_slice()) &&
+                   op->args.size() >= 1U) {
+          record_buffer_arg_(op, 0, /*is_write=*/false);
+          handled = true;
+        } else if (call_op.same_as(blackhole_untilize_cb_front_tile_fragment()) &&
+                   op->args.size() >= 1U) {
+          record_buffer_arg_(op, 0, /*is_write=*/true);
+          handled = true;
         } else if (call_op->name == "tl.blackhole.fill_fragment" && !op->args.empty()) {
           record_buffer_arg_(op, 0, /*is_write=*/true);
           handled = true;
@@ -3651,6 +3775,13 @@ std::unordered_set<std::string> PlanTTKernelABI::CollectLoopCarriedBufferIdentit
       if (abi_->IsMatmulCall(op)) {
         record_buffer_arg_(op, 0, /*is_write=*/false);
         record_buffer_arg_(op, 1, /*is_write=*/false);
+        const auto* clear_accum =
+            op->args.size() > 9 ? op->args[9].as<IntImmNode>() : nullptr;
+        const bool matmul_accumulates_existing =
+            clear_accum == nullptr || clear_accum->value == 0;
+        if (matmul_accumulates_existing) {
+          record_buffer_arg_(op, 2, /*is_write=*/false);
+        }
         record_buffer_arg_(op, 2, /*is_write=*/true);
         handled = true;
       }
@@ -3895,7 +4026,7 @@ Stmt PlanTTKernelABI::VisitStmt_(const ForNode* op) {
       if (match.direction != CopyDirection::kCBToLocal || match.store == nullptr) {
         continue;
       }
-      const auto* load = match.store->value.as<BufferLoadNode>();
+      const auto* load = GetCopyLoad(match.store);
       if (load == nullptr) {
         continue;
       }

@@ -621,6 +621,10 @@ public:
   ffi::String descriptor_kind;
   ffi::String value_source;
   int64_t constant_value = 0;
+  ffi::String access_region;
+  int64_t access_region_index = -1;
+  ffi::String index_buffer;
+  int64_t index_value_scale = 1;
 
   static void RegisterReflection();
   TVM_FFI_DECLARE_OBJECT_INFO_FINAL("tl.TTPerWorkArgSpec", TTPerWorkArgSpecNode,
@@ -632,6 +636,18 @@ public:
   TVM_DLL TTPerWorkArgSpec(ffi::String arg_kind, ffi::String arg_identity,
                            ffi::String buffer, ffi::String descriptor_kind,
                            ffi::String value_source, int64_t constant_value);
+  TVM_DLL TTPerWorkArgSpec(ffi::String arg_kind, ffi::String arg_identity,
+                           ffi::String buffer, ffi::String descriptor_kind,
+                           ffi::String value_source, int64_t constant_value,
+                           ffi::String access_region,
+                           int64_t access_region_index);
+  TVM_DLL TTPerWorkArgSpec(ffi::String arg_kind, ffi::String arg_identity,
+                           ffi::String buffer, ffi::String descriptor_kind,
+                           ffi::String value_source, int64_t constant_value,
+                           ffi::String access_region,
+                           int64_t access_region_index,
+                           ffi::String index_buffer,
+                           int64_t index_value_scale);
   TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(TTPerWorkArgSpec, ObjectRef,
                                              TTPerWorkArgSpecNode);
 };

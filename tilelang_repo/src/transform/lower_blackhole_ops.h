@@ -292,6 +292,15 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
     int64_t max_consume_pages = 0;
   };
 
+  struct SpatialAccessRegionRef {
+    std::string name;
+    int64_t index = -1;
+    std::string subject;
+    std::string access_kind;
+    std::string index_buffer;
+    int64_t index_value_scale = 1;
+  };
+
   /*! \brief Get CB configuration from function attributes */
   CBConfig GetCBConfig() const;
 
@@ -375,6 +384,14 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   /*! \brief Load first-class SpatialPlan live-value references for TT physical plans. */
   void LoadSpatialLiveValueBoundaries(const SpatialPlan& plan);
 
+  /*! \brief Load SpatialPlan access-region references for per-work descriptors. */
+  void LoadSpatialAccessRegions(const SpatialPlan& plan);
+
+  /*! \brief Return SpatialPlan access evidence for a subject/access kind. */
+  const SpatialAccessRegionRef* FindSpatialAccessRegionRef(
+      const std::string& subject,
+      const std::string& access_kind) const;
+
   /*! \brief Return the SpatialPlan materialization boundary for a boundary index. */
   const SpatialMaterializationBoundaryRef* FindSpatialMaterializationBoundaryRef(
       int64_t materialization_boundary_index) const;
@@ -417,6 +434,10 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
 
   /*! \brief Detect copy operation by buffer pattern */
   bool IsCopyOperation(const tvm::tir::BufferStoreNode* op) const;
+
+  /*! \brief Return the source BufferLoad for direct or guarded zero-fill copies. */
+  const tvm::tir::BufferLoadNode* GetCopyLoad(
+      const tvm::tir::BufferStoreNode* op) const;
 
   /*! \brief Determine copy direction using buffer scopes */
   CopyDirection GetCopyDirection(const tvm::tir::BufferStoreNode* op) const;
@@ -558,7 +579,8 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
                                                     bool reacquire_in1,
                                                     const FragmentCastMatch* post_merge_cast,
                                                     int post_merge_cast_order_index,
-                                                    bool merge_with_zero_reload);
+                                                    bool merge_with_zero_reload,
+                                                    bool reload_from_loop_carried_local_state);
   bool CanPublishPostMergeCastWithPackTile(const FragmentCastMatch& match,
                                            int cast_order_index) const;
   bool HasZeroFragmentFillFact(const tvm::tir::Buffer& buffer) const;
@@ -585,7 +607,9 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
                                                     bool merge_with_zero_reload = false,
                                                     int live_reload_cb_id = -1,
                                                     const tvm::tir::Buffer& live_reload_buffer =
-                                                        tvm::tir::Buffer());
+                                                        tvm::tir::Buffer(),
+                                                    bool reload_from_loop_carried_local_state =
+                                                        false);
   tvm::tir::Buffer CreateEphemeralBufferLike(const tvm::tir::Buffer& buffer,
                                              const std::string& suffix) const;
   tvm::tir::Buffer CreateConstantTileBuffer(tvm::DataType dtype, const std::string& suffix) const;
@@ -845,6 +869,7 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   tvm::tir::Stmt VisitStmt_(const tvm::tir::AttrStmtNode* op) override;
   tvm::tir::Stmt VisitStmt_(const tvm::tir::DeclBufferNode* op) override;
   tvm::tir::Stmt VisitStmt_(const tvm::tir::AllocateNode* op) override;
+  tvm::tir::Stmt VisitStmt_(const tvm::tir::LetStmtNode* op) override;
   tvm::tir::Stmt VisitStmt_(const tvm::tir::SeqStmtNode* op) override;
   tvm::tir::Stmt VisitStmt_(const tvm::tir::ForNode* op) override;
   tvm::tir::Stmt VisitStmt_(const tvm::tir::EvaluateNode* op) override;
@@ -958,6 +983,8 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   std::vector<SpatialMaterializationBoundaryRef> spatial_materialization_boundaries_;
   std::unordered_map<int64_t, size_t> spatial_materialization_boundary_position_by_index_;
   std::unordered_map<std::string, SpatialLiveValueRef> spatial_live_value_by_subject_;
+  std::vector<SpatialAccessRegionRef> spatial_access_regions_;
+  std::unordered_map<std::string, size_t> spatial_access_region_position_by_subject_access_;
   std::unordered_map<std::string, std::string> spatial_lifetime_kind_by_subject_;
   std::unordered_map<std::string, tvm::PrimExpr> last_fragment_fill_value_by_buffer_identity_;
   std::unordered_map<const tvm::tir::VarNode*, tvm::PrimExpr> last_fragment_fill_value_by_data_;

@@ -504,7 +504,7 @@ Buffer PlanTTKernelABI::SelectCBProducerBufferForDramToCB(const Buffer& source) 
 std::optional<std::pair<int64_t, int64_t>>
 PlanTTKernelABI::InferStagedCopySharedShapeFromTransportCoverage(
     const BufferStoreNode* op, const std::vector<Var>& loop_vars_to_zero) const {
-  const auto* load = op->value.as<BufferLoadNode>();
+  const auto* load = GetCopyLoad(op);
   if (!load) {
     return std::nullopt;
   }
@@ -587,7 +587,7 @@ PlanTTKernelABI::InferStagedCopySharedShapeFromTransportCoverage(
 
 Array<Integer> PlanTTKernelABI::GetEncodedCurrentStagedCopySharedShape(
     const BufferStoreNode* op, const std::vector<Var>& loop_vars_to_zero) const {
-  const auto* load = op->value.as<BufferLoadNode>();
+  const auto* load = GetCopyLoad(op);
   if (!load) {
     return {};
   }
@@ -645,8 +645,72 @@ bool PlanTTKernelABI::UseStagedCopyPageTransport(const Buffer& shared_buffer) co
   return UseStagedCopyPageTransportForShape(rows_imm->value, cols_imm->value);
 }
 
-bool PlanTTKernelABI::IsCopyOperation(const BufferStoreNode* op) const {
+namespace {
+
+bool IsZeroFillValue(const PrimExpr& expr) {
+  if (tir::is_zero(expr)) {
+    return true;
+  }
+  if (const auto* float_imm = expr.as<FloatImmNode>()) {
+    return float_imm->value == 0.0;
+  }
+  if (const auto* cast = expr.as<tir::CastNode>()) {
+    return IsZeroFillValue(cast->value);
+  }
+  return false;
+}
+
+bool IsIfThenElseCall(const tir::CallNode* call) {
+  if (call == nullptr || call->args.size() != 3U) {
+    return false;
+  }
+  if (call->op.same_as(tir::builtin::if_then_else())) {
+    return true;
+  }
+  if (const auto* op = call->op.as<OpNode>()) {
+    return op->name == "tir.if_then_else";
+  }
+  return false;
+}
+
+const BufferLoadNode* SelectGuardedCopyLoad(const PrimExpr& true_value,
+                                            const PrimExpr& false_value) {
+  if (const auto* true_load = true_value.as<BufferLoadNode>()) {
+    if (IsZeroFillValue(false_value)) {
+      return true_load;
+    }
+  }
+  if (const auto* false_load = false_value.as<BufferLoadNode>()) {
+    if (IsZeroFillValue(true_value)) {
+      return false_load;
+    }
+  }
+  return nullptr;
+}
+
+}  // namespace
+
+const BufferLoadNode* PlanTTKernelABI::GetCopyLoad(
+    const BufferStoreNode* op) const {
+  if (op == nullptr) {
+    return nullptr;
+  }
   if (const auto* load = op->value.as<BufferLoadNode>()) {
+    return load;
+  }
+  if (const auto* select = op->value.as<tir::SelectNode>()) {
+    return SelectGuardedCopyLoad(select->true_value, select->false_value);
+  }
+  if (const auto* call = op->value.as<tir::CallNode>()) {
+    if (IsIfThenElseCall(call)) {
+      return SelectGuardedCopyLoad(call->args[1], call->args[2]);
+    }
+  }
+  return nullptr;
+}
+
+bool PlanTTKernelABI::IsCopyOperation(const BufferStoreNode* op) const {
+  if (const auto* load = GetCopyLoad(op)) {
     if (op->buffer.same_as(load->buffer)) {
       return false;
     }
@@ -656,7 +720,7 @@ bool PlanTTKernelABI::IsCopyOperation(const BufferStoreNode* op) const {
 }
 
 CopyDirection PlanTTKernelABI::GetCopyDirection(const BufferStoreNode* op) const {
-  const auto* load = op->value.as<BufferLoadNode>();
+  const auto* load = GetCopyLoad(op);
   if (!load) return CopyDirection::kUnknown;
 
   std::string dst_scope = GetStorageScope(op->buffer);
@@ -868,7 +932,7 @@ std::vector<int64_t> PlanTTKernelABI::BuildStagedCopyHostAxisOrder(
 
 PrimExpr PlanTTKernelABI::InferCopyTileIndex(const BufferStoreNode* op,
                                                const Var& loop_var) const {
-  const auto* load = op->value.as<BufferLoadNode>();
+  const auto* load = GetCopyLoad(op);
   ICHECK(load) << "InferCopyTileIndex requires BufferLoad copy source";
 
   CopyDirection direction = GetCopyDirection(op);
@@ -916,7 +980,7 @@ PrimExpr PlanTTKernelABI::InferCopyTileIndex(const BufferStoreNode* op,
 
 PrimExpr PlanTTKernelABI::InferStagedCopyBaseTileIndex(
     const BufferStoreNode* op, const std::vector<Var>& loop_vars_to_zero) const {
-  const auto* load = op->value.as<BufferLoadNode>();
+  const auto* load = GetCopyLoad(op);
   ICHECK(load) << "InferStagedCopyBaseTileIndex requires BufferLoad copy source";
 
   CopyDirection direction = GetCopyDirection(op);
@@ -1065,7 +1129,7 @@ void PlanTTKernelABI::CollectNestedCopyStores(const Stmt& stmt,
 
 void PlanTTKernelABI::RecordStagedCopyBufferBinding(const BufferStoreNode* op,
                                                       CopyDirection direction) {
-  const auto* load = op->value.as<BufferLoadNode>();
+  const auto* load = GetCopyLoad(op);
   if (!load) {
     return;
   }
@@ -1100,7 +1164,7 @@ void PlanTTKernelABI::RecordStagedCopyBufferBinding(const BufferStoreNode* op,
 }
 
 void PlanTTKernelABI::RecordDramToDramCopy(const BufferStoreNode* op) {
-  const auto* load = op->value.as<BufferLoadNode>();
+  const auto* load = GetCopyLoad(op);
   if (!load) return;
   auto append_unique = [](std::vector<std::string>* buffers,
                           const std::string& buffer_name) {
@@ -1148,7 +1212,7 @@ Stmt PlanTTKernelABI::GenerateCopySequence(const BufferStoreNode* op,
   ICHECK(direction != CopyDirection::kUnknown)
       << "PlanTTKernelABI copy lowering requires an explicit copy-direction classification";
 
-  const auto* load = op->value.as<BufferLoadNode>();
+  const auto* load = GetCopyLoad(op);
   if (!load) return StmtExprMutator::VisitStmt_(op);
 
   std::vector<Stmt> stmts;
@@ -1226,7 +1290,7 @@ Stmt PlanTTKernelABI::GenerateCopySequence(const BufferStoreNode* op,
       // the copy semantics should now exist explicitly in the lowered TIR body.
       RecordDramToDramCopy(op);
 
-      const auto* load = op->value.as<BufferLoadNode>();
+      const auto* load = GetCopyLoad(op);
       if (!load) {
         return GetRef<Stmt>(op);
       }
@@ -1463,7 +1527,7 @@ Stmt PlanTTKernelABI::GenerateCopySequence(const BufferStoreNode* op,
 Stmt PlanTTKernelABI::GenerateCopySequence(const BufferStoreNode* op,
                                              const PrimExpr& tile_index) {
   CopyDirection direction = GetCopyDirection(op);
-  const auto* load = op->value.as<BufferLoadNode>();
+  const auto* load = GetCopyLoad(op);
   if (!load) {
     return GetRef<Stmt>(op);
   }
@@ -1557,7 +1621,7 @@ Stmt PlanTTKernelABI::GenerateStagedCopyLoopSequence(
     const BufferStoreNode* op, const PrimExpr& base_tile_index,
     const std::vector<Var>& loop_vars_to_zero) {
   CopyDirection direction = GetCopyDirection(op);
-  const auto* load = op->value.as<BufferLoadNode>();
+  const auto* load = GetCopyLoad(op);
   if (!load) {
     return GetRef<Stmt>(op);
   }
@@ -1807,8 +1871,8 @@ Stmt PlanTTKernelABI::GenerateStagedCopyLoopSequence(
 Stmt PlanTTKernelABI::GenerateFusedStagedCopySequence(
     const BufferStoreNode* dram_to_cb, const BufferStoreNode* cb_to_dram,
     const PrimExpr& base_tile_index, const std::vector<Var>& loop_vars_to_zero) {
-  const auto* dram_load = dram_to_cb->value.as<BufferLoadNode>();
-  const auto* cb_load = cb_to_dram->value.as<BufferLoadNode>();
+  const auto* dram_load = GetCopyLoad(dram_to_cb);
+  const auto* cb_load = GetCopyLoad(cb_to_dram);
   if (!dram_load || !cb_load) {
     return GetRef<Stmt>(dram_to_cb);
   }

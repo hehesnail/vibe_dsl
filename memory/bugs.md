@@ -2461,6 +2461,75 @@
     the skips remain the typed TT-Sim `tensix_execute_pacr: count=1` boundary
     for seq128/256/512 after source/spec admission.
 
+### Larger flash shapes exposed false indexed evidence and local accumulator reload gaps
+
+- **症状**:
+  - A larger GQA flash pipeline first failed validation with
+    `indexed access requires loop_vars evidence` for constant full-tile reads
+    such as `index_exprs ['0', '0']`.
+  - After tightening that evidence, clear-accum=false PV merge failed with
+    `PlanTTKernelABI requires buffer materialization fact or exact live-CB state`
+    for loop-carried `acc_o`.
+  - A follow-up source regression showed `acc_s` and `acc_o` rendered from the
+    same physical CB write pointer because metadata-only CB configs were used
+    to CB-back local `blackhole.acc` allocations.
+- **根因**:
+  - `BuildSpatialPlan` treated rank-aligned indices as indexed evidence even
+    when the TIR expression had no index variable.
+  - Loop-carried collection did not model exact-CB leaf read/write effects
+    (`tilize_*_fragment_slice`, `untilize_cb_front_tile_fragment`) and earlier
+    matmul logic treated loop presence as accumulator liveness.
+  - Source codegen interpreted any CB config for a `blackhole.acc` variable as
+    permission to allocate it from `tilelang_cb_write_ptr_bytes_direct`, even
+    when TTProgram had not projected `initial_reserve_pages`.
+- **修法**:
+  - Require a real index variable before projecting `AccessRegion.index_exprs`
+    as indexed evidence.
+  - Derive clear-accum=false loop-carried liveness from TIR read-before-write,
+    matmul `clear_accum`, and exact-CB leaf accesses; admit local accumulator
+    reload only when typed loop-carried evidence and full static local shape
+    agree.
+  - Require explicit `initial_reserve_pages` before CB-backing
+    `blackhole.acc` source allocations.
+- **验证**:
+  - Original larger GQA pipeline regression passed.
+  - `seq_len=128,256,512` flash metadata gate passed; direct runtime still
+    skips at the typed TT-Sim `tensix_execute_pacr: count=1` boundary.
+  - Flash source/lifecycle selector reported `8 passed`, T8 grid-indexed
+    selector reported `9 passed`, and seq64 bf16 MHA flash direct runtime
+    passed.
+
+### T8 table-indexed copy leaked index-table BufferLoad into source/runtime ABI
+
+- **症状**:
+  - Minimal `BlockIndices[bx]` staged copy failed source codegen with
+    `Find undefined Variable BlockIndices`.
+  - After lowering the source-side load to a runtime arg, direct runtime first
+    rejected the formal `BlockIndices` tensor because it had no explicit
+    input/output role binding.
+- **根因**:
+  - The predicated copy value was represented as a `tir.if_then_else` call, not
+    a `SelectNode`, so guarded copies were not recognized as copy loads.
+  - `AccessRegion` recording did not substitute active `LetStmt` bindings,
+    losing the relation between `tile_id` and `BlockIndices[bx]`.
+  - The executable role/materialization gates only considered address-bearing
+    runtime args; an index table used solely to compute per-work args was not
+    registered as a named input buffer.
+- **修法**:
+  - Recognize guarded zero-fill copy loads for both `SelectNode` and
+    `tir.if_then_else`.
+  - Substitute `LetStmt` bindings into `AccessRegion.index_exprs` and derive a
+    table-backed tile-start descriptor from that evidence.
+  - Project `index_buffer` / `index_value_scale` through TTProgram,
+    executable metadata, serialization, and Python helpers.
+  - Register index tables as page-indexed DRAM input materializations and
+    include them in direct-runtime buffer role checks.
+  - Validate table-derived tile starts against the target buffer's typed page
+    count so invalid table entries fail closed.
+- **验证**:
+  - The table-indexed pipeline/runtime selectors reported `3 passed`, and the
+    broader T8 copy selector reported `5 passed`.
+
 ## 3. 环境问题速查
 
 | 问题 | 解决 |

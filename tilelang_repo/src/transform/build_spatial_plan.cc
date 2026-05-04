@@ -55,6 +55,14 @@ struct StatementAccessSummary {
   bool has_compute_consume{false};
 };
 
+struct AccessPattern {
+  Array<PrimExpr> index_exprs;
+  Array<String> loop_vars;
+  bool guarded{false};
+  bool has_index_var{false};
+  bool has_block_index_var{false};
+};
+
 struct ClosureCandidateInfo {
   std::string name;
   std::vector<std::string> reads;
@@ -136,6 +144,19 @@ Array<String> ToStringArraySorted(const std::unordered_set<std::string>& values)
   std::vector<std::string> sorted(values.begin(), values.end());
   std::sort(sorted.begin(), sorted.end());
   return ToStringArray(sorted);
+}
+
+void AppendUniqueString(Array<String>* values, const std::string& value) {
+  ICHECK(values != nullptr);
+  if (value.empty()) {
+    return;
+  }
+  for (const String& existing : *values) {
+    if (str(existing) == value) {
+      return;
+    }
+  }
+  values->push_back(String(value));
 }
 
 std::string GetBufferScope(const tir::Buffer& buffer) {
@@ -353,6 +374,159 @@ class StatementAccessAnalyzer : public tir::StmtExprVisitor {
   }
 
   StatementAccessSummary summary_;
+};
+
+class ExprVarNameCollector : public tir::StmtExprVisitor {
+ public:
+  std::vector<std::string> Collect(const Array<PrimExpr>& exprs) {
+    names_.clear();
+    sorted_names_.clear();
+    for (const PrimExpr& expr : exprs) {
+      VisitExpr(expr);
+    }
+    std::sort(sorted_names_.begin(), sorted_names_.end());
+    return sorted_names_;
+  }
+
+ private:
+  void VisitExpr_(const tir::BufferLoadNode* op) final {
+    for (const PrimExpr& index : op->indices) {
+      VisitExpr(index);
+    }
+  }
+
+  void VisitExpr_(const tir::VarNode* op) final {
+    const std::string name = op->name_hint;
+    if (!name.empty() && names_.insert(name).second) {
+      sorted_names_.push_back(name);
+    }
+  }
+
+  std::unordered_set<std::string> names_;
+  std::vector<std::string> sorted_names_;
+};
+
+class AccessPatternCollector : public tir::StmtExprVisitor {
+ public:
+  explicit AccessPatternCollector(std::unordered_set<std::string> block_index_var_names)
+      : block_index_var_names_(std::move(block_index_var_names)) {}
+
+  std::unordered_map<std::string, AccessPattern> Collect(const tir::Stmt& stmt) {
+    patterns_.clear();
+    active_loop_vars_.clear();
+    predicate_depth_ = 0;
+    VisitStmt(stmt);
+    return patterns_;
+  }
+
+ private:
+  static std::string Key(const std::string& subject, const std::string& access_kind) {
+    return subject + "|" + access_kind;
+  }
+
+  void RecordAccess(const tir::Buffer& buffer, const std::string& access_kind,
+                    const Array<PrimExpr>& indices) {
+    const std::string subject = BufferIdentityName(buffer);
+    if (subject.empty()) {
+      return;
+    }
+    AccessPattern next;
+    next.index_exprs = SubstituteLetBindings(indices);
+    next.guarded = predicate_depth_ > 0;
+
+    for (const std::string& loop_var : active_loop_vars_) {
+      AppendUniqueString(&next.loop_vars, loop_var);
+    }
+    ExprVarNameCollector var_collector;
+    const std::vector<std::string> index_var_names = var_collector.Collect(indices);
+    next.has_index_var = !index_var_names.empty();
+    for (const std::string& var_name : index_var_names) {
+      AppendUniqueString(&next.loop_vars, var_name);
+      if (block_index_var_names_.count(var_name)) {
+        next.has_block_index_var = true;
+      }
+    }
+
+    const std::string key = Key(subject, access_kind);
+    auto it = patterns_.find(key);
+    if (it == patterns_.end()) {
+      patterns_.emplace(key, std::move(next));
+      return;
+    }
+    AccessPattern& existing = it->second;
+    existing.guarded = existing.guarded || next.guarded;
+    existing.has_index_var = existing.has_index_var || next.has_index_var;
+    existing.has_block_index_var =
+        existing.has_block_index_var || next.has_block_index_var;
+    for (const String& loop_var : next.loop_vars) {
+      AppendUniqueString(&existing.loop_vars, str(loop_var));
+    }
+    if (existing.index_exprs.empty() ||
+        (!existing.has_block_index_var && next.has_block_index_var)) {
+      existing.index_exprs = next.index_exprs;
+    }
+  }
+
+  void VisitStmt_(const tir::ForNode* op) final {
+    active_loop_vars_.push_back(op->loop_var->name_hint);
+    tir::StmtExprVisitor::VisitStmt_(op);
+    active_loop_vars_.pop_back();
+  }
+
+  void VisitStmt_(const tir::LetStmtNode* op) final {
+    let_bindings_.push_back({op->var, SubstituteLetBindings(op->value)});
+    tir::StmtExprVisitor::VisitStmt(op->body);
+    let_bindings_.pop_back();
+  }
+
+  void VisitStmt_(const tir::IfThenElseNode* op) final {
+    ++predicate_depth_;
+    tir::StmtExprVisitor::VisitStmt_(op);
+    --predicate_depth_;
+  }
+
+  void VisitExpr_(const tir::BufferLoadNode* op) final {
+    RecordAccess(op->buffer, "read", op->indices);
+    tir::StmtExprVisitor::VisitExpr_(op);
+  }
+
+  void VisitStmt_(const tir::BufferStoreNode* op) final {
+    RecordAccess(op->buffer, "write", op->indices);
+    tir::StmtExprVisitor::VisitStmt_(op);
+  }
+
+  std::unordered_set<std::string> block_index_var_names_;
+  std::unordered_map<std::string, AccessPattern> patterns_;
+  std::vector<std::string> active_loop_vars_;
+  std::vector<std::pair<Var, PrimExpr>> let_bindings_;
+  int predicate_depth_{0};
+
+  Map<Var, PrimExpr> MakeLetBindingMap() const {
+    Map<Var, PrimExpr> bindings;
+    for (const auto& binding : let_bindings_) {
+      bindings.Set(binding.first, binding.second);
+    }
+    return bindings;
+  }
+
+  Array<PrimExpr> SubstituteLetBindings(const Array<PrimExpr>& exprs) const {
+    if (let_bindings_.empty()) {
+      return exprs;
+    }
+    Map<Var, PrimExpr> bindings = MakeLetBindingMap();
+    Array<PrimExpr> substituted;
+    for (const PrimExpr& expr : exprs) {
+      substituted.push_back(tir::Substitute(expr, bindings));
+    }
+    return substituted;
+  }
+
+  PrimExpr SubstituteLetBindings(const PrimExpr& expr) const {
+    if (let_bindings_.empty()) {
+      return expr;
+    }
+    return tir::Substitute(expr, MakeLetBindingMap());
+  }
 };
 
 bool HasGlobalRead(const StatementAccessSummary& summary) {
@@ -1400,12 +1574,67 @@ Array<PrimExpr> MakeUnitStrides(size_t rank) {
   return strides;
 }
 
+std::unordered_set<std::string> CollectBlockIndexVarNames(const tir::Stmt& body) {
+  std::unordered_set<std::string> names;
+  tir::PostOrderVisit(body, [&](const ObjectRef& node) {
+    const auto* attr = node.as<tir::AttrStmtNode>();
+    if (!attr || attr->attr_key != tir::attr::thread_extent) {
+      return;
+    }
+    const auto* iv = attr->node.as<tir::IterVarNode>();
+    if (!iv || std::string(iv->thread_tag).rfind("blockIdx.", 0) != 0) {
+      return;
+    }
+    if (!iv->var->name_hint.empty()) {
+      names.insert(iv->var->name_hint);
+    }
+  });
+  return names;
+}
+
 Array<AccessRegion> BuildAccessRegions(
     const Array<ExecutionUnit>& execution_units, const Array<LayoutSpec>& layout_specs,
-    const std::unordered_map<std::string, BufferMetadata>& metadata_by_buffer) {
+    const std::unordered_map<std::string, BufferMetadata>& metadata_by_buffer,
+    const std::vector<tir::Stmt>& top_level_stmts,
+    const std::unordered_set<std::string>& block_index_var_names) {
   std::unordered_map<std::string, LayoutSpec> layout_by_subject;
   for (const LayoutSpec& layout : layout_specs) {
     layout_by_subject.emplace(str(layout->subject), layout);
+  }
+
+  std::unordered_map<std::string, AccessPattern> access_pattern_by_key;
+  AccessPatternCollector access_pattern_collector(block_index_var_names);
+  for (const ExecutionUnit& unit : execution_units) {
+    for (const Integer& stmt_index_integer : unit->stmt_indices) {
+      const int64_t stmt_index = stmt_index_integer.IntValue();
+      if (stmt_index < 0 ||
+          stmt_index >= static_cast<int64_t>(top_level_stmts.size())) {
+        continue;
+      }
+      auto patterns = access_pattern_collector.Collect(
+          top_level_stmts[static_cast<size_t>(stmt_index)]);
+      for (auto& kv : patterns) {
+        const std::string key =
+            str(unit->name) + "|" + std::move(kv.first);
+        auto it = access_pattern_by_key.find(key);
+        if (it == access_pattern_by_key.end()) {
+          access_pattern_by_key.emplace(key, std::move(kv.second));
+          continue;
+        }
+        AccessPattern& existing = it->second;
+        existing.guarded = existing.guarded || kv.second.guarded;
+        existing.has_index_var = existing.has_index_var || kv.second.has_index_var;
+        existing.has_block_index_var =
+            existing.has_block_index_var || kv.second.has_block_index_var;
+        for (const String& loop_var : kv.second.loop_vars) {
+          AppendUniqueString(&existing.loop_vars, str(loop_var));
+        }
+        if (existing.index_exprs.empty() ||
+            (!existing.has_block_index_var && kv.second.has_block_index_var)) {
+          existing.index_exprs = kv.second.index_exprs;
+        }
+      }
+    }
   }
 
   auto extents_for_subject = [&](const std::string& subject) -> Array<PrimExpr> {
@@ -1443,11 +1672,34 @@ Array<AccessRegion> BuildAccessRegions(
       const int64_t rank = static_cast<int64_t>(extents.size());
       const std::string name = "access_" + str(unit->name) + "_" + access_kind + "_" +
                                subject_name;
+      const std::string access_key =
+          str(unit->name) + "|" + subject_name + "|" + access_kind;
+      const auto access_pattern_it = access_pattern_by_key.find(access_key);
+      const AccessPattern* access_pattern =
+          access_pattern_it == access_pattern_by_key.end()
+              ? nullptr
+              : &access_pattern_it->second;
+      const bool has_rank_aligned_indexed_evidence =
+          access_pattern != nullptr && !access_pattern->index_exprs.empty() &&
+          access_pattern->has_index_var &&
+          access_pattern->index_exprs.size() == static_cast<size_t>(rank);
+      const std::string coverage_kind =
+          rank == 0 ? "scalar"
+                    : (access_pattern != nullptr &&
+                               has_rank_aligned_indexed_evidence &&
+                               access_pattern->has_block_index_var
+                           ? "slice"
+                           : "full");
+      const std::string predicate_kind =
+          access_pattern != nullptr && access_pattern->guarded ? "guarded"
+                                                               : "unconditional";
       regions.push_back(AccessRegion(
           String(name), String(subject_name), unit->name, unit_index, String(access_kind),
-          String(value_kind_for_subject(subject_name)), rank, Array<String>{}, Array<PrimExpr>{},
+          String(value_kind_for_subject(subject_name)), rank,
+          has_rank_aligned_indexed_evidence ? access_pattern->loop_vars : Array<String>{},
+          has_rank_aligned_indexed_evidence ? access_pattern->index_exprs : Array<PrimExpr>{},
           MakeZeroBounds(extents.size()), extents, MakeUnitStrides(extents.size()),
-          String(rank == 0 ? "scalar" : "full"), String("unconditional"),
+          String(coverage_kind), String(predicate_kind),
           MakeAnchors("access_region", name)));
     };
     for (const String& subject : unit->read_buffers) {
@@ -1826,6 +2078,7 @@ Array<PhasePlan> BuildPhasePlans(const Array<ExecutionUnit>& execution_units,
 }
 
 SpatialPlan BuildSpatialPlanForFunc(const std::string& member_func, const tir::PrimFunc& func) {
+  const std::vector<tir::Stmt> top_level_stmts = CollectTopLevelExecutableStmts(func);
   const std::vector<ClosureCandidateInfo> candidates = AnalyzeClosureCandidates(func);
   Array<ExecutionClosure> closures;
   for (const ClosureCandidateInfo& candidate : candidates) {
@@ -1843,7 +2096,8 @@ SpatialPlan BuildSpatialPlanForFunc(const std::string& member_func, const tir::P
   const Array<TensorPlacementIntent> tensor_placement_intents =
       BuildTensorPlacementIntents(func, layout_specs, metadata_by_buffer);
   const Array<AccessRegion> access_regions =
-      BuildAccessRegions(execution_units, layout_specs, metadata_by_buffer);
+      BuildAccessRegions(execution_units, layout_specs, metadata_by_buffer,
+                         top_level_stmts, CollectBlockIndexVarNames(func->body));
   const Array<ClosureBoundary> boundaries =
       BuildClosureBoundariesFromAccessRegions(execution_units, access_regions);
   const std::vector<int> unit_phases =

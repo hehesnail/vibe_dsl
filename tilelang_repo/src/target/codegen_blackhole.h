@@ -262,9 +262,12 @@ class CodeGenBlackhole : public CodeGenCHost {
 
   struct PerWorkArgSpecBinding {
     std::string arg_identity;
+    std::string buffer;
     std::string descriptor_kind;
     std::string value_source;
     uint32_t constant_value{0};
+    std::string index_buffer;
+    int64_t index_value_scale{1};
   };
 
   // Per-instance header emission flag (replaces static variable)

@@ -259,6 +259,17 @@ Hard requirements:
 - final local materialization is legal only if the liveness plan inserts it as
   a split/materialization event with full coverage evidence.
 
+Implementation note from the larger-shape flash checkpoint:
+
+- a clear-accum=false GEMM may reload a loop-carried local accumulator without
+  a materialization fact only when loop-carried evidence comes from TIR
+  read-before-write / exact-CB leaf accesses and the destination has a full
+  static local state shape matching the GEMM tile set;
+- source codegen may CB-back a `blackhole.acc` local allocation only when the
+  TTProgram CB plan projects explicit `initial_reserve_pages`.  A metadata-only
+  CB config is not permission to turn a local accumulator into a CB write
+  pointer, because physical CB reuse is an allocation decision.
+
 ## Algorithm
 
 ### 1. Build Event Order

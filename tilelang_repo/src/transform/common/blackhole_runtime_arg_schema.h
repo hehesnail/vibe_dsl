@@ -36,6 +36,10 @@ inline constexpr const char* kBuffer = "buffer";
 inline constexpr const char* kDescriptorKind = "descriptor_kind";
 inline constexpr const char* kValueSource = "value_source";
 inline constexpr const char* kConstantValue = "constant_value";
+inline constexpr const char* kAccessRegion = "access_region";
+inline constexpr const char* kAccessRegionIndex = "access_region_index";
+inline constexpr const char* kIndexBuffer = "index_buffer";
+inline constexpr const char* kIndexValueScale = "index_value_scale";
 
 inline constexpr const char* kDescriptorTileStart = "tile_start";
 inline constexpr const char* kDescriptorTileCount = "tile_count";
@@ -53,6 +57,7 @@ inline constexpr const char* kValueSourceLogicalBlockZKTileStart =
     "logical_block_z_k_tile_start";
 inline constexpr const char* kValueSourceComputeNumKTiles = "compute_op_num_k_tiles";
 inline constexpr const char* kValueSourceComputeLogicalNTiles = "compute_op_logical_n_tiles";
+inline constexpr const char* kValueSourceIndexTable = "index_table";
 inline constexpr const char* kValueSourceConstant = "constant";
 
 }  // namespace blackhole_runtime_arg_schema
