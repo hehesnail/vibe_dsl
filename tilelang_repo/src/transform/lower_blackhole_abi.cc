@@ -381,7 +381,9 @@ EnsureSegmentBufferRuntimeArgs(const std::string &segment_kind,
                                    buffer_name);
     }
     push_existing_or_synthesized("work_linear_id", "work_linear_id");
-    if (!resolved_input_buffer_names.empty()) {
+    const bool input_addressed_by_row_segment =
+        FindRuntimeArgIndex(existing_runtime_args, "a_segment_row_start") >= 0;
+    if (!resolved_input_buffer_names.empty() && !input_addressed_by_row_segment) {
       push_existing_or_synthesized("a_tile_start_id", "a_tile_start_id");
       push_existing_or_synthesized("a_tile_num_tiles", "a_tile_num_tiles");
       push_existing_or_synthesized("a_tile_stride", "a_tile_stride");
@@ -917,6 +919,8 @@ void PlanTTKernelABI::StoreSegmentPlan(PrimFunc &func) {
       CollectSegmentKindsFromBody(func->body);
   if (segment_kinds.empty() && !needs_copy_runtime_args_ &&
       !needs_ragged_row_bound_arg_ &&
+      !needs_segment_row_start_arg_ &&
+      !needs_segment_row_count_arg_ &&
       !requires_compute_segment_) {
     segment_plan_ = Array<Any>();
     return;
@@ -927,15 +931,29 @@ void PlanTTKernelABI::StoreSegmentPlan(PrimFunc &func) {
          "workloads; do not recover them as fused_dataflow";
 
   Array<Any> kernels;
+  auto append_row_bound_runtime_args = [&](Array<Any>* runtime_args) {
+    if (needs_ragged_row_bound_arg_) {
+      runtime_args->push_back(
+          MakeRuntimeArg("a_valid_rows", "a_valid_rows", "uint32"));
+    }
+    if (needs_segment_row_start_arg_) {
+      runtime_args->push_back(MakeRuntimeArg(
+          "a_segment_row_start", "a_segment_row_start", "uint32"));
+    }
+    if (needs_segment_row_count_arg_) {
+      runtime_args->push_back(MakeRuntimeArg(
+          "a_segment_row_count", "a_segment_row_count", "uint32"));
+    }
+  };
   if (segment_kinds.empty()) {
     Map<String, Any> kernel;
     kernel.Set("name", String("main"));
     kernel.Set("kind", String("fused_dataflow"));
     kernel.Set("core_type", String("brisc"));
-    if (needs_ragged_row_bound_arg_) {
+    if (needs_ragged_row_bound_arg_ || needs_segment_row_start_arg_ ||
+        needs_segment_row_count_arg_) {
       Array<Any> runtime_args;
-      runtime_args.push_back(
-          MakeRuntimeArg("a_valid_rows", "a_valid_rows", "uint32"));
+      append_row_bound_runtime_args(&runtime_args);
       kernel.Set("runtime_args", runtime_args);
     }
     kernels.push_back(kernel);
@@ -945,10 +963,11 @@ void PlanTTKernelABI::StoreSegmentPlan(PrimFunc &func) {
       kernel.Set("name", String(kind));
       kernel.Set("kind", String(kind));
       kernel.Set("core_type", String(CoreTypeForSegmentKind(kind)));
-      if (kind == "fused_dataflow" && needs_ragged_row_bound_arg_) {
+      if (kind == "fused_dataflow" &&
+          (needs_ragged_row_bound_arg_ || needs_segment_row_start_arg_ ||
+           needs_segment_row_count_arg_)) {
         Array<Any> runtime_args;
-        runtime_args.push_back(
-            MakeRuntimeArg("a_valid_rows", "a_valid_rows", "uint32"));
+        append_row_bound_runtime_args(&runtime_args);
         kernel.Set("runtime_args", runtime_args);
       }
       kernels.push_back(kernel);
@@ -1244,6 +1263,34 @@ void PlanTTKernelABI::StoreAccessorDescriptors(PrimFunc &func) {
             blackhole_runtime_arg_schema::kValueSourceIndexTable,
             bound_subject, 0, "", -1,
             ragged_row_bound_index_buffer_name_, 1));
+      }
+      if (runtime_args_contain_kind("a_segment_row_start") &&
+          !segment_row_start_index_buffer_name_.empty()) {
+        const std::string segment_subject =
+            !segment_row_subject_buffer_name_.empty()
+                ? segment_row_subject_buffer_name_
+                : copy_input_buffer_name;
+        upsert_spec(MakePerWorkArgSpec(
+            "a_segment_row_start",
+            runtime_arg_identity_for_kind("a_segment_row_start"),
+            blackhole_runtime_arg_schema::kDescriptorSegmentRowStart,
+            blackhole_runtime_arg_schema::kValueSourceIndexTable,
+            segment_subject, 0, "", -1,
+            segment_row_start_index_buffer_name_, 1));
+      }
+      if (runtime_args_contain_kind("a_segment_row_count") &&
+          !segment_row_count_index_buffer_name_.empty()) {
+        const std::string segment_subject =
+            !segment_row_subject_buffer_name_.empty()
+                ? segment_row_subject_buffer_name_
+                : copy_input_buffer_name;
+        upsert_spec(MakePerWorkArgSpec(
+            "a_segment_row_count",
+            runtime_arg_identity_for_kind("a_segment_row_count"),
+            blackhole_runtime_arg_schema::kDescriptorSegmentRowCount,
+            blackhole_runtime_arg_schema::kValueSourceIndexTable,
+            segment_subject, 0, "", -1,
+            segment_row_count_index_buffer_name_, 1));
       }
       if (runtime_args_contain_kind("output_tile_start_id")) {
         upsert_spec(MakePerWorkArgSpec(

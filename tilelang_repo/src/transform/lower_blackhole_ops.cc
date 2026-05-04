@@ -2927,6 +2927,44 @@ Stmt PlanTTKernelABI::VisitStmt_(const LetStmtNode* op) {
     });
     return found;
   };
+  auto index_var_coefficient = [&](const PrimExpr& expr) -> std::optional<int64_t> {
+    if (!expr_uses_var(expr, op->var.get())) {
+      return std::nullopt;
+    }
+    Analyzer analyzer;
+    ffi::Map<Var, PrimExpr> var_zero{{op->var, IntImm(op->var.dtype(), 0)}};
+    ffi::Map<Var, PrimExpr> var_one{{op->var, IntImm(op->var.dtype(), 1)}};
+    PrimExpr diff = analyzer.Simplify(tir::Substitute(expr, var_one) -
+                                      tir::Substitute(expr, var_zero));
+    if (const auto* imm = diff.as<IntImmNode>()) {
+      return imm->value;
+    }
+    return std::nullopt;
+  };
+  auto copy_source_row_index_var_coefficient = [&](const Stmt& body) -> std::optional<int64_t> {
+    std::optional<int64_t> coefficient;
+    tir::PostOrderVisit(body, [&](const ObjectRef& node) {
+      if (coefficient.has_value()) {
+        return;
+      }
+      const auto* store = node.as<BufferStoreNode>();
+      if (store == nullptr) {
+        return;
+      }
+      const BufferLoadNode* load = GetCopyLoad(store);
+      if (load == nullptr) {
+        return;
+      }
+      if (load->indices.empty()) {
+        return;
+      }
+      coefficient = index_var_coefficient(load->indices[0]);
+      if (coefficient.has_value()) {
+        return;
+      }
+    });
+    return coefficient;
+  };
   auto body_uses_let_var_for_copy_index = [&](const Stmt& body) {
     bool found = false;
     tir::PostOrderVisit(body, [&](const ObjectRef& node) {
@@ -2983,11 +3021,25 @@ Stmt PlanTTKernelABI::VisitStmt_(const LetStmtNode* op) {
       table_load->buffer->dtype.is_int() && table_load->buffer->dtype.bits() == 32 &&
       GetStorageScope(table_load->buffer) == "global" &&
       body_uses_let_var_for_copy_index(op->body)) {
-    PrimExpr per_work_tile_start =
-        Call(op->var.dtype(), blackhole_runtime_arg_u32(),
-             {StringImm("a_tile_start_id")});
-    Stmt rewritten =
-        LetStmt(op->var, per_work_tile_start, op->body, op->span);
+    const std::optional<int64_t> coefficient =
+        copy_source_row_index_var_coefficient(op->body);
+    const std::string index_buffer = BufferIdentityName(table_load->buffer);
+    ICHECK(!index_buffer.empty())
+        << "Blackhole table-backed copy index requires named index-table buffer";
+    std::string arg_name = "a_tile_start_id";
+    if (coefficient.has_value() && coefficient.value() == 1) {
+      if (!segment_row_start_index_buffer_name_.empty()) {
+        ICHECK_EQ(segment_row_start_index_buffer_name_, index_buffer)
+            << "Blackhole first segmented row slice admits one row-start "
+            << "index table per fused dataflow kernel";
+      }
+      segment_row_start_index_buffer_name_ = index_buffer;
+      needs_segment_row_start_arg_ = true;
+      arg_name = "a_segment_row_start";
+    }
+    PrimExpr per_work_table_value =
+        Call(op->var.dtype(), blackhole_runtime_arg_u32(), {StringImm(arg_name)});
+    Stmt rewritten = LetStmt(op->var, per_work_table_value, op->body, op->span);
     return StmtExprMutator::VisitStmt_(rewritten.as<LetStmtNode>());
   }
   if (!select_compute_builtins_only_ && table_load != nullptr &&
@@ -2997,6 +3049,21 @@ Stmt PlanTTKernelABI::VisitStmt_(const LetStmtNode* op) {
     const std::string index_buffer = BufferIdentityName(table_load->buffer);
     ICHECK(!index_buffer.empty())
         << "Blackhole ragged row bound requires named index-table buffer";
+    if (needs_segment_row_start_arg_) {
+      if (!segment_row_count_index_buffer_name_.empty()) {
+        ICHECK_EQ(segment_row_count_index_buffer_name_, index_buffer)
+            << "Blackhole first segmented row slice admits one row-count "
+            << "index table per fused dataflow kernel";
+      }
+      segment_row_count_index_buffer_name_ = index_buffer;
+      needs_segment_row_count_arg_ = true;
+      PrimExpr per_work_segment_row_count =
+          Call(op->var.dtype(), blackhole_runtime_arg_u32(),
+               {StringImm("a_segment_row_count")});
+      Stmt rewritten =
+          LetStmt(op->var, per_work_segment_row_count, op->body, op->span);
+      return StmtExprMutator::VisitStmt_(rewritten.as<LetStmtNode>());
+    }
     if (!ragged_row_bound_index_buffer_name_.empty()) {
       ICHECK_EQ(ragged_row_bound_index_buffer_name_, index_buffer)
           << "Blackhole first ragged row-bound slice admits one row-count "

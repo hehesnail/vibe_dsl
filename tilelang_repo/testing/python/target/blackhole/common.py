@@ -1300,6 +1300,41 @@ def ragged_row_masked_staged_copy_kernel(
     raise ValueError(f"Unsupported ragged_row_masked_staged_copy_kernel dtype: {dtype}")
 
 
+def segmented_row_masked_staged_copy_kernel(
+    grid_x: int,
+    source_rows: int,
+    tile_m: int = 32,
+    tile_n: int = 32,
+    dtype: str = "bfloat16",
+):
+    """Define a non-uniform row-segment copy from per-work start/count tables."""
+    output_rows = grid_x * tile_m
+
+    if dtype == "bfloat16":
+        @T.prim_func
+        def main(
+            A: T.Tensor((source_rows, tile_n), "bfloat16"),
+            SegmentOffsets: T.Tensor((grid_x,), "int32"),
+            SegmentCounts: T.Tensor((grid_x,), "int32"),
+            B: T.Tensor((output_rows, tile_n), "bfloat16"),
+        ):
+            with T.Kernel(grid_x, 1) as (bx, by):
+                A_shared = T.alloc_shared((tile_m, tile_n), "bfloat16")
+                segment_start = SegmentOffsets[bx]
+                segment_count = SegmentCounts[bx]
+                for i, j in T.Parallel(tile_m, tile_n):
+                    A_shared[i, j] = T.if_then_else(
+                        i < segment_count,
+                        A[segment_start + i, j],
+                        0,
+                    )
+                T.copy(A_shared, B[bx * tile_m, 0])
+
+        return main
+
+    raise ValueError(f"Unsupported segmented_row_masked_staged_copy_kernel dtype: {dtype}")
+
+
 def staged_stick_copy_kernel(
     tile_m: int = 32,
     tile_n: int = 16,

@@ -2558,6 +2558,45 @@
   - Existing 64-byte page-indexed stick direct-runtime selectors remained
     green.
 
+### Segment row offsets were lowered as tile-start descriptors
+
+- **症状**:
+  - A non-uniform segmented row copy using `SegmentOffsets[bx]` and
+    `SegmentCounts[bx]` compiled to `tile_index = a_segment_row_start / 32`
+    and tried to materialize A with 2048-byte tile pages.
+  - Direct runtime failed before correctness with a TT-Metal buffer
+    `size % page_size == 0` fatal for a source tensor whose row count was not
+    a multiple of a 32x32 tile page.
+  - The executable also carried a stale A-side `a_tile_start_id` descriptor
+    pointing at `SegmentOffsets`, even though the source address semantics
+    were row offsets.
+- **根因**:
+  - The first table-indexed rewrite classified any int32 table load used in a
+    copy index as `tile_start`.  It did not distinguish coefficient-32 tile-id
+    usage (`tile_id * 32 + row`) from coefficient-1 row-start usage
+    (`segment_start + row`).
+  - Fused dataflow ABI synthesis then added default A tile-start/count/stride
+    runtime args even after the segmented input address had a stronger row
+    descriptor.
+  - The row predicate matcher attempted to re-match the original predicate
+    against a flattened shared index instead of consuming the projected
+    segment-row-count descriptor.
+- **修法**:
+  - Compute the table variable coefficient in copy index expressions by
+    substituting table var `0` and `1`; coefficient 1 lowers to
+    `a_segment_row_start`, while the existing coefficient-32 case remains the
+    tile-start path.
+  - Lower the predicate table load to `a_segment_row_count` when a segment
+    row-start descriptor is active.
+  - Use `segment_row_start + page_row` for reader page IDs and
+    `page_row < segment_row_count` for row validity, with zero CB pages for
+    invalid rows.
+  - Suppress default A tile-start/count/stride descriptors for the segmented
+    input path.
+- **验证**:
+  - Segmented structure and direct-runtime selectors passed.
+  - T8 indexed/ragged/segmented aggregate selectors reported `9 passed`.
+
 ## 3. 环境问题速查
 
 | 问题 | 解决 |

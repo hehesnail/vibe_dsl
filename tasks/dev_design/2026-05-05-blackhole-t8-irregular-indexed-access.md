@@ -157,6 +157,20 @@ Segmented/grouped dispatch:
   by those expressions;
 - source/runtime descriptors must carry the selected segment start/count.
 
+The admitted first segmented/grouped slice is a row-segment staged copy:
+
+- a one-dimensional `int32` table load used in the source address row
+  expression becomes a per-work `segment_row_start` descriptor;
+- a one-dimensional `int32` table load used in the guarded copy predicate
+  becomes a per-work `segment_row_count` descriptor;
+- the device source consumes runtime args derived from those descriptors and
+  must not emit raw source reads from the tables;
+- the copied output is a compact per-work tile-sized block, so invalid rows
+  are zero-filled inside that block and cannot clobber a neighboring segment;
+- this slice admits non-uniform segment starts/counts only for a single
+  page-indexed bf16 row-copy surface.  Wider grouped GEMM dispatch is a later
+  workload path, but must reuse the same descriptor/evidence contract.
+
 Ragged bounds:
 
 - derive valid row/token bounds from TIR predicates;
@@ -273,11 +287,33 @@ Implemented:
 - The admitted direct-runtime gate proves `RowCounts=[32,17,0]` copies only
   valid rows and writes zeros for invalid rows through `BlackholeModule`.
 
+2026-05-05 segmented row-segment slice status:
+
+- A minimal non-uniform row segment copy is admitted as the first
+  segmented/grouped dispatch surface.
+- The row start table is used in the TIR source address expression and lowers
+  to an `a_segment_row_start` runtime arg with descriptor kind
+  `segment_row_start`, `value_source=index_table`, and
+  `index_buffer=SegmentOffsets`.
+- The row count table is used in the TIR guarded-copy predicate and lowers to
+  an `a_segment_row_count` runtime arg with descriptor kind
+  `segment_row_count`, `value_source=index_table`, and
+  `index_buffer=SegmentCounts`.
+- Source consumes those two projected per-work descriptors and must not emit
+  raw source reads from `SegmentOffsets` / `SegmentCounts`.
+- The segmented reader uses page-indexed row pages
+  `segment_row_start + page_row`; the writer emits a compact per-work output
+  block and writes explicit zero pages for invalid rows.  The old input
+  `a_tile_start_id` / tile-count / tile-stride descriptors are not synthesized
+  for this segmented input path.
+- The admitted direct-runtime gate proves non-32-aligned starts and
+  non-uniform counts, including a zero-count segment, through `BlackholeModule`.
+
 Still open for T8:
 
-- segmented/grouped dispatch with non-uniform ranges;
 - broader indexed block traversal beyond the first one-dimensional
   per-work tile-start table descriptor.
+- broader ragged token/page forms beyond the first row-count predicate slice.
 
 ## Completion Criteria
 

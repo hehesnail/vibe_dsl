@@ -2389,3 +2389,11 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   64-byte float32 16-column sticks are row-major pages and must be copied raw
   on host transfer; otherwise predicates over logical rows operate on TT face
   pages and produce grouped/rounded row counts.
+- 2026-05-05 T8 segmented row descriptors:
+  A table load used with coefficient 1 in a source row address is a row-start
+  descriptor, not a tile-start descriptor.  Lower it to an explicit
+  `segment_row_start` per-work arg, pair it with a predicate-derived
+  `segment_row_count` descriptor, and make row transport use
+  `segment_row_start + page_row`.  Do not leave the default A-side
+  `a_tile_start_id` / tile-count / tile-stride descriptor as a compatibility
+  path when the segmented input address is already owned by row descriptors.

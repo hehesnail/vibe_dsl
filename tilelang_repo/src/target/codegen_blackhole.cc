@@ -1413,7 +1413,9 @@ void CodeGenBlackhole::EmitRuntimeArgLoads(const tvm::tir::PrimFunc &f) {
           arg_kind == "b_tile_num_tiles" || arg_kind == "b_tile_stride" ||
           arg_kind == "output_tile_start_id" || arg_kind == "output_tile_num_tiles" ||
           arg_kind == "output_tile_stride" || arg_kind == "k_tile_start_id" ||
-          arg_kind == "num_k_tiles" || arg_kind == "a_valid_rows";
+          arg_kind == "num_k_tiles" || arg_kind == "a_valid_rows" ||
+          arg_kind == "a_segment_row_start" ||
+          arg_kind == "a_segment_row_count";
       if (!requires_explicit_per_work_binding) {
         continue;
       }

@@ -68,6 +68,7 @@ using tir::builtin::blackhole_noc_async_write;
 using tir::builtin::blackhole_noc_async_write_barrier;
 using tir::builtin::blackhole_pack_untilize_slice;
 using tir::builtin::blackhole_pack_untilize_tile;
+using tir::builtin::blackhole_runtime_arg_u32;
 using tir::builtin::blackhole_read_page_to_cb;
 using tir::builtin::blackhole_read_bcast_cols_to_cb;
 using tir::builtin::blackhole_read_tile_to_cb;
@@ -1790,6 +1791,25 @@ Stmt PlanTTKernelABI::GenerateStagedCopyLoopSequence(
     }
     return page_index;
   };
+  auto make_segment_row_page_index = [&](int page_row) -> PrimExpr {
+    PrimExpr segment_start =
+        Call(DataType::UInt(32), blackhole_runtime_arg_u32(),
+             {StringImm("a_segment_row_start")});
+    if (page_row != 0) {
+      segment_start = analyzer.Simplify(segment_start + IntImm32(page_row));
+    }
+    return segment_start;
+  };
+  auto make_segment_row_predicate = [&](int page_row) -> PrimExpr {
+    return IntImm32(page_row) <
+           Call(DataType::UInt(32), blackhole_runtime_arg_u32(),
+                {StringImm("a_segment_row_count")});
+  };
+  const bool has_segmented_row_bound =
+      !segment_row_start_index_buffer_name_.empty() &&
+      !segment_row_count_index_buffer_name_.empty();
+  const bool has_ragged_row_bound =
+      !ragged_row_bound_index_buffer_name_.empty();
 
   if (IsDramToDeviceCopyDirection(direction)) {
     const bool materialize_to_local = direction == CopyDirection::kDramToLocal;
@@ -1800,27 +1820,50 @@ Stmt PlanTTKernelABI::GenerateStagedCopyLoopSequence(
     RecordStagedCopyBufferBinding(op, direction);
     const int accessor_slot = GetReadAccessorSlot(segment_kind, load->buffer, direction);
     const std::optional<PrimExpr> ragged_predicate = GetGuardedCopyPredicate(op);
-    if (!materialize_to_local && !ragged_row_bound_index_buffer_name_.empty() &&
-        ragged_predicate.has_value() && !op->indices.empty() &&
-        MakeRaggedRowPredicateForPage(ragged_predicate.value(), op->indices[0], 0).has_value() &&
+    const bool has_admitted_row_predicate =
+        ragged_predicate.has_value() &&
+        ((has_segmented_row_bound && !op->indices.empty()) ||
+         (!op->indices.empty() &&
+          MakeRaggedRowPredicateForPage(ragged_predicate.value(), op->indices[0], 0).has_value()));
+    if (!materialize_to_local && (has_ragged_row_bound || has_segmented_row_bound) &&
+        has_admitted_row_predicate &&
         !geometry.use_page_transport && geometry.shared_cols == kBlackholeTileCols &&
         geometry.global_cols == geometry.shared_cols) {
       SetRequirementPageLayout(cb_id, geometry.page_bytes, static_cast<int>(geometry.shared_rows));
-      ragged_row_bound_subject_buffer_name_ = BufferIdentityName(load->buffer);
-      ragged_row_bound_shared_buffer_names_.insert(BufferIdentityName(cb_producer_buffer));
-      if (!SameBufferIdentity(cb_producer_buffer, op->buffer)) {
-        ragged_row_bound_shared_buffer_names_.insert(BufferIdentityName(op->buffer));
+      const std::string source_buffer_name = BufferIdentityName(load->buffer);
+      const std::string cb_producer_name = BufferIdentityName(cb_producer_buffer);
+      const std::string op_buffer_name = BufferIdentityName(op->buffer);
+      if (has_segmented_row_bound) {
+        segment_row_subject_buffer_name_ = source_buffer_name;
+        segment_row_shared_buffer_names_.insert(cb_producer_name);
+        if (!SameBufferIdentity(cb_producer_buffer, op->buffer)) {
+          segment_row_shared_buffer_names_.insert(op_buffer_name);
+        }
+      } else {
+        ragged_row_bound_subject_buffer_name_ = source_buffer_name;
+        ragged_row_bound_shared_buffer_names_.insert(cb_producer_name);
+        if (!SameBufferIdentity(cb_producer_buffer, op->buffer)) {
+          ragged_row_bound_shared_buffer_names_.insert(op_buffer_name);
+        }
       }
       for (int page_row = 0; page_row < shared_rows; ++page_row) {
-        const std::optional<PrimExpr> maybe_row_predicate =
-            MakeRaggedRowPredicateForPage(ragged_predicate.value(), op->indices[0], page_row);
-        ICHECK(maybe_row_predicate.has_value())
-            << "Blackhole ragged row reader lost row-bound predicate";
-        PrimExpr row_predicate = analyzer.Simplify(maybe_row_predicate.value());
+        PrimExpr row_predicate;
+        if (has_segmented_row_bound) {
+          row_predicate = analyzer.Simplify(make_segment_row_predicate(page_row));
+        } else {
+          const std::optional<PrimExpr> maybe_row_predicate =
+              MakeRaggedRowPredicateForPage(ragged_predicate.value(), op->indices[0], page_row);
+          ICHECK(maybe_row_predicate.has_value())
+              << "Blackhole ragged row reader lost row-bound predicate";
+          row_predicate = analyzer.Simplify(maybe_row_predicate.value());
+        }
+        PrimExpr source_page_index =
+            has_segmented_row_bound ? make_segment_row_page_index(page_row)
+                                    : make_full_tile_row_page_index(page_row);
         std::vector<Stmt> valid_row_stmts;
         valid_row_stmts.push_back(MakeBlackholeCall(
             blackhole_read_page_to_cb(),
-            {load->buffer->data, make_full_tile_row_page_index(page_row), IntImm32(cb_id),
+            {load->buffer->data, source_page_index, IntImm32(cb_id),
              IntImm32(geometry.page_bytes), IntImm32(accessor_slot), IntImm32(0)}));
         valid_row_stmts.push_back(MakeBlackholeCall(blackhole_noc_async_read_barrier(), {}));
         std::vector<Stmt> zero_row_stmts;
@@ -1949,8 +1992,13 @@ Stmt PlanTTKernelABI::GenerateStagedCopyLoopSequence(
                                                                    : CBType::kIntermediate);
     RecordStagedCopyBufferBinding(op, direction);
     const int accessor_slot = GetWriteAccessorSlot(segment_kind, op->buffer, direction);
-    if (!ragged_row_bound_index_buffer_name_.empty() &&
-        ragged_row_bound_shared_buffer_names_.count(BufferIdentityName(load->buffer)) != 0U &&
+    const std::string live_input_name = BufferIdentityName(load->buffer);
+    const bool shared_buffer_has_row_bound =
+        (has_ragged_row_bound &&
+         ragged_row_bound_shared_buffer_names_.count(live_input_name) != 0U) ||
+        (has_segmented_row_bound &&
+         segment_row_shared_buffer_names_.count(live_input_name) != 0U);
+    if (shared_buffer_has_row_bound &&
         !geometry.use_page_transport && geometry.shared_cols == kBlackholeTileCols &&
         geometry.global_cols == geometry.shared_cols) {
       SetRequirementPageLayout(cb_id, geometry.page_bytes, static_cast<int>(geometry.shared_rows));

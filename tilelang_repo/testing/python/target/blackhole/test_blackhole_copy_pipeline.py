@@ -35,6 +35,7 @@ from .common import (
     require_tt_kernel,
     require_tt_program,
     ragged_row_masked_staged_copy_kernel,
+    segmented_row_masked_staged_copy_kernel,
     staged_copy_kernel,
     staged_stick_copy_kernel,
     tt_abi_for_kernel,
@@ -1276,6 +1277,63 @@ def test_blackhole_ragged_row_copy_uses_valid_rows_index_table_descriptor():
     assert int(materializations["B"]["transport_page_size"]) == 64
     assert str(materializations["RowCounts"]["layout"]) == "page_indexed"
     assert int(materializations["RowCounts"]["transport_page_size"]) == 4
+
+
+def test_blackhole_segmented_row_copy_uses_segment_index_table_descriptors():
+    target = Target("blackhole")
+    with target:
+        artifact = lower(
+            segmented_row_masked_staged_copy_kernel(grid_x=3, source_rows=80),
+            target=target,
+        )
+
+    executable_spec = _extract_blackhole_executable_spec(artifact)
+    kernel_spec = _require_blackhole_kernel(
+        executable_spec["kernels"], kind="fused_dataflow", core_type="brisc"
+    )
+    source = str(kernel_spec["source_code"])
+    assert "a_segment_row_start = get_arg_val<uint32_t>" in source
+    assert "a_segment_row_count = get_arg_val<uint32_t>" in source
+    assert "a_tile_start_id = get_arg_val<uint32_t>" not in source
+    assert "a_tile_num_tiles = get_arg_val<uint32_t>" not in source
+    assert "a_tile_stride = get_arg_val<uint32_t>" not in source
+    assert "SegmentOffsets" not in source
+    assert "SegmentCounts" not in source
+    assert "dst_words[i] = 0u" in source
+
+    descriptors = {
+        (str(spec.get("buffer", "")), str(spec["descriptor_kind"])): spec
+        for spec in executable_spec["per_work_arg_specs"]
+    }
+    segment_start = descriptors[("A", "segment_row_start")]
+    assert str(segment_start["value_source"]) == "index_table"
+    assert str(segment_start["index_buffer"]) == "SegmentOffsets"
+    assert int(segment_start["index_value_scale"]) == 1
+    assert str(segment_start["access_region"])
+    assert int(segment_start["access_region_index"]) >= 0
+
+    segment_count = descriptors[("A", "segment_row_count")]
+    assert str(segment_count["value_source"]) == "index_table"
+    assert str(segment_count["index_buffer"]) == "SegmentCounts"
+    assert int(segment_count["index_value_scale"]) == 1
+    assert str(segment_count["access_region"])
+    assert int(segment_count["access_region_index"]) >= 0
+    assert ("A", "tile_start") not in descriptors
+    assert ("A", "tile_count") not in descriptors
+    assert ("A", "tile_stride") not in descriptors
+
+    materializations = {
+        str(item["buffer"]): item
+        for item in executable_spec["buffer_materializations"]
+    }
+    assert str(materializations["A"]["layout"]) == "page_indexed"
+    assert int(materializations["A"]["transport_page_size"]) == 64
+    assert str(materializations["B"]["layout"]) == "page_indexed"
+    assert int(materializations["B"]["transport_page_size"]) == 64
+    assert str(materializations["SegmentOffsets"]["layout"]) == "page_indexed"
+    assert int(materializations["SegmentOffsets"]["transport_page_size"]) == 4
+    assert str(materializations["SegmentCounts"]["layout"]) == "page_indexed"
+    assert int(materializations["SegmentCounts"]["transport_page_size"]) == 4
 
 
 def test_blackhole_grid_indexed_copy_rejects_per_work_arg_kind_fallback_without_identity():

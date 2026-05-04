@@ -2631,7 +2631,8 @@ static bool RuntimeArgKindRequiresExplicitPerWorkBinding(std::string_view kind) 
          kind == "b_tile_num_tiles" || kind == "b_tile_stride" ||
          kind == "output_tile_start_id" || kind == "output_tile_num_tiles" ||
          kind == "output_tile_stride" || kind == "k_tile_start_id" ||
-         kind == "num_k_tiles" || kind == "a_valid_rows";
+         kind == "num_k_tiles" || kind == "a_valid_rows" ||
+         kind == "a_segment_row_start" || kind == "a_segment_row_count";
 }
 
 static void ValidateKernelExplicitPerWorkBindingSchema(const CorePlan& core_plan,
@@ -2974,7 +2975,9 @@ static void EnforceExplicitPerWorkAccessDescriptorGate(
               arg.kind == "b_tile_num_tiles" || arg.kind == "b_tile_stride" ||
               arg.kind == "output_tile_start_id" || arg.kind == "output_tile_num_tiles" ||
               arg.kind == "output_tile_stride" || arg.kind == "k_tile_start_id" ||
-              arg.kind == "num_k_tiles" || arg.kind == "a_valid_rows") {
+              arg.kind == "num_k_tiles" || arg.kind == "a_valid_rows" ||
+              arg.kind == "a_segment_row_start" ||
+              arg.kind == "a_segment_row_count") {
             if (arg.identity.empty() ||
                 !PerWorkArgSpecsContainArgIdentity(per_work_arg_specs, arg.identity)) {
               return true;

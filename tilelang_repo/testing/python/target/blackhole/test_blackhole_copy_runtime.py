@@ -19,6 +19,7 @@ from .common import (
     extract_blackhole_work_per_core,
     grid_indexed_staged_copy_kernel,
     ragged_row_masked_staged_copy_kernel,
+    segmented_row_masked_staged_copy_kernel,
     rebuild_tt_buffer_distribution_plan,
     rebuild_tt_abi_plan,
     rebuild_tt_kernel,
@@ -797,6 +798,47 @@ def test_blackhole_module_direct_call_ragged_row_copy_uses_row_count_predicate()
         atol=1e-3,
         rtol=1e-3,
         failure_message="Ragged row direct-call output mismatch",
+    )
+
+
+def test_blackhole_module_direct_call_segmented_row_copy_uses_start_and_count_tables():
+    can_run, msg = check_blackhole_direct_execution_requirements()
+    if not can_run:
+        pytest.skip(f"Blackhole requirements not met: {msg}")
+
+    grid_x, tile_m, tile_n = 3, 32, 32
+    source_rows = 80
+    a_torch = _bf16_matrix(source_rows, tile_n)
+    segment_offsets = torch.tensor([3, 37, 48], dtype=torch.int32)
+    segment_counts = torch.tensor([11, 0, 29], dtype=torch.int32)
+    b_output = torch.full((grid_x * tile_m, tile_n), -17, dtype=torch.bfloat16)
+    b_ref = torch.zeros_like(b_output)
+    for bx, (segment_start, valid_rows) in enumerate(
+        zip(segment_offsets.tolist(), segment_counts.tolist())
+    ):
+        row_start = bx * tile_m
+        if valid_rows > 0:
+            b_ref[row_start : row_start + valid_rows, :] = a_torch[
+                segment_start : segment_start + valid_rows, :
+            ]
+
+    target = Target("blackhole")
+    kernel = segmented_row_masked_staged_copy_kernel(
+        grid_x=grid_x,
+        source_rows=source_rows,
+        tile_m=tile_m,
+        tile_n=tile_n,
+    )
+    with target:
+        artifact = lower(kernel, target=target)
+
+    artifact.codegen_mod["main"](a_torch, segment_offsets, segment_counts, b_output)
+    assert_tensors_close_or_dump(
+        b_output,
+        b_ref,
+        atol=1e-3,
+        rtol=1e-3,
+        failure_message="Segmented row direct-call output mismatch",
     )
 
 
