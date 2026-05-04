@@ -58,8 +58,18 @@ T6 validation must cover:
 
 - projection tests proving value and index outputs are represented in typed
   IR/source/spec records;
-- direct-runtime correctness for the first admitted bf16/fp32 value surface
-  with `int32` indices;
+- direct-runtime correctness for standalone row-wise fp32 `topk` values with
+  exact `int32` indices, using a multi-work shape such as `M=320`, `N=128`,
+  `k=6`, `axis=1`, and `blk_m=64`, with non-tie input data unless deterministic
+  tie behavior is explicitly represented;
+- direct-runtime correctness for the admitted bf16 value surface with exact
+  `int32` indices and `M > blk_m`, comparing values with bf16-appropriate
+  tolerance and indices exactly;
 - typed rejects for unsupported axes, dtypes, placements, tie behavior, and
   layout combinations;
 - source/spec tests proving the generated path consumes the typed records.
+
+The positive runtime cases must execute through `BlackholeModule` with the
+repository TT-Sim setup.  Validator-only, source-only, or schema-only coverage
+cannot complete T6, and negative typed rejects cannot substitute for admitted
+value/index correctness.

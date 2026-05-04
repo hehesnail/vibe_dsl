@@ -328,6 +328,13 @@ This roadmap keeps the stable order and exit criteria.
 | T9 Workload first paths | Bring up pre-grouped MoE, sparse/ragged attention, paged GQA decode, paged MLA decode, chunk recurrence, and multi-block flash decode first paths. | Prior primitive surfaces as needed by each workload: explicit TIR compute/dataflow, placement/reshard, accessor ABI, materialization, and TIR-derived irregular work evidence. | Each workload has a stated first path, correctness proof, and typed rejects for unadmitted forms; no workload-named semantic object or metadata contract becomes owner truth. |
 | T10 Production distributed variants | Add mesh/sharding/CCL/NoC/multicast/global scheduling support, including production K-sharded GEMM partial-reduce protocol. | Stable first paths plus explicit placement/dataflow requirements, hardware facts, and typed distributed realization records. | Distributed paths have typed placement, communication, admission, and correctness gates; records are target-realization primitives, not workload-family semantics. |
 
+For T6-T10, "correctness proof" means an admitted positive case runs through
+`BlackholeModule` with the repository TT-Sim setup and compares device output
+against a host reference.  Projection, validation, source/schema checks, and
+typed unsupported diagnostics are necessary supporting tests, but they do not
+complete a task by themselves.  The detailed runtime case matrix for the
+remaining queue is maintained in `tasks/progress.md`.
+
 Do not advance workload admission that depends on external sharded or
 page-indexed accessors past T4 until those accessor forms have
 source/spec/direct-runtime admission or precise typed rejects.

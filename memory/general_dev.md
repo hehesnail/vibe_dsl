@@ -2214,3 +2214,9 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   T10 distributed records are TT target-realization primitives
   (placement/communication/sync/resource/runtime ABI), not workload-family
   semantics.
+- 2026-05-04 remaining-task runtime gates:
+  For T6-T10, validator/projection/source-schema tests are supporting evidence
+  only.  Every admitted positive surface needs a direct `BlackholeModule`
+  runtime correctness case under the repo TT-Sim setup, with bf16 as the formal
+  value baseline where tensor values are involved.  Negative typed rejects do
+  not substitute for positive runtime correctness.

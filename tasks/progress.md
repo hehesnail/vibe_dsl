@@ -186,6 +186,105 @@ T6 is complete only when:
 | TT-Sim correctness | Runtime correctness uses the repository TT-Sim setup and bf16 baseline. |
 | Unsupported reason | Unsupported forms fail closed with typed diagnostics before source/runtime guessing. |
 
+## Remaining Runtime Correctness Gates
+
+These are acceptance gates for T6-T10.  Projection tests, validators, source
+schema tests, and typed rejects are required, but they do not complete a task
+unless the admitted positive path also executes through `BlackholeModule` with
+the repository TT-Sim setup.  Where tensor values are involved, the formal
+runtime gate includes a bf16 case; fp32 cases can be additional coverage or the
+first value-surface bring-up, but they do not replace the bf16 baseline.
+
+### T6 `topk`
+
+- Run standalone row-wise `topk` with fp32 values and `int32` indices through
+  direct runtime, using a multi-work shape such as `M=320`, `N=128`, `k=6`,
+  `axis=1`, and `blk_m=64`.  The input data must avoid ties unless the tie
+  policy is explicitly represented.  Compare both values and indices against
+  `torch.topk`.
+- Run the admitted bf16 value surface with `int32` indices through direct
+  runtime, with `M > blk_m` so multiple logical work items execute.  Compare
+  values with bf16-appropriate tolerance and indices exactly.
+- Keep unsupported axes, dtypes, tie behavior, and layouts as typed reject
+  tests, but do not count those rejects as runtime correctness coverage.
+
+### T7 Exact-CB / Materialization Primitives
+
+- Run a bf16 source-live-form materialization case where one kernel publishes
+  an intermediate value and a later kernel consumes the materialized form.
+  The final tensor must match a host reference across multiple work packets.
+- Run at least one admitted exact-CB publish/consume multi-kernel path through
+  direct runtime.  If multi-page events are not admitted, they must reject
+  with a typed reason; the admitted one-page path still needs positive runtime
+  correctness.
+- Run a partial-combine case with two or more device-produced partial values
+  such as partial output / logsum or the equivalent explicit TIR values.  The
+  on-device combine result must match the host reference.
+- Run a bf16 multi-block flash-attn or flash-decode exact-CB case that exercises
+  producer/consumer lifetime and combine behavior through `BlackholeModule`.
+
+### T8 Irregular Work Domains / Indexed Access
+
+- Run a segmented or grouped-dispatch case whose valid ranges come from TIR
+  loop bounds, predicates, and address expressions with operands such as
+  `group_sizes` / `group_offsets`.  Use non-uniform groups and more than one
+  work packet, then compare the output with a host reference.
+- Run a ragged-bound case whose valid rows/tokens come from TIR predicates and
+  expressions with operands such as `cache_seqlens`.  The runtime must prove it
+  skips invalid rows by comparing against a ragged host reference.
+- Run an indexed-block traversal case where `BufferLoad` / `BufferStore`
+  indices use an operand such as `block_indices`.  The direct-runtime result
+  must match a gather, copy, or accumulation reference that depends on the
+  index list.
+- T8 is not complete if these facts only validate or project.  The derived
+  evidence must drive source/runtime addressing for the admitted positive
+  cases, and no workload-family metadata registry may become owner truth.
+
+### T9 Workload First Paths
+
+Each T9 checkpoint needs its own first-path direct-runtime correctness proof:
+
+- T9.1 pre-grouped MoE / routed grouped GEMM: bf16 grouped GEMM with explicit
+  grouped token ranges, non-uniform groups, and typed gather/scatter or packed
+  operands as admitted.  Compare with a host grouped-GEMM reference.
+- T9.2 paged GQA decode: bf16 page/block-table KV reads with ragged
+  `cache_seqlens`, more than one page, and the admitted partial combine path.
+  Compare with a host decode reference.
+- T9.3 paged MLA decode: bf16 paged latent / KV access with the admitted
+  page-table and ragged-bound surface.  Compare with a host MLA decode
+  reference.
+- T9.4 sparse / ragged attention: bf16 indexed sparse-block traversal plus
+  ragged valid lengths.  Compare with a dense or sparse host reference for the
+  same `block_indices` and bounds.
+- T9.5 chunk recurrence / scan: a multi-chunk case with loop-carried state and
+  device state-buffer lifetime.  Compare final outputs and final state against
+  a host scan/reference implementation.
+- T9.6 multi-block flash decode: a bf16 multi-block split with exact-CB
+  publish/consume and partial combine.  Compare with the host flash-decode
+  reference.
+
+### T10 Distributed Production Variants
+
+- T10.1 mesh / multi-device placement: run an admitted mesh or multi-device
+  placement case with real runtime movement and computation across more than
+  one device when the simulator/target supports it.  If the available TT-Sim
+  target cannot execute multi-device, that is a documented target boundary for
+  that claim, not a substitute for distributed correctness.
+- T10.2 CCL contracts: run all-gather, reduce-scatter, and all-to-all
+  correctness cases over at least two logical shards/devices for every
+  admitted collective contract, comparing against host references.
+- T10.3 NoC / multicast / global scheduling: run a multi-core producer /
+  consumer case that uses the admitted semaphore, remote route, or multicast
+  protocol and compare the final tensor with a host reference.
+- T10.4 distributed workload correctness: run at least one T9 first path in its
+  admitted distributed form end to end, not just primitive collectives.
+- T10.5 K-sharded GEMM production partial reduce: replace the current blocking
+  z-wave runtime-issued tile-add path with the typed production reducer
+  protocol, then run a many-core bf16 case such as `M=320`, `N=352`,
+  `K>=512`, `logical_grid=11x10x2` or larger.  Correctness must compare
+  against host GEMM and the old special fallback must be deleted or folded into
+  the typed protocol implementation.
+
 ## Recent Verification
 
 2026-05-04 UTC T5 multi-core/all-bf16 sharded GEMM hardening:
