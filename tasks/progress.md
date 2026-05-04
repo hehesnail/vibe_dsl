@@ -332,7 +332,7 @@ T6 now owns standalone value/index selection.
 | T5 Sharded GEMM / layout variants | Admit GEMM/layout variants that depend on real tensor sharding, including explicit retile/work-coarsening when a layout changes logical work mapping. | T3 and T4 complete. | Complete. |
 | T6 `topk` | Admit standalone value/index selection. | T2 leaf reductions. | Value and `int32` index correctness, not compile-only. |
 | T7 Exact-CB / materialization primitives | Repair wider publish/consume, partial combine, source-live-form materialization, and multi-block flash-attn / flash-decode exact-CB correctness. | T1 and relevant T3 materialization rules when sharded values are involved. | Multi-kernel intermediate correctness and typed materialization rejects. |
-| T8 Grouped / ragged work packets | Represent group/ragged metadata as typed planning input. | T1 and relevant per-work descriptors. | Missing/inconsistent group/ragged metadata rejects before source/runtime emission. |
+| T8 Irregular work domains / indexed access | Represent segmented/ragged ranges, indexed block traversal, and grouped dispatch as explicit work-domain and access descriptors derived from IR operands. | T1 and relevant per-work descriptors. | Missing/inconsistent irregular-domain evidence rejects before source/runtime emission; no workload-specific metadata registry. |
 | T9 Workload first paths | Bring up pre-grouped MoE, sparse/ragged attention, paged GQA decode, paged MLA decode, chunk recurrence, and multi-block flash decode first paths. | Prior tasks as needed by each workload. | Each workload has a stated first path with correctness proof and unsupported-form rejects. |
 | T10 Distributed production variants | Add mesh/sharding/CCL/NoC/multicast/global scheduling support, including production K-sharded GEMM partial-reduce protocol. | Stable first paths and typed distributed plans, including T3 sharding/reshard. | Production distributed paths have typed placement, communication, and correctness gates. |
 
@@ -409,19 +409,23 @@ Large tasks must land through these smaller checkpoints.
   partial-output / logsum combine plus multi-block flash-attn / flash-decode
   exact-CB correctness.
 
-### T8 Grouped / Ragged Work Packets
+### T8 Irregular Work Domains / Indexed Access
 
-- T8.1 Group metadata schema:
-  group sizes, group offsets, padded offsets, and group-to-work mapping as
-  typed planning inputs.
-- T8.2 Ragged range descriptors:
-  row counts, cache sequence lengths, and per-work indexed ranges with shape
-  validation.
-- T8.3 Sparse/block index metadata:
-  sparse block indices and block-table evidence without name-based recovery.
-- T8.4 Work-packet validation:
-  reject missing or inconsistent grouped/ragged metadata before source or
-  runtime emission.
+- T8.1 Irregular work-domain primitives:
+  segmented ranges, ragged row domains, indexed block sets, and grouped
+  dispatch maps as target-independent domain objects.  Do not introduce
+  workload names such as MoE or sparse attention as planning semantics.
+- T8.2 Domain operand/evidence binding:
+  tensors such as `group_sizes`, `group_offsets`, `cache_seqlens`, and
+  `block_indices` may enter only as operands/evidence for the domain objects
+  above, tied to IR range or address expressions.
+- T8.3 Per-work lowering:
+  lower admitted irregular domains into work packets, per-work ranges,
+  accessor/runtime args, and indexed address contracts without source-name or
+  argument-position recovery.
+- T8.4 Domain validation:
+  reject missing, inconsistent, out-of-range, or shape-incompatible domain
+  evidence before source or runtime emission.
 
 ### T9 Workload First Paths
 

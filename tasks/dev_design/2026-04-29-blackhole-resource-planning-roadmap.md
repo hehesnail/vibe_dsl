@@ -300,7 +300,7 @@ Each family must name two things separately:
 This means T9 workload bring-up is not blocked on all of T10.
 It is blocked on the specific earlier primitives each first path actually
 needs, such as T3 sharding / reshard, T4 external accessors, T7
-materialization, or T8 grouped / ragged metadata.
+materialization, or T8 irregular work-domain / indexed-access descriptors.
 Those primitives must be pulled forward explicitly instead of hidden under a
 generic "later runtime" bucket.
 
@@ -318,7 +318,7 @@ This roadmap keeps the stable order and exit criteria.
 | T5 Sharded GEMM / layout variants | Admit GEMM/layout variants that depend on real tensor sharding, including explicit retile/work-coarsening when a layout changes logical work mapping. | T3, and T4 when external sharded/page-indexed accessors are required. | Sharded GEMM/layout correctness where admitted; typed rejects for unsupported placement/conversion/retile combinations. |
 | T6 Selection / index base | Bring up standalone `topk` with `int32` index outputs. | T2 leaf reductions. | Value and index correctness are proven; compile-only is not enough. |
 | T7 Exact-CB / materialization primitives | Repair wider exact-CB publish/consume, partial combine, source-live-form materialization, and multi-block flash-attn / flash-decode exact-CB correctness. | T1 and relevant T3 materialization rules when sharded values are involved. | Multi-kernel intermediate correctness is covered and missing materialization protocol fails before source/runtime emission. |
-| T8 Grouped / ragged work packets | Represent group, block, ragged row count, and per-work indexed ranges as typed planning inputs. | T1 and relevant per-work descriptors. | Missing or inconsistent group/ragged metadata is rejected before source/runtime emission. |
+| T8 Irregular work domains / indexed access | Represent segmented/ragged ranges, indexed block traversal, and grouped dispatch as explicit work-domain and access descriptors derived from IR operands. | T1 and relevant per-work descriptors. | Missing or inconsistent irregular-domain evidence is rejected before source/runtime emission; no workload-specific metadata registry. |
 | T9 Workload first paths | Bring up pre-grouped MoE, sparse/ragged attention, paged GQA decode, paged MLA decode, chunk recurrence, and multi-block flash decode first paths. | Prior tasks as needed by each workload. | Each workload has a stated first path, correctness proof, and typed rejects for unadmitted forms. |
 | T10 Production distributed variants | Add mesh/sharding/CCL/NoC/multicast/global scheduling support, including production K-sharded GEMM partial-reduce protocol. | Stable first paths and typed distributed plans, including T3 sharding/reshard. | Distributed paths have typed placement, communication, admission, and correctness gates. |
 

@@ -2198,3 +2198,10 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   both `blockIdx.x = xy % grid_x` and `blockIdx.y = (xy / grid_x) % grid_y`;
   otherwise partial-K writers can silently write every partial to tile 0 even
   though runtime per-work args are correct.
+- 2026-05-04 T8 design boundary:
+  Do not turn grouped / ragged / sparse workload parameters into a metadata
+  registry.  The IR-first object is the irregular work/access pattern:
+  segmented ranges, ragged row domains, indexed block traversal, and grouped
+  dispatch maps.  Names such as MoE, sparse attention, `group_sizes`,
+  `cache_seqlens`, or `block_indices` are only test inputs or domain operands,
+  not planning semantics by themselves.

@@ -66,7 +66,7 @@ T1 Buffer address ABI execution integration (complete)
   -> T5 sharded GEMM / layout variants (complete)
   -> T6 topk (active)
   -> T7 exact-CB / materialization primitives
-  -> T8 grouped / ragged work packets
+  -> T8 irregular work domains / indexed access
   -> T9 workload first paths
   -> T10 production distributed variants
 ```
