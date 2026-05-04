@@ -2676,6 +2676,7 @@ static bool RuntimeArgKindRequiresExplicitPerWorkBinding(std::string_view kind) 
          kind == "output_tile_start_id" || kind == "output_tile_num_tiles" ||
          kind == "output_tile_stride" || kind == "k_tile_start_id" ||
          kind == "num_k_tiles" || kind == "a_valid_rows" ||
+         kind == "a_ragged_page_index" ||
          kind == "a_segment_row_start" || kind == "a_segment_row_count";
 }
 
@@ -3020,6 +3021,7 @@ static void EnforceExplicitPerWorkAccessDescriptorGate(
               arg.kind == "output_tile_start_id" || arg.kind == "output_tile_num_tiles" ||
               arg.kind == "output_tile_stride" || arg.kind == "k_tile_start_id" ||
               arg.kind == "num_k_tiles" || arg.kind == "a_valid_rows" ||
+              arg.kind == "a_ragged_page_index" ||
               arg.kind == "a_segment_row_start" ||
               arg.kind == "a_segment_row_count") {
             if (arg.identity.empty() ||

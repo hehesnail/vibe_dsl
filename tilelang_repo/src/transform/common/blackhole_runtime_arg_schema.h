@@ -49,6 +49,7 @@ inline constexpr const char* kDescriptorTileStride = "tile_stride";
 inline constexpr const char* kDescriptorKTileStart = "k_tile_start";
 inline constexpr const char* kDescriptorKTileCount = "k_tile_count";
 inline constexpr const char* kDescriptorValidRows = "valid_rows";
+inline constexpr const char* kDescriptorRaggedPageIndex = "ragged_page_index";
 inline constexpr const char* kDescriptorSegmentRowStart = "segment_row_start";
 inline constexpr const char* kDescriptorSegmentRowCount = "segment_row_count";
 

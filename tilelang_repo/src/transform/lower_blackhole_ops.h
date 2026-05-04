@@ -894,6 +894,7 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   bool saw_copy_op_ = false;
   bool needs_copy_runtime_args_ = false;
   bool needs_ragged_row_bound_arg_ = false;
+  bool needs_ragged_page_index_arg_ = false;
   bool needs_segment_row_start_arg_ = false;
   bool needs_segment_row_count_arg_ = false;
   bool requires_compute_segment_ = false;
@@ -907,6 +908,7 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   std::vector<std::string> copy_output_buffer_names_;
   std::string ragged_row_bound_index_buffer_name_;
   std::string ragged_row_bound_subject_buffer_name_;
+  std::string ragged_page_index_value_source_;
   std::unordered_set<std::string> ragged_row_bound_shared_buffer_names_;
   std::string segment_row_start_index_buffer_name_;
   std::string segment_row_count_index_buffer_name_;

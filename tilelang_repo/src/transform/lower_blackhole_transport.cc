@@ -24,6 +24,7 @@
 
 #include "lower_blackhole_ops.h"
 
+#include "common/blackhole_runtime_arg_schema.h"
 #include "common/blackhole_utils.h"
 
 #include <tvm/arith/analyzer.h>
@@ -32,6 +33,7 @@
 #include "runtime/thread_storage_scope.h"
 
 #include <algorithm>
+#include <functional>
 #include <optional>
 #include <vector>
 
@@ -776,6 +778,18 @@ std::optional<PrimExpr> MakeRaggedRowPredicateForPage(
     }
   }
   return std::nullopt;
+}
+
+void CollectConjuncts(const PrimExpr& expr, std::vector<PrimExpr>* conjuncts) {
+  if (!expr.defined()) {
+    return;
+  }
+  if (const auto* and_node = expr.as<tir::AndNode>()) {
+    CollectConjuncts(and_node->a, conjuncts);
+    CollectConjuncts(and_node->b, conjuncts);
+    return;
+  }
+  conjuncts->push_back(expr);
 }
 
 bool PlanTTKernelABI::IsCopyOperation(const BufferStoreNode* op) const {
@@ -1820,11 +1834,160 @@ Stmt PlanTTKernelABI::GenerateStagedCopyLoopSequence(
     RecordStagedCopyBufferBinding(op, direction);
     const int accessor_slot = GetReadAccessorSlot(segment_kind, load->buffer, direction);
     const std::optional<PrimExpr> ragged_predicate = GetGuardedCopyPredicate(op);
+    auto make_ragged_row_predicate_for_page =
+        [&](const PrimExpr& predicate, const PrimExpr& row_expr,
+            int page_row) -> std::optional<PrimExpr> {
+      if (std::optional<PrimExpr> simple =
+              MakeRaggedRowPredicateForPage(predicate, row_expr, page_row)) {
+        return simple;
+      }
+      const PrimExpr stripped_row = StripCasts(row_expr);
+      std::vector<PrimExpr> row_candidates{stripped_row};
+      const PrimExpr local_row_from_tile =
+          analyzer.Simplify(stripped_row -
+                            base_tile_index * IntImm32(kBlackholeTileRows));
+      if (!ExprStructurallyEqualModuloCasts(local_row_from_tile, stripped_row)) {
+        row_candidates.push_back(local_row_from_tile);
+      }
+
+      auto make_page_index_arg = []() {
+        return Call(DataType::UInt(32), blackhole_runtime_arg_u32(),
+                    {StringImm("a_ragged_page_index")});
+      };
+
+      struct RewriteResult {
+        PrimExpr expr;
+        bool used_local_row = false;
+        bool used_page_index = false;
+        bool unsupported = false;
+      };
+
+      auto rewrite_for_candidate =
+          [&](const PrimExpr& expr, const PrimExpr& local_row_expr,
+              int row_value) -> RewriteResult {
+        std::function<RewriteResult(const PrimExpr&)> rewrite =
+            [&](const PrimExpr& current) -> RewriteResult {
+          if (!current.defined()) {
+            return RewriteResult{current, false, false, true};
+          }
+          if (ExprStructurallyEqualModuloCasts(current, local_row_expr)) {
+            return RewriteResult{
+                IntImm(current.dtype(), row_value), true, false, false};
+          }
+          const PrimExpr stripped = StripCasts(current);
+          if (const auto* var = stripped.as<tir::VarNode>()) {
+            auto source_it = block_index_source_by_var_.find(var);
+            if (source_it == block_index_source_by_var_.end()) {
+              return RewriteResult{current, false, false, false};
+            }
+            if (source_it->second !=
+                blackhole_runtime_arg_schema::kValueSourceLogicalBlockY) {
+              return RewriteResult{current, false, false, true};
+            }
+            return RewriteResult{make_page_index_arg(), false, true, false};
+          }
+          auto join_binary = [&](const PrimExpr& a, const PrimExpr& b,
+                                 auto make_expr) -> RewriteResult {
+            RewriteResult lhs = rewrite(a);
+            RewriteResult rhs = rewrite(b);
+            if (lhs.unsupported || rhs.unsupported) {
+              return RewriteResult{current, lhs.used_local_row || rhs.used_local_row,
+                                   lhs.used_page_index || rhs.used_page_index, true};
+            }
+            if (!lhs.used_local_row && !lhs.used_page_index &&
+                !rhs.used_local_row && !rhs.used_page_index) {
+              return RewriteResult{current, false, false, false};
+            }
+            return RewriteResult{
+                make_expr(lhs.expr, rhs.expr),
+                lhs.used_local_row || rhs.used_local_row,
+                lhs.used_page_index || rhs.used_page_index,
+                false};
+          };
+          if (const auto* add = stripped.as<tir::AddNode>()) {
+            return join_binary(add->a, add->b,
+                               [](const PrimExpr& a, const PrimExpr& b) {
+                                 return a + b;
+                               });
+          }
+          if (const auto* sub = stripped.as<tir::SubNode>()) {
+            return join_binary(sub->a, sub->b,
+                               [](const PrimExpr& a, const PrimExpr& b) {
+                                 return a - b;
+                               });
+          }
+          if (const auto* mul = stripped.as<tir::MulNode>()) {
+            return join_binary(mul->a, mul->b,
+                               [](const PrimExpr& a, const PrimExpr& b) {
+                                 return a * b;
+                               });
+          }
+          if (const auto* div = stripped.as<tir::DivNode>()) {
+            return join_binary(div->a, div->b,
+                               [](const PrimExpr& a, const PrimExpr& b) {
+                                 return a / b;
+                               });
+          }
+          if (const auto* floordiv = stripped.as<tir::FloorDivNode>()) {
+            return join_binary(floordiv->a, floordiv->b,
+                               [](const PrimExpr& a, const PrimExpr& b) {
+                                 return FloorDiv(a, b);
+                               });
+          }
+          if (const auto* floormod = stripped.as<tir::FloorModNode>()) {
+            return join_binary(floormod->a, floormod->b,
+                               [](const PrimExpr& a, const PrimExpr& b) {
+                                 return FloorMod(a, b);
+                               });
+          }
+          return RewriteResult{current, false, false, false};
+        };
+        return rewrite(expr);
+      };
+
+      std::vector<PrimExpr> conjuncts;
+      CollectConjuncts(predicate, &conjuncts);
+      for (const PrimExpr& conjunct : conjuncts) {
+        for (const PrimExpr& local_row_expr : row_candidates) {
+          if (const auto* lt = conjunct.as<tir::LTNode>()) {
+            RewriteResult lhs =
+                rewrite_for_candidate(lt->a, local_row_expr, page_row);
+            RewriteResult rhs =
+                rewrite_for_candidate(lt->b, local_row_expr, page_row);
+            if (!lhs.unsupported && !rhs.unsupported &&
+                (lhs.used_local_row || rhs.used_local_row)) {
+              if (lhs.used_page_index || rhs.used_page_index) {
+                needs_ragged_page_index_arg_ = true;
+                ragged_page_index_value_source_ =
+                    blackhole_runtime_arg_schema::kValueSourceLogicalBlockY;
+              }
+              return analyzer.Simplify(lhs.expr < rhs.expr);
+            }
+          } else if (const auto* le = conjunct.as<tir::LENode>()) {
+            RewriteResult lhs =
+                rewrite_for_candidate(le->a, local_row_expr, page_row);
+            RewriteResult rhs =
+                rewrite_for_candidate(le->b, local_row_expr, page_row);
+            if (!lhs.unsupported && !rhs.unsupported &&
+                (lhs.used_local_row || rhs.used_local_row)) {
+              if (lhs.used_page_index || rhs.used_page_index) {
+                needs_ragged_page_index_arg_ = true;
+                ragged_page_index_value_source_ =
+                    blackhole_runtime_arg_schema::kValueSourceLogicalBlockY;
+              }
+              return analyzer.Simplify(lhs.expr <= rhs.expr);
+            }
+          }
+        }
+      }
+      return std::nullopt;
+    };
     const bool has_admitted_row_predicate =
         ragged_predicate.has_value() &&
         ((has_segmented_row_bound && !op->indices.empty()) ||
          (!op->indices.empty() &&
-          MakeRaggedRowPredicateForPage(ragged_predicate.value(), op->indices[0], 0).has_value()));
+          make_ragged_row_predicate_for_page(
+              ragged_predicate.value(), op->indices[0], 0).has_value()));
     if (!materialize_to_local && (has_ragged_row_bound || has_segmented_row_bound) &&
         has_admitted_row_predicate &&
         !geometry.use_page_transport && geometry.shared_cols == kBlackholeTileCols &&
@@ -1852,7 +2015,8 @@ Stmt PlanTTKernelABI::GenerateStagedCopyLoopSequence(
           row_predicate = analyzer.Simplify(make_segment_row_predicate(page_row));
         } else {
           const std::optional<PrimExpr> maybe_row_predicate =
-              MakeRaggedRowPredicateForPage(ragged_predicate.value(), op->indices[0], page_row);
+              make_ragged_row_predicate_for_page(
+                  ragged_predicate.value(), op->indices[0], page_row);
           ICHECK(maybe_row_predicate.has_value())
               << "Blackhole ragged row reader lost row-bound predicate";
           row_predicate = analyzer.Simplify(maybe_row_predicate.value());

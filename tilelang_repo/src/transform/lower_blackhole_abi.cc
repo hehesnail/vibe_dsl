@@ -932,6 +932,7 @@ void PlanTTKernelABI::StoreSegmentPlan(PrimFunc &func) {
       CollectSegmentKindsFromBody(func->body);
   if (segment_kinds.empty() && !needs_copy_runtime_args_ &&
       !needs_ragged_row_bound_arg_ &&
+      !needs_ragged_page_index_arg_ &&
       !needs_segment_row_start_arg_ &&
       !needs_segment_row_count_arg_ &&
       !requires_compute_segment_) {
@@ -949,6 +950,10 @@ void PlanTTKernelABI::StoreSegmentPlan(PrimFunc &func) {
       runtime_args->push_back(
           MakeRuntimeArg("a_valid_rows", "a_valid_rows", "uint32"));
     }
+    if (needs_ragged_page_index_arg_) {
+      runtime_args->push_back(MakeRuntimeArg(
+          "a_ragged_page_index", "a_ragged_page_index", "uint32"));
+    }
     if (needs_segment_row_start_arg_) {
       runtime_args->push_back(MakeRuntimeArg(
           "a_segment_row_start", "a_segment_row_start", "uint32"));
@@ -963,8 +968,8 @@ void PlanTTKernelABI::StoreSegmentPlan(PrimFunc &func) {
     kernel.Set("name", String("main"));
     kernel.Set("kind", String("fused_dataflow"));
     kernel.Set("core_type", String("brisc"));
-    if (needs_ragged_row_bound_arg_ || needs_segment_row_start_arg_ ||
-        needs_segment_row_count_arg_) {
+    if (needs_ragged_row_bound_arg_ || needs_ragged_page_index_arg_ ||
+        needs_segment_row_start_arg_ || needs_segment_row_count_arg_) {
       Array<Any> runtime_args;
       append_row_bound_runtime_args(&runtime_args);
       kernel.Set("runtime_args", runtime_args);
@@ -978,7 +983,7 @@ void PlanTTKernelABI::StoreSegmentPlan(PrimFunc &func) {
       kernel.Set("core_type", String(CoreTypeForSegmentKind(kind)));
       if (kind == "fused_dataflow" &&
           (needs_ragged_row_bound_arg_ || needs_segment_row_start_arg_ ||
-           needs_segment_row_count_arg_)) {
+           needs_ragged_page_index_arg_ || needs_segment_row_count_arg_)) {
         Array<Any> runtime_args;
         append_row_bound_runtime_args(&runtime_args);
         kernel.Set("runtime_args", runtime_args);
@@ -1284,6 +1289,22 @@ void PlanTTKernelABI::StoreAccessorDescriptors(PrimFunc &func) {
             blackhole_runtime_arg_schema::kValueSourceIndexTable,
             bound_subject, 0, "", -1,
             ragged_row_bound_index_buffer_name_, 1));
+      }
+      if (runtime_args_contain_kind("a_ragged_page_index")) {
+        const std::string bound_subject =
+            !ragged_row_bound_subject_buffer_name_.empty()
+                ? ragged_row_bound_subject_buffer_name_
+                : copy_input_buffer_name;
+        const std::string value_source =
+            !ragged_page_index_value_source_.empty()
+                ? ragged_page_index_value_source_
+                : blackhole_runtime_arg_schema::kValueSourceLogicalBlockY;
+        upsert_spec(MakePerWorkArgSpec(
+            "a_ragged_page_index",
+            runtime_arg_identity_for_kind("a_ragged_page_index"),
+            blackhole_runtime_arg_schema::kDescriptorRaggedPageIndex,
+            value_source,
+            bound_subject));
       }
       if (runtime_args_contain_kind("a_segment_row_start") &&
           !segment_row_start_index_buffer_name_.empty()) {

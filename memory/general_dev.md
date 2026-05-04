@@ -2403,3 +2403,13 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   `segment_row_start + page_row`.  Do not leave the default A-side
   `a_tile_start_id` / tile-count / tile-stride descriptor as a compatibility
   path when the segmented input address is already owned by row descriptors.
+- 2026-05-05 T8 paged ragged row descriptors:
+  For paged decode-like TIR, `PageTable[bx, by]` and
+  `CacheSeqLens[bx]` should lower as ordinary typed descriptors:
+  table-backed A `tile_start`, table-backed A `valid_rows`, and A
+  `ragged_page_index` from `logical_block_y`.  Predicate recognition needs to
+  look inside conjunctions and compare the page-local row expression, because
+  the source address is `page_id * page_rows + local_row` while the validity
+  predicate is `logical_page * page_rows + local_row < cache_len`.  Row-bound
+  transport must bypass fused full-tile copy lowering so invalid rows are
+  zero-filled page by page.

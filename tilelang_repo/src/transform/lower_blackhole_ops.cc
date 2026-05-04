@@ -1842,6 +1842,10 @@ PrimFunc PlanTTKernelABI::Transform(const PrimFunc& func) {
   next_requirement_index_ = 0;
   saw_copy_op_ = false;
   needs_copy_runtime_args_ = false;
+  needs_ragged_row_bound_arg_ = false;
+  needs_ragged_page_index_arg_ = false;
+  needs_segment_row_start_arg_ = false;
+  needs_segment_row_count_arg_ = false;
   requires_compute_segment_ = false;
   logical_grid_z_ = 1;
   copy_input_buffer_ = Buffer();
@@ -1850,6 +1854,14 @@ PrimFunc PlanTTKernelABI::Transform(const PrimFunc& func) {
   copy_output_buffer_name_.clear();
   copy_input_buffer_names_.clear();
   copy_output_buffer_names_.clear();
+  ragged_row_bound_index_buffer_name_.clear();
+  ragged_row_bound_subject_buffer_name_.clear();
+  ragged_page_index_value_source_.clear();
+  ragged_row_bound_shared_buffer_names_.clear();
+  segment_row_start_index_buffer_name_.clear();
+  segment_row_count_index_buffer_name_.clear();
+  segment_row_subject_buffer_name_.clear();
+  segment_row_shared_buffer_names_.clear();
   host_buffer_by_compute_operand_buffer_.clear();
   direct_copy_source_by_buffer_identity_.clear();
   buffer_by_identity_.clear();
@@ -4266,7 +4278,10 @@ Stmt PlanTTKernelABI::VisitStmt_(const ForNode* op) {
           cb_to_dram = &match;
         }
       }
-      if (dram_to_cb && cb_to_dram) {
+      const bool has_row_bound_transport =
+          needs_ragged_row_bound_arg_ || needs_segment_row_start_arg_ ||
+          needs_segment_row_count_arg_;
+      if (dram_to_cb && cb_to_dram && !has_row_bound_transport) {
         saw_copy_op_ = true;
         std::vector<Var> loop_vars_to_zero = dram_to_cb->loop_vars;
         for (const auto& v : cb_to_dram->loop_vars) {

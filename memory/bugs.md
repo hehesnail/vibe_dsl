@@ -2625,6 +2625,38 @@
   - Segmented structure and direct-runtime selectors passed.
   - T8 indexed/ragged/segmented aggregate selectors reported `9 passed`.
 
+### Paged cache-length copy lost its ragged predicate through fused tile transport
+
+- **症状**:
+  - A copy-shaped paged surface using `PageTable[bx, by]` and
+    `CacheSeqLens[bx]` projected A `tile_start` and `valid_rows`
+    descriptors, but generated source still emitted a full-tile
+    `read_tile_to_cb`.
+  - Direct runtime copied rows beyond the cache length because invalid rows
+    were never zero-filled.
+- **根因**:
+  - The row-bound admission check only recognized predicates whose top-level
+    expression was directly `row < bound`.
+  - The paged TIR predicate is a conjunction:
+    `logical_page * page_rows + local_row < cache_len` plus page-id bounds.
+    The A source address is `page_id * page_rows + local_row`, so the local
+    row expression must be derived before matching the predicate.
+  - The staged copy reader/writer pair was also eligible for the fused
+    full-tile shortcut, which discards row predicate evidence.
+- **修法**:
+  - Flatten conjunctions and select the comparison conjunct that contains the
+    TIR-derived local row expression.
+  - Rewrite `logical_block_y` in that comparison to a typed
+    `a_ragged_page_index` per-work descriptor, while `CacheSeqLens[bx]`
+    remains the table-backed `valid_rows` descriptor.
+  - Disable fused full-tile transport when row-bound descriptors are active,
+    so the reader/writer use row-page transport with explicit invalid-row
+    zero-fill.
+- **验证**:
+  - Focused paged structure/runtime selectors reported `2 passed`.
+  - T8 indexed/ragged/segmented aggregate selectors including the paged case
+    reported `14 passed`.
+
 ## 3. 环境问题速查
 
 | 问题 | 解决 |

@@ -1401,6 +1401,43 @@ def segmented_row_masked_staged_copy_kernel(
     raise ValueError(f"Unsupported segmented_row_masked_staged_copy_kernel dtype: {dtype}")
 
 
+def paged_cache_len_masked_staged_copy_kernel(
+    grid_x: int,
+    pages_per_sequence: int,
+    total_pages: int,
+    tile_m: int = 32,
+    tile_n: int = 32,
+    dtype: str = "bfloat16",
+):
+    """Define a paged copy guarded by a per-sequence cache length."""
+    source_m = total_pages * tile_m
+    output_m = grid_x * pages_per_sequence * tile_m
+
+    if dtype == "bfloat16":
+        @T.prim_func
+        def main(
+            A: T.Tensor((source_m, tile_n), "bfloat16"),
+            PageTable: T.Tensor((grid_x, pages_per_sequence), "int32"),
+            CacheSeqLens: T.Tensor((grid_x,), "int32"),
+            B: T.Tensor((output_m, tile_n), "bfloat16"),
+        ):
+            with T.Kernel(grid_x, pages_per_sequence) as (bx, by):
+                A_shared = T.alloc_shared((tile_m, tile_n), "bfloat16")
+                page_id = PageTable[bx, by]
+                cache_len = CacheSeqLens[bx]
+                for i, j in T.Parallel(tile_m, tile_n):
+                    A_shared[i, j] = T.if_then_else(
+                        by * tile_m + i < cache_len,
+                        A[page_id * tile_m + i, j],
+                        0,
+                    )
+                T.copy(A_shared, B[(by * grid_x + bx) * tile_m, 0])
+
+        return main
+
+    raise ValueError(f"Unsupported paged_cache_len_masked_staged_copy_kernel dtype: {dtype}")
+
+
 def staged_stick_copy_kernel(
     tile_m: int = 32,
     tile_n: int = 16,

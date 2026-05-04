@@ -23,7 +23,7 @@
 | T6 `topk` | Complete | Existing-TIR row-wise value/index selection runs through direct runtime for fp32 and bf16 values with exact `int32` indices, without a frontend topk op or selection plan. |
 | T7 Exact-CB / materialization primitives | Complete | Exact-CB materialization is admitted through typed live-form/materialization/consumer-binding records, including GEMM post-merge `pack_tile`, source-live `cb_republish`, and seq64 bf16 flash-attn exact-CB partial-combine direct runtime correctness. |
 | T7.5 Exact-CB liveness / allocation cutover | Complete | Covered exact-CB resident tiles use typed TTProgram/ExecutableSpec lifecycle, allocation, and release records; old loop-carried owner maps, materialization-pop fallback, and full-tile/slice ambiguity are fail-closed or deleted from the active path. |
-| T8 Irregular work domains / indexed access | Implementation | Grid-indexed, one-dimensional and launch-axis two-dimensional table-indexed tile descriptors, first predicate-derived ragged row bounds, and first non-uniform segmented row ranges carry TIR-derived evidence through TT per-work descriptors and direct runtime; broader indexed block/page traversal and broader ragged token/page gates remain open. |
+| T8 Irregular work domains / indexed access | Implementation | Grid-indexed, one-dimensional and launch-axis two-dimensional table-indexed tile descriptors, first predicate-derived ragged row bounds, copy-shaped paged `cache_seqlens`, and first non-uniform segmented row ranges carry TIR-derived evidence through TT per-work descriptors and direct runtime; broader indexed block/page traversal and workload-level ragged/grouped gates remain open. |
 | T9 Workload first paths | Queued | Workload checkpoints decomposed into admitted primitive surfaces with direct-runtime correctness. |
 | T10 Distributed production variants | Queued | Mesh, CCL, NoC/multicast/global scheduling, distributed workload correctness, and production partial-K reduction protocol. |
 
@@ -149,7 +149,7 @@ Every active implementation task uses this acceptance table.
   per-work tile-start cases, where `BufferLoad` / `BufferStore` indices use an
   operand such as `block_indices`.
 - Broader ragged token/page forms beyond the admitted one-dimensional row-count
-  predicate slice, such as `cache_seqlens` in paged decode.
+  and copy-shaped paged `cache_seqlens` predicate slices.
 - Broader segmented/grouped workload use beyond the admitted row-segment copy,
   including grouped GEMM admission in T9.1.
 - In every case, the derived evidence must drive source/runtime addressing.
@@ -193,6 +193,31 @@ Each checkpoint needs its own direct-runtime correctness proof:
   `M=320`, `N=352`, `K>=512`, `logical_grid=11x10x2` or larger.
 
 ## Recent Verification
+
+2026-05-05 UTC T8 paged ragged cache-length checkpoint:
+
+- `cmake --build build -j32` passed.
+- Minimal `PageTable[bx, by]` plus `CacheSeqLens[bx]` staged copy now lowers
+  the A tile-start descriptor from the page table with
+  `index_table_shape=[2,3]` and
+  `index_table_index_sources=[logical_block_x,logical_block_y]`.
+- The cache-length table lowers to A `valid_rows` with
+  `value_source=index_table`, `index_buffer=CacheSeqLens`, and
+  `index_table_index_sources=[logical_block_x]`.
+- The launch page axis lowers to A `ragged_page_index` with
+  `value_source=logical_block_y`; source consumes
+  `a_tile_start_id`, `a_valid_rows`, and `a_ragged_page_index`, and emits no
+  raw `PageTable` / `CacheSeqLens` loads.
+- The reader uses row-page transport and zero-fills invalid rows according to
+  `logical_block_y * 32 + page_row < cache_len`; the direct-runtime case
+  passed for a nontrivial 2x3 page table and cache lengths `[45,70]`.
+- Focused selectors
+  `test_blackhole_paged_cache_len_copy_uses_page_table_and_ragged_page_descriptors`
+  and
+  `test_blackhole_module_direct_call_paged_cache_len_copy_uses_page_table_and_seq_lens`
+  reported `2 passed`.
+- T8 indexed/ragged/segmented aggregate selectors including the paged case
+  reported `14 passed`.
 
 2026-05-05 UTC T8 launch-axis indexed-table checkpoint:
 

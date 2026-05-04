@@ -178,6 +178,14 @@ Ragged bounds:
   or index expression;
 - invalid rows/tokens must be skipped in source/runtime.
 
+The next ragged token/page slice admits a copy-shaped paged decode primitive:
+`PageTable[bx, by]` selects the source page and `CacheSeqLens[bx]` is consumed
+by a predicate of the form `by * page_rows + row < cache_len`.  This is still
+ordinary TIR.  TTProgram must project both the page-table tile-start descriptor
+and a ragged page-index descriptor, so source can evaluate row validity from
+typed per-work args instead of leaving block-axis variables or cache-length
+table loads in device source.
+
 Indexed block traversal:
 
 - derive table-driven block traversal from `BufferLoad` / `BufferStore` index
@@ -309,6 +317,29 @@ Implemented:
 - The admitted direct-runtime gate proves `RowCounts=[32,17,0]` copies only
   valid rows and writes zeros for invalid rows through `BlackholeModule`.
 
+2026-05-05 paged ragged cache-length slice status:
+
+- A copy-shaped paged decode primitive is admitted for the first
+  `PageTable[bx, by]` plus `CacheSeqLens[bx]` shape.
+- The page table participates in the TIR source address expression and lowers
+  to the existing A `tile_start` descriptor with `value_source=index_table`,
+  `index_table_shape=[grid_x, pages_per_sequence]`, and
+  `index_table_index_sources=[logical_block_x, logical_block_y]`.
+- The cache-length table participates in the TIR guarded-copy predicate and
+  lowers to A `valid_rows` with `value_source=index_table`,
+  `index_buffer=CacheSeqLens`, and
+  `index_table_index_sources=[logical_block_x]`.
+- The launch page axis is represented by a typed A `ragged_page_index`
+  descriptor with `value_source=logical_block_y`.  Source evaluates row
+  validity as `logical_block_y * page_rows + page_row < cache_len` from
+  projected runtime args; it does not leave raw `PageTable` /
+  `CacheSeqLens` loads or block-axis variables in the device source.
+- Row-bound staged copy lowering treats this surface as separate row-page
+  reader/writer transport rather than a fused full-tile shortcut, preserving
+  invalid-row zero-fill semantics.
+- The admitted direct-runtime gate proves nontrivial page order and
+  non-page-aligned cache lengths through `BlackholeModule`.
+
 2026-05-05 segmented row-segment slice status:
 
 - A minimal non-uniform row segment copy is admitted as the first
@@ -335,7 +366,8 @@ Still open for T8:
 
 - broader indexed block/page traversal beyond launch-axis addressed per-work
   tile-start tables.
-- broader ragged token/page forms beyond the first row-count predicate slice.
+- broader ragged token/page forms beyond the admitted row-count and
+  copy-shaped paged cache-length predicate slices.
 
 ## Completion Criteria
 
