@@ -197,10 +197,17 @@ static void ValidateStagedStickCopyGlobalWidthDivisible(int64_t global_cols, int
 }
 
 static void ValidateStagedStickCopyTransportPageAlignment(int page_bytes) {
-  ICHECK_EQ(page_bytes % 64, 0)
-      << "Blackhole staged stick copy direct-path boundary requires a 64B-aligned transport "
-         "page size, but got "
+  const bool scalar_element_page =
+      page_bytes == 1 || page_bytes == 2 || page_bytes == 4 || page_bytes == 8;
+  ICHECK(scalar_element_page || page_bytes % 64 == 0)
+      << "Blackhole staged stick copy direct-path boundary requires either a scalar "
+         "element page or a 64B-aligned transport page size, but got "
       << page_bytes << " bytes";
+}
+
+static bool IsDramToDeviceCopyDirection(CopyDirection direction) {
+  return direction == CopyDirection::kDramToCB ||
+         direction == CopyDirection::kDramToLocal;
 }
 
 struct StagedCopyTransportGeometry {
@@ -301,9 +308,14 @@ static StagedCopyTransportGeometry BuildStagedCopyTransportGeometry(
       << "Blackhole staged copy currently expects shared tile height aligned to 32";
   if (!use_page_transport) {
     ICHECK_EQ(shared_cols % kBlackholeTileCols, 0)
-        << "Blackhole staged copy currently expects shared tile width aligned to 32";
+        << "Blackhole staged copy currently expects shared tile width aligned to 32"
+        << " for buffer " << BufferIdentityName(shared_buffer)
+        << " with shared shape [" << shared_rows << ", " << shared_cols << "]";
     ICHECK_EQ(global_cols % kBlackholeTileCols, 0)
-        << "Blackhole staged copy currently expects global width aligned to 32";
+        << "Blackhole staged copy currently expects global width aligned to 32"
+        << " for buffer " << BufferIdentityName(shared_buffer)
+        << " with shared shape [" << shared_rows << ", " << shared_cols
+        << "] and global shape [" << global_rows << ", " << global_cols << "]";
   }
 
   StagedCopyTransportGeometry geometry;
@@ -326,6 +338,12 @@ static StagedCopyTransportGeometry BuildStagedCopyTransportGeometry(
   return geometry;
 }
 
+static bool UseStagedCopyPageTransportForShape(int64_t shared_rows,
+                                               int64_t shared_cols) {
+  return shared_rows > 0 && shared_rows % kBlackholeTileRows == 0 &&
+         shared_cols > 0 && shared_cols % kBlackholeTileCols != 0;
+}
+
 static std::pair<int64_t, int64_t> ResolveStagedCopySharedShape(
     const Buffer& shared_buffer,
     const Array<Integer>& fallback_shape,
@@ -345,6 +363,10 @@ static std::pair<int64_t, int64_t> ResolveStagedCopySharedShape(
     ICHECK_GT(gemm_m, 0);
     ICHECK_GT(gemm_n, 0);
     return {gemm_m, gemm_n};
+  }
+  if (shared_buffer->shape.size() < 2U && fallback_shape.size() >= 2U) {
+    return {fallback_shape[fallback_shape.size() - 2]->value,
+            fallback_shape[fallback_shape.size() - 1]->value};
   }
   if (logical_matrix_shape.first > 0 && logical_matrix_shape.second > 0) {
     return logical_matrix_shape;
@@ -488,14 +510,14 @@ PlanTTKernelABI::InferStagedCopySharedShapeFromTransportCoverage(
   }
 
   const CopyDirection direction = GetCopyDirection(op);
-  if (direction != CopyDirection::kDramToCB && direction != CopyDirection::kCBToDram) {
+  if (!IsDramToDeviceCopyDirection(direction) && direction != CopyDirection::kCBToDram) {
     return std::nullopt;
   }
 
   const Buffer& global_buffer =
-      direction == CopyDirection::kDramToCB ? load->buffer : op->buffer;
+      IsDramToDeviceCopyDirection(direction) ? load->buffer : op->buffer;
   const Array<PrimExpr>& global_indices =
-      direction == CopyDirection::kDramToCB ? load->indices : op->indices;
+      IsDramToDeviceCopyDirection(direction) ? load->indices : op->indices;
   const std::vector<int64_t> logical_global_shape = GetLogicalBufferShape(global_buffer);
   if (logical_global_shape.size() < 2U) {
     return std::nullopt;
@@ -571,7 +593,20 @@ Array<Integer> PlanTTKernelABI::GetEncodedCurrentStagedCopySharedShape(
   }
   const CopyDirection direction = GetCopyDirection(op);
   const Buffer& shared_buffer =
-      direction == CopyDirection::kDramToCB ? op->buffer : load->buffer;
+      IsDramToDeviceCopyDirection(direction) ? op->buffer : load->buffer;
+  if (direction == CopyDirection::kCBToDram) {
+    ExactTiledCBValue live_value;
+    if (TryCreateExactOutputLiveTiledCBValue(load->buffer, &live_value) ||
+        TryCreateLiveExactTiledCBValue(load->buffer, &live_value)) {
+      if (live_value.num_elements > 0 && live_value.row_width > 0 &&
+          live_value.num_elements % live_value.row_width == 0) {
+        Array<Integer> live_shape;
+        live_shape.push_back(Integer(live_value.num_elements / live_value.row_width));
+        live_shape.push_back(Integer(live_value.row_width));
+        return live_shape;
+      }
+    }
+  }
   Array<Integer> shared_shape = GetEncodedCurrentBufferShape(shared_buffer);
   if (shared_shape.size() >= 2U) {
     return shared_shape;
@@ -607,9 +642,7 @@ bool PlanTTKernelABI::UseStagedCopyPageTransport(const Buffer& shared_buffer) co
   if (!rows_imm || !cols_imm) {
     return false;
   }
-  return rows_imm->value > 0 && rows_imm->value % kBlackholeTileRows == 0 &&
-         cols_imm->value > 0 &&
-         cols_imm->value % kBlackholeTileCols != 0;
+  return UseStagedCopyPageTransportForShape(rows_imm->value, cols_imm->value);
 }
 
 bool PlanTTKernelABI::IsCopyOperation(const BufferStoreNode* op) const {
@@ -666,6 +699,11 @@ CopyDirection PlanTTKernelABI::GetCopyDirection(const BufferStoreNode* op) const
   // DRAM -> CB (global -> shared)
   if (isDRAMScope(src_scope) && isCBScope(dst_scope)) {
     return CopyDirection::kDramToCB;
+  }
+
+  // DRAM -> local/accumulator via typed reader CB materialization.
+  if (isDRAMScope(src_scope) && isAccumulatorLikeScope(dst_scope)) {
+    return CopyDirection::kDramToLocal;
   }
 
   // DRAM -> DRAM (global -> global)
@@ -842,11 +880,11 @@ PrimExpr PlanTTKernelABI::InferCopyTileIndex(const BufferStoreNode* op,
            runtime::StorageRank::kBlackholeAccumulator);
   const bool transpose_b_reader = false;
   const Buffer& global_buffer =
-      direction == CopyDirection::kDramToCB ? load->buffer : op->buffer;
+      IsDramToDeviceCopyDirection(direction) ? load->buffer : op->buffer;
   const Array<PrimExpr>& global_indices =
-      direction == CopyDirection::kDramToCB ? load->indices : op->indices;
+      IsDramToDeviceCopyDirection(direction) ? load->indices : op->indices;
   const Buffer& shared_buffer =
-      direction == CopyDirection::kDramToCB ? op->buffer : load->buffer;
+      IsDramToDeviceCopyDirection(direction) ? op->buffer : load->buffer;
   const Array<Integer> global_shape = GetEncodedCurrentBufferShape(global_buffer);
   const Array<Integer> shared_shape =
       GetEncodedCurrentStagedCopySharedShape(op, loop_var.defined() ? std::vector<Var>{loop_var}
@@ -860,13 +898,14 @@ PrimExpr PlanTTKernelABI::InferCopyTileIndex(const BufferStoreNode* op,
       "Blackhole staged copy currently expects static global buffer shape",
       "Blackhole staged copy requires rank-2 shape metadata after FlattenBuffer",
       [&](const PrimExpr& expr) { return ZeroThreadAndLoopVars(expr, loop_var); }, &analyzer);
-  const bool use_page_transport = UseStagedCopyPageTransport(shared_buffer);
   int64_t shared_rows = 0;
   int64_t shared_cols = 0;
   const auto logical_shared_shape = GetLogicalMatrixShape(shared_buffer);
   std::tie(shared_rows, shared_cols) = ResolveStagedCopySharedShape(
       shared_buffer, shared_shape, logical_shared_shape, segmented_gemm, transpose_b_reader,
       accumulator_like_src, gemm_m_, gemm_n_, gemm_k_);
+  const bool use_page_transport =
+      UseStagedCopyPageTransportForShape(shared_rows, shared_cols);
   const StagedCopyTransportGeometry geometry = BuildStagedCopyTransportGeometry(
       shared_buffer, shared_rows, shared_cols, global_info.global_rows, global_info.global_cols,
       use_page_transport);
@@ -882,9 +921,9 @@ PrimExpr PlanTTKernelABI::InferStagedCopyBaseTileIndex(
 
   CopyDirection direction = GetCopyDirection(op);
   const Buffer& global_buffer =
-      direction == CopyDirection::kDramToCB ? load->buffer : op->buffer;
+      IsDramToDeviceCopyDirection(direction) ? load->buffer : op->buffer;
   const Array<PrimExpr>& global_indices =
-      direction == CopyDirection::kDramToCB ? load->indices : op->indices;
+      IsDramToDeviceCopyDirection(direction) ? load->indices : op->indices;
   const bool is_gemm_b_input =
       direction == CopyDirection::kDramToCB &&
       ((gemm_b_buffer_.defined() && SameBufferIdentity(op->buffer, gemm_b_buffer_)) ||
@@ -899,7 +938,7 @@ PrimExpr PlanTTKernelABI::InferStagedCopyBaseTileIndex(
   Analyzer analyzer;
   const bool transpose_b_reader = gemm_transpose_b_ && is_gemm_b_input;
   const Buffer& shared_buffer =
-      direction == CopyDirection::kDramToCB ? op->buffer : load->buffer;
+      IsDramToDeviceCopyDirection(direction) ? op->buffer : load->buffer;
   const Array<Integer> global_shape = GetEncodedCurrentBufferShape(global_buffer);
   const Array<Integer> shared_shape =
       GetEncodedCurrentStagedCopySharedShape(op, loop_vars_to_zero);
@@ -923,7 +962,7 @@ PrimExpr PlanTTKernelABI::InferStagedCopyBaseTileIndex(
       transpose_b_reader ? global_info.global_rows : global_info.global_cols;
   const StagedCopyTransportGeometry geometry = BuildStagedCopyTransportGeometry(
       shared_buffer, shared_rows, shared_cols, effective_global_rows, effective_global_cols,
-      UseStagedCopyPageTransport(shared_buffer));
+      UseStagedCopyPageTransportForShape(shared_rows, shared_cols));
   const PrimExpr transport_row = transpose_b_reader ? global_info.base_col : global_info.base_row;
   const PrimExpr transport_col = transpose_b_reader ? global_info.base_row : global_info.base_col;
   return LinearizeStagedCopyTransportIndex(&analyzer, transport_row, transport_col,
@@ -1041,7 +1080,7 @@ void PlanTTKernelABI::RecordStagedCopyBufferBinding(const BufferStoreNode* op,
     }
   };
   needs_copy_runtime_args_ = true;
-  if (direction == CopyDirection::kDramToCB) {
+  if (IsDramToDeviceCopyDirection(direction)) {
     copy_input_buffer_ = load->buffer;
     copy_input_buffer_name_ = BufferIdentityName(load->buffer);
     append_unique(&copy_input_buffer_names_, copy_input_buffer_name_);
@@ -1172,6 +1211,13 @@ Stmt PlanTTKernelABI::GenerateCopySequence(const BufferStoreNode* op,
       }
       // Staged DRAM -> shared copies should be collapsed at loop granularity.
       return GetRef<Stmt>(op);
+    }
+
+    case CopyDirection::kDramToLocal: {
+      const PrimExpr base_tile_index =
+          InferStagedCopyBaseTileIndex(op, loop_vars_to_zero);
+      return GenerateStagedCopyLoopSequence(op, base_tile_index,
+                                            loop_vars_to_zero);
     }
 
     case CopyDirection::kDramToDram: {
@@ -1458,6 +1504,9 @@ Stmt PlanTTKernelABI::GenerateCopySequence(const BufferStoreNode* op,
       }
       return maybe_wrap_segment_stmt(segment_kind, SeqStmt::Flatten(stmts));
     }
+    case CopyDirection::kDramToLocal: {
+      return GenerateStagedCopyLoopSequence(op, tile_index, std::vector<Var>{});
+    }
     case CopyDirection::kCBToDram: {
       const std::string segment_kind = ResolveAccessorSegmentKind(direction);
       const bool segmented_gemm = !gemm_a_buffer_name_.empty() && segment_kind == "writer";
@@ -1527,7 +1576,7 @@ Stmt PlanTTKernelABI::GenerateStagedCopyLoopSequence(
        (buffer_to_req_.count(op->buffer) && buffer_to_req_.at(op->buffer) == gemm_b_req_index_));
 
   const Buffer& shared_buffer =
-      direction == CopyDirection::kDramToCB ? op->buffer : load->buffer;
+      IsDramToDeviceCopyDirection(direction) ? op->buffer : load->buffer;
   int64_t shared_rows = 0;
   int64_t shared_cols = 0;
   const auto logical_shared_shape = GetLogicalMatrixShape(shared_buffer);
@@ -1537,10 +1586,12 @@ Stmt PlanTTKernelABI::GenerateStagedCopyLoopSequence(
       shared_buffer, shared_shape, logical_shared_shape, segmented_gemm, transpose_b_reader,
       accumulator_like_src, gemm_m_, gemm_n_, gemm_k_);
 
-  const bool use_page_transport = UseStagedCopyPageTransport(shared_buffer);
-  const Buffer& global_buffer = direction == CopyDirection::kDramToCB ? load->buffer : op->buffer;
+  const bool use_page_transport =
+      UseStagedCopyPageTransportForShape(shared_rows, shared_cols);
+  const Buffer& global_buffer =
+      IsDramToDeviceCopyDirection(direction) ? load->buffer : op->buffer;
   const Array<PrimExpr>& global_indices =
-      direction == CopyDirection::kDramToCB ? load->indices : op->indices;
+      IsDramToDeviceCopyDirection(direction) ? load->indices : op->indices;
   const Array<Integer> global_shape = GetEncodedCurrentBufferShape(global_buffer);
   const auto [row_axis, col_axis] =
       SelectStagedCopyTransportAxes(global_indices, {});
@@ -1598,13 +1649,19 @@ Stmt PlanTTKernelABI::GenerateStagedCopyLoopSequence(
     return page_index;
   };
 
-  if (direction == CopyDirection::kDramToCB) {
-    const Buffer cb_producer_buffer = SelectCBProducerBufferForDramToCB(op->buffer);
+  if (IsDramToDeviceCopyDirection(direction)) {
+    const bool materialize_to_local = direction == CopyDirection::kDramToLocal;
+    const Buffer cb_producer_buffer =
+        materialize_to_local ? op->buffer : SelectCBProducerBufferForDramToCB(op->buffer);
     int cb_id = AllocateRequirementIndex(
         cb_producer_buffer, segmented_gemm ? CBType::kInput : CBType::kIntermediate);
     RecordStagedCopyBufferBinding(op, direction);
     const int accessor_slot = GetReadAccessorSlot(segment_kind, load->buffer, direction);
     if (use_page_transport) {
+      ICHECK(!materialize_to_local)
+          << "Blackhole DRAM-to-local materialization currently admits tiled CB pages; "
+             "page-indexed stick materialization must lower through an explicit local layout "
+             "contract";
       SetRequirementPageLayout(cb_id, geometry.shared_bytes, 1);
       stmts.push_back(MakeBlackholeCall(
           blackhole_cb_reserve_back(), {IntImm32(cb_id), IntImm32(1)}));
@@ -1630,6 +1687,13 @@ Stmt PlanTTKernelABI::GenerateStagedCopyLoopSequence(
     }
     const int total_subtiles = geometry.subtile_rows * geometry.subtile_cols;
     int tile_emit_count = total_subtiles;
+    if (materialize_to_local) {
+      ICHECK_EQ(tile_emit_count, total_subtiles);
+      SetRequirementPageLayout(cb_id, geometry.tile_bytes, total_subtiles);
+      auto& req = cb_requirements_.at(cb_id);
+      req.publish_pages_per_event = std::max(req.publish_pages_per_event, total_subtiles);
+      req.consume_pages_per_event = std::max(req.consume_pages_per_event, total_subtiles);
+    }
     if (segmented_reader_tile_limit > 0) {
       ICHECK_LE(segmented_reader_tile_limit, total_subtiles)
           << "PlanTTKernelABI segmented reader transport exceeds staged copy shape for buffer "
@@ -1652,6 +1716,28 @@ Stmt PlanTTKernelABI::GenerateStagedCopyLoopSequence(
                        transpose_b_reader);
       stmts.push_back(MakeBlackholeCall(
           blackhole_cb_push_back(), {IntImm32(cb_id), IntImm32(1)}));
+    }
+    if (materialize_to_local) {
+      ExactTiledCBValue live_value;
+      live_value.buffer = op->buffer;
+      live_value.cb_id = cb_id;
+      live_value.borrowed_live = true;
+      PopulateExactTiledCBValueShape(op->buffer, &live_value);
+      live_value.num_tiles = std::max(live_value.num_tiles, total_subtiles);
+      live_value.num_elements =
+          std::max<int64_t>(live_value.num_elements,
+                            static_cast<int64_t>(total_subtiles) *
+                                kBlackholeTileRows * kBlackholeTileCols);
+      Stmt reader_stmt = maybe_wrap_segment_stmt(SeqStmt::Flatten(stmts));
+      Stmt materialize_stmt =
+          MaterializeExactTiledCBToLocalBuffer(op->buffer, live_value,
+                                               /*pop_front=*/true);
+      materialize_stmt =
+          WrapSegmentStmtIfNeeded(current_segment_kind_, "compute", materialize_stmt);
+      ClearTiledCBLiveFormAliases(op->buffer);
+      InvalidateLastFragmentFillValue(op->buffer);
+      Array<Stmt> joined{reader_stmt, materialize_stmt};
+      return SeqStmt::Flatten(joined);
     }
     RecordTiledCBLiveFormAliases(cb_producer_buffer, cb_id);
     if (!SameBufferIdentity(cb_producer_buffer, op->buffer)) {
@@ -1738,7 +1824,8 @@ Stmt PlanTTKernelABI::GenerateFusedStagedCopySequence(
   std::tie(shared_rows, shared_cols) = ResolveStagedCopySharedShape(
       shared_buffer, shared_shape, logical_shared_shape, /*segmented_gemm=*/false,
       /*transpose_b_reader=*/false, /*accumulator_like_src=*/false, gemm_m_, gemm_n_, gemm_k_);
-  const bool use_page_transport = UseStagedCopyPageTransport(shared_buffer);
+  const bool use_page_transport =
+      UseStagedCopyPageTransportForShape(shared_rows, shared_cols);
   const Array<Integer> global_shape = GetEncodedCurrentBufferShape(dram_load->buffer);
   int64_t global_rows = 0;
   int64_t global_cols = 0;

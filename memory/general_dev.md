@@ -2220,6 +2220,31 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   runtime correctness case under the repo TT-Sim setup, with bf16 as the formal
   value baseline where tensor values are involved.  Negative typed rejects do
   not substitute for positive runtime correctness.
+- 2026-05-04 T6 value/index selection boundary:
+  Treat the task as the existing TileLang/TIR value/index selection algorithm
+  shape, not as a new frontend op or Blackhole-private plan.  The admitted
+  input surface is ordinary `T.copy`, `T.fill`, `T.reduce_max`,
+  `T.if_then_else`, local value / index buffers, and explicit value/index
+  stores like
+  `examples/topk/example_topk.py`.  Do not introduce `T.topk`,
+  `tl.blackhole.topk`, `TTSelectionPlan`, or `selection_plans`; classify only
+  from IR structure, types, regions, and dataflow.  For DRAM-to-fragment
+  source values in compute-bearing kernels, route global input reads through
+  typed reader CB materialization and keep compute kernels off raw buffer
+  pointer fallback paths.
+- 2026-05-04 Blackhole row-reduce shape boundary:
+  do not summarize the T6 blocker as "topk unsupported" or "reduce
+  unsupported".  Flash attention proves floating row `reduce_tile` is admitted
+  in the GEMM/softmax chain, and standalone bf16 row reduce now also runs after
+  initializing PACK/UNPACK format state before compute-side scaler publish.
+  The T6 failure was narrower: the existing value/index selection TIR emitted
+  an `Int32` index-side `reduce_tile<MAX, REDUCE_ROW>` for
+  `expand_max_idx -> max_idx`, while TT-Metal's value/index paths use
+  `max_reduce_with_indices`, argmax reader/dataflow scans, or topk-family
+  primitives rather than an `Int32` row-max `reduce_tile`.  The fix kept the
+  frontend surface as ordinary TIR and lowered from IR structure/types/dataflow
+  to one backend value/index scan; do not add a topk-specific frontend op or
+  side-channel plan.
 - 2026-05-04 docs maintenance boundary:
   Keep `tasks/progress.md` as a compact current board, not a rolling
   implementation inventory or verification archive.  Stable task ordering and
@@ -2235,3 +2260,32 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   contracts, not repeat the T1-T10 task board.  Source-analysis READMEs should
   avoid file counts, backend-status tables, and last-updated dates unless those
   facts are actively maintained.
+- 2026-05-04 T6 value/index selection implementation:
+  Do not add a frontend `topk` op, `tl.blackhole.topk`, `TTSelectionPlan`, or
+  `selection_plans` for the current T6 surface.  The admitted path is the
+  existing Tile TIR value/index selection structure lowered from typed
+  value-reduce plus `int32` index-reduce records into one backend scan over the
+  reader-materialized input CB.  The scan owns both values and indices and
+  publishes the normal writer CB pages; compute must not read raw host buffer
+  pointers.  Equal-value tie behavior follows the authored TIR mask/index
+  reduction and selects the highest column index.
+- 2026-05-04 T6 writer/publication mechanics:
+  The current scalar writer emits redundant page-write groups based on output
+  dtype grouping.  fp32 value pages use 32-row event grouping; bf16 value pages
+  use 16-row grouping.  A custom compute publisher must match the writer's
+  event count or the writer will block in `cb_wait_front` even though the data
+  in each duplicate event is identical.
+- 2026-05-04 small-page writer mechanics:
+  For 1/2/4/8-byte output pages, do not write directly from an unaligned CB
+  source address and do not use stack scratch or the tail of the source CB as
+  temporary storage.  Stage through TT-Metal's per-NOC inline L1 scratch from
+  `noc_get_interim_inline_value_addr(noc_index, dst_noc_addr)` and barrier
+  before reusing it.
+- 2026-05-04 CB-backed allocation reserve mechanics:
+  CB `num_pages` is capacity, not the initial reserve size for every
+  CB-backed local allocation.  Reserve the pages required by the allocation
+  byte size unless a more specific initial-reserve/publication event contract
+  exists.  When an active CB-backed handle already owns reserved pages, a later
+  producer reserve for the same CB can be duplicate; track allocation-reserve
+  credit and consume it on `cb_push_back` instead of blindly skipping all later
+  reserves while the handle is in scope.

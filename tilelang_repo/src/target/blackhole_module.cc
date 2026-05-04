@@ -1819,6 +1819,7 @@ static tt::DataFormat ParseDataFormat(const std::string& value) {
   if (value == "Float32") return tt::DataFormat::Float32;
   if (value == "UInt16") return tt::DataFormat::UInt16;
   if (value == "UInt32") return tt::DataFormat::UInt32;
+  if (value == "Int32") return tt::DataFormat::Int32;
   LOG(FATAL) << "Unsupported data format: " << value;
   return tt::DataFormat::Float16_b;
 }

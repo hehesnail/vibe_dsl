@@ -17,10 +17,6 @@ from .test_blackhole_copy_pipeline import _extract_blackhole_executable_spec
 
 M = 32
 N = 32
-STANDALONE_REDUCE_SIM_REASON = "standalone reduce_tile leaf direct runtime is gated"
-STANDALONE_REDUCE_SIM_REASON_DETAILS = (
-    "UnimplementedFunctionality tensix_execute_pacr count=1",
-)
 STANDALONE_FILL_TYPECAST_SIM_REASON = (
     "standalone fill/typecast publish direct runtime is gated"
 )
@@ -172,16 +168,7 @@ def test_blackhole_standalone_leaf_compute_projects_typed_runtime_contracts(
     assert "compute_contract" not in executable_spec
     assert "multi_compute_contracts" not in executable_spec
     reasons = _direct_runtime_unsupported_reasons(artifact)
-    if case_name == "reduction_sum":
-        reduce_reasons = [
-            reason for reason in reasons if STANDALONE_REDUCE_SIM_REASON in reason
-        ]
-        assert reduce_reasons
-        assert all(
-            detail in reduce_reasons[0] for detail in STANDALONE_REDUCE_SIM_REASON_DETAILS
-        )
-        assert "vector-output materialization is not yet admitted" not in reduce_reasons[0]
-    elif case_name == "typecast_publish":
+    if case_name == "typecast_publish":
         assert any(STANDALONE_FILL_TYPECAST_SIM_REASON in reason for reason in reasons)
     else:
         assert not reasons, case_name

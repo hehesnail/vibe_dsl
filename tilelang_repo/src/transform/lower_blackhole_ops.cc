@@ -2484,6 +2484,42 @@ bool HasResidualFragmentMax(const Stmt& body) {
   return found;
 }
 
+bool IsValueIndexSelectionMaskCastStore(const BufferStoreNode* store) {
+  if (!store || !store->buffer->dtype.is_bfloat16()) {
+    return false;
+  }
+  const auto* cast = store->value.as<CastNode>();
+  if (!cast || !cast->dtype.is_bfloat16()) {
+    return false;
+  }
+  PrimExpr true_value;
+  PrimExpr false_value;
+  if (const auto* select = cast->value.as<SelectNode>()) {
+    true_value = select->true_value;
+    false_value = select->false_value;
+  } else if (const auto* call = cast->value.as<CallNode>()) {
+    if (!call->op->IsInstance<OpNode>() ||
+        Downcast<Op>(call->op)->name != "tir.if_then_else" ||
+        call->args.size() != 3U) {
+      return false;
+    }
+    true_value = call->args[1];
+    false_value = call->args[2];
+  } else {
+    return false;
+  }
+  if (!IsFloatImmValue(true_value, -10000.0)) {
+    return false;
+  }
+  PrimExpr retained_value = false_value;
+  if (const auto* retained_cast = retained_value.as<CastNode>()) {
+    retained_value = retained_cast->value;
+  }
+  const auto* retained_load = retained_value.as<BufferLoadNode>();
+  return retained_load != nullptr &&
+         SameBufferIdentity(retained_load->buffer, store->buffer);
+}
+
 bool HasResidualFragmentCast(const Stmt& body) {
   bool found = false;
   tir::PostOrderVisit(body, [&](const ObjectRef& node) {
@@ -2492,6 +2528,9 @@ bool HasResidualFragmentCast(const Stmt& body) {
       return;
     }
     if (store->value.as<CastNode>()) {
+      if (IsValueIndexSelectionMaskCastStore(store)) {
+        return;
+      }
       found = true;
     }
   });
@@ -3447,7 +3486,8 @@ Stmt PlanTTKernelABI::VisitStmt_(const ForNode* op) {
       std::vector<Stmt> lowered_matches;
       for (const auto& match : matches) {
         if (match.direction != CopyDirection::kDramToCB &&
-            match.direction != CopyDirection::kCBToDram) {
+            match.direction != CopyDirection::kCBToDram &&
+            match.direction != CopyDirection::kDramToLocal) {
           all_staged_single_direction = false;
           break;
         }
@@ -3471,7 +3511,9 @@ Stmt PlanTTKernelABI::VisitStmt_(const ForNode* op) {
     std::vector<Var> nested_loop_vars;
     if (const auto* nested_store = FindNestedCopyStore(op->body, &nested_loop_vars)) {
       CopyDirection direction = GetCopyDirection(nested_store);
-      if (direction == CopyDirection::kDramToCB || direction == CopyDirection::kCBToDram) {
+      if (direction == CopyDirection::kDramToCB ||
+          direction == CopyDirection::kCBToDram ||
+          direction == CopyDirection::kDramToLocal) {
         saw_copy_op_ = true;
         std::vector<Var> loop_vars_to_zero;
         if (transport_loop_var.defined()) {
@@ -3492,7 +3534,9 @@ Stmt PlanTTKernelABI::VisitStmt_(const ForNode* op) {
     if (const auto* store = op->body.as<BufferStoreNode>()) {
       if (IsCopyOperation(store)) {
         CopyDirection direction = GetCopyDirection(store);
-        if (direction == CopyDirection::kDramToCB || direction == CopyDirection::kCBToDram) {
+        if (direction == CopyDirection::kDramToCB ||
+            direction == CopyDirection::kCBToDram ||
+            direction == CopyDirection::kDramToLocal) {
           saw_copy_op_ = true;
           PrimExpr tile_index = InferCopyTileIndex(store, transport_loop_var);
           return GenerateCopySequence(store, tile_index);

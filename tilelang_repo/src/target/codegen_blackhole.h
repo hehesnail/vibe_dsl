@@ -57,6 +57,7 @@ class CodeGenBlackhole : public CodeGenCHost {
   // Generate generic kernel_main entry point (IR-driven, no hardcoded paths)
   void GenerateGenericKernelMain(const tvm::tir::PrimFunc &f,
                                  const std::string &func_name);
+  bool TryEmitValueIndexSelectionKernel(const tvm::tir::PrimFunc &f);
 
   // Override visitor to handle TT-Metal builtin calls
   void VisitExpr_(const tvm::tir::CallNode *op,
@@ -297,6 +298,7 @@ class CodeGenBlackhole : public CodeGenCHost {
   std::unordered_map<std::string, int> cb_publish_pages_by_requirement_name_;
   std::unordered_map<std::string, int> cb_initial_reserve_pages_by_requirement_name_;
   std::unordered_map<int, std::vector<ActiveCBWritePtrBinding>> active_cb_write_ptr_bindings_;
+  std::unordered_map<int, int> active_cb_allocation_reserved_pages_;
   std::unordered_map<std::string, LogicalTileLayoutBinding> logical_tile_layout_bindings_by_buffer_name_;
   std::string thread_idx_x_expr_;
   int logical_grid_x_{1};

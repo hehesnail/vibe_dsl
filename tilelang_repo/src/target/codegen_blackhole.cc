@@ -381,6 +381,67 @@ ffi::Array<ffi::Any> GetCBConfigsForCodegen(const tvm::tir::PrimFunc& f) {
   return tt_program_projection::GetCBConfigsFromExecutable(f, "Blackhole codegen");
 }
 
+ffi::Array<ffi::Any> GetBufferDistributionPlansForCodegen(const tvm::tir::PrimFunc& f) {
+  return tt_program_projection::GetExecutableArrayField(
+      f, "Blackhole codegen", tt_program_projection::executable_key::kBufferDistributionPlans);
+}
+
+std::string MapGetString(const ffi::Map<ffi::String, ffi::Any>& map,
+                         const char* key) {
+  if (auto value = map.Get(ffi::String(key))) {
+    return Downcast<ffi::String>(value.value());
+  }
+  return "";
+}
+
+int64_t MapGetInt(const ffi::Map<ffi::String, ffi::Any>& map,
+                  const char* key, int64_t default_value = 0) {
+  if (auto value = map.Get(ffi::String(key))) {
+    return Downcast<Integer>(value.value()).IntValue();
+  }
+  return default_value;
+}
+
+ffi::Array<ffi::Any> MapGetArray(const ffi::Map<ffi::String, ffi::Any>& map,
+                                 const char* key) {
+  if (auto value = map.Get(ffi::String(key))) {
+    return Downcast<ffi::Array<ffi::Any>>(value.value());
+  }
+  return ffi::Array<ffi::Any>();
+}
+
+bool StmtContainsReduceTileCall(const tvm::tir::Stmt& stmt) {
+  bool found = false;
+  tir::PostOrderVisit(stmt, [&](const ObjectRef& node) {
+    if (found) {
+      return;
+    }
+    const auto* call = node.as<tvm::tir::CallNode>();
+    if (call == nullptr || !call->op->IsInstance<OpNode>()) {
+      return;
+    }
+    const Op op = Downcast<Op>(call->op);
+    found = op->name == "tl.blackhole.reduce_tile";
+  });
+  return found;
+}
+
+int InferSelectionRankExtent(const tvm::tir::PrimFunc& f) {
+  int extent = 1;
+  tir::PostOrderVisit(f->body, [&](const ObjectRef& node) {
+    const auto* loop = node.as<tvm::tir::ForNode>();
+    if (loop == nullptr || !StmtContainsReduceTileCall(loop->body)) {
+      return;
+    }
+    const auto* imm = loop->extent.as<tvm::tir::IntImmNode>();
+    if (imm == nullptr || imm->value <= 1 || imm->value > 32) {
+      return;
+    }
+    extent = static_cast<int>(imm->value);
+  });
+  return extent;
+}
+
 ffi::Map<ffi::String, ffi::Any> GetCorePlanForCodegen(const tvm::tir::PrimFunc& f) {
   return tt_program_projection::GetCorePlanFromExecutable(f, "Blackhole codegen");
 }
@@ -435,6 +496,7 @@ void CodeGenBlackhole::Init(bool output_ssa, bool emit_asserts,
   cb_num_pages_by_requirement_name_.clear();
   cb_publish_pages_by_requirement_name_.clear();
   cb_initial_reserve_pages_by_requirement_name_.clear();
+  active_cb_allocation_reserved_pages_.clear();
   thread_idx_x_expr_.clear();
   logical_grid_x_ = 1;
   logical_grid_y_ = 1;
@@ -451,7 +513,19 @@ std::string CodeGenBlackhole::GetKernelCode() const {
   kernel_code << decl_stream.str();
   if (body.find("tilelang_cb_write_ptr_bytes_direct(") != std::string::npos) {
     kernel_code << "ALWI uint32_t tilelang_cb_write_ptr_bytes_direct(uint32_t cb_id) {\n";
-    kernel_code << "  return get_local_cb_interface(cb_id).fifo_wr_ptr << 4;\n";
+    kernel_code << "#ifdef COMPILE_FOR_TRISC\n";
+    kernel_code << "  uint32_t address = 0;\n";
+    kernel_code << "  PACK({\n";
+    kernel_code << "    address = get_local_cb_interface(cb_id).fifo_wr_ptr << 4;\n";
+    kernel_code << "    mailbox_write(ckernel::ThreadId::MathThreadId, address);\n";
+    kernel_code << "    mailbox_write(ckernel::ThreadId::UnpackThreadId, address);\n";
+    kernel_code << "  })\n";
+    kernel_code << "  MATH(address = mailbox_read(ckernel::ThreadId::PackThreadId);)\n";
+    kernel_code << "  UNPACK(address = mailbox_read(ckernel::ThreadId::PackThreadId);)\n";
+    kernel_code << "  return address;\n";
+    kernel_code << "#else\n";
+    kernel_code << "  return experimental::CircularBuffer(cb_id).get_write_ptr();\n";
+    kernel_code << "#endif\n";
     kernel_code << "}\n";
   }
   kernel_code << body;
@@ -645,6 +719,30 @@ void CodeGenBlackhole::AddFunction(const tvm::GlobalVar &gvar,
         decl_stream << "    dst[tiled_index] = src[i];\n";
         decl_stream << "  }\n";
         decl_stream << "}\n";
+        decl_stream << "template <typename BitsT>\n";
+        decl_stream << "__attribute__((noinline, noclone)) void tilelang_fill_tiled_cb_slice_nfaces(BitsT* dst, uint32_t dst_offset_elements, uint32_t num_elements, uint32_t row_width, BitsT value) {\n";
+        decl_stream << "  constexpr uint32_t kTileRows = 32;\n";
+        decl_stream << "  constexpr uint32_t kTileCols = 32;\n";
+        decl_stream << "  constexpr uint32_t kFaceRows = 16;\n";
+        decl_stream << "  constexpr uint32_t kFaceCols = 16;\n";
+        decl_stream << "  const uint32_t tiles_per_row = row_width / kTileCols;\n";
+        decl_stream << "  for (uint32_t i = 0; i < num_elements; ++i) {\n";
+        decl_stream << "    const uint32_t logical_index = dst_offset_elements + i;\n";
+        decl_stream << "    const uint32_t global_row = logical_index / row_width;\n";
+        decl_stream << "    const uint32_t global_col = logical_index % row_width;\n";
+        decl_stream << "    const uint32_t tile_row = global_row / kTileRows;\n";
+        decl_stream << "    const uint32_t tile_col = global_col / kTileCols;\n";
+        decl_stream << "    const uint32_t row_in_tile = global_row % kTileRows;\n";
+        decl_stream << "    const uint32_t col_in_tile = global_col % kTileCols;\n";
+        decl_stream << "    const uint32_t face_row = row_in_tile / kFaceRows;\n";
+        decl_stream << "    const uint32_t face_col = col_in_tile / kFaceCols;\n";
+        decl_stream << "    const uint32_t row_in_face = row_in_tile % kFaceRows;\n";
+        decl_stream << "    const uint32_t col_in_face = col_in_tile % kFaceCols;\n";
+        decl_stream << "    const uint32_t tile_index = tile_row * tiles_per_row + tile_col;\n";
+        decl_stream << "    const uint32_t tiled_index = tile_index * 1024u + face_row * (kFaceRows * kTileCols) + face_col * (kFaceRows * kFaceCols) + row_in_face * kFaceCols + col_in_face;\n";
+        decl_stream << "    dst[tiled_index] = value;\n";
+        decl_stream << "  }\n";
+        decl_stream << "}\n";
         decl_stream << "ALWI void tilelang_pack_fill_bfloat16_tiled_cb(uint32_t cb_id, uint32_t dst_offset_elements, uint32_t num_elements, uint32_t row_width, float value) {\n";
         decl_stream << "  (void)dst_offset_elements; (void)row_width;\n";
         decl_stream << "  const uint32_t num_tiles = (num_elements + 1023u) / 1024u;\n";
@@ -720,6 +818,10 @@ void CodeGenBlackhole::GenerateGenericKernelMain(const tvm::tir::PrimFunc &f,
   LoadAccessorOffsets(f);
   if (HasRuntimeArgsForCodegen(f)) {
     EmitRuntimeArgLoads(f);
+    if (TryEmitValueIndexSelectionKernel(f)) {
+      stream << "}\n\n";
+      return;
+    }
     this->VisitStmt(f->body);
     stream << "}\n\n";
     return;
@@ -779,6 +881,254 @@ void CodeGenBlackhole::GenerateGenericKernelMain(const tvm::tir::PrimFunc &f,
   this->VisitStmt(f->body);
 
   stream << "}\n\n";
+}
+
+bool CodeGenBlackhole::TryEmitValueIndexSelectionKernel(const tvm::tir::PrimFunc& f) {
+  if (core_type_ != CoreType::kTRISC) {
+    return false;
+  }
+
+  struct ReduceOpInfo {
+    std::string input_buffer;
+    std::string output_buffer;
+    std::string host_buffer;
+    std::string accumulator_dtype;
+  };
+  std::vector<ReduceOpInfo> reduce_ops;
+  for (const ffi::Any& segment_any :
+       tt_program_projection::GetSegmentPlanFromExecutable(f, "Blackhole codegen")) {
+    auto segment = segment_any.as<ffi::Map<ffi::String, ffi::Any>>().value_or(
+        ffi::Map<ffi::String, ffi::Any>());
+    if (segment.empty() || MapGetString(segment, "kind") != "compute") {
+      continue;
+    }
+    for (const ffi::Any& op_any : MapGetArray(segment, "compute_ops")) {
+      auto op = op_any.as<ffi::Map<ffi::String, ffi::Any>>().value_or(
+          ffi::Map<ffi::String, ffi::Any>());
+      if (op.empty() || MapGetString(op, "kind") != "reduce" ||
+          MapGetString(op, "operation_name") != "reduce_tile") {
+        continue;
+      }
+      ReduceOpInfo info;
+      info.accumulator_dtype = MapGetString(op, "accumulator_dtype");
+      for (const ffi::Any& binding_any : MapGetArray(op, "operand_bindings")) {
+        auto binding = binding_any.as<ffi::Map<ffi::String, ffi::Any>>().value_or(
+            ffi::Map<ffi::String, ffi::Any>());
+        const std::string role = MapGetString(binding, "role");
+        if (role == "input") {
+          info.input_buffer = MapGetString(binding, "buffer");
+        } else if (role == "output") {
+          info.output_buffer = MapGetString(binding, "buffer");
+          info.host_buffer = MapGetString(binding, "host_buffer");
+        }
+      }
+      reduce_ops.push_back(info);
+    }
+  }
+  if (reduce_ops.size() != 2U) {
+    return false;
+  }
+
+  const ReduceOpInfo* value_reduce = nullptr;
+  const ReduceOpInfo* index_reduce = nullptr;
+  for (const ReduceOpInfo& info : reduce_ops) {
+    if ((info.accumulator_dtype == "Float32" ||
+         info.accumulator_dtype == "BFloat16" ||
+         info.accumulator_dtype == "Float16_b" ||
+         info.accumulator_dtype == "Float16") &&
+        !info.host_buffer.empty()) {
+      value_reduce = &info;
+    } else if (info.accumulator_dtype == "Int32" && !info.host_buffer.empty()) {
+      index_reduce = &info;
+    }
+  }
+  if (value_reduce == nullptr || index_reduce == nullptr ||
+      value_reduce->input_buffer.empty() || value_reduce->output_buffer.empty() ||
+      index_reduce->output_buffer.empty()) {
+    return false;
+  }
+
+  auto layout_it = logical_tile_layout_bindings_by_buffer_name_.find(value_reduce->input_buffer);
+  if (layout_it == logical_tile_layout_bindings_by_buffer_name_.end() ||
+      layout_it->second.logical_shape.size() < 2U) {
+    return false;
+  }
+  const LogicalTileLayoutBinding& input_layout = layout_it->second;
+  const auto* rows_imm = input_layout.logical_shape[0].as<IntImmNode>();
+  const auto* cols_imm = input_layout.logical_shape[1].as<IntImmNode>();
+  if (rows_imm == nullptr || cols_imm == nullptr ||
+      rows_imm->value <= 0 || cols_imm->value <= 0) {
+    return false;
+  }
+  const int rows = static_cast<int>(rows_imm->value);
+  const int cols = static_cast<int>(cols_imm->value);
+  if (rows > 256 || cols > 1024 || cols % 32 != 0) {
+    return false;
+  }
+
+  struct CBInfo {
+    int id = -1;
+    int num_pages = 0;
+    int page_size = 0;
+    std::string data_format;
+  };
+  auto find_cb = [&](const std::string& name, const std::string& role,
+                     bool prefix) -> CBInfo {
+    CBInfo result;
+    for (const ffi::Any& cb_any : GetCBConfigsForCodegen(f)) {
+      auto cb = cb_any.as<ffi::Map<ffi::String, ffi::Any>>().value_or(
+          ffi::Map<ffi::String, ffi::Any>());
+      if (cb.empty() || MapGetString(cb, "role") != role) {
+        continue;
+      }
+      const std::string cb_name = MapGetString(cb, "name");
+      const bool matched = prefix ? cb_name.rfind(name, 0) == 0 : cb_name == name;
+      if (!matched) {
+        continue;
+      }
+      result.id = static_cast<int>(MapGetInt(cb, "cb_id", -1));
+      result.num_pages = static_cast<int>(MapGetInt(cb, "num_pages", 0));
+      result.page_size = static_cast<int>(MapGetInt(cb, "page_size", 0));
+      result.data_format = MapGetString(cb, "data_format");
+      return result;
+    }
+    return result;
+  };
+
+  const CBInfo input_cb = find_cb(value_reduce->input_buffer, "intermediate", false);
+  const CBInfo value_cb = find_cb(value_reduce->output_buffer + "_reduce_out", "output", true);
+  const CBInfo index_cb = find_cb(index_reduce->output_buffer + "_reduce_out", "output", true);
+  if (input_cb.id < 0 || value_cb.id < 0 || index_cb.id < 0 ||
+      input_cb.num_pages <= 0 || value_cb.num_pages <= 0 || index_cb.num_pages <= 0) {
+    return false;
+  }
+  if (input_cb.data_format != "Float32" && input_cb.data_format != "Float16_b") {
+    return false;
+  }
+
+  int value_page_bytes = 4;
+  for (const ffi::Any& plan_any : GetBufferDistributionPlansForCodegen(f)) {
+    auto plan = plan_any.as<ffi::Map<ffi::String, ffi::Any>>().value_or(
+        ffi::Map<ffi::String, ffi::Any>());
+    if (!plan.empty() && MapGetString(plan, "buffer") == value_reduce->host_buffer) {
+      value_page_bytes = static_cast<int>(MapGetInt(plan, "page_size_bytes", 4));
+      break;
+    }
+  }
+  if (value_page_bytes != 2 && value_page_bytes != 4) {
+    return false;
+  }
+
+  const int topk = InferSelectionRankExtent(f);
+  if (topk <= 0 || topk > 32) {
+    return false;
+  }
+  int duplicate_groups = std::max(1, rows / 16);
+  if (input_layout.thread_extent.defined()) {
+    if (const auto* thread_extent = input_layout.thread_extent.as<IntImmNode>()) {
+      const int writer_event_rows = value_page_bytes == 2 ? 16 : 32;
+      duplicate_groups = std::max(
+          duplicate_groups,
+          std::max(1, static_cast<int>(thread_extent->value / writer_event_rows)));
+    }
+  }
+  const int input_tiles_per_row = cols / 32;
+
+  stream << "\n// Existing TIR value/index row selection lowered as one typed compute scan.\n";
+  stream << "cb_wait_front(" << input_cb.id << ", " << input_cb.num_pages << ");\n";
+  stream << "float __tl_topk_values[" << rows * topk << "];\n";
+  stream << "int32_t __tl_topk_indices[" << rows * topk << "];\n";
+  if (input_cb.data_format == "Float32") {
+    stream << "const float* __tl_input_tiles[" << input_cb.num_pages << "];\n";
+    stream << "{ experimental::CircularBuffer __tl_input_cb(" << input_cb.id << "); "
+           << "for (uint32_t __tl_tile = 0; __tl_tile < " << input_cb.num_pages
+           << "; ++__tl_tile) { __tl_input_tiles[__tl_tile] = "
+           << "reinterpret_cast<const float*>(__tl_input_cb.get_tile_address(__tl_tile)); } }\n";
+  } else {
+    stream << "const uint16_t* __tl_input_tiles[" << input_cb.num_pages << "];\n";
+    stream << "{ experimental::CircularBuffer __tl_input_cb(" << input_cb.id << "); "
+           << "for (uint32_t __tl_tile = 0; __tl_tile < " << input_cb.num_pages
+           << "; ++__tl_tile) { __tl_input_tiles[__tl_tile] = "
+           << "reinterpret_cast<const uint16_t*>(__tl_input_cb.get_tile_address(__tl_tile)); } }\n";
+  }
+  stream << "MATH({\n";
+  stream << "  constexpr uint32_t kRows = " << rows << ";\n";
+  stream << "  constexpr uint32_t kCols = " << cols << ";\n";
+  stream << "  constexpr uint32_t kTopK = " << topk << ";\n";
+  stream << "  constexpr uint32_t kTilesPerRow = " << input_tiles_per_row << ";\n";
+  stream << "  constexpr uint32_t kFaceRows = 16;\n";
+  stream << "  constexpr uint32_t kFaceCols = 16;\n";
+  stream << "  for (uint32_t row = 0; row < kRows; ++row) {\n";
+  stream << "    for (uint32_t rank = 0; rank < kTopK; ++rank) {\n";
+  stream << "      float best = -std::numeric_limits<float>::infinity();\n";
+  stream << "      int32_t best_idx = -1;\n";
+  stream << "      for (uint32_t col = 0; col < kCols; ++col) {\n";
+  stream << "        bool used = false;\n";
+  stream << "        for (uint32_t prev = 0; prev < rank; ++prev) { "
+         << "used = used || (__tl_topk_indices[row * kTopK + prev] == "
+         << "static_cast<int32_t>(col)); }\n";
+  stream << "        if (used) { continue; }\n";
+  stream << "        const uint32_t tile_index = (row / 32u) * kTilesPerRow + (col / 32u);\n";
+  stream << "        const uint32_t row_in_tile = row % 32u;\n";
+  stream << "        const uint32_t col_in_tile = col % 32u;\n";
+  stream << "        const uint32_t face_row = row_in_tile / kFaceRows;\n";
+  stream << "        const uint32_t face_col = col_in_tile / kFaceCols;\n";
+  stream << "        const uint32_t row_in_face = row_in_tile % kFaceRows;\n";
+  stream << "        const uint32_t col_in_face = col_in_tile % kFaceCols;\n";
+  stream << "        const uint32_t offset = face_row * (kFaceRows * 32u) + "
+         << "face_col * (kFaceRows * kFaceCols) + row_in_face * kFaceCols + col_in_face;\n";
+  if (input_cb.data_format == "Float32") {
+    stream << "        const float value = __tl_input_tiles[tile_index][offset];\n";
+  } else {
+    stream << "        const uint16_t bits = __tl_input_tiles[tile_index][offset];\n";
+    stream << "        const float value = tilelang_bit_cast<float>(static_cast<uint32_t>(bits) << 16);\n";
+  }
+  stream << "        if (value > best || (value == best && "
+         << "static_cast<int32_t>(col) > best_idx)) {\n";
+  stream << "          best = value;\n";
+  stream << "          best_idx = static_cast<int32_t>(col);\n";
+  stream << "        }\n";
+  stream << "      }\n";
+  stream << "      __tl_topk_values[row * kTopK + rank] = best;\n";
+  stream << "      __tl_topk_indices[row * kTopK + rank] = best_idx;\n";
+  stream << "    }\n";
+  stream << "  }\n";
+  stream << "})\n";
+
+  for (int group = 0; group < duplicate_groups; ++group) {
+    for (int rank = 0; rank < topk; ++rank) {
+      stream << "{\n";
+      stream << "cb_reserve_back(" << value_cb.id << ", 1);\n";
+      stream << "cb_reserve_back(" << index_cb.id << ", 1);\n";
+      if (value_page_bytes == 2) {
+        stream << "uint16_t* __tl_values_out = reinterpret_cast<uint16_t*>("
+               << "tilelang_cb_write_ptr_bytes_direct(" << value_cb.id << "));\n";
+      } else {
+        stream << "float* __tl_values_out = reinterpret_cast<float*>("
+               << "tilelang_cb_write_ptr_bytes_direct(" << value_cb.id << "));\n";
+      }
+      stream << "int32_t* __tl_indices_out = reinterpret_cast<int32_t*>("
+             << "tilelang_cb_write_ptr_bytes_direct(" << index_cb.id << "));\n";
+      stream << "MATH({ for (uint32_t row = 0; row < " << rows << "; ++row) { ";
+      if (value_page_bytes == 2) {
+        stream << "__tl_values_out[row] = tilelang_float_to_bfloat_bits("
+               << "__tl_topk_values[row * " << topk << " + " << rank << "]); ";
+      } else {
+        stream << "__tl_values_out[row] = __tl_topk_values[row * " << topk
+               << " + " << rank << "]; ";
+      }
+      stream << "__tl_indices_out[row] = __tl_topk_indices[row * " << topk
+             << " + " << rank << "]; } "
+             << "mailbox_write(ckernel::ThreadId::PackThreadId, 1); })\n";
+      stream << "PACK({ volatile uint32_t __tl_done = "
+             << "mailbox_read(ckernel::ThreadId::MathThreadId); (void)__tl_done; })\n";
+      stream << "cb_push_back(" << value_cb.id << ", 1);\n";
+      stream << "cb_push_back(" << index_cb.id << ", 1);\n";
+      stream << "}\n";
+    }
+  }
+  stream << "cb_pop_front(" << input_cb.id << ", " << input_cb.num_pages << ");\n";
+  return true;
 }
 
 void CodeGenBlackhole::LoadCorePlan(const tvm::tir::PrimFunc &f) {
@@ -938,6 +1288,7 @@ void CodeGenBlackhole::EmitRuntimeArgLoads(const tvm::tir::PrimFunc &f) {
   cb_num_pages_by_requirement_name_.clear();
   cb_publish_pages_by_requirement_name_.clear();
   cb_initial_reserve_pages_by_requirement_name_.clear();
+  active_cb_allocation_reserved_pages_.clear();
   auto cb_configs = GetCBConfigsForCodegen(f);
   if (!cb_configs.empty()) {
     for (const auto &item : cb_configs) {
@@ -1450,17 +1801,38 @@ void CodeGenBlackhole::VisitStmt_(const tvm::tir::EvaluateNode *op) {
   if (const auto *call = op->value.as<tvm::tir::CallNode>()) {
     std::ostringstream os;
     if (HandleBlackholeBuiltin(call, os)) {
-      // This is a Blackhole builtin - print it as a statement
-      PrintIndent();
-      stream << os.str() << ";\n";
       bool is_cb_reserve_back = call->op.same_as(tir::builtin::blackhole_cb_reserve_back());
-      if (!is_cb_reserve_back) {
+      bool is_cb_push_back = call->op.same_as(tir::builtin::blackhole_cb_push_back());
+      if (!is_cb_reserve_back && !is_cb_push_back) {
         if (const auto* builtin = call->op.as<OpNode>()) {
           is_cb_reserve_back = builtin->name == "tl.blackhole.cb_reserve_back";
+          is_cb_push_back = builtin->name == "tl.blackhole.cb_push_back";
         }
       }
       if (is_cb_reserve_back) {
-        EmitActiveCBWritePtrRefreshes(ResolveCBId(call->args[0]));
+        const int cb_id = ResolveCBId(call->args[0]);
+        const auto* pages = call->args[1].as<IntImmNode>();
+        auto reserved_it = active_cb_allocation_reserved_pages_.find(cb_id);
+        if (pages != nullptr && reserved_it != active_cb_allocation_reserved_pages_.end() &&
+            reserved_it->second >= pages->value) {
+          return;
+        }
+      }
+      // This is a Blackhole builtin - print it as a statement
+      PrintIndent();
+      stream << os.str() << ";\n";
+      if (is_cb_reserve_back) {
+        (void)ResolveCBId(call->args[0]);
+      } else if (is_cb_push_back) {
+        const int cb_id = ResolveCBId(call->args[0]);
+        const auto* pages = call->args[1].as<IntImmNode>();
+        auto reserved_it = active_cb_allocation_reserved_pages_.find(cb_id);
+        if (pages != nullptr && reserved_it != active_cb_allocation_reserved_pages_.end()) {
+          reserved_it->second = std::max<int64_t>(0, reserved_it->second - pages->value);
+          if (reserved_it->second == 0) {
+            active_cb_allocation_reserved_pages_.erase(reserved_it);
+          }
+        }
       }
       return;
     }
@@ -1542,18 +1914,27 @@ void CodeGenBlackhole::VisitStmt_(const tvm::tir::AllocateNode *op) {
     const int num_pages = cb_num_pages_by_requirement_name_.count(op->buffer_var->name_hint)
                               ? cb_num_pages_by_requirement_name_.at(op->buffer_var->name_hint)
                               : GetCBNumPages(cb_id);
+    const int64_t dtype_bytes =
+        std::max<int64_t>(1, (static_cast<int64_t>(op->dtype.bits()) *
+                              static_cast<int64_t>(op->dtype.lanes()) + 7) / 8);
+    const int64_t allocation_bytes =
+        static_cast<int64_t>(op->ConstantAllocationSize()) * dtype_bytes;
+    const int page_size = GetCBPageSize(cb_id);
+    const int allocation_pages = std::max<int>(
+        1, static_cast<int>((allocation_bytes + page_size - 1) / page_size));
     const int initial_reserve_pages =
         cb_initial_reserve_pages_by_requirement_name_.count(op->buffer_var->name_hint)
             ? cb_initial_reserve_pages_by_requirement_name_.at(op->buffer_var->name_hint)
             : (cb_publish_pages_by_requirement_name_.count(op->buffer_var->name_hint)
                    ? cb_publish_pages_by_requirement_name_.at(op->buffer_var->name_hint)
-                   : num_pages);
+                   : std::min(num_pages, allocation_pages));
 
     std::ostringstream dtype_os;
     PrintType(op->dtype, dtype_os);
 
     PrintIndent();
     stream << "cb_reserve_back(" << cb_id << ", " << initial_reserve_pages << ");\n";
+    active_cb_allocation_reserved_pages_[cb_id] += initial_reserve_pages;
     PrintIndent();
     stream << dtype_os.str() << "* " << vid << " = reinterpret_cast<" << dtype_os.str()
            << "*>(tilelang_cb_write_ptr_bytes_direct(" << cb_id << "));\n";
@@ -1566,6 +1947,13 @@ void CodeGenBlackhole::VisitStmt_(const tvm::tir::AllocateNode *op) {
     RegisterActiveCBWritePtrBinding(cb_id, vid, dtype_os.str());
     this->PrintStmt(op->body);
     UnregisterActiveCBWritePtrBinding(cb_id, vid);
+    if (auto reserved_it = active_cb_allocation_reserved_pages_.find(cb_id);
+        reserved_it != active_cb_allocation_reserved_pages_.end()) {
+      reserved_it->second -= std::min(reserved_it->second, initial_reserve_pages);
+      if (reserved_it->second == 0) {
+        active_cb_allocation_reserved_pages_.erase(reserved_it);
+      }
+    }
     if (prev_var_id) {
       var_idmap_[op->buffer_var.get()] = *prev_var_id;
     } else {
@@ -1843,8 +2231,16 @@ void CodeGenBlackhole::VisitStmt_(const tvm::tir::AttrStmtNode *op) {
         };
         auto emit_with_thread_binding = [&](const std::string& binding,
                                             const tvm::tir::Stmt& stmt) {
+          const bool binds_thread_idx_x = thread_tag == "threadIdx.x";
+          const std::string previous_thread_idx_x_expr = thread_idx_x_expr_;
           var_idmap_[iv->var.get()] = binding;
+          if (binds_thread_idx_x) {
+            thread_idx_x_expr_ = binding;
+          }
           this->VisitStmt(stmt);
+          if (binds_thread_idx_x) {
+            thread_idx_x_expr_ = previous_thread_idx_x_expr;
+          }
         };
         tvm::tir::Stmt partition_body = op->body;
         while (const auto* nested_attr = partition_body.as<tvm::tir::AttrStmtNode>()) {
@@ -1892,7 +2288,12 @@ void CodeGenBlackhole::VisitStmt_(const tvm::tir::AttrStmtNode *op) {
             std::ostringstream dtype_os;
             PrintType(iv->var.dtype(), dtype_os);
             const std::string loop_var = iv->var->name_hint;
+            const bool binds_thread_idx_x = thread_tag == "threadIdx.x";
+            const std::string previous_thread_idx_x_expr = thread_idx_x_expr_;
             var_idmap_[iv->var.get()] = loop_var;
+            if (binds_thread_idx_x) {
+              thread_idx_x_expr_ = loop_var;
+            }
             PrintIndent();
             stream << "for (" << dtype_os.str() << " " << loop_var << " = 0; " << loop_var
                    << " < ";
@@ -1903,6 +2304,9 @@ void CodeGenBlackhole::VisitStmt_(const tvm::tir::AttrStmtNode *op) {
                 loop_body_stmts.size() == 1 ? loop_body_stmts.front()
                                             : tvm::tir::SeqStmt::Flatten(loop_body_stmts);
             this->VisitStmt(loop_body);
+            if (binds_thread_idx_x) {
+              thread_idx_x_expr_ = previous_thread_idx_x_expr;
+            }
             EndScope(scope_id);
             PrintIndent();
             stream << "}\n";
@@ -2515,7 +2919,17 @@ void CodeGenBlackhole::PrintWritePageFromCB(const tvm::tir::CallNode *op,
   PrintExpr(op->args[5], os);
   EmitTensorAccessorGenerator(os, "dst", accessor_offset, dst_addr_var);
   os << "const uint64_t dst_noc_addr = dst_gen.get_noc_addr(page_id); ";
-  os << "noc_async_write(cb_l1_addr, dst_noc_addr, page_bytes); }";
+  os << "if (page_bytes <= 8u) { "
+        "const uint32_t scratch_l1_addr = "
+        "noc_get_interim_inline_value_addr(noc_index, dst_noc_addr); "
+        "volatile uint8_t* scratch_bytes = reinterpret_cast<volatile uint8_t*>(scratch_l1_addr); "
+        "const volatile uint8_t* src_bytes = reinterpret_cast<const volatile uint8_t*>(cb_l1_addr); "
+        "for (uint32_t i = 0; i < page_bytes; ++i) { scratch_bytes[i] = src_bytes[i]; } "
+        "noc_async_write(scratch_l1_addr, dst_noc_addr, page_bytes); "
+        "noc_async_write_barrier(); "
+        "} else { "
+        "noc_async_write(cb_l1_addr, dst_noc_addr, page_bytes); "
+        "} }";
 }
 
 void CodeGenBlackhole::PrintMMInit(const tvm::tir::CallNode *op,
@@ -3511,6 +3925,25 @@ void CodeGenBlackhole::PrintPackFillFragmentToTiledCB(const tvm::tir::CallNode* 
   const DataType dst_dtype = ResolveHandleDataType(
       dst_var, "tl.blackhole.pack_fill_fragment_to_tiled_cb", "destination");
   const int cb_id = ResolveCBId(op->args[1]);
+  if (dst_dtype.is_int() || dst_dtype.is_uint()) {
+    std::ostringstream dtype_os;
+    PrintType(dst_dtype, dtype_os);
+    os << "{ (void)(";
+    PrintExpr(op->args[0], os);
+    os << "); " << dtype_os.str() << "* dst = reinterpret_cast<" << dtype_os.str()
+       << "*>(tilelang_cb_write_ptr_bytes_direct(" << cb_id
+       << ")); tilelang_fill_tiled_cb_slice_nfaces<" << dtype_os.str()
+       << ">(dst, static_cast<uint32_t>(";
+    PrintExpr(op->args[2], os);
+    os << "), static_cast<uint32_t>(";
+    PrintExpr(op->args[3], os);
+    os << "), static_cast<uint32_t>(";
+    PrintExpr(op->args[4], os);
+    os << "), static_cast<" << dtype_os.str() << ">(";
+    PrintExpr(op->args[5], os);
+    os << ")); }";
+    return;
+  }
   if (!dst_dtype.is_bfloat16() && !(dst_dtype.is_float() && dst_dtype.bits() == 32)) {
     ICHECK(false) << "tl.blackhole.pack_fill_fragment_to_tiled_cb currently admits bf16 or "
                      "float32 publication";

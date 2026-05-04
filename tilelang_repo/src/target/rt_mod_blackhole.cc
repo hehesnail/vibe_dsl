@@ -3006,7 +3006,6 @@ static std::unordered_set<std::string> CollectComputeInputBufferNames(
 
 static void EnforceStandalonePacrLeafSimulatorGate(ExecutableSpec* spec) {
   ICHECK(spec != nullptr);
-  bool has_reduce = false;
   bool has_fill_typecast_publish = false;
   bool has_gemm = false;
   const std::unordered_set<std::string> runtime_outputs =
@@ -3034,22 +3033,12 @@ static void EnforceStandalonePacrLeafSimulatorGate(ExecutableSpec* spec) {
       }
       const bool terminal_leaf_publish =
           produces_runtime_output || produces_terminal_compute_value;
-      has_reduce =
-          has_reduce || ((compute_op.kind == "reduce" ||
-                          compute_op.operation_name == "reduce_tile") &&
-                         terminal_leaf_publish);
       has_fill_typecast_publish =
           has_fill_typecast_publish ||
           ((compute_op.operation_name == "fill_tile" ||
             compute_op.operation_name == "typecast_tile") &&
            terminal_leaf_publish);
     }
-  }
-  if (has_reduce && !has_gemm) {
-    AppendDirectRuntimeUnsupportedReason(
-        spec,
-        "standalone reduce_tile leaf direct runtime is gated: TT-Sim reports "
-        "UnimplementedFunctionality tensix_execute_pacr count=1 for row-reduce pack");
   }
   if (has_fill_typecast_publish && !has_gemm) {
     AppendDirectRuntimeUnsupportedReason(

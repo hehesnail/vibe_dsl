@@ -56,6 +56,40 @@ bool IsBlackholeComputeBuffer(const Buffer& buffer) {
          scope == "blackhole.acc";
 }
 
+bool IsIntegerLikeBuffer(const Buffer& buffer) {
+  return buffer.defined() &&
+         (buffer->dtype.is_int() || buffer->dtype.is_uint() ||
+          buffer->dtype.is_bool());
+}
+
+bool ContainsIfThenElse(const PrimExpr& expr) {
+  bool found = false;
+  PostOrderVisit(expr, [&](const ObjectRef& node) {
+    if (found) {
+      return;
+    }
+    if (node.as<IfThenElseNode>()) {
+      found = true;
+      return;
+    }
+    const auto* call = node.as<CallNode>();
+    if (call != nullptr && call->op.same_as(builtin::if_then_else())) {
+      found = true;
+    }
+  });
+  return found;
+}
+
+bool IsScalarControlOrIndexResidue(const BufferStoreNode* op) {
+  if (op == nullptr || !IsBlackholeComputeBuffer(op->buffer)) {
+    return false;
+  }
+  if (IsIntegerLikeBuffer(op->buffer)) {
+    return true;
+  }
+  return ContainsIfThenElse(op->value);
+}
+
 bool IsOneDimensionalBuffer(const Buffer& buffer) {
   return buffer.defined() && buffer->shape.size() == 1U;
 }
@@ -944,7 +978,8 @@ class BlackholeTileComputeResidueValidator : public StmtExprVisitor {
 
  private:
   void VisitStmt_(const BufferStoreNode* op) final {
-    if (IsBlackholeComputeBuffer(op->buffer)) {
+    if (IsBlackholeComputeBuffer(op->buffer) &&
+        !IsScalarControlOrIndexResidue(op)) {
       LOG(FATAL)
           << "Blackhole tile compute normalization left scalar compute residue "
           << "for buffer " << BufferIdentityName(op->buffer)

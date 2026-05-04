@@ -2393,6 +2393,10 @@ def test_blackhole_gemm_post_merge_cast_consumer_uses_pack_tile_materialization(
     with target:
         artifact = lower(kernel, target=target)
 
+    _assert_gemm_post_merge_cast_consumer_exact_cb_pack_tile_contract(artifact)
+
+
+def _assert_gemm_post_merge_cast_consumer_exact_cb_pack_tile_contract(artifact):
     reasons = _direct_runtime_unsupported_reasons(artifact)
     assert not any("thread-distributed cb_republish materialization" in reason for reason in reasons)
 
@@ -2422,6 +2426,41 @@ def test_blackhole_gemm_post_merge_cast_consumer_uses_pack_tile_materialization(
     assert f"tilelang_get_cb_write_ptr_bytes({d_local_cb_id})" not in compute_source
     assert "reinterpret_cast<uint32_t*>(tilelang_get_cb_write_ptr_bytes(" not in compute_source
     assert "reinterpret_cast<uint16_t*>(tilelang_get_cb_write_ptr_bytes(" not in compute_source
+
+
+def test_blackhole_t7_exact_cb_gemm_post_merge_cast_consumer_direct_runtime():
+    torch.manual_seed(0)
+    a_torch = torch.randn(32, 128, dtype=torch.bfloat16)
+    b_torch = torch.randn(32, 128, dtype=torch.bfloat16)
+    d_output = torch.zeros(32, 32, dtype=torch.bfloat16)
+    d_ref = torch.matmul(a_torch.float(), b_torch.float().transpose(0, 1)).to(torch.bfloat16)
+
+    kernel = gemm_kernel_with_post_merge_cast_consumer()
+    target = Target("blackhole")
+
+    with target:
+        artifact = lower(kernel, target=target)
+
+    executable_spec = _extract_blackhole_executable_spec(artifact)
+    _assert_no_contract_family(executable_spec)
+    compute_config = _require_compute_config(executable_spec)
+    assert bool(compute_config["clear_accum"]) is False
+    _assert_gemm_post_merge_cast_consumer_exact_cb_pack_tile_contract(artifact)
+
+    can_run, msg = check_blackhole_direct_execution_requirements()
+    if not can_run:
+        pytest.skip(f"Blackhole requirements not met: {msg}")
+
+    artifact.codegen_mod["main"](a_torch, b_torch, d_output)
+    assert_tensors_close_or_dump(
+        d_output,
+        d_ref,
+        atol=2e-1,
+        rtol=2e-1,
+        failure_message=(
+            "T7 exact-CB GEMM post-merge cast-consumer direct-call output mismatch"
+        ),
+    )
 
 
 def test_blackhole_gemm_post_merge_cast_consumer_without_zero_preclear_keeps_materialization_gate():
@@ -2459,8 +2498,7 @@ def test_blackhole_gemm_direct_runtime_preserves_clear_accum_false_fragment_for_
     _assert_no_contract_family(executable_spec)
     compute_config = _require_compute_config(executable_spec)
     assert bool(compute_config["clear_accum"]) is False
-    reasons = _direct_runtime_unsupported_reasons(artifact)
-    assert not any("thread-distributed cb_republish materialization" in reason for reason in reasons)
+    _assert_gemm_post_merge_cast_consumer_exact_cb_pack_tile_contract(artifact)
     can_run, msg = check_blackhole_direct_execution_requirements()
     if not can_run:
         pytest.skip(f"Blackhole requirements not met: {msg}")

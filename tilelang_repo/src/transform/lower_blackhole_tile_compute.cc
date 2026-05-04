@@ -1035,6 +1035,9 @@ Stmt PlanTTKernelABI::GenerateRowReductionSequence(const RowReductionMatch& matc
       stmts.push_back(publish_dst);
     }
   }
+  stmts.push_back(MakeBlackholeCall(blackhole_binary_op_init_common(),
+                                    {IntImm32(src_in.cb_id), IntImm32(src_in.cb_id),
+                                     IntImm32(scaler.cb_id)}));
   stmts.push_back(scaler_publish);
   if (accumulate_existing) {
     MarkExactCBValuesOverlap({src_in.cb_id, dst_in.cb_id, scaler.cb_id, reduced.cb_id,
@@ -1047,12 +1050,13 @@ Stmt PlanTTKernelABI::GenerateRowReductionSequence(const RowReductionMatch& matc
   emit.Wait(src_in.cb_id, src_in.num_tiles);
   emit.Wait(scaler.cb_id, scaler.num_tiles);
   emit.ReconfigDataFormat(src_in.cb_id, scaler.cb_id);
+  emit.BinaryOpInitCommon(src_in.cb_id, scaler.cb_id, reduced.cb_id);
+  emit.Append(
+      blackhole_reduce_init(),
+      {IntImm32(src_in.cb_id), IntImm32(scaler.cb_id), IntImm32(reduced.cb_id),
+       StringImm(match.kind), StringImm("row")});
   for (int out_tile = 0; out_tile < reduced.num_tiles; ++out_tile) {
     emit.Append(blackhole_tile_regs_acquire(), {});
-    emit.Append(
-        blackhole_reduce_init(),
-        {IntImm32(src_in.cb_id), IntImm32(scaler.cb_id), IntImm32(reduced.cb_id),
-         StringImm(match.kind), StringImm("row")});
     for (int tile = 0; tile < tiles_per_reduction; ++tile) {
       const int src_tile = out_tile * tiles_per_reduction + tile;
       emit.Append(
@@ -1064,8 +1068,8 @@ Stmt PlanTTKernelABI::GenerateRowReductionSequence(const RowReductionMatch& matc
     emit.Append(blackhole_tile_regs_wait(), {});
     emit.PackTile(reduced.cb_id, out_tile);
     emit.Append(blackhole_tile_regs_release(), {});
-    emit.Append(blackhole_reduce_uninit(), {StringImm(match.kind), StringImm("row")});
   }
+  emit.Append(blackhole_reduce_uninit(), {StringImm(match.kind), StringImm("row")});
   if (Stmt release = ReleaseExactInputAfterUse(src_in, current_lowering_order_index_);
       release.defined()) {
     stmts.push_back(release);
@@ -1129,6 +1133,11 @@ Stmt PlanTTKernelABI::GenerateRowReductionSequence(const RowReductionMatch& matc
     emit.Push(out.cb_id, out.num_tiles);
   }
   const Buffer live_form_dst = match.live_form_dst.defined() ? match.live_form_dst : match.dst;
+  stmts.push_back(MaterializeExactTiledCBToLocalBuffer(match.dst, out, /*pop_front=*/false));
+  InvalidateLastFragmentFillValue(match.dst);
+  if (live_form_dst.defined() && !SameBufferIdentity(live_form_dst, match.dst)) {
+    InvalidateLastFragmentFillValue(live_form_dst);
+  }
   RecordExactOutputLiveForm(live_form_dst, out);
 
   Stmt body = SeqStmt::Flatten(stmts);
@@ -1167,16 +1176,23 @@ Stmt PlanTTKernelABI::GenerateFillTileSequence(const Buffer& dst, const PrimExpr
     }
   }
 
+  const bool future_write_before_compute_consume =
+      FutureWritePrecedesFutureComputeConsume(dst, current_lowering_order_index_);
+
   ClearSelectedSourceLiveProducer(dst);
   ClearTiledCBLiveFormAliases(dst);
-  for (const std::string& identity : CollectBufferFlowIdentities(dst)) {
-    last_fragment_fill_value_by_buffer_identity_[identity] = value;
-  }
-  if (const VarNode* data = BufferDataIdentity(dst)) {
-    last_fragment_fill_value_by_data_[data] = value;
+  InvalidateLastFragmentFillValue(dst);
+  if (!future_write_before_compute_consume) {
+    for (const std::string& identity : CollectBufferFlowIdentities(dst)) {
+      last_fragment_fill_value_by_buffer_identity_[identity] = value;
+    }
+    if (const VarNode* data = BufferDataIdentity(dst)) {
+      last_fragment_fill_value_by_data_[data] = value;
+    }
   }
   const Buffer physical_dst = ResolvePhysicalComputeBuffer(dst);
-  if (physical_dst.defined() && !physical_dst.same_as(dst)) {
+  if (!future_write_before_compute_consume &&
+      physical_dst.defined() && !physical_dst.same_as(dst)) {
     if (const VarNode* data = BufferDataIdentity(physical_dst)) {
       last_fragment_fill_value_by_data_[data] = value;
     }

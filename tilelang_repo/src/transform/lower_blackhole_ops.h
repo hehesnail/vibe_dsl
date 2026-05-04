@@ -62,6 +62,7 @@ enum class CopyDirection {
   kCBToCB,       // CB -> CB (local copy)
   kCBToLocal,    // CB -> local/accumulator (fragment/local materialization)
   kLocalToCB,    // local/accumulator -> CB (fragment/local staging write)
+  kDramToLocal,  // DRAM -> local/accumulator through typed reader CB materialization
   kDramToDram,   // DRAM -> DRAM (Stage 2 copy pass integration path)
   kUnknown
 };

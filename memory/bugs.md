@@ -1945,16 +1945,35 @@
     publication event 的粒度；CB event 粒度错了会表现为 runtime hang，
     不是数值错误。
 
-#### standalone reduce/fill/typecast publish 的 TT-Sim `pacr` 边界要 typed gate
+#### standalone fill/typecast publish 和 Int32 row-max reduce 的 TT-Sim / LLK 边界要 typed gate
 
 - **症状**:
-  - standalone `reduce_tile` bf16 direct runtime 命中
-    `UnimplementedFunctionality: tensix_execute_pacr: count=1`。
+  - standalone `reduce_tile` bf16 direct runtime 曾命中
+    `UnimplementedFunctionality: tensix_execute_pacr: count=1`；后续确认这是
+    Blackhole lowering 初始化 PACK/UNPACK 格式状态不足导致的 emitted-sequence
+    bug，不是 bf16 row reduce 整体不支持。
   - standalone compute-only `fill_tile` / `typecast_tile` publish 也会命中
     同类 TT-Sim pack/publish capability boundary 或输出不可靠。
+  - T6 existing-TIR value/index selection 继续执行到 index 侧时，
+    `T.reduce_max(expand_max_idx, max_idx, dim=1)` 会以
+    `Int32 reduce_tile<MAX, REDUCE_ROW>` 形式进入 TT-Sim，并命中
+    `tensix_execute_pacr` 的 format 组合 unsupported。
 - **根因**:
-  - 当前 TT-Sim 对 standalone row-reduce 的 compute-side PACR 路径未覆盖；
-    这不是让后端恢复名字或 fallback source path 的理由。
+  - bf16 standalone row-reduce 的根因是 compute-side scaler fill/pack 前未先
+    做 `binary_op_init_common`，PACK/UNPACK data-format state 没被设置；修正后
+    leaf `reduction_sum` direct runtime 能通过。
+  - `Int32` index-side row max 的根因不同：TT-Metal 公开 reduce / topk /
+    argmax 形态没有把 row-wise value/index selection 表达成
+    `Int32 reduce_tile<MAX, REDUCE_ROW>`。相关支持面是
+    `max_reduce_with_indices`、argmax reader/dataflow scan，或
+    `topk_local_sort` / `topk_merge` / `topk_rebuild` 这类 topk-family compute
+    primitive。
+  - 这不是 `topk` 作为算子不支持。现有 T6 输入是普通 Tile TIR
+    selection 结构，当前卡住的是 index 侧 row max 被 emit 成了错误硬件形态。
+  - Flash attention 里的 row reduce 是已 admitted 的不同形态：
+    GEMM-produced stream CB 进入 `reduce_tile`，再被 softmax / broadcast /
+    matmul 链继续消费。small bf16 flash-attention direct runtime 能通过，
+    所以不能把问题归纳成 Blackhole reduce 一概不支持。
   - 2026-05-02 修掉了先前混在同一个 gate 下的结构问题：
     reduce exact live form 绑定到了临时 `local.fragment` 输出，writer 因而
     等另一个 rank-1 logical buffer CB；writer 还会按每个 active lane
@@ -1974,18 +1993,19 @@
     使用，segment extraction 在父节点已判定 segment 时继承上下文，保留
     writer final barrier/pop。
   - 保留 typed leaf records，并在 `ExecutableSpec` direct-runtime reasons
-    中对 standalone reduce 和 standalone fill/typecast publish fail closed。
-    不把 GEMM/flash-attn 内已经 admitted 的 compute chain 全局 gate 掉。
-  - standalone reduce 的 unsupported reason 现在只点明 PACR simulator
-    boundary；不要再把已修复的 vector-output writer binding 说成未
-    admitted。
+    中对 standalone fill/typecast publish 和 standalone `Int32` row max
+    `reduce_tile` fail closed。不把 bf16 standalone reduce 或 GEMM/flash-attn
+    内已经 admitted 的 compute chain 全局 gate 掉。
+  - T6 正向修复从现有 TIR 的 value/index dataflow lowering 到 backend
+    typed value/index scan；不能通过新增 frontend `topk` op、
+    `selection_plans` 或 source-name recovery 绕过。
 - **教训**:
   - simulator capability boundary 应写成 queryable typed unsupported reason；
     不要把它伪装成 semantic unsupported，也不要为绕过它新增旧 matcher /
     runtime guessing path。
-  - 解除 reduce gate 前现在只剩一个条件：TT-Sim 能执行 PACR count=1
-    row-reduce pack；full-tile reduce live form 到 rank-1 host-visible
-    output 的 writer consumer binding 已由 typed lowering/source 结构覆盖。
+  - row reduce 诊断必须区分 dtype、reduce kind、消费链和硬件 primitive；
+    flash attention 的 float/bf16 row reduce 可运行，不能推导出
+    `Int32 reduce_tile<MAX, REDUCE_ROW>` 也合法。
 
 #### T3 sharded compute runtime exposed exact-CB event/role and grouped-broadcast gaps
 
@@ -2193,6 +2213,130 @@
   - direct-runtime device-side partial reduction 目前依赖 blocking z-wave /
     reduction wave barriers；不要把它表述成 production single-launch
     semaphore/atomic reduce 已经完成。
+
+#### Generic tiled-CB fragment bridge lost `threadIdx.x`
+
+- **症状**:
+  - T6 existing-TIR topk lowering moved DRAM input materialization through the
+    typed reader CB path, but generated TRISC source still emitted generic
+    tiled-CB fragment bridge code with `const uint32_t thread_idx_x = 0`
+    inside a real `for (tx = 0; tx < 128; ++tx)` loop.
+  - The same compute source previously also fell back to raw packed-argument
+    handle loads when the compute segment had no explicit runtime args.
+- **根因**:
+  - `CodeGenBlackhole::VisitStmt_(AttrStmtNode)` has a custom
+    `thread_extent` emission path that bypasses `BindThreadIndex`; it updated
+    `var_idmap_` for the loop variable but not the codegen-side
+    `thread_idx_x_expr_` consumed by generic logical tile-layout bridges.
+  - Empty compute-segment `runtime_args` made codegen choose the legacy raw
+    function-parameter fallback instead of typed executable runtime args.
+- **修法**:
+  - Preserve and restore `thread_idx_x_expr_` while emitting both one-shot
+    thread bindings and emitted thread loops.
+  - Give compute segments an explicit `work_linear_id` runtime arg so TRISC
+    kernels use the typed runtime-arg path; unexpected global-buffer use should
+    fail as a missing binding instead of being silently reconstructed.
+- **教训**:
+  - Codegen-local bridge state is still part of the typed lowering contract.
+    When a builtin consumes a thread binding implicitly, the custom thread
+    emitter must keep that binding live; do not repair it by adding a
+    workload- or algorithm-specific semantic object.
+
+#### TRISC CB write pointer and live-form invalidation hazards
+
+- **症状**:
+  - After routing existing-TIR T6 materialization through typed CB bridges,
+    standalone leaf compute initially hit TRISC link failures for direct
+    `get_local_cb_interface(cb_id)` use from ordinary compute code.
+  - Moving the read through a PACK-to-MATH/UNPACK mailbox fixed the link, but
+    omitting the historical `<< 4` byte-address conversion left compute with
+    word-address pointers and produced `binary_add` mismatches.
+  - A separate attempted fix that cleared all local/`blackhole.acc`
+    live-form aliases on ordinary local stores broke the leaf A/B live-CB
+    path: reader CB pages were no longer recognized as the compute operands,
+    so source emitted a bogus local republish path.
+- **根因**:
+  - `get_local_cb_interface(...).fifo_wr_ptr` is in 16-byte words; codegen
+    consumers need byte pointers.
+  - Live-form invalidation must be tied to the actual written buffer/event.
+    A broad dtype/scope rule treats local mechanics as a new semantic
+    category and can delete valid aliases needed by later TT leaf ops.
+- **修法**:
+  - In `tilelang_cb_write_ptr_bytes_direct`, read `fifo_wr_ptr << 4` on the
+    PACK thread and deliver that byte address through the mailbox.
+  - Do not add a blanket local-store alias invalidation path.  For T6 stale
+    fill publication, invalidate the retained fill fact at the `T.fill`
+    lowering point when a future scalar write precedes the next compute
+    consume.
+- **验证**:
+  - `testing/python/target/blackhole/test_blackhole_leaf_compute_runtime.py`
+    reports `16 passed, 2 skipped` under the repository TT-Sim setup.
+
+#### T6 topk was a backend value/index lowering bug, not a frontend-op gap
+
+- **症状**:
+  - Existing Tile TIR topk-style value/index selection was initially described
+    as if it needed a new frontend topk op or selection plan.
+  - The direct runtime path either fell into the standalone
+    `Int32 reduce_tile<MAX, REDUCE_ROW>` index boundary or timed out in the
+    bf16 case.
+  - An intermediate fp32 scalar-output writer fix produced exact value matches
+    but corrupted several index rows with float value bits.
+- **根因**:
+  - The existing TIR already expresses the computation: value reduce, index
+    mask/update, index reduce, value mask, and explicit value/index stores.
+    The missing piece was an admitted backend value/index selection lowering,
+    not frontend syntax.
+  - TTProgram/codegen represents bf16 accumulator dtype as `Float16_b`; a
+    narrower dtype check let the bf16 case fall back to the old reduce path.
+  - The scalar writer's event schedule is dtype-dependent.  bf16 value output
+    waits on 16-row groups, so publishing only the fp32-style 4 events per rank
+    left the writer blocked on the fifth event.
+  - Reusing source-CB tail scratch for small scalar page writes overlapped live
+    payload and allowed later value bytes to be written as index output.
+- **修法**:
+  - Keep the frontend as ordinary TIR and emit one backend typed scan for the
+    existing value/index selection records.  The scan reads from the typed
+    reader CB, computes values and indices together, and publishes value/index
+    output CB pages for the normal writer.
+  - Accept `Float16_b` for the bf16 value side and publish bf16 values as
+    bfloat16 bits.
+  - Match the writer event grouping: fp32 uses 32-row grouping, bf16 uses
+    16-row grouping.
+  - Stage small output pages through TT-Metal inline L1 scratch rather than
+    direct unaligned writes, stack scratch, or source-CB tail scratch.
+- **验证**:
+  - `testing/python/target/blackhole/test_blackhole_topk_runtime.py` reports
+    `4 passed` under TT-Sim, covering structure, fp32 single-work, fp32
+    multi-work, and bf16 values with exact `int32` indices.
+
+#### CB-backed local allocations over-reserved shared state CBs
+
+- **症状**:
+  - Flash attention seq64 bf16 source queue validation reported
+    `cb28 reserve would exceed capacity 4`, then after the first correction
+    `cb19 reserve would exceed capacity 1`, and then `cb17 push has only 0
+    reserved pages`.
+- **根因**:
+  - Codegen treated CB capacity `num_pages` as the initial reserve size for
+    each CB-backed `blackhole.acc` allocation.  Small fragments such as
+    `logsum`, `scores_max`, and `scores_sum` each needed one page but each
+    reserved the full four-page CB capacity.
+  - Some producer builtins reuse an allocation-owned writable window.  Skipping
+    every later reserve while a CB-backed handle is active was too broad:
+    once a previous push consumes the allocation reserve, later producers for
+    the same CB need a fresh reserve.
+- **修法**:
+  - Derive CB-backed allocation initial reserve pages from allocation byte
+    size and CB page size, capped by CB capacity unless an explicit event
+    contract overrides it.
+  - Track allocation-reserve credit per active CB-backed handle.  Skip a later
+    same-CB reserve only while unconsumed allocation reserve credit exists, and
+    consume that credit on `cb_push_back`.
+- **验证**:
+  - `test_flash_attention_seq64_bf16_compute_source_keeps_cb_events_queue_consistent`
+    passes, and the focused flash attention structural selector set reports
+    `3 passed`.
 
 ## 3. 环境问题速查
 

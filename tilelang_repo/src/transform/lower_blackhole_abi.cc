@@ -404,6 +404,15 @@ EnsureSegmentBufferRuntimeArgs(const std::string &segment_kind,
 
   const bool is_reader = segment_kind == "reader";
   const bool is_writer = segment_kind == "writer";
+  const bool is_compute = segment_kind == "compute";
+  if (is_compute) {
+    Array<Any> runtime_args = existing_runtime_args;
+    if (FindRuntimeArgIndex(runtime_args, "work_linear_id") < 0) {
+      runtime_args.push_back(
+          MakeRuntimeArg("work_linear_id", "work_linear_id", "uint32"));
+    }
+    return runtime_args;
+  }
   if (!is_reader && !is_writer) {
     return existing_runtime_args;
   }
@@ -1731,7 +1740,8 @@ PlanTTKernelABI::ResolveAccessorSegmentKind(CopyDirection direction) const {
     return current_segment_kind_;
   }
   if (requires_compute_segment_) {
-    if (direction == CopyDirection::kDramToCB) {
+    if (direction == CopyDirection::kDramToCB ||
+        direction == CopyDirection::kDramToLocal) {
       return "reader";
     }
     if (direction == CopyDirection::kCBToDram) {
@@ -1739,7 +1749,8 @@ PlanTTKernelABI::ResolveAccessorSegmentKind(CopyDirection direction) const {
     }
     return "fused_dataflow";
   }
-  if (direction == CopyDirection::kDramToCB) {
+  if (direction == CopyDirection::kDramToCB ||
+      direction == CopyDirection::kDramToLocal) {
     return !gemm_a_buffer_name_.empty() ? "reader" : "fused_dataflow";
   }
   if (direction == CopyDirection::kCBToDram ||
@@ -1774,7 +1785,8 @@ int PlanTTKernelABI::GetReadAccessorSlot(const std::string &segment_kind,
     return GetOrAllocateSegmentAccessorSlot(&fused_dataflow_accessor_slots_,
                                             segment_kind, buffer);
   }
-  if (direction == CopyDirection::kDramToCB) {
+  if (direction == CopyDirection::kDramToCB ||
+      direction == CopyDirection::kDramToLocal) {
     return GetOrAllocateSegmentAccessorSlot(&read_accessor_slots_, segment_kind,
                                             buffer);
   }
