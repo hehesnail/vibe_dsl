@@ -254,10 +254,28 @@ Implemented:
   typed materialization page count.  Out-of-range table entries fail closed
   instead of relying on the original TIR guard after source lowering.
 
+2026-05-05 ragged row-bound slice status:
+
+- A minimal `RowCounts[bx]` staged copy is admitted as the first
+  predicate-derived ragged bound descriptor.
+- The TIR predicate `i < valid_rows`, where `valid_rows` is bound by a real
+  `BufferLoad` from the row-count table, is lowered to an `a_valid_rows`
+  runtime arg with `TTPerWorkArgSpec` descriptor kind `valid_rows`,
+  `value_source=index_table`, and `index_buffer=RowCounts`.
+- The reader source consumes the projected per-work arg, reads only valid
+  row pages from the input, and writes zero pages for invalid rows before
+  publishing the CB.  The writer consumes the same 32 published row pages and
+  writes them back, preserving the original TIR `if_then_else(load, 0)`
+  semantics without relying on output-buffer initialization.
+- Row-count tables are materialized as 4-byte page-indexed DRAM inputs.
+  64-byte bf16 row/stick pages remain row-major host pages; only complete
+  32x32 tile pages use nfaces host tilization in direct runtime transfer.
+- The admitted direct-runtime gate proves `RowCounts=[32,17,0]` copies only
+  valid rows and writes zeros for invalid rows through `BlackholeModule`.
+
 Still open for T8:
 
 - segmented/grouped dispatch with non-uniform ranges;
-- ragged predicate-derived bounds;
 - broader indexed block traversal beyond the first one-dimensional
   per-work tile-start table descriptor.
 

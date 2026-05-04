@@ -51,6 +51,7 @@ TIR_DEFINE_BUILTIN(read_page_to_cb)
 TIR_DEFINE_BUILTIN(read_bcast_cols_to_cb)
 TIR_DEFINE_BUILTIN(write_tile_from_cb)
 TIR_DEFINE_BUILTIN(write_page_from_cb)
+TIR_DEFINE_BUILTIN(zero_cb_page)
 TIR_DEFINE_BUILTIN(get_semaphore)
 TIR_DEFINE_BUILTIN(runtime_arg_u32)
 TIR_DEFINE_BUILTIN(semaphore_wait)
@@ -207,6 +208,13 @@ TVM_REGISTER_OP("tl.blackhole.write_page_from_cb")
     .add_argument("page_id", "int", "Logical page id in the destination buffer")
     .add_argument("page_bytes", "int", "Page size in bytes")
     .add_argument("accessor_slot", "int", "Accessor slot for later TT-Metal mapping")
+    .add_argument("cb_offset_bytes", "int", "Byte offset within the current CB page");
+
+TVM_REGISTER_OP("tl.blackhole.zero_cb_page")
+    .set_num_inputs(3)
+    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque))
+    .add_argument("cb_id", "int", "Destination CB ID")
+    .add_argument("page_bytes", "int", "Page size in bytes")
     .add_argument("cb_offset_bytes", "int", "Byte offset within the current CB page");
 
 TVM_REGISTER_OP("tl.blackhole.get_semaphore")

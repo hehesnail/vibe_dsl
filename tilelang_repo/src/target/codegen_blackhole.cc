@@ -1413,7 +1413,7 @@ void CodeGenBlackhole::EmitRuntimeArgLoads(const tvm::tir::PrimFunc &f) {
           arg_kind == "b_tile_num_tiles" || arg_kind == "b_tile_stride" ||
           arg_kind == "output_tile_start_id" || arg_kind == "output_tile_num_tiles" ||
           arg_kind == "output_tile_stride" || arg_kind == "k_tile_start_id" ||
-          arg_kind == "num_k_tiles";
+          arg_kind == "num_k_tiles" || arg_kind == "a_valid_rows";
       if (!requires_explicit_per_work_binding) {
         continue;
       }
@@ -2470,6 +2470,7 @@ bool CodeGenBlackhole::HandleBlackholeBuiltin(const tvm::tir::CallNode *op,
       "read_bcast_cols_to_cb",
       "write_tile_from_cb",
       "write_page_from_cb",
+      "zero_cb_page",
   };
   if (core_type_ != CoreType::kTRISC &&
       kTRISCOnlyBuiltins.count(builtin_name)) {
@@ -2521,6 +2522,9 @@ bool CodeGenBlackhole::HandleBlackholeBuiltin(const tvm::tir::CallNode *op,
     return true;
   } else if (builtin_name == "write_page_from_cb") {
     PrintWritePageFromCB(op, os);
+    return true;
+  } else if (builtin_name == "zero_cb_page") {
+    PrintZeroCBPage(op, os);
     return true;
   } else if (builtin_name == "get_semaphore") {
     PrintGetSemaphore(op, os);
@@ -2962,6 +2966,22 @@ void CodeGenBlackhole::PrintWritePageFromCB(const tvm::tir::CallNode *op,
         "} else { "
         "noc_async_write(cb_l1_addr, dst_noc_addr, page_bytes); "
         "} }";
+}
+
+void CodeGenBlackhole::PrintZeroCBPage(const tvm::tir::CallNode *op,
+                                       std::ostream &os) {
+  ICHECK_EQ(op->args.size(), 3)
+      << "tl.blackhole.zero_cb_page expects 3 arguments";
+  need_dataflow_api_h_ = true;
+  const int cb_id = ResolveCBId(op->args[0]);
+  os << "{ const uint32_t page_bytes = ";
+  PrintExpr(op->args[1], os);
+  os << "; const uint32_t cb_l1_addr = get_write_ptr(" << cb_id << ") + ";
+  PrintExpr(op->args[2], os);
+  os << "; volatile tt_l1_ptr uint32_t* dst_words = "
+        "reinterpret_cast<volatile tt_l1_ptr uint32_t*>(cb_l1_addr); "
+        "for (uint32_t i = 0; i < page_bytes / sizeof(uint32_t); ++i) { "
+        "dst_words[i] = 0u; } }";
 }
 
 void CodeGenBlackhole::PrintMMInit(const tvm::tir::CallNode *op,

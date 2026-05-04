@@ -2375,3 +2375,17 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   directly.  Direct runtime should materialize the table as a normal named
   input buffer, evaluate the per-work arg from host-side table data, and check
   the result against the target buffer's typed page count.
+- 2026-05-05 T8 ragged row-bound descriptors:
+  Predicate-derived row bounds should be represented as typed per-work args
+  (`descriptor_kind=valid_rows`, `value_source=index_table`) when a TIR
+  predicate consumes a table-loaded bound such as `RowCounts[bx]`.  For
+  `if_then_else(load, 0)` semantics, the dataflow reader should publish one CB
+  page per logical row: valid rows read DRAM, invalid rows explicitly zero the
+  reserved CB page, and the writer writes all published pages.  Do not rely on
+  host/output-buffer initialization to make invalid rows zero.
+- 2026-05-05 page-indexed host transfer:
+  Direct-runtime nfaces host tilization is valid only for complete 32x32 tile
+  pages.  Sub-tile page-indexed sticks/rows such as 64-byte bf16 row pages or
+  64-byte float32 16-column sticks are row-major pages and must be copied raw
+  on host transfer; otherwise predicates over logical rows operate on TT face
+  pages and produce grouped/rounded row counts.

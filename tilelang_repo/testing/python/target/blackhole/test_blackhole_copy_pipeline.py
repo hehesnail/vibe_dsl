@@ -34,6 +34,7 @@ from .common import (
     rebuild_tt_semaphore_plan,
     require_tt_kernel,
     require_tt_program,
+    ragged_row_masked_staged_copy_kernel,
     staged_copy_kernel,
     staged_stick_copy_kernel,
     tt_abi_for_kernel,
@@ -1232,6 +1233,49 @@ def test_blackhole_block_indexed_copy_per_work_spec_uses_index_table_descriptor(
     assert str(materializations["BlockIndices"]["layout"]) == "page_indexed"
     assert str(materializations["BlockIndices"]["memory_space"]) == "dram"
     assert int(materializations["BlockIndices"]["transport_page_size"]) == 4
+
+
+def test_blackhole_ragged_row_copy_uses_valid_rows_index_table_descriptor():
+    target = Target("blackhole")
+    with target:
+        artifact = lower(
+            ragged_row_masked_staged_copy_kernel(grid_x=3),
+            target=target,
+        )
+
+    executable_spec = _extract_blackhole_executable_spec(artifact)
+    kernel_spec = _require_blackhole_kernel(
+        executable_spec["kernels"], kind="fused_dataflow", core_type="brisc"
+    )
+    source = str(kernel_spec["source_code"])
+    assert "a_valid_rows = get_arg_val<uint32_t>" in source
+    assert "RowCounts" not in source
+    assert "dst_words[i] = 0u" in source
+    assert "if (17 < a_valid_rows)" in source
+    assert "noc_async_read(" in source
+    assert "noc_async_write(" in source
+
+    descriptors = {
+        (str(spec.get("buffer", "")), str(spec["descriptor_kind"])): spec
+        for spec in executable_spec["per_work_arg_specs"]
+    }
+    valid_rows = descriptors[("A", "valid_rows")]
+    assert str(valid_rows["value_source"]) == "index_table"
+    assert str(valid_rows["index_buffer"]) == "RowCounts"
+    assert int(valid_rows["index_value_scale"]) == 1
+    assert str(valid_rows["access_region"])
+    assert int(valid_rows["access_region_index"]) >= 0
+
+    materializations = {
+        str(item["buffer"]): item
+        for item in executable_spec["buffer_materializations"]
+    }
+    assert str(materializations["A"]["layout"]) == "page_indexed"
+    assert int(materializations["A"]["transport_page_size"]) == 64
+    assert str(materializations["B"]["layout"]) == "page_indexed"
+    assert int(materializations["B"]["transport_page_size"]) == 64
+    assert str(materializations["RowCounts"]["layout"]) == "page_indexed"
+    assert int(materializations["RowCounts"]["transport_page_size"]) == 4
 
 
 def test_blackhole_grid_indexed_copy_rejects_per_work_arg_kind_fallback_without_identity():

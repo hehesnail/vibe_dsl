@@ -2950,6 +2950,33 @@ Stmt PlanTTKernelABI::VisitStmt_(const LetStmtNode* op) {
     });
     return found;
   };
+  auto body_uses_let_var_for_guarded_copy_predicate = [&](const Stmt& body) {
+    bool found = false;
+    tir::PostOrderVisit(body, [&](const ObjectRef& node) {
+      if (found) {
+        return;
+      }
+      const auto* store = node.as<BufferStoreNode>();
+      if (store == nullptr) {
+        return;
+      }
+      const BufferLoadNode* load = GetCopyLoad(store);
+      if (load == nullptr) {
+        return;
+      }
+      bool index_uses_let_var = false;
+      for (const PrimExpr& index : load->indices) {
+        if (expr_uses_var(index, op->var.get())) {
+          index_uses_let_var = true;
+          break;
+        }
+      }
+      if (!index_uses_let_var && expr_uses_var(store->value, op->var.get())) {
+        found = true;
+      }
+    });
+    return found;
+  };
 
   const auto* table_load = op->value.as<BufferLoadNode>();
   if (!select_compute_builtins_only_ && table_load != nullptr &&
@@ -2961,6 +2988,26 @@ Stmt PlanTTKernelABI::VisitStmt_(const LetStmtNode* op) {
              {StringImm("a_tile_start_id")});
     Stmt rewritten =
         LetStmt(op->var, per_work_tile_start, op->body, op->span);
+    return StmtExprMutator::VisitStmt_(rewritten.as<LetStmtNode>());
+  }
+  if (!select_compute_builtins_only_ && table_load != nullptr &&
+      table_load->buffer->dtype.is_int() && table_load->buffer->dtype.bits() == 32 &&
+      GetStorageScope(table_load->buffer) == "global" &&
+      body_uses_let_var_for_guarded_copy_predicate(op->body)) {
+    const std::string index_buffer = BufferIdentityName(table_load->buffer);
+    ICHECK(!index_buffer.empty())
+        << "Blackhole ragged row bound requires named index-table buffer";
+    if (!ragged_row_bound_index_buffer_name_.empty()) {
+      ICHECK_EQ(ragged_row_bound_index_buffer_name_, index_buffer)
+          << "Blackhole first ragged row-bound slice admits one row-count "
+          << "index table per fused dataflow kernel";
+    }
+    ragged_row_bound_index_buffer_name_ = index_buffer;
+    needs_ragged_row_bound_arg_ = true;
+    PrimExpr per_work_valid_rows =
+        Call(op->var.dtype(), blackhole_runtime_arg_u32(),
+             {StringImm("a_valid_rows")});
+    Stmt rewritten = LetStmt(op->var, per_work_valid_rows, op->body, op->span);
     return StmtExprMutator::VisitStmt_(rewritten.as<LetStmtNode>());
   }
 

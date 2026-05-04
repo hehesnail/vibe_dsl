@@ -2214,6 +2214,7 @@ class SegmentBodyExtractor final : public tir::StmtMutator {
            !op->op.same_as(tir::builtin::blackhole_noc_async_write()) &&
            !op->op.same_as(tir::builtin::blackhole_noc_async_read_barrier()) &&
            !op->op.same_as(tir::builtin::blackhole_noc_async_write_barrier()) &&
+           !op->op.same_as(tir::builtin::blackhole_zero_cb_page()) &&
            !op->op.same_as(tir::builtin::blackhole_get_semaphore()) &&
            !op->op.same_as(tir::builtin::blackhole_runtime_arg_u32()) &&
            !op->op.same_as(tir::builtin::blackhole_semaphore_wait()) &&
@@ -2630,7 +2631,7 @@ static bool RuntimeArgKindRequiresExplicitPerWorkBinding(std::string_view kind) 
          kind == "b_tile_num_tiles" || kind == "b_tile_stride" ||
          kind == "output_tile_start_id" || kind == "output_tile_num_tiles" ||
          kind == "output_tile_stride" || kind == "k_tile_start_id" ||
-         kind == "num_k_tiles";
+         kind == "num_k_tiles" || kind == "a_valid_rows";
 }
 
 static void ValidateKernelExplicitPerWorkBindingSchema(const CorePlan& core_plan,
@@ -2973,7 +2974,7 @@ static void EnforceExplicitPerWorkAccessDescriptorGate(
               arg.kind == "b_tile_num_tiles" || arg.kind == "b_tile_stride" ||
               arg.kind == "output_tile_start_id" || arg.kind == "output_tile_num_tiles" ||
               arg.kind == "output_tile_stride" || arg.kind == "k_tile_start_id" ||
-              arg.kind == "num_k_tiles") {
+              arg.kind == "num_k_tiles" || arg.kind == "a_valid_rows") {
             if (arg.identity.empty() ||
                 !PerWorkArgSpecsContainArgIdentity(per_work_arg_specs, arg.identity)) {
               return true;

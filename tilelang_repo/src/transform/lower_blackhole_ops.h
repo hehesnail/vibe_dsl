@@ -886,6 +886,7 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   std::vector<CBRequirement> cb_requirements_;
   bool saw_copy_op_ = false;
   bool needs_copy_runtime_args_ = false;
+  bool needs_ragged_row_bound_arg_ = false;
   bool requires_compute_segment_ = false;
   bool select_compute_builtins_only_ = false;
   int64_t logical_grid_z_ = 1;
@@ -895,6 +896,9 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   std::string copy_output_buffer_name_;
   std::vector<std::string> copy_input_buffer_names_;
   std::vector<std::string> copy_output_buffer_names_;
+  std::string ragged_row_bound_index_buffer_name_;
+  std::string ragged_row_bound_subject_buffer_name_;
+  std::unordered_set<std::string> ragged_row_bound_shared_buffer_names_;
   std::unordered_map<std::string, std::string> host_buffer_by_compute_operand_buffer_;
   std::unordered_map<std::string, std::string> direct_copy_source_by_buffer_identity_;
   std::unordered_map<std::string, tvm::tir::Buffer> buffer_by_identity_;

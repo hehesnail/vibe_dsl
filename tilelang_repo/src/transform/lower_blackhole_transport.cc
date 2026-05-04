@@ -74,6 +74,7 @@ using tir::builtin::blackhole_read_tile_to_cb;
 using tir::builtin::blackhole_untilize_cb_front_tile;
 using tir::builtin::blackhole_write_page_from_cb;
 using tir::builtin::blackhole_write_tile_from_cb;
+using tir::builtin::blackhole_zero_cb_page;
 using tvm::DataType;
 using tvm::Integer;
 using tvm::IntImm;
@@ -707,6 +708,73 @@ const BufferLoadNode* PlanTTKernelABI::GetCopyLoad(
     }
   }
   return nullptr;
+}
+
+std::optional<PrimExpr> GetGuardedCopyPredicate(const BufferStoreNode* op) {
+  if (op == nullptr) {
+    return std::nullopt;
+  }
+  if (const auto* select = op->value.as<tir::SelectNode>()) {
+    if (SelectGuardedCopyLoad(select->true_value, select->false_value) != nullptr) {
+      if (select->true_value.as<BufferLoadNode>() != nullptr &&
+          IsZeroFillValue(select->false_value)) {
+        return select->condition;
+      }
+      if (select->false_value.as<BufferLoadNode>() != nullptr &&
+          IsZeroFillValue(select->true_value)) {
+        return tir::Not(select->condition);
+      }
+    }
+  }
+  if (const auto* call = op->value.as<tir::CallNode>()) {
+    if (!IsIfThenElseCall(call)) {
+      return std::nullopt;
+    }
+    if (call->args[1].as<BufferLoadNode>() != nullptr &&
+        IsZeroFillValue(call->args[2])) {
+      return call->args[0];
+    }
+    if (call->args[2].as<BufferLoadNode>() != nullptr &&
+        IsZeroFillValue(call->args[1])) {
+      return tir::Not(call->args[0]);
+    }
+  }
+  return std::nullopt;
+}
+
+PrimExpr StripCasts(const PrimExpr& expr) {
+  if (const auto* cast = expr.as<tir::CastNode>()) {
+    return StripCasts(cast->value);
+  }
+  return expr;
+}
+
+bool ExprStructurallyEqualModuloCasts(const PrimExpr& lhs, const PrimExpr& rhs) {
+  return StructuralEqual()(StripCasts(lhs), StripCasts(rhs));
+}
+
+std::optional<PrimExpr> MakeRaggedRowPredicateForPage(
+    const PrimExpr& predicate, const PrimExpr& row_expr, int page_row) {
+  if (!predicate.defined() || !row_expr.defined()) {
+    return std::nullopt;
+  }
+  if (const auto* lt = predicate.as<tir::LTNode>()) {
+    if (ExprStructurallyEqualModuloCasts(lt->a, row_expr)) {
+      return IntImm32(page_row) < lt->b;
+    }
+    if (ExprStructurallyEqualModuloCasts(lt->b, row_expr)) {
+      return lt->a < IntImm32(page_row);
+    }
+  }
+  if (const auto* le = predicate.as<tir::LENode>()) {
+    if (ExprStructurallyEqualModuloCasts(le->a, row_expr)) {
+      return IntImm32(page_row) <= le->b;
+    }
+    if (ExprStructurallyEqualModuloCasts(le->b, row_expr)) {
+      return le->a <= IntImm32(page_row);
+    }
+  }
+  return std::nullopt;
 }
 
 bool PlanTTKernelABI::IsCopyOperation(const BufferStoreNode* op) const {
@@ -1712,6 +1780,16 @@ Stmt PlanTTKernelABI::GenerateStagedCopyLoopSequence(
     }
     return page_index;
   };
+  auto make_full_tile_row_page_index = [&](int page_row) -> PrimExpr {
+    ICHECK_EQ(geometry.global_cols, geometry.shared_cols)
+        << "Blackhole first ragged row-copy slice requires one row page per logical row";
+    PrimExpr page_index =
+        analyzer.Simplify(base_tile_index * IntImm32(kBlackholeTileRows));
+    if (page_row != 0) {
+      page_index = analyzer.Simplify(page_index + IntImm32(page_row));
+    }
+    return page_index;
+  };
 
   if (IsDramToDeviceCopyDirection(direction)) {
     const bool materialize_to_local = direction == CopyDirection::kDramToLocal;
@@ -1721,6 +1799,51 @@ Stmt PlanTTKernelABI::GenerateStagedCopyLoopSequence(
         cb_producer_buffer, segmented_gemm ? CBType::kInput : CBType::kIntermediate);
     RecordStagedCopyBufferBinding(op, direction);
     const int accessor_slot = GetReadAccessorSlot(segment_kind, load->buffer, direction);
+    const std::optional<PrimExpr> ragged_predicate = GetGuardedCopyPredicate(op);
+    if (!materialize_to_local && !ragged_row_bound_index_buffer_name_.empty() &&
+        ragged_predicate.has_value() && !op->indices.empty() &&
+        MakeRaggedRowPredicateForPage(ragged_predicate.value(), op->indices[0], 0).has_value() &&
+        !geometry.use_page_transport && geometry.shared_cols == kBlackholeTileCols &&
+        geometry.global_cols == geometry.shared_cols) {
+      SetRequirementPageLayout(cb_id, geometry.page_bytes, static_cast<int>(geometry.shared_rows));
+      ragged_row_bound_subject_buffer_name_ = BufferIdentityName(load->buffer);
+      ragged_row_bound_shared_buffer_names_.insert(BufferIdentityName(cb_producer_buffer));
+      if (!SameBufferIdentity(cb_producer_buffer, op->buffer)) {
+        ragged_row_bound_shared_buffer_names_.insert(BufferIdentityName(op->buffer));
+      }
+      for (int page_row = 0; page_row < shared_rows; ++page_row) {
+        const std::optional<PrimExpr> maybe_row_predicate =
+            MakeRaggedRowPredicateForPage(ragged_predicate.value(), op->indices[0], page_row);
+        ICHECK(maybe_row_predicate.has_value())
+            << "Blackhole ragged row reader lost row-bound predicate";
+        PrimExpr row_predicate = analyzer.Simplify(maybe_row_predicate.value());
+        std::vector<Stmt> valid_row_stmts;
+        valid_row_stmts.push_back(MakeBlackholeCall(
+            blackhole_read_page_to_cb(),
+            {load->buffer->data, make_full_tile_row_page_index(page_row), IntImm32(cb_id),
+             IntImm32(geometry.page_bytes), IntImm32(accessor_slot), IntImm32(0)}));
+        valid_row_stmts.push_back(MakeBlackholeCall(blackhole_noc_async_read_barrier(), {}));
+        std::vector<Stmt> zero_row_stmts;
+        zero_row_stmts.push_back(MakeBlackholeCall(
+            blackhole_zero_cb_page(),
+            {IntImm32(cb_id), IntImm32(geometry.page_bytes), IntImm32(0)}));
+        stmts.push_back(MakeBlackholeCall(
+            blackhole_cb_reserve_back(), {IntImm32(cb_id), IntImm32(1)}));
+        stmts.push_back(tir::IfThenElse(row_predicate,
+                                        SeqStmt::Flatten(valid_row_stmts),
+                                        SeqStmt::Flatten(zero_row_stmts)));
+        stmts.push_back(MakeBlackholeCall(
+            blackhole_cb_push_back(), {IntImm32(cb_id), IntImm32(1)}));
+        RegisterAccessor(segment_kind, load->buffer,
+                         accessor_slot, 2, 0, 0, 2, geometry.page_bytes, host_axis_order,
+                         false, "page_indexed");
+      }
+      RecordTiledCBLiveFormAliases(cb_producer_buffer, cb_id);
+      if (!SameBufferIdentity(cb_producer_buffer, op->buffer)) {
+        RecordTiledCBLiveFormAliases(op->buffer, cb_id);
+      }
+      return maybe_wrap_segment_stmt(SeqStmt::Flatten(stmts));
+    }
     if (use_page_transport) {
       ICHECK(!materialize_to_local)
           << "Blackhole DRAM-to-local materialization currently admits tiled CB pages; "
@@ -1826,6 +1949,27 @@ Stmt PlanTTKernelABI::GenerateStagedCopyLoopSequence(
                                                                    : CBType::kIntermediate);
     RecordStagedCopyBufferBinding(op, direction);
     const int accessor_slot = GetWriteAccessorSlot(segment_kind, op->buffer, direction);
+    if (!ragged_row_bound_index_buffer_name_.empty() &&
+        ragged_row_bound_shared_buffer_names_.count(BufferIdentityName(load->buffer)) != 0U &&
+        !geometry.use_page_transport && geometry.shared_cols == kBlackholeTileCols &&
+        geometry.global_cols == geometry.shared_cols) {
+      SetRequirementPageLayout(cb_id, geometry.page_bytes, static_cast<int>(geometry.shared_rows));
+      for (int page_row = 0; page_row < shared_rows; ++page_row) {
+        stmts.push_back(MakeBlackholeCall(
+            blackhole_cb_wait_front(), {IntImm32(cb_id), IntImm32(1)}));
+        stmts.push_back(MakeBlackholeCall(
+            blackhole_write_page_from_cb(),
+            {IntImm32(cb_id), op->buffer->data, make_full_tile_row_page_index(page_row),
+             IntImm32(geometry.page_bytes), IntImm32(accessor_slot), IntImm32(0)}));
+        stmts.push_back(MakeBlackholeCall(blackhole_noc_async_write_barrier(), {}));
+        stmts.push_back(MakeBlackholeCall(
+            blackhole_cb_pop_front(), {IntImm32(cb_id), IntImm32(1)}));
+        RegisterAccessor(segment_kind, op->buffer,
+                         accessor_slot, 2, 0, 0, 2, geometry.page_bytes, host_axis_order,
+                         false, "page_indexed");
+      }
+      return maybe_wrap_segment_stmt(SeqStmt::Flatten(stmts));
+    }
     if (use_page_transport) {
       SetRequirementPageLayout(cb_id, geometry.shared_bytes, 1);
       stmts.push_back(MakeBlackholeCall(
@@ -1876,7 +2020,6 @@ Stmt PlanTTKernelABI::GenerateFusedStagedCopySequence(
   if (!dram_load || !cb_load) {
     return GetRef<Stmt>(dram_to_cb);
   }
-
   const Buffer& shared_buffer = dram_to_cb->buffer;
   ICHECK(shared_buffer.same_as(cb_load->buffer))
       << "Fused staged copy expects DRAM->shared and shared->DRAM to use the same shared buffer";

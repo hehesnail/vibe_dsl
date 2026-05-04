@@ -2530,6 +2530,34 @@
   - The table-indexed pipeline/runtime selectors reported `3 passed`, and the
     broader T8 copy selector reported `5 passed`.
 
+### Ragged bf16 row copy zero-filled TT face pages instead of logical rows
+
+- **症状**:
+  - `RowCounts[bx]` ragged staged copy initially compiled and launched but
+    `RowCounts=17` copied 18 rows, small counts copied in pairs, and counts
+    around 8-16 saturated at 16 rows.
+  - Adding explicit CB zero pages fixed stale output for fully invalid blocks
+    but did not fix the rounded row counts.
+- **根因**:
+  - The direct-runtime host transfer helper treated any bf16 64-byte
+    `page_indexed` materialization as an nfaces tiled plan because 64 bytes is
+    32 bf16 elements.  The source reader/writer page IDs were logical row
+    pages, but host data was laid out as TT face pages.
+  - Skipping invalid writes was also semantically incomplete for
+    `if_then_else(load, 0)` because output buffers are not a correctness
+    contract for zero-fill.
+- **修法**:
+  - Restrict host-side nfaces tilization to complete 32x32 tile pages.
+    Sub-tile page-indexed row/stick pages remain raw row-major pages.
+  - For ragged row predicates, reader publishes one page per logical row:
+    valid rows read DRAM, invalid rows zero the reserved CB page, and writer
+    writes all pages.
+- **验证**:
+  - Ragged row runtime selector passed for `RowCounts=[32,17,0]`.
+  - T8 indexed/ragged aggregate selectors reported `7 passed`.
+  - Existing 64-byte page-indexed stick direct-runtime selectors remained
+    green.
+
 ## 3. 环境问题速查
 
 | 问题 | 解决 |

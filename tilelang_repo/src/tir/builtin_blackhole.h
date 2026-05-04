@@ -142,6 +142,14 @@ TVM_DLL const Op& blackhole_write_tile_from_cb();
  */
 TVM_DLL const Op& blackhole_write_page_from_cb();
 
+/*!
+ * \brief Fill one reserved CB page/stick with zeros.
+ * \param cb_id Destination circular buffer ID
+ * \param page_bytes Page size in bytes
+ * \param cb_offset_bytes Byte offset within the current CB page
+ */
+TVM_DLL const Op& blackhole_zero_cb_page();
+
 // TT-Metal Semaphore Operations
 
 /*!

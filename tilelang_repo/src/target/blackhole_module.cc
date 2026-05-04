@@ -1754,10 +1754,14 @@ static InterleavedTilePlan BuildInterleavedTilePlan(const ExecutableSpec& spec,
 
   constexpr uint32_t kBlackholeTileCols = 32;
   const uint32_t tile_elements = materialization.transport_page_size_bytes / element_size_bytes;
-  const uint32_t tile_rows = tile_elements / kBlackholeTileCols;
   if (tile_elements == 0 || tile_elements % kBlackholeTileCols != 0) {
     return plan;
   }
+  constexpr uint32_t kBlackholeTileRows = 32;
+  if (tile_elements != kBlackholeTileRows * kBlackholeTileCols) {
+    return plan;
+  }
+  const uint32_t tile_rows = kBlackholeTileRows;
 
   if (!materialization.host_axis_order.empty()) {
     ICHECK(IsValidAxisOrder(materialization.host_axis_order, tensor->ndim))

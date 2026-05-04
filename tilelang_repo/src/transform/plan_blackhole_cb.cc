@@ -167,7 +167,8 @@ std::vector<int> GetCBArgPositions(const std::string& op_name) {
       op_name == "tl.blackhole.cb_wait_front" ||
       op_name == "tl.blackhole.cb_pop_front" ||
       op_name == "tl.blackhole.write_tile_from_cb" ||
-      op_name == "tl.blackhole.write_page_from_cb") {
+      op_name == "tl.blackhole.write_page_from_cb" ||
+      op_name == "tl.blackhole.zero_cb_page") {
     return {0};
   }
   if (op_name == "tl.blackhole.read_tile_to_cb" ||

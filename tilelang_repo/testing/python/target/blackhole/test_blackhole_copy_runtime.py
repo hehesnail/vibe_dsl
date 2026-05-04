@@ -18,6 +18,7 @@ from .common import (
     extract_blackhole_total_l1_bytes,
     extract_blackhole_work_per_core,
     grid_indexed_staged_copy_kernel,
+    ragged_row_masked_staged_copy_kernel,
     rebuild_tt_buffer_distribution_plan,
     rebuild_tt_abi_plan,
     rebuild_tt_kernel,
@@ -761,6 +762,42 @@ def test_blackhole_module_direct_call_block_indexed_copy_rejects_out_of_range_in
 
     with pytest.raises(Exception, match="index_table tile_start out of bounds"):
         artifact.codegen_mod["main"](a_torch, block_indices, b_output)
+
+
+def test_blackhole_module_direct_call_ragged_row_copy_uses_row_count_predicate():
+    can_run, msg = check_blackhole_direct_execution_requirements()
+    if not can_run:
+        pytest.skip(f"Blackhole requirements not met: {msg}")
+
+    grid_x, tile_m, tile_n = 3, 32, 32
+    a_torch = _bf16_matrix(grid_x * tile_m, tile_n)
+    row_counts = torch.tensor([32, 17, 0], dtype=torch.int32)
+    b_output = torch.zeros_like(a_torch)
+    b_ref = torch.zeros_like(a_torch)
+    for bx, valid_rows in enumerate(row_counts.tolist()):
+        row_start = bx * tile_m
+        if valid_rows > 0:
+            b_ref[row_start : row_start + valid_rows, :] = a_torch[
+                row_start : row_start + valid_rows, :
+            ]
+
+    target = Target("blackhole")
+    kernel = ragged_row_masked_staged_copy_kernel(
+        grid_x=grid_x,
+        tile_m=tile_m,
+        tile_n=tile_n,
+    )
+    with target:
+        artifact = lower(kernel, target=target)
+
+    artifact.codegen_mod["main"](a_torch, row_counts, b_output)
+    assert_tensors_close_or_dump(
+        b_output,
+        b_ref,
+        atol=1e-3,
+        rtol=1e-3,
+        failure_message="Ragged row direct-call output mismatch",
+    )
 
 
 @pytest.mark.parametrize(
