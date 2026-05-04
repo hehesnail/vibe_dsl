@@ -140,7 +140,7 @@ reader defaults.
 
 Core placement and buffer placement are separate responsibilities.
 Core groups must remain hardware-model backed;
-the current active expansion point is buffer distribution.
+buffer distribution remains the low-level address-ABI expansion point.
 
 Core placement must consume:
 
@@ -310,34 +310,31 @@ materialization, or T8 TIR-derived irregular work/access evidence.
 Those primitives must be pulled forward explicitly instead of hidden under a
 generic "later runtime" bucket.
 
-## Execution Order
+## Queue Relationship
 
-The active board is `tasks/progress.md`.
-This roadmap keeps the stable order and exit criteria.
+The active order, current state, and detailed runtime case matrix live in
+`tasks/progress.md`.
+This roadmap keeps only the stable resource-planning rules.
 
-| Task | Goal | Depends On | Exit Criteria |
-| --- | --- | --- | --- |
-| T1 Buffer address ABI execution integration | Make sharded L1 and page-indexed address ABI real execution contracts, not metadata-only records. | Hardware-backed buffer placement and typed sharded fields. | Complete: sharded L1 staged-copy path materializes from typed plans into source/spec/direct-runtime and passes TT-Sim bf16 correctness; page-indexed 64B page path materializes from typed page metadata and passes direct-runtime correctness; non-admitted 32B bf16 sub-tile page transport and external sharded/page-indexed accessor kinds fail closed from typed fields. |
-| T2 Leaf compute / GEMM baseline | Admit non-flash leaf compute and current-placement GEMM layout baseline. | T1. | Unary / binary / broadcast / reduce / pack / typecast, current-placement GEMM variants, and admitted layout movement have direct correctness gates or typed rejects. |
-| T3 Tensor/value sharding and explicit reshard | Make TTNN-style user placement intent, op placement contracts, placement conflict handling, and reshard plans first-class in the IR chain. | T2 baseline. | DSL placement intent, tensor memory-config plans, op contracts, conflict rejects, reshard plans, and executable projection are typed and tested. |
-| T4 External accessor / runtime ABI expansion | Admit or precisely reject external `sharded_accessor_cta` and `page_indexed_accessor_cta` runtime/codegen forms. | T1 address ABI and T3 placement/conversion projection. | External sharded/page-indexed accessors have direct TT-Metal ABI records and runtime/codegen admission, or fail from explicit executable accessor records. |
-| T5 Sharded GEMM / layout variants | Admit GEMM/layout variants that depend on real tensor sharding, including explicit retile/work-coarsening when a layout changes logical work mapping. | T3, and T4 when external sharded/page-indexed accessors are required. | Sharded GEMM/layout correctness where admitted; typed rejects for unsupported placement/conversion/retile combinations. |
-| T6 Selection / index base | Bring up standalone `topk` with `int32` index outputs. | T2 leaf reductions. | Value and index correctness are proven; compile-only is not enough. |
-| T7 Exact-CB / materialization primitives | Repair wider exact-CB publish/consume, partial combine, source-live-form materialization, and multi-block flash-attn / flash-decode exact-CB correctness. | T1 and relevant T3 materialization rules when sharded values are involved. | Multi-kernel intermediate correctness is covered and missing materialization protocol fails before source/runtime emission. |
-| T8 Irregular work domains / indexed access | Analyze existing TIR loop, predicate, and buffer-access expressions for segmented/ragged/indexed work; preserve only durable evidence needed by later layers. | T1 and relevant per-work descriptors. | Missing or inconsistent irregular-domain evidence is rejected before source/runtime emission; no workload-specific metadata registry or parallel domain IR. |
-| T9 Workload first paths | Bring up pre-grouped MoE, sparse/ragged attention, paged GQA decode, paged MLA decode, chunk recurrence, and multi-block flash decode first paths. | Prior primitive surfaces as needed by each workload: explicit TIR compute/dataflow, placement/reshard, accessor ABI, materialization, and TIR-derived irregular work evidence. | Each workload has a stated first path, correctness proof, and typed rejects for unadmitted forms; no workload-named semantic object or metadata contract becomes owner truth. |
-| T10 Production distributed variants | Add mesh/sharding/CCL/NoC/multicast/global scheduling support, including production K-sharded GEMM partial-reduce protocol. | Stable first paths plus explicit placement/dataflow requirements, hardware facts, and typed distributed realization records. | Distributed paths have typed placement, communication, admission, and correctness gates; records are target-realization primitives, not workload-family semantics. |
+Completed T1-T5 surfaces are inputs to this roadmap, not duplicated status:
+
+- T3 provides explicit placement intent, tensor memory-config plans,
+  placement contracts, placement resolution, and first reshard projection.
+- T4 provides executable external accessor ABI records for interleaved,
+  page-indexed, and static sharded-L1 admitted subsets.
+- T5 provides first sharded GEMM correctness, including the temporary
+  blocking logical-z partial-K path.
 
 For T6-T10, "correctness proof" means an admitted positive case runs through
 `BlackholeModule` with the repository TT-Sim setup and compares device output
 against a host reference.  Projection, validation, source/schema checks, and
 typed unsupported diagnostics are necessary supporting tests, but they do not
-complete a task by themselves.  The detailed runtime case matrix for the
-remaining queue is maintained in `tasks/progress.md`.
+complete a task by themselves.
 
-Do not advance workload admission that depends on external sharded or
-page-indexed accessors past T4 until those accessor forms have
-source/spec/direct-runtime admission or precise typed rejects.
+New workload admission that needs sharded or page-indexed access must consume
+the T4 executable accessor records.  New accessor variants outside the T4
+admitted subset need the same source/spec/direct-runtime admission or a typed
+reject from executable records.
 
 ## Planning Order
 

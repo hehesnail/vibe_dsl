@@ -114,8 +114,7 @@ Represents buffer distribution and placement class:
 - host visibility
 - attached core range when relevant
 
-This is the current active expansion point for low-level placement and
-address ABI.
+This is the low-level expansion point for placement and address ABI.
 
 `shard_shape`
 means the per-core tensor data shape in the durable contract.

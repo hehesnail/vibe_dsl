@@ -2220,3 +2220,11 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   runtime correctness case under the repo TT-Sim setup, with bf16 as the formal
   value baseline where tensor values are involved.  Negative typed rejects do
   not substitute for positive runtime correctness.
+- 2026-05-04 docs maintenance boundary:
+  Keep `tasks/progress.md` as a compact current board, not a rolling
+  implementation inventory or verification archive.  Stable task ordering and
+  runtime gates can live there; detailed historical verification belongs in
+  memory or commit history.  Roadmap docs should reference the active board
+  instead of duplicating the full T1-T10 queue, and completed task designs
+  should be written as current contracts instead of future implementation
+  plans.

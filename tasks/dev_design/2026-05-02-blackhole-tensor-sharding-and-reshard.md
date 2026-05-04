@@ -15,29 +15,15 @@ Normalized Tile TIR
   -> ExecutableSpec
 ```
 
-Current implementation status still lives in `tasks/progress.md`.
+Current implementation status lives in `tasks/progress.md`.
 
 ## Problem
 
-The current Blackhole implementation has a `TTBufferDistributionPlan`.
-That object is useful, but it is not a complete sharding model.
+`TTBufferDistributionPlan`
+is a low-level buffer placement and address-ABI object.
+It remains necessary, but it is not the owner of tensor/value sharding.
 
-The current implementation mostly derives low-level buffer distribution from:
-
-- `SpatialPlan.LayoutSpec.scope`
-- local / shared / global buffer class
-- the selected `TTCoreGroup`
-- CB-backed or staged-copy address requirements
-
-That is enough for the current direct-runtime address ABI:
-
-- interleaved DRAM runtime buffers
-- staged-copy resident L1 / CB-backed views
-- page-indexed address contracts
-
-It is not enough for real tensor sharding.
-
-Real sharding must answer all of these questions:
+Real tensor sharding must answer all of these questions:
 
 - which logical tensor or value is sharded
 - which tensor dimensions are partitioned
@@ -48,8 +34,10 @@ Real sharding must answer all of these questions:
 - what happens when a producer placement conflicts with a consumer placement
 - whether an explicit reshard / layout conversion is required
 
-The current one-buffer-one-distribution plan cannot represent this whole
-problem.
+Those questions belong to explicit placement intent, tensor memory-config
+plans, op sharding contracts, placement resolution, and reshard plans.
+The one-buffer-one-distribution address plan is derived after those decisions
+exist.
 
 ## TT-Metal Ground Truth
 
@@ -168,16 +156,19 @@ The design above is based on these local TT-Metal / TTNN surfaces:
   raw TT-Metal constructs `ShardSpecBuffer` and `BufferShardingArgs`
   explicitly.
 
-The corresponding current TileLang surfaces are:
+The corresponding TileLang contract surfaces are:
 
 - `tilelang/language/annotations.py`:
-  `annotate_layout` already exposes a block-attribute user surface for
-  buffer-index layout maps.
-  This is local layout / index-transform evidence, not tensor sharding.
+  exposes `MemoryConfig`, `ShardSpec`, `NDShardSpec`, `CoreGrid`,
+  `interleaved_dram`, `sharded_dram`, `sharded_l1`, and
+  `annotate_memory_config` for tensor placement requests.
+  `annotate_layout` remains local layout / index-transform evidence, not
+  tensor sharding.
 - `tilelang/language/ast/ir.py` and `tilelang/language/allocate.py`:
   `match_buffer`, `alloc_buffer`, `alloc_shared`, and `alloc_fragment`
   expose buffer subjects, shape, dtype, scope, strides, and buffer type.
-  They do not currently expose a TTNN-style memory config.
+  Constructor sugar must lower to the same placement-intent path as
+  `annotate_memory_config`.
 - `tilelang/language/kernel.py`:
   `T.Kernel(...)` exposes the logical work-item grid.
   It is not a TT physical core grid or tensor shard grid.
@@ -198,11 +189,11 @@ The corresponding current TileLang surfaces are:
   validators and runtime admission consume the projected buffer distribution
   address contract.
 
-## Current TileLang State
+## TileLang Boundary
 
 ### SpatialPlan
 
-`LayoutSpec` currently carries:
+`LayoutSpec` carries:
 
 - subject
 - scope
@@ -210,7 +201,7 @@ The corresponding current TileLang surfaces are:
 - logical and local tile layout fields when recoverable
 - execution-unit association
 
-It does not carry a real tensor sharding intent.
+It does not carry tensor sharding intent.
 `distribution_kind = shared_visible` means a target-independent visibility
 class.
 It does not mean "this tensor is width-sharded" or "this operation requires a
@@ -218,7 +209,7 @@ specific shard shape".
 
 ### TTProgram
 
-`TTBufferDistributionPlan` currently carries physical buffer placement and
+`TTBufferDistributionPlan` carries physical buffer placement and
 address ABI fields:
 
 - distribution kind
@@ -237,7 +228,7 @@ This is the right object for low-level buffer placement.
 It is not the right owner for user intent, op-level placement requirements,
 or producer/consumer sharding conflicts.
 
-The current staged-copy path should be reinterpreted as:
+The admitted staged-copy path is interpreted as:
 
 ```text
 interleaved DRAM source tensor
@@ -245,12 +236,11 @@ interleaved DRAM source tensor
   -> resident L1 sharded working view
 ```
 
-It should not be described as proof that TileLang has complete tensor
-sharding.
+It is not proof that TileLang has complete production tensor sharding.
 
 ### ExecutableSpec / Runtime
 
-`ExecutableSpec` currently projects buffer distribution fields as a runtime
+`ExecutableSpec` projects buffer distribution fields as a runtime
 address contract.
 
 That is correct for leaf consumption.
@@ -260,16 +250,14 @@ It must not become the place that infers missing sharding.
 
 ## DSL / User Interface Design
 
-The missing frontend piece is explicit user placement intent.
-Without it, the backend can only derive local scratch placement from buffer
-scope and access shape.
-That is not enough for TTNN-style sharded inputs, outputs, weights, or
-intermediate values.
+The frontend placement surface is explicit user placement intent.
+The backend must not derive tensor sharding from buffer scope, names, or work
+grid shape.
 
 ### User-Facing Objects
 
-TileLang should introduce a small, TT-Metal-aligned placement API on the
-language surface:
+TileLang exposes a small, TT-Metal-aligned placement API on the language
+surface:
 
 ```python
 T.MemoryConfig(
@@ -308,8 +296,8 @@ They must lower to `T.MemoryConfig`.
 
 ### Attachment Surface
 
-The first durable attachment surface should be a block annotation, analogous
-to existing `T.annotate_layout`:
+The durable attachment surface is a block annotation, analogous to existing
+`T.annotate_layout`:
 
 ```python
 T.annotate_memory_config({
@@ -325,17 +313,13 @@ T.annotate_memory_config({
 ...
 ```
 
-This should lower to a single typed block attr, for example
+This lowers to a single typed block attr, for example
 `tl.memory_config_map`, whose keys are buffer data vars and whose values are
 typed placement objects.
 `BuildSpatialPlan` consumes that attr and emits
 `TensorPlacementIntent(source="user", ...)`.
 
-The annotation surface is the first implementation target because it matches
-TileLang's existing attribute mechanism and avoids changing every buffer
-constructor at the same time.
-After the attr path is working, the same config can be accepted as sugar on
-buffer constructors:
+The same config can also be accepted as constructor sugar:
 
 ```python
 A = T.match_buffer(a, (M, K), dtype, memory_config=T.interleaved_dram())
@@ -504,8 +488,8 @@ truth.
 
 ### SpatialPlan: TensorPlacementIntent
 
-`SpatialPlan` needs a `TensorPlacementIntent` object for target-independent
-logical placement intent.
+`SpatialPlan` carries `TensorPlacementIntent` for target-independent logical
+placement intent.
 
 Required fields:
 
@@ -562,7 +546,7 @@ Default behavior must be explicit:
 
 ### TTProgram: TTTensorMemoryConfigPlan
 
-`TTProgram` needs `TTTensorMemoryConfigPlan`, a concrete plan that mirrors
+`TTProgram` carries `TTTensorMemoryConfigPlan`, a concrete plan that mirrors
 TT-Metal's `MemoryConfig` model.
 
 Required fields:
@@ -606,7 +590,7 @@ this plan and the projected executable record.
 ### TTProgram: TTOpShardingContract
 
 Every TT leaf or higher-level admitted op family that cares about placement
-needs a `TTOpShardingContract`.
+uses a `TTOpShardingContract`.
 
 Required contract fields:
 
@@ -647,7 +631,7 @@ implementation.
 
 ### TTProgram: TTPlacementResolutionPlan
 
-Planning needs a placement-resolution pass over a value/use graph.
+Planning resolves placement over a value/use graph.
 Its durable output is `TTPlacementResolutionPlan`.
 
 Inputs:
@@ -815,199 +799,44 @@ Reject:
   record
 - fallback source-region recovery from names, arguments, or source text
 
-## Implementation Order
+## Admitted Surface And Remaining Extensions
 
-The implementation is ordered so each checkpoint leaves the active IR chain
-more explicit.
-No checkpoint by itself is a claim that full tensor sharding is complete.
+The admitted T3 surface includes:
 
-### S1: Lock The Current Boundary
+- Python placement objects and `T.annotate_memory_config`;
+- `SpatialPlan.TensorPlacementIntent`;
+- `TTTensorMemoryConfigPlan`;
+- `TTOpShardingContract`;
+- `TTPlacementResolutionPlan`;
+- `TTReshardPlan`;
+- `ExecutableSpec` projection of tensor memory configs and reshard records;
+- the first direct-runtime conversion:
+  `interleaved DRAM -> resident L1 sharded staged-copy view`.
 
-Clarify in docs and tests that current `TTBufferDistributionPlan` is a
-buffer placement / address ABI object.
-It is not the full tensor sharding model.
+T4 and T5 consume this surface for external accessor ABI and first sharded GEMM
+layouts.  They do not broaden this document into production DRAM-sharded
+weights, N-D sharding, mesh, CCL, NoC, or distributed production support.
 
-No behavior change.
+Remaining sharding extensions are admitted only when represented through the
+same objects:
 
-### S2: Add The DSL Placement Surface
+- sharded L1 view to interleaved DRAM output when needed by external ABI;
+- L1 sharded to L1 sharded when source and target shard shapes differ;
+- DRAM sharded to L1 sharded for weight / prefetcher-style paths;
+- sharded DRAM to sharded DRAM when TT-Metal / TTNN evidence and runtime
+  admission are available;
+- `NdShardSpec`-style N-D sharding;
+- distributed mesh / CCL production variants.
 
-Add the Python-facing placement objects:
-
-- `T.MemoryConfig`
-- `T.ShardSpec`
-- `T.NDShardSpec`
-- `T.CoreGrid` / `T.CoreRangeSet` if no suitable public TileLang wrapper
-  already exists
-- convenience constructors such as `T.interleaved_dram`,
-  `T.sharded_l1`, and `T.sharded_dram`
-
-Add `T.annotate_memory_config({buffer: config})`.
-This should emit one typed block attr.
-It should be round-trippable in TIR printing / parsing and should reject
-invalid Python object shapes before lowering.
-
-The acceptance test for this checkpoint is structural:
-a TileLang kernel with annotated input/output/weight buffers produces the
-expected typed attr, and invalid strategy/orientation combinations reject.
-
-### S3: Lower User Placement To SpatialPlan
-
-Add `TensorPlacementIntent` to `SpatialPlan`.
-`BuildSpatialPlan` consumes the typed DSL attr and emits validated placement
-intent.
-
-This checkpoint must prove:
-
-- existing `T.annotate_layout` still produces only layout evidence
-- `scope` and `T.Kernel` do not create sharding intent
-- unannotated global buffers receive explicit default interleaved-DRAM
-  placement intent
-- invalid or duplicate user configs fail before TT planning
-
-### S4: Add TTTensorMemoryConfigPlan
-
-Add the TTProgram-level typed object that mirrors TT-Metal
-`MemoryConfig + ShardSpec / NdShardSpec`.
-
-The first producer path must cover every placement already present in the
-current implementation:
-
-- interleaved DRAM external buffers
-- resident L1 staged-copy views
-- device-local replicated local buffers
-
-Validators must ensure existing `TTBufferDistributionPlan` records are
-consistent with these new plans.
-At this point, a buffer distribution that cannot be traced to either
-`TTTensorMemoryConfigPlan` or an explicitly local scratch/materialization
-requirement is invalid.
-
-### S5: Add TTOpShardingContract
-
-Add placement contracts for the op families that matter to the active queue:
-
-- copy / staged load
-- leaf elementwise
-- reduction
-- matmul / GEMM variants
-- output stores / external ABI writes
-
-Each contract states accepted input placements, output policy, conversion
-permission, and typed reject reasons.
-
-This is where different compute requirements become explicit.
-For example, two consumers of the same producer may require different shard
-dimensions; the planner must see that before source emission.
-
-### S6: Add TTPlacementResolutionPlan And Conflict Rejects
-
-Build the value/use placement-resolution pass.
-
-The first resolver milestone must not silently insert a conversion.
-It selects a common legal placement when one exists and otherwise emits a
-typed conflict diagnostic naming:
-
-- producer value
-- consumer op/use
-- source placement
-- required target placement
-- whether the missing edge is a conversion implementation, an op contract,
-  or a user `allow_reshard=False` constraint
-
-This immediately prevents silent wrong placement.
-
-### S7: Add TTReshardPlan Conversion Paths
-
-Admit explicit conversion plans in this order:
-
-1. interleaved DRAM to resident L1 sharded view,
-   matching the existing staged-copy path
-2. sharded L1 view to interleaved DRAM output when needed by external ABI
-3. L1 sharded to L1 sharded when source and target shard shapes differ
-4. DRAM sharded to L1 sharded for weight / prefetcher-style paths
-5. sharded DRAM to sharded DRAM when TT-Metal / TTNN evidence and runtime
-   admission are available
-
-Each conversion needs source/spec/direct-runtime or codegen admission.
-Unsupported conversions must be typed rejects.
-
-### S8: Project Placement And Conversion To ExecutableSpec
-
-Extend `ExecutableSpec` projection with:
-
-- tensor memory config records
-- conversion / reshard records
-- materialization records
-- placement-derived direct-runtime admission reasons
-
-Leaf readers, `BlackholeModule`, and codegen consume these records.
-They may select a concrete leaf implementation or reject unsupported
-conversion kinds.
-They may not recover missing placement from lower-level source structure.
-
-### S9: DRAM-Sharded And N-D Production Cases
-
-After 2D L1 conversion paths and executable projection are stable, add:
-
-- DRAM-sharded tensor configs
-- DRAM-sharded matmul / weight streaming contracts
-- `NdShardSpec`-style N-D sharding
-- distributed mesh / CCL production variants
-
-This belongs before claiming production distributed sharding support.
-
-## Relation To Current Task Queue
-
-T2 leaf compute / GEMM baseline work can continue for interleaved or
-already-admitted placements.
-
-This design is queued as T3.
-It starts after the T2 current-placement baseline and before any sharded
-GEMM/layout claim.
-The external `sharded_accessor_cta` / `page_indexed_accessor_cta` runtime
-ABI gap is queued as T4 after this design, because those accessors must
-consume projected placement / conversion records rather than infer sharding
-or page metadata.
-
-Any task that claims sharded GEMM/layout support must depend on:
-
-- DSL / user placement intent capture
-- `TTTensorMemoryConfigPlan`
-- `TTOpShardingContract`
-- placement conflict validation
-- `TTReshardPlan` or typed rejects
-
-T10 distributed production variants depend on this design before they can
-claim sharding support.
-Mesh / CCL / NoC plans are not enough by themselves if tensor sharding and
-reshard conflicts are still implicit.
-
-The ordering relationship is:
-
-```text
-T2 interleaved / current admitted placements
-  can proceed now
-
-T3 tensor/value sharding and explicit reshard
-  starts after T2 baseline
-
-T4 external accessor / runtime ABI expansion
-  consumes the projected placement and conversion records
-
-T5 sharded GEMM / layout variants
-  require S2-S8 of this design
-
-T9 workload first paths that rely on sharded weights or activations
-  require DSL intent, memory-config plans, op contracts, and conflict rejects;
-  admitted correctness requires the matching reshard path
-
-T10 production distributed variants
-  require the whole sharding / reshard lane plus mesh / CCL / NoC plans
-```
+T9 workload first paths that rely on sharded weights or activations must
+consume DSL intent, memory-config plans, op contracts, conflict rejects, and
+the matching admitted reshard path.
+T10 production distributed variants also require mesh / CCL / NoC plans, but
+those plans do not replace tensor sharding and reshard contracts.
 
 ## Completion Criteria
 
-This design is implemented only when:
+This design remains satisfied only while:
 
 - user or op sharding intent is explicit before TT planning
 - TileLang exposes a concrete DSL / annotation surface for memory configs

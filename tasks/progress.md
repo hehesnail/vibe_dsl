@@ -1,10 +1,8 @@
 # TileLang Blackhole Backend Progress
 
-> 这是当前 checkout 的执行看板。
-> 长期合同看 `tasks/dev_design/`。
-> 本文件只回答：现在做哪一项、下一项被什么挡住、
-> 当前任务需要知道的边界、最近跑过什么验证。
-> 不维护按 HEAD 实时更新的实现库存或历史流水。
+> 当前 checkout 的执行看板。
+> 长期架构合同看 `tasks/dev_design/`。
+> 本文件只保留当前状态、active task、后续 gate、最近验证摘要。
 
 ## Status
 
@@ -13,603 +11,166 @@
 - Main chain:
   `Normalized Tile TIR -> SpatialPlan -> TTProgram -> ExecutableSpec`
 
-## Active Boundary
+## Current Board
 
-The current admitted direct-runtime surface is T1's buffer-address ABI, the
-completed T2 current-placement compute baseline, T3's first explicit
-placement / reshard projection surface, T4's external accessor ABI
-expansion, and T5's hardened admitted static sharded-L1 GEMM layout:
-interleaved DRAM runtime buffers, staged-copy resident L1 / CB-backed views,
-the admitted 64B page-indexed copy path, static external sharded L1 accessors,
-admitted standalone leaf compute families, current-placement GEMM direct
-correctness, static external sharded-L1 GEMM direct correctness for the first
-admitted bf16 layouts including 2x2 multi-core sharded execution and all
-external bf16 input/output tensors, plus a 110-core many-core all-bf16
-sharded execution gate, plus K-dimension width-sharded bf16 GEMM direct
-runtime correctness through device-side partial-C reduction across K shards,
-explicit
-`T.MemoryConfig` / `T.annotate_memory_config` placement intent,
-`TTTensorMemoryConfigPlan`, `TTOpShardingContract`,
-`TTPlacementResolutionPlan`, and `TTReshardPlan` projection for the current
-interleaved-DRAM to resident-L1 staged-copy conversion.
+| Task | State | Current boundary |
+| --- | --- | --- |
+| T1 Buffer address ABI | Complete | Runtime consumes typed buffer/address records for interleaved DRAM, staged-copy resident L1 views, and the admitted 64B page-indexed copy path. |
+| T2 Leaf compute / GEMM baseline | Complete | Admitted non-flash leaf families and current-placement GEMM run through `BlackholeModule` or fail closed with typed reasons. |
+| T3 Tensor/value sharding and explicit reshard | Complete | `T.MemoryConfig`, placement intents, tensor memory-config plans, op sharding contracts, placement resolution, and first `interleaved_to_sharded` staged-copy conversion are typed and projected. |
+| T4 External accessor / runtime ABI | Complete | External interleaved, 64B page-indexed DRAM, and static sharded-L1 accessors are executable records consumed by source/runtime; unsupported dynamic/common-runtime forms reject from typed records. |
+| T5 Sharded GEMM / layout variants | Complete | First static external sharded-L1 GEMM layouts pass direct runtime, including single-core, 2x2 multi-core, 110-core many-core all-bf16, and first K-dimension partial-sum correctness path. |
+| T6 `topk` | Active | Standalone value/index selection with typed value output and `int32` index output contracts. |
+| T7 Exact-CB / materialization primitives | Queued | Wider source-live-form materialization, exact-CB publish/consume, partial combine, and multi-block flash exact-CB correctness. |
+| T8 Irregular work domains / indexed access | Queued | TIR-derived segmented, ragged, and indexed addressing evidence; no workload metadata registry. |
+| T9 Workload first paths | Queued | Workload checkpoints decomposed into admitted primitive surfaces with direct-runtime correctness. |
+| T10 Distributed production variants | Queued | Mesh, CCL, NoC/multicast/global scheduling, distributed workload correctness, and production partial-K reduction protocol. |
 
-T5's K-sharded direct-runtime path executes each K shard as a separate
-logical-z wave and uses the direct runtime as the blocking partial-sum barrier.
-The first `bk` wave writes final `C`; later `bk` waves write a partial-C scratch
-buffer, then a runtime-issued TT-Metal tile-add reduction program reads final
-and partial `C` through sharded accessors and writes the reduced tile back to
-final `C`. The host only reads the final output after device reductions finish.
-This proves direct-runtime correctness for cross-core partial sums, but it does
-not claim a production single-launch semaphore/atomic reduce protocol. T5 also
-does not claim implicit
-retile/work-coarsening, production DRAM-sharded weights, N-D production cases,
-mesh/CCL/NoC, or distributed production variants.  Those remain later work
-and must consume the projected placement/conversion/accessor records instead
-of inferring sharding or page metadata.
+## Active Boundary Notes
 
-The T3 hardening gate for the admitted `interleaved_to_sharded`
-staged-copy conversion now covers large and oversubscribed copy shapes,
-explicit user placement of the resident L1 view, multiple independent
-reshard records, non-zero tile offsets, sharded resident-L1 elementwise
-compute chains, mixed elementwise-plus-reduce compute chains, corrupted
-executable placement / reshard records, and serialization preservation. It
-does not expand T3 into external accessors, sharded GEMM, or production
-DRAM-sharded weights.
+- Runtime/codegen must consume `ExecutableSpec` leaf records; no source-name,
+  argument-position, accessor-string, or runtime observation recovery.
+- `T.Kernel` describes logical work items.  Tensor sharding comes from
+  explicit placement intent and resolved memory-config plans.
+- T5 K-sharded GEMM currently proves correctness with blocking logical-z waves
+  plus a runtime-issued device tile-add reduction.  It is not the production
+  single-launch or fused-launch semaphore/NoC partial-reduce protocol.
+  T10.5 owns replacing that path and deleting or folding the temporary special
+  route.
+- For T6-T10, validators and projection tests are support evidence only.
+  An admitted positive path must execute through `BlackholeModule` under the
+  repository TT-Sim setup and compare device output against a host reference.
 
-## Completed Baseline: T1 Buffer Address ABI
+## Active Task: T6 `topk`
 
-T1 is complete for the current admitted direct-runtime surface.
-The active non-negotiable boundaries carried into T2 are:
-
-- Do not silently retile GPU-style `alloc_shared((tile_m, tile_n))` to fill
-  Blackhole L1. Treat it as per-worker, per-work-item scratch unless an
-  explicit retile/work-coarsening plan changes the logical work mapping and
-  source-region mapping together.
-- Keep TileLang logical work grid, physical worker group, temporal work
-  packets, and per-worker L1 / CB scratch reuse separate.
-- Runtime must execute typed contracts. It must not infer source regions,
-  shard ownership, page metadata, or buffer roles from names, suffixes,
-  argument order, or layout strings.
-
-## Completed Baseline: T2 Leaf Compute / GEMM Baseline
-
-T2 is complete for the current-placement surface.
-Unary, binary, broadcast-cols, reduction, fill/typecast publish, and the
-current-placement GEMM baseline now project typed leaf/source/spec contracts.
-Admitted leaf and GEMM forms run through `BlackholeModule`; simulator-limited
-standalone reduction and standalone fill/typecast publish fail closed with
-typed direct-runtime unsupported reasons. Standalone reduction remains gated
-until the TT-Sim `tensix_execute_pacr: count=1` row-reduce PACR boundary is
-resolved. The full-tile reduce CB to rank-1 output writer binding is now
-covered by typed lowering/source checks.
-
-T2 does not claim tensor/value sharding, explicit reshard, sharded GEMM, or
-external sharded/page-indexed runtime accessor admission.
-
-## Completed Baseline: T3 Tensor/Value Sharding And Explicit Reshard
-
-T3 is complete for the first explicit placement and reshard surface.
-TileLang now exposes `T.MemoryConfig`, `T.ShardSpec`, `T.NDShardSpec`,
-`T.CoreGrid`, convenience constructors, and `T.annotate_memory_config`.
-User/default global placement lowers into `SpatialPlan.TensorPlacementIntent`.
-`TTProgram` carries `TTTensorMemoryConfigPlan`,
-`TTOpShardingContract`, `TTPlacementResolutionPlan`, and `TTReshardPlan`;
-validators reject placement conflicts and incomplete conversion records.
-
-`ExecutableSpec` projects tensor memory config and reshard records, and
-`BlackholeModule` metadata / serialization / direct-runtime admission consume
-those records. The first admitted conversion class is the existing
-interleaved-DRAM to resident-L1 staged-copy path, represented explicitly as
-`interleaved_to_sharded` with `materialization_protocol = staged_copy`.
-
-T3 does not admit external `sharded_accessor_cta` /
-`page_indexed_accessor_cta` runtime accessors or sharded GEMM/layout
-variants; those remain T4/T5.
-
-## Completed Baseline: T4 External Accessor / Runtime ABI Expansion
-
-T4 is complete for the admitted external accessor surface.
-`TTBufferDistributionPlan`, `TTTensorMemoryConfigPlan`, `TTABIPlan`, and
-`ExecutableSpec` now project enough records for:
-
-- interleaved DRAM accessors,
-- 64B page-indexed DRAM transport accessors,
-- static sharded L1 external accessors backed by `TensorAccessorArgs`.
-
-Direct runtime/codegen consume typed accessor offsets/counts and buffer
-distribution records.  Missing page metadata, unsupported common-runtime
-accessor metadata, and incomplete sharded distribution records fail closed
-from executable records before source/runtime guessing.
-
-T4 does not claim dynamic/common-runtime accessor metadata, production
-DRAM-sharded weights, N-D sharding, or GEMM/layout variants beyond the
-current-placement baseline.
-
-## Completed Baseline: T5 Sharded GEMM / Layout Variants
-
-T5 is complete for the first static external sharded-L1 GEMM layout.
-External `A`, `B`, and `C` tensors can carry explicit block-sharded L1
-placement intent when the shard grid is covered by the kernel work mapping.
-The GEMM source/spec/direct-runtime path consumes T4 `TTABIPlan` /
-`ExecutableSpec` sharded accessor records and direct runtime executes the
-admitted single-core bf16-input / fp32-output case plus the 2x2 multi-core
-bf16-input / fp32-output, 2x2 all-external-bf16, and 110-core many-core
-all-external-bf16 cases through `BlackholeModule`. T5 also admits the first
-K-dimension sharded GEMM correctness path: `A` and `B` are width-sharded on
-their K dimension, `T.Kernel(grid_x, grid_y, k_shards)` projects
-`logical_grid_z`, direct runtime maps each K shard to a logical-z wave, and a
-device-side tile-add reduction program merges fp32 partial-C scratch output
-into final `C` before host readback.
-
-Unsupported external sharded-L1 GEMM layouts that require a logical work
-mapping change now fail closed from typed records: a runtime-visible sharded
-accessor whose `shard_grid_shape` is not covered by the attached
-`TTCoreGroup.work_packets` is rejected in `ValidateTTProgram` with an
-explicit retile/work-coarsening diagnostic.
-
-T5 does not claim implicit retile/work-coarsening, dynamic/common-runtime
-sharded accessors, production DRAM-sharded weights, N-D sharding, or
-distributed GEMM variants.
-
-## Active Task: T6 topk
-
-### Problem
-
-Standalone value/index selection is not yet an admitted Blackhole direct
-runtime path. T6 must represent `topk` value and index selection with typed
-leaf/source/spec contracts and reject unsupported axis, dtype, shape, or
-index-layout combinations before source/runtime guessing.  Task design:
+T6 admits standalone value/index selection as a real Blackhole direct-runtime
+path.  Task design:
 `tasks/dev_design/2026-05-03-blackhole-t6-topk.md`.
-
-### Completion Standard
 
 T6 is complete only when:
 
-- admitted value and `int32` index outputs are represented in typed IR/source
-  contracts,
-- direct runtime correctness covers the first admitted bf16/fp32 input
-  surface,
-- unsupported `topk` axes, index dtypes, tie-breaking assumptions, and layout
-  combinations fail closed with typed diagnostics,
+- value output and `int32` index output are represented in typed IR/source/spec
+  contracts;
+- standalone row-wise fp32 `topk` values plus exact `int32` indices run through
+  direct runtime for a multi-work case such as
+  `M=320`, `N=128`, `k=6`, `axis=1`, `blk_m=64`;
+- the admitted bf16 value surface plus exact `int32` indices also runs through
+  direct runtime with `M > blk_m`;
+- unsupported axes, index dtypes, tie behavior, and layout combinations fail
+  closed with typed diagnostics;
 - no external runner or source-name recovery is introduced.
+
+Next implementation step:
+add the typed value/index projection and direct-runtime tests first, then land
+the source/runtime implementation against those tests.
 
 ## Required Verification
 
-每个 active implementation task 都使用这张验收表。
+Every active implementation task uses this acceptance table.
 
-| 层级 | 要求 |
+| Level | Requirement |
 | --- | --- |
 | Compile | C++ build succeeds with `cmake --build build -j32`. |
-| Structure | TIR / `TTProgram` / executable projection tests prove the typed fields exist and old fallbacks are absent. |
-| Source/spec | Materialized executable schema contains the real address contract used by the source/runtime path. |
+| Structure | TIR / `SpatialPlan` / `TTProgram` / executable projection tests prove typed fields exist and old fallbacks are absent. |
+| Source/spec | Materialized executable schema contains the records consumed by source/runtime. |
 | Direct runtime | The admitted path runs through `BlackholeModule`, not an external runner. |
-| TT-Sim correctness | Runtime correctness uses the repository TT-Sim setup and bf16 baseline. |
+| TT-Sim correctness | Runtime correctness uses the repository TT-Sim setup and bf16 baseline when tensor values are involved. |
 | Unsupported reason | Unsupported forms fail closed with typed diagnostics before source/runtime guessing. |
 
 ## Remaining Runtime Correctness Gates
 
-These are acceptance gates for T6-T10.  Projection tests, validators, source
-schema tests, and typed rejects are required, but they do not complete a task
-unless the admitted positive path also executes through `BlackholeModule` with
-the repository TT-Sim setup.  Where tensor values are involved, the formal
-runtime gate includes a bf16 case; fp32 cases can be additional coverage or the
-first value-surface bring-up, but they do not replace the bf16 baseline.
-
 ### T6 `topk`
 
-- Run standalone row-wise `topk` with fp32 values and `int32` indices through
-  direct runtime, using a multi-work shape such as `M=320`, `N=128`, `k=6`,
-  `axis=1`, and `blk_m=64`.  The input data must avoid ties unless the tie
-  policy is explicitly represented.  Compare both values and indices against
-  `torch.topk`.
-- Run the admitted bf16 value surface with `int32` indices through direct
-  runtime, with `M > blk_m` so multiple logical work items execute.  Compare
-  values with bf16-appropriate tolerance and indices exactly.
-- Keep unsupported axes, dtypes, tie behavior, and layouts as typed reject
-  tests, but do not count those rejects as runtime correctness coverage.
+- fp32 values + exact `int32` indices, multi-work row-wise case:
+  compare values and indices with `torch.topk`.
+- bf16 values + exact `int32` indices, `M > blk_m`:
+  compare values with bf16-appropriate tolerance and indices exactly.
+- Inputs should avoid ties until deterministic tie behavior is represented.
+  Typed rejects for unsupported forms do not count as positive correctness.
 
-### T7 Exact-CB / Materialization Primitives
+### T7 Exact-CB / Materialization
 
-- Run a bf16 source-live-form materialization case where one kernel publishes
-  an intermediate value and a later kernel consumes the materialized form.
-  The final tensor must match a host reference across multiple work packets.
-- Run at least one admitted exact-CB publish/consume multi-kernel path through
-  direct runtime.  If multi-page events are not admitted, they must reject
-  with a typed reason; the admitted one-page path still needs positive runtime
-  correctness.
-- Run a partial-combine case with two or more device-produced partial values
-  such as partial output / logsum or the equivalent explicit TIR values.  The
-  on-device combine result must match the host reference.
-- Run a bf16 multi-block flash-attn or flash-decode exact-CB case that exercises
-  producer/consumer lifetime and combine behavior through `BlackholeModule`.
+- bf16 source-live-form materialization where one kernel publishes an
+  intermediate value and a later kernel consumes the materialized form.
+- At least one admitted exact-CB publish/consume multi-kernel path through
+  direct runtime.  Unsupported multi-page events must reject with typed
+  reasons, but the admitted subset still needs positive runtime correctness.
+- Device-produced partial combine over two or more partial values, compared
+  with a host reference.
+- bf16 multi-block flash-attn or flash-decode exact-CB case exercising
+  producer/consumer lifetime and combine behavior.
 
-### T8 Irregular Work Domains / Indexed Access
+### T8 Irregular Work / Indexed Access
 
-- Run a segmented or grouped-dispatch case whose valid ranges come from TIR
-  loop bounds, predicates, and address expressions with operands such as
-  `group_sizes` / `group_offsets`.  Use non-uniform groups and more than one
-  work packet, then compare the output with a host reference.
-- Run a ragged-bound case whose valid rows/tokens come from TIR predicates and
-  expressions with operands such as `cache_seqlens`.  The runtime must prove it
-  skips invalid rows by comparing against a ragged host reference.
-- Run an indexed-block traversal case where `BufferLoad` / `BufferStore`
-  indices use an operand such as `block_indices`.  The direct-runtime result
-  must match a gather, copy, or accumulation reference that depends on the
-  index list.
-- T8 is not complete if these facts only validate or project.  The derived
-  evidence must drive source/runtime addressing for the admitted positive
-  cases, and no workload-family metadata registry may become owner truth.
+- Segmented or grouped dispatch from TIR loop/predicate/address structure with
+  non-uniform groups and operands such as `group_sizes` / `group_offsets`.
+- Ragged bounds from TIR predicates and operands such as `cache_seqlens`,
+  proving invalid rows/tokens are skipped.
+- Indexed block traversal where `BufferLoad` / `BufferStore` indices use an
+  operand such as `block_indices`.
+- In every case, the derived evidence must drive source/runtime addressing.
+  Projection-only tests do not complete T8.
 
 ### T9 Workload First Paths
 
-Each T9 checkpoint needs its own first-path direct-runtime correctness proof:
+Each checkpoint needs its own direct-runtime correctness proof:
 
-- T9.1 pre-grouped MoE / routed grouped GEMM: bf16 grouped GEMM with explicit
-  grouped token ranges, non-uniform groups, and typed gather/scatter or packed
-  operands as admitted.  Compare with a host grouped-GEMM reference.
-- T9.2 paged GQA decode: bf16 page/block-table KV reads with ragged
-  `cache_seqlens`, more than one page, and the admitted partial combine path.
-  Compare with a host decode reference.
-- T9.3 paged MLA decode: bf16 paged latent / KV access with the admitted
-  page-table and ragged-bound surface.  Compare with a host MLA decode
-  reference.
-- T9.4 sparse / ragged attention: bf16 indexed sparse-block traversal plus
-  ragged valid lengths.  Compare with a dense or sparse host reference for the
-  same `block_indices` and bounds.
-- T9.5 chunk recurrence / scan: a multi-chunk case with loop-carried state and
-  device state-buffer lifetime.  Compare final outputs and final state against
-  a host scan/reference implementation.
-- T9.6 multi-block flash decode: a bf16 multi-block split with exact-CB
-  publish/consume and partial combine.  Compare with the host flash-decode
-  reference.
+- T9.1 pre-grouped MoE / routed grouped GEMM:
+  bf16 grouped GEMM with explicit non-uniform token ranges.
+- T9.2 paged GQA decode:
+  bf16 page/block-table KV reads with ragged `cache_seqlens`, more than one
+  page, and the admitted partial combine path.
+- T9.3 paged MLA decode:
+  bf16 paged latent / KV access through the admitted page-table and ragged
+  bound surface.
+- T9.4 sparse / ragged attention:
+  bf16 indexed sparse-block traversal plus ragged valid lengths.
+- T9.5 chunk recurrence / scan:
+  multi-chunk loop-carried state and device state-buffer lifetime.
+- T9.6 multi-block flash decode:
+  bf16 multi-block split with exact-CB publish/consume and partial combine.
 
-### T10 Distributed Production Variants
+### T10 Distributed Production
 
-- T10.1 mesh / multi-device placement: run an admitted mesh or multi-device
-  placement case with real runtime movement and computation across more than
-  one device when the simulator/target supports it.  If the available TT-Sim
-  target cannot execute multi-device, that is a documented target boundary for
-  that claim, not a substitute for distributed correctness.
-- T10.2 CCL contracts: run all-gather, reduce-scatter, and all-to-all
-  correctness cases over at least two logical shards/devices for every
-  admitted collective contract, comparing against host references.
-- T10.3 NoC / multicast / global scheduling: run a multi-core producer /
-  consumer case that uses the admitted semaphore, remote route, or multicast
-  protocol and compare the final tensor with a host reference.
-- T10.4 distributed workload correctness: run at least one T9 first path in its
-  admitted distributed form end to end, not just primitive collectives.
-- T10.5 K-sharded GEMM production partial reduce: replace the current blocking
-  z-wave runtime-issued tile-add path with the typed production reducer
-  protocol, then run a many-core bf16 case such as `M=320`, `N=352`,
-  `K>=512`, `logical_grid=11x10x2` or larger.  Correctness must compare
-  against host GEMM and the old special fallback must be deleted or folded into
-  the typed protocol implementation.
+- T10.1 mesh / multi-device placement:
+  admitted mesh or multi-device runtime movement and computation across more
+  than one device when the simulator/target supports it.
+- T10.2 CCL contracts:
+  all-gather, reduce-scatter, and all-to-all correctness over at least two
+  logical shards/devices for every admitted collective contract.
+- T10.3 NoC / multicast / global scheduling:
+  multi-core producer/consumer correctness through the admitted semaphore,
+  remote route, or multicast protocol.
+- T10.4 distributed workload correctness:
+  at least one T9 first path in its admitted distributed form end to end.
+- T10.5 K-sharded GEMM production partial reduce:
+  replace the current blocking z-wave tile-add path with typed reducer records
+  and run a many-core bf16 case such as
+  `M=320`, `N=352`, `K>=512`, `logical_grid=11x10x2` or larger.
 
 ## Recent Verification
 
-2026-05-04 UTC T5 multi-core/all-bf16 sharded GEMM hardening:
+2026-05-04 UTC documentation cleanup:
 
-- `cmake --build build -- -j32` passed.
-- TT-Sim T5/T4 targeted selector:
-  `test_blackhole_t5_external_sharded_l1_gemm_projects_accessor_contracts`,
-  `test_blackhole_t5_external_sharded_l1_gemm_rejects_unmapped_shard_grid`,
-  `test_blackhole_t5_external_sharded_l1_gemm_direct_runtime_bf16`,
-  `test_blackhole_t5_multicore_external_sharded_l1_gemm_direct_runtime_bf16`,
-  `test_blackhole_t5_multicore_external_sharded_l1_gemm_direct_runtime_all_bf16`,
-  `test_blackhole_t5_manycore_external_sharded_l1_gemm_direct_runtime_all_bf16`,
-  and
-  `test_blackhole_t4_external_sharded_l1_accessor_projects_from_memory_config`
-  passed: `7 passed`.
-- The many-core case covers `M=320`, `N=352`, `K=256`, logical grid
-  `11 x 10`, 110 physical worker cores, 110 one-work packets, A/B/C sharded
-  accessor compile-time counts `11/12/61`, and all external bf16 input/output
-  tensors.
-- GEMM non-direct regression subset:
-  `pytest -q testing/python/target/blackhole/test_blackhole_gemm.py -k 'not direct_runtime and not direct_call and not gemm_basic and not multicore' --tb=short`
-  passed: `45 passed, 2 skipped, 17 deselected`.
-- `pytest -q testing/python/transform/test_blackhole_spatial_ir.py`
-  passed: `104 passed`.
+- `git diff --check` passed.
+- No build or TT-Sim runtime tests were run because this batch only edits
+  design/progress/memory documentation.
 
-2026-05-04 UTC T5 K-dimension sharded GEMM device partial-sum runtime:
+2026-05-04 UTC T5 K-dimension sharded GEMM direct-runtime correctness:
 
 - `cmake --build tilelang_repo/build -- -j32` passed.
-- K-sharded direct-runtime selector:
+- K-sharded direct-runtime selector passed:
   `test_blackhole_t5_external_k_sharded_l1_gemm_direct_runtime_partial_sum_bf16`
   and
-  `test_blackhole_t5_manycore_external_k_sharded_l1_gemm_direct_runtime_partial_sum_bf16`
-  passed: `2 passed`.
-- T4/T5 targeted selector including existing M/N sharded GEMM gates, all-bf16
-  many-core GEMM, both new K-sharded partial-sum cases, and T4 sharded accessor
-  projection passed: `9 passed`.
+  `test_blackhole_t5_manycore_external_k_sharded_l1_gemm_direct_runtime_partial_sum_bf16`.
+- T4/T5 targeted selector passed: `9 passed`.
 - GEMM non-direct regression subset passed:
   `46 passed, 1 skipped, 20 deselected`.
-- `pytest -q testing/python/transform/test_blackhole_spatial_ir.py --tb=short`
-  passed: `104 passed`.
-- The K-sharded many-core gate covers `M=320`, `N=352`, `K=512`,
-  `logical_grid = 11 x 10 x 2`, 110 physical worker cores, 220 logical work
-  items, width-sharded A/B K placement, block-sharded C placement, and
-  direct-runtime device-side fp32 partial-C reduction across the two K shards.
-
-2026-05-03 UTC T5 static external sharded-L1 GEMM:
-
-- `cmake --build build -- -j32` passed.
-- TT-Sim direct-runtime T5 trio:
-  `test_blackhole_t5_external_sharded_l1_gemm_projects_accessor_contracts`,
-  `test_blackhole_t5_external_sharded_l1_gemm_rejects_unmapped_shard_grid`,
-  and `test_blackhole_t5_external_sharded_l1_gemm_direct_runtime_bf16`
-  passed.
-- GEMM non-direct regression subset:
-  `45 passed, 2 skipped, 15 deselected`.
-- `test_blackhole_spatial_ir.py`: `104 passed`.
-- T4 sharded accessor projection smoke passed.
-
-2026-05-03 UTC T4 external accessor/runtime ABI expansion:
-
-- `cmake --build build -- -j32` passed.
-- `pytest -q tilelang_repo/testing/python/target/blackhole/test_blackhole_copy_pipeline.py`:
-  `57 passed, 10 skipped, 1 xfailed`.
-- TT-Sim direct runtime:
-  `pytest -q testing/python/target/blackhole/test_blackhole_copy_runtime.py`:
-  `34 passed`.
-- Spatial / TTProgram / executable projection:
-  `pytest -q tilelang_repo/testing/python/transform/test_blackhole_spatial_ir.py`:
-  `104 passed`.
-- Adjacent GEMM schema/source regression without direct-runtime execution:
-  `pytest -q tilelang_repo/testing/python/target/blackhole/test_blackhole_gemm.py -k 'not direct_runtime and not direct_call and not gemm_basic and not multicore' --tb=short`:
-  `43 passed, 2 skipped, 14 deselected`.
-- `timeout 240s pytest -q testing/python/target/blackhole/test_blackhole_gemm.py --tb=short`
-  timed out in direct-runtime GEMM execution; no residual pytest/TT-Sim
-  process remained. This is tracked as an adjacent TT-Sim/GEMM runtime
-  boundary, not as a T4 external accessor blocker.
-
-2026-05-03 UTC flash-attn exact-CB lifetime regression fix:
-
-- `cmake --build build -- -j32` passed.
-- Targeted flash-attn source lifetime gates:
-  `test_flash_attention_small_compute_source_respects_cb_capacity_on_reuse`,
-  `test_flash_attention_seq64_bf16_compute_source_keeps_cb_events_queue_consistent`,
-  `test_flash_attention_seq64_bf16_compute_source_releases_qk_scores_before_next_scores_publish`,
-  `test_flash_attention_seq64_bf16_compute_source_uses_static_tile_zero_for_single_page_cb_inputs`,
-  and `test_flash_attention_seq64_bf16_pv_merge_consumes_scaled_acc_o_live_form`
-  all passed.
-- seq64 direct runtime recovery:
-  `test_blackhole_flash_attention_seq64_mha_bf16_forward_direct_runtime` and
-  `test_blackhole_flash_attention_seq64_gqa_bf16_forward_direct_runtime`
-  both passed.
-- Full flash-attn runtime + pipeline:
-  `pytest -q -vv testing/python/target/blackhole/test_blackhole_flash_attention_runtime.py testing/python/target/blackhole/test_blackhole_flash_attention_pipeline.py --tb=short`
-  passed: `95 passed`.
-- Adjacent compute runtime regression checks:
-  `test_blackhole_t3_compute_runtime.py` passed: `8 passed`;
-  `test_blackhole_leaf_compute_runtime.py` passed: `16 passed, 2 skipped`.
-
-2026-05-02 T3 runtime hardening and adjacent Blackhole regression:
-
-- `cmake --build build -- -j32` passed.
-- T3 hardening selector in
-  `testing/python/target/blackhole/test_blackhole_copy_runtime.py`:
-  `13 passed`.
-- `pytest -q -vv testing/python/target/blackhole --tb=short`:
-  `253 passed, 9 skipped, 1 xfailed`.
-- `pytest -q -vv testing/python/transform/test_blackhole_spatial_ir.py --tb=short`:
-  `101 passed`.
-
-2026-05-03 UTC T3 sharded compute runtime hardening:
-
-- `cmake --build build -- -j32` passed after final cleanup.
-- `pytest -q -vv testing/python/target/blackhole/test_blackhole_t3_compute_runtime.py --tb=short`:
-  `7 passed`.
-- `pytest -q -vv testing/python/target/blackhole/test_blackhole_leaf_compute_runtime.py --tb=short`:
-  `16 passed, 2 skipped`.
-- `pytest -q -vv testing/python/target/blackhole/test_blackhole_copy_runtime.py --tb=short`:
-  `31 passed`.
-- `pytest -q -vv testing/python/target/blackhole/test_blackhole_flash_attention_runtime.py --tb=short`:
-  `15 passed, 5 skipped`.
-- Remaining target files
-  `test_blackhole_gemm.py`, `test_blackhole_copy_pipeline.py`,
-  `test_blackhole_flash_attention_pipeline.py`, and
-  `test_blackhole_tvm_ffi_export.py`:
-  `191 passed, 2 skipped, 1 xfailed`.
-- Post-cleanup smoke:
-  `test_blackhole_t3_compute_runtime.py` stayed `7 passed`, and
-  `test_blackhole_flash_attention_runtime.py::test_blackhole_flash_attention_single_work_item_metadata_drops_contract_family`
-  passed.
-- `git diff --check` passed.
-
-## Task Queue
-
-当前 active task 是 T6。
-T1, T2, T3, T4, and T5 are complete for their stated boundaries.
-T6 now owns standalone value/index selection.
-
-| 任务 | 目标 | 依赖 | 完成目标 |
-| --- | --- | --- | --- |
-| T1 Buffer address ABI 接入执行路径 | Make sharded L1 and page-indexed address ABI real execution contracts. | Current typed placement fields. | Complete. |
-| T2 Leaf compute / GEMM baseline | Admit non-flash leaf compute and current-placement GEMM layout baseline. | T1 complete. | Complete. |
-| T3 Tensor/value sharding and explicit reshard | Make TTNN-style user placement intent, op placement contracts, placement conflict handling, and reshard plans first-class in the IR chain. | T2 baseline complete; design in `2026-05-02-blackhole-tensor-sharding-and-reshard.md`. | Complete. |
-| T4 External accessor/runtime ABI expansion | Admit or precisely reject external `sharded_accessor_cta` and `page_indexed_accessor_cta` runtime/codegen forms. | T1 address ABI and T3 placement/conversion projection. | Complete. |
-| T5 Sharded GEMM / layout variants | Admit GEMM/layout variants that depend on real tensor sharding, including explicit retile/work-coarsening when a layout changes logical work mapping. | T3 and T4 complete. | Complete. |
-| T6 `topk` | Admit standalone value/index selection. | T2 leaf reductions. | Value and `int32` index correctness, not compile-only. |
-| T7 Exact-CB / materialization primitives | Repair wider publish/consume, partial combine, source-live-form materialization, and multi-block flash-attn / flash-decode exact-CB correctness. | T1 and relevant T3 materialization rules when sharded values are involved. | Multi-kernel intermediate correctness and typed materialization rejects. |
-| T8 Irregular work domains / indexed access | Analyze existing TIR loop, predicate, and buffer-access expressions for segmented/ragged/indexed work; preserve only durable evidence needed by later layers. | T1 and relevant per-work descriptors. | Missing/inconsistent irregular-domain evidence rejects before source/runtime emission; no workload-specific metadata registry or parallel domain IR. |
-| T9 Workload first paths | Bring up pre-grouped MoE, sparse/ragged attention, paged GQA decode, paged MLA decode, chunk recurrence, and multi-block flash decode first paths. | Prior tasks as needed by each workload. | Each workload has a stated first path with correctness proof and unsupported-form rejects. |
-| T10 Distributed production variants | Add mesh/sharding/CCL/NoC/multicast/global scheduling support, including production K-sharded GEMM partial-reduce protocol. | Stable first paths and typed distributed plans, including T3 sharding/reshard. | Production distributed paths have typed placement, communication, and correctness gates. |
-
-## Scope Breakdown
-
-Top-level tasks are review / planning boundaries.
-Large tasks must land through these smaller checkpoints.
-
-### T2 Leaf Compute / GEMM Baseline
-
-- T2.1 Leaf contract matrix:
-  admitted TT-Metal leaf names, operand/result schemas, source/spec records,
-  and typed unsupported categories.
-- T2.2 Elementwise / pack / typecast families:
-  unary, binary, broadcast, pack, and typecast direct correctness or typed
-  rejects.
-- T2.3 Reduction family:
-  reduce leaf contracts, access/live-form evidence, and typed rejects for
-  unsupported axes or shapes.
-- T2.4 Current-placement GEMM baseline:
-  non-sharded GEMM layout variants that use the existing admitted placement
-  surface; no sharded GEMM claim.
-
-### T3 Tensor/Value Sharding And Explicit Reshard
-
-- T3.1 DSL placement surface:
-  `T.MemoryConfig`, `T.ShardSpec`, `T.NDShardSpec`,
-  `T.annotate_memory_config`, constructor sugar, and frontend validation.
-- T3.2 `SpatialPlan.TensorPlacementIntent`:
-  lower user configs and explicit defaults into target-independent placement
-  intent; prove `scope`, `T.Kernel`, and `T.annotate_layout` are not sharding
-  APIs.
-- T3.3 `TTTensorMemoryConfigPlan`:
-  mirror TTNN `MemoryConfig + ShardSpec / NdShardSpec` and validate
-  consistency with low-level buffer distribution.
-- T3.4 `TTOpShardingContract` and placement conflict rejects:
-  op input/output placement contracts plus deterministic producer/consumer
-  conflict diagnostics.
-- T3.5 `TTReshardPlan` and executable projection:
-  explicit conversion records, first admitted conversion path, and
-  runtime/codegen fail-closed consumption.
-
-### T4 External Accessor / Runtime ABI Expansion
-
-- T4.1 Executable accessor schema:
-  project enough typed records for external sharded and page-indexed accessors.
-- T4.2 `sharded_accessor_cta` admission:
-  direct TT-Metal accessor ABI or precise typed reject.
-- T4.3 `page_indexed_accessor_cta` admission:
-  page metadata ABI, runtime/codegen consumption, and precise typed reject for
-  unadmitted page shapes.
-
-### T5 Sharded GEMM / Layout Variants
-
-- T5.1 Sharded GEMM placement contracts (complete):
-  admitted input/output memory configs and typed rejects for unsupported
-  layouts.
-- T5.2 Retile / work-coarsening plan (complete for admitted surface):
-  explicit logical-work mapping changes are not implicit; external sharded
-  accessors whose shard grid is not covered by work packets now reject with a
-  typed retile/work-coarsening diagnostic.
-- T5.3 First sharded GEMM correctness (complete):
-  direct correctness for the first admitted sharded layout variant, including
-  single-core, 2x2 multi-core, 110-core many-core, bf16-input /
-  fp32-output, and all external bf16 input/output coverage.
-
-### T7 Exact-CB / Materialization Primitives
-
-- T7.1 Source-live-form materialization:
-  full logical value proof, materialized view records, and consumer binding.
-- T7.2 Exact-CB publish / consume:
-  CB event lifetime, producer/consumer synchronization, and typed rejects.
-- T7.3 Partial combine and multi-block flash:
-  partial-output / logsum combine plus multi-block flash-attn / flash-decode
-  exact-CB correctness.  The combine must be derived from explicit TIR values
-  and dataflow, not from flash-specific metadata.
-
-### T8 Irregular Work Domains / Indexed Access
-
-- T8.1 TIR structural analysis:
-  derive segmented ranges, ragged bounds, indexed block traversal, and grouped
-  dispatch only from existing TIR loops, predicates, buffer loads/stores, and
-  index expressions.
-- T8.2 Durable evidence boundary:
-  keep derived facts pass-local unless a downstream layer cannot recompute them
-  from its current representation.  Only then project evidence into
-  `SpatialPlan` or lower it into `TTProgram` work packets / address plans.
-- T8.3 Operand discipline:
-  tensors such as `group_sizes`, `group_offsets`, `cache_seqlens`, and
-  `block_indices` are ordinary IR operands inside range or address
-  expressions.  They are not standalone planning semantics and must not form a
-  workload metadata registry.
-- T8.4 Validation:
-  reject missing, inconsistent, out-of-range, or shape-incompatible evidence
-  before source or runtime emission; do not recover it from source names,
-  argument positions, or workload family labels.
-
-### T9 Workload First Paths
-
-Each workload is a separate first-path checkpoint:
-
-- T9.1 pre-grouped MoE / routed grouped GEMM
-- T9.2 paged GQA decode
-- T9.3 paged MLA decode
-- T9.4 sparse / ragged attention
-- T9.5 chunk recurrence / scan
-- T9.6 multi-block flash decode
-
-These workload names are scheduling checkpoints only.  They must decompose into
-the already admitted primitive surfaces: explicit TIR compute/dataflow,
-placement/reshard records, accessor ABI, exact-CB/materialization, and
-TIR-derived irregular work evidence.  T9 must not introduce workload-named
-semantic objects or metadata contracts as owner truth.
-
-### T10 Distributed Production Variants
-
-- T10.1 mesh / multi-device placement records
-- T10.2 CCL contracts:
-  all-gather, reduce-scatter, all-to-all, and collective admission
-- T10.3 NoC / multicast / global scheduling plans
-- T10.4 distributed workload correctness and typed production rejects
-- T10.5 K-sharded GEMM production partial reduce:
-  reducer ownership per output tile, partial-C scratch placement, semaphore
-  ids, remote NOC routes, transport choice, accumulation order, and final
-  writer timing projected through `TTProgram` / `ExecutableSpec`.  This is the
-  acceptance item for replacing the current blocking z-wave reduction with a
-  single-launch or fused-launch semaphore/NoC protocol.  Completion requires
-  deleting or folding the current runtime-issued partial-K tile-add special
-  path into the typed protocol implementation; no parallel fallback path should
-  remain.
-
-T10 records are TT target-realization records: mesh/device placement,
-communication topology, collective operation contracts, NoC/multicast routes,
-sync primitives, resource admission, and executable runtime ABI.  They must be
-derived from explicit placement/dataflow requirements and hardware facts, not
-from workload family names or runtime observations.
-
-## Support Boundary
-
-- Admitted direct-runtime forms remain limited to the T1 surface, admitted T2
-  standalone leaf cases, and current GEMM A/B-separated reader and writer
-  ranges.
-- `sharded_accessor_cta` and `page_indexed_accessor_cta` are typed but not
-  admitted as external runtime accessors; T4 owns that gap.
-- Workload backlog stays ordered by the task queue: `topk`, then
-  materialization, TIR-derived irregular work, and workload-first paths.
-
-## Latest Verification
-
-Latest implementation batch:
-T3 tensor/value sharding and explicit reshard.
-
-Verified:
-
-- `cmake --build /root/dev/vibe_dsl/tilelang_repo/build -- -j32`
-- Structure / planner / executable projection:
-  `pytest -q testing/python/transform/test_blackhole_spatial_ir.py`
-  (`101 passed`)
-- Source/spec and runtime-module metadata:
-  `pytest -q testing/python/target/blackhole/test_blackhole_copy_pipeline.py`
-  (`56 passed, 10 skipped, 1 xfailed`)
-- Leaf / GEMM compute schema regression:
-  `pytest -q`
-  `testing/python/target/blackhole/test_blackhole_leaf_compute_runtime.py::test_blackhole_standalone_leaf_compute_projects_typed_runtime_contracts`
-  `testing/python/target/blackhole/test_blackhole_gemm.py::test_blackhole_gemm_kernel_projects_typed_compute_ops_schema`
-  `testing/python/target/blackhole/test_blackhole_gemm.py::test_blackhole_gemm_compute_ops_carry_typed_operand_bindings`
-  `testing/python/target/blackhole/test_blackhole_gemm.py::test_blackhole_gemm_spec_uses_typed_compute_ops_without_legacy_payload`
-  (`11 passed`)
-- TT-Sim direct staged-copy selector via `scripts/setup_tt_sim.sh`:
-  `pytest -q -vv -x testing/python/target/blackhole/test_blackhole_copy_runtime.py::test_blackhole_module_direct_call_grid_indexed_copy_multicore_launch`
-  (`1 passed`)
-
-Observed boundary:
-
-- T3's first admitted conversion is limited to interleaved DRAM source to
-  resident L1 sharded view through the existing staged-copy direct-runtime
-  path. Other reshard kinds remain typed unsupported until admitted by later
-  tasks.
-- Broadcast-cols rank-1 RHS materialization must be reader-produced as a
-  full-tile CB page. Scalar NOC reads into first-column tile positions are
-  not an admitted runtime path.
+- Spatial IR regression passed:
+  `pytest -q testing/python/transform/test_blackhole_spatial_ir.py --tb=short`
+  reported `104 passed`.
+- The many-core K-sharded gate covers
+  `M=320`, `N=352`, `K=512`, `logical_grid=11x10x2`,
+  110 physical worker cores, 220 logical work items, width-sharded A/B K
+  placement, block-sharded C placement, and device-side fp32 partial-C
+  reduction before host readback.
