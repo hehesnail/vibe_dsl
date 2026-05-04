@@ -2200,8 +2200,10 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   though runtime per-work args are correct.
 - 2026-05-04 T8 design boundary:
   Do not turn grouped / ragged / sparse workload parameters into a metadata
-  registry.  The IR-first object is the irregular work/access pattern:
-  segmented ranges, ragged row domains, indexed block traversal, and grouped
-  dispatch maps.  Names such as MoE, sparse attention, `group_sizes`,
-  `cache_seqlens`, or `block_indices` are only test inputs or domain operands,
-  not planning semantics by themselves.
+  registry or a parallel domain IR.  First analyze existing TIR loops,
+  predicates, BufferLoad/BufferStore nodes, and index expressions for segmented
+  ranges, ragged bounds, indexed traversal, or grouped dispatch.  Keep facts
+  pass-local unless a later layer cannot recompute them from its current
+  representation.  Names such as MoE, sparse attention, `group_sizes`,
+  `cache_seqlens`, or `block_indices` are only test inputs or operands in TIR
+  expressions, not planning semantics by themselves.

@@ -332,7 +332,7 @@ T6 now owns standalone value/index selection.
 | T5 Sharded GEMM / layout variants | Admit GEMM/layout variants that depend on real tensor sharding, including explicit retile/work-coarsening when a layout changes logical work mapping. | T3 and T4 complete. | Complete. |
 | T6 `topk` | Admit standalone value/index selection. | T2 leaf reductions. | Value and `int32` index correctness, not compile-only. |
 | T7 Exact-CB / materialization primitives | Repair wider publish/consume, partial combine, source-live-form materialization, and multi-block flash-attn / flash-decode exact-CB correctness. | T1 and relevant T3 materialization rules when sharded values are involved. | Multi-kernel intermediate correctness and typed materialization rejects. |
-| T8 Irregular work domains / indexed access | Represent segmented/ragged ranges, indexed block traversal, and grouped dispatch as explicit work-domain and access descriptors derived from IR operands. | T1 and relevant per-work descriptors. | Missing/inconsistent irregular-domain evidence rejects before source/runtime emission; no workload-specific metadata registry. |
+| T8 Irregular work domains / indexed access | Analyze existing TIR loop, predicate, and buffer-access expressions for segmented/ragged/indexed work; preserve only durable evidence needed by later layers. | T1 and relevant per-work descriptors. | Missing/inconsistent irregular-domain evidence rejects before source/runtime emission; no workload-specific metadata registry or parallel domain IR. |
 | T9 Workload first paths | Bring up pre-grouped MoE, sparse/ragged attention, paged GQA decode, paged MLA decode, chunk recurrence, and multi-block flash decode first paths. | Prior tasks as needed by each workload. | Each workload has a stated first path with correctness proof and unsupported-form rejects. |
 | T10 Distributed production variants | Add mesh/sharding/CCL/NoC/multicast/global scheduling support, including production K-sharded GEMM partial-reduce protocol. | Stable first paths and typed distributed plans, including T3 sharding/reshard. | Production distributed paths have typed placement, communication, and correctness gates. |
 
@@ -407,25 +407,28 @@ Large tasks must land through these smaller checkpoints.
   CB event lifetime, producer/consumer synchronization, and typed rejects.
 - T7.3 Partial combine and multi-block flash:
   partial-output / logsum combine plus multi-block flash-attn / flash-decode
-  exact-CB correctness.
+  exact-CB correctness.  The combine must be derived from explicit TIR values
+  and dataflow, not from flash-specific metadata.
 
 ### T8 Irregular Work Domains / Indexed Access
 
-- T8.1 Irregular work-domain primitives:
-  segmented ranges, ragged row domains, indexed block sets, and grouped
-  dispatch maps as target-independent domain objects.  Do not introduce
-  workload names such as MoE or sparse attention as planning semantics.
-- T8.2 Domain operand/evidence binding:
+- T8.1 TIR structural analysis:
+  derive segmented ranges, ragged bounds, indexed block traversal, and grouped
+  dispatch only from existing TIR loops, predicates, buffer loads/stores, and
+  index expressions.
+- T8.2 Durable evidence boundary:
+  keep derived facts pass-local unless a downstream layer cannot recompute them
+  from its current representation.  Only then project evidence into
+  `SpatialPlan` or lower it into `TTProgram` work packets / address plans.
+- T8.3 Operand discipline:
   tensors such as `group_sizes`, `group_offsets`, `cache_seqlens`, and
-  `block_indices` may enter only as operands/evidence for the domain objects
-  above, tied to IR range or address expressions.
-- T8.3 Per-work lowering:
-  lower admitted irregular domains into work packets, per-work ranges,
-  accessor/runtime args, and indexed address contracts without source-name or
-  argument-position recovery.
-- T8.4 Domain validation:
-  reject missing, inconsistent, out-of-range, or shape-incompatible domain
-  evidence before source or runtime emission.
+  `block_indices` are ordinary IR operands inside range or address
+  expressions.  They are not standalone planning semantics and must not form a
+  workload metadata registry.
+- T8.4 Validation:
+  reject missing, inconsistent, out-of-range, or shape-incompatible evidence
+  before source or runtime emission; do not recover it from source names,
+  argument positions, or workload family labels.
 
 ### T9 Workload First Paths
 
@@ -463,7 +466,7 @@ Each workload is a separate first-path checkpoint:
 - `sharded_accessor_cta` and `page_indexed_accessor_cta` are typed but not
   admitted as external runtime accessors; T4 owns that gap.
 - Workload backlog stays ordered by the task queue: `topk`, then
-  materialization, grouped / ragged work, and workload-first paths.
+  materialization, TIR-derived irregular work, and workload-first paths.
 
 ## Latest Verification
 
