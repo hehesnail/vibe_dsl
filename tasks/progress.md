@@ -334,7 +334,7 @@ T6 now owns standalone value/index selection.
 | T7 Exact-CB / materialization primitives | Repair wider publish/consume, partial combine, source-live-form materialization, and multi-block flash-attn / flash-decode exact-CB correctness. | T1 and relevant T3 materialization rules when sharded values are involved. | Multi-kernel intermediate correctness and typed materialization rejects. |
 | T8 Grouped / ragged work packets | Represent group/ragged metadata as typed planning input. | T1 and relevant per-work descriptors. | Missing/inconsistent group/ragged metadata rejects before source/runtime emission. |
 | T9 Workload first paths | Bring up pre-grouped MoE, sparse/ragged attention, paged GQA decode, paged MLA decode, chunk recurrence, and multi-block flash decode first paths. | Prior tasks as needed by each workload. | Each workload has a stated first path with correctness proof and unsupported-form rejects. |
-| T10 Distributed production variants | Add mesh/sharding/CCL/NoC/multicast/global scheduling support. | Stable first paths and typed distributed plans, including T3 sharding/reshard. | Production distributed paths have typed placement, communication, and correctness gates. |
+| T10 Distributed production variants | Add mesh/sharding/CCL/NoC/multicast/global scheduling support, including production K-sharded GEMM partial-reduce protocol. | Stable first paths and typed distributed plans, including T3 sharding/reshard. | Production distributed paths have typed placement, communication, and correctness gates. |
 
 ## Scope Breakdown
 
@@ -441,6 +441,12 @@ Each workload is a separate first-path checkpoint:
   all-gather, reduce-scatter, all-to-all, and collective admission
 - T10.3 NoC / multicast / global scheduling plans
 - T10.4 distributed workload correctness and typed production rejects
+- T10.5 K-sharded GEMM production partial reduce:
+  reducer ownership per output tile, partial-C scratch placement, semaphore
+  ids, remote NOC routes, transport choice, accumulation order, and final
+  writer timing projected through `TTProgram` / `ExecutableSpec`.  This is the
+  acceptance item for replacing the current blocking z-wave reduction with a
+  single-launch or fused-launch semaphore/NoC protocol.
 
 ## Support Boundary
 

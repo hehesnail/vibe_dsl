@@ -288,6 +288,7 @@ Each family must name two things separately:
 | Family | Repo evidence | First single-device path | Later production requirements |
 | --- | --- | --- | --- |
 | Non-flash leaf compute and GEMM baseline | Current Blackhole copy / GEMM tests plus TT-Metal leaf API surface | Standalone unary / binary / broadcast / reduce / pack / typecast leaf families and current-placement GEMM layout variants with direct correctness gates; existing stick / page-shaped copy tests remain baseline coverage, not a new top-level task | Sharded layouts, wider multi-core placement, and non-replicated buffer distributions |
+| K-sharded GEMM partial reduction | T5 K-dimension sharded GEMM direct-runtime tests and TT-Metal semaphore / NoC primitives | Current direct-runtime path with `logical_grid_z`, per-K-shard waves, partial-C scratch, and runtime-issued device tile-add reduction | Production single-launch or fused-launch reducer protocol with typed reducer ownership, partial-C scratch placement, semaphore ids, remote NOC routes, transport choice, accumulation order, and final writer timing |
 | External accessor / runtime ABI | Existing executable accessor kinds `sharded_accessor_cta` and `page_indexed_accessor_cta` | Admit or precisely reject external sharded/page-indexed runtime/codegen accessors from executable records | Wider direct runtime coverage for sharded tensors, paged tensors, and page-table driven workloads |
 | `topk` / selection / indexing | `tilelang_repo/examples/topk/example_topk.py` | Single-device `reduce_max` selection with `int32` index outputs and correctness checks | Use as MoE gating input and routing metadata producer |
 | MoE / `fusedmoe` | `tilelang_repo/examples/fusedmoe/example_fusedmoe_tilelang.py`; `tt_metal_repo/models/demos/deepseek_v3/tt/moe.py`; `tt_metal_repo/models/demos/deepseek_v3/tt/experts.py` | Shared expert plus pre-packed routed grouped GEMM where `group_sizes`, `group_offsets`, `group_padded_offsets`, `group_idx_for_bx`, routed weights, and token grouping are explicit inputs; no claim of full MoE until gating and combine are admitted | In-pipeline topk, token packing, scatter / gather / combine, expert sharding, all-to-all dispatch / combine, reduce-scatter, all-gather, mesh memory placement |
@@ -319,7 +320,7 @@ This roadmap keeps the stable order and exit criteria.
 | T7 Exact-CB / materialization primitives | Repair wider exact-CB publish/consume, partial combine, source-live-form materialization, and multi-block flash-attn / flash-decode exact-CB correctness. | T1 and relevant T3 materialization rules when sharded values are involved. | Multi-kernel intermediate correctness is covered and missing materialization protocol fails before source/runtime emission. |
 | T8 Grouped / ragged work packets | Represent group, block, ragged row count, and per-work indexed ranges as typed planning inputs. | T1 and relevant per-work descriptors. | Missing or inconsistent group/ragged metadata is rejected before source/runtime emission. |
 | T9 Workload first paths | Bring up pre-grouped MoE, sparse/ragged attention, paged GQA decode, paged MLA decode, chunk recurrence, and multi-block flash decode first paths. | Prior tasks as needed by each workload. | Each workload has a stated first path, correctness proof, and typed rejects for unadmitted forms. |
-| T10 Production distributed variants | Add mesh/sharding/CCL/NoC/multicast/global scheduling support. | Stable first paths and typed distributed plans, including T3 sharding/reshard. | Distributed paths have typed placement, communication, admission, and correctness gates. |
+| T10 Production distributed variants | Add mesh/sharding/CCL/NoC/multicast/global scheduling support, including production K-sharded GEMM partial-reduce protocol. | Stable first paths and typed distributed plans, including T3 sharding/reshard. | Distributed paths have typed placement, communication, admission, and correctness gates. |
 
 Do not advance workload admission that depends on external sharded or
 page-indexed accessors past T4 until those accessor forms have
@@ -336,6 +337,11 @@ source/spec/direct-runtime admission or precise typed rejects.
 6. Pull forward only the typed primitives required by the current first path.
 7. Defer production distributed variants until mesh / sharding / CCL /
    NoC / multicast / global scheduling plans are typed and validated.
+8. Do not upgrade K-sharded GEMM from blocking z-wave device reduction to a
+   production single-launch or fused-launch partial reduce until reducer
+   ownership, partial scratch placement, semaphore ids, remote NOC routes,
+   transport choice, accumulation order, and final writer timing are explicit
+   `TTProgram` / `ExecutableSpec` records.
 
 ## Completion Criteria
 

@@ -162,6 +162,25 @@ boundary, not to every device-local sharded distribution.  Internal
 materialization records can have different shard-grid mechanics and are not
 runtime-visible external accessor claims.
 
+### Production Partial-K Follow-Up
+
+The current K-dimension sharded GEMM path is not the final production
+cross-core reduction protocol.  The production follow-up belongs to the
+distributed / NoC scheduling lane and must be tracked explicitly, not hidden
+under a generic runtime bucket.
+
+That follow-up must add typed `TTProgram` / `ExecutableSpec` records for:
+
+- reducer ownership for each output tile;
+- partial-C scratch placement and lifetime;
+- producer-to-reducer semaphore ids;
+- remote worker NOC routes;
+- NoC read/write or multicast transport choice;
+- reducer accumulation order and final writer timing.
+
+Only after those records are projected and validated may K-sharded GEMM claim a
+single-launch or fused-launch semaphore/NoC partial-reduce implementation.
+
 ## Validation
 
 T4 validation must cover:
