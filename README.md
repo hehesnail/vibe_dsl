@@ -10,7 +10,7 @@
   `tasks/progress.md`
 - Active design index:
   `tasks/dev_design/README.md`
-- Protocol audit:
+- Historical protocol audit:
   `tasks/dev_design/blackhole_first_principles_protocol_audit.md`
 - Working norms:
   `AGENTS.md`
@@ -37,8 +37,8 @@ Normalized Tile TIR
   -> ExecutableSpec
 ```
 
-The current active lane and next task are maintained only in
-`tasks/progress.md`.
+Active task, blockers, next steps, and latest verification are maintained only
+in `tasks/progress.md`.
 
 ## Recommended Reading Order
 
@@ -49,7 +49,7 @@ The current active lane and next task are maintained only in
 5. `tasks/dev_design/task3_runtime_gate_and_workload_cutover.md`
 6. `tasks/progress.md`
 7. `tasks/dev_design/README.md`
-8. Current lane docs listed in `tasks/dev_design/README.md`
+8. Active design docs listed in `tasks/dev_design/README.md`
 9. `memory/general_dev.md`
 10. `memory/bugs.md`
 11. Relevant code and tests
@@ -71,7 +71,7 @@ The current active lane and next task are maintained only in
 
 - Do not add a second overall design document.
 - Keep current status only in `tasks/progress.md`.
-- Keep active design docs as contracts, not chronological notebooks.
+- Keep design docs as contracts, not chronological notebooks.
 - Put durable lessons in `memory/`.
 - If docs and code diverge, update the relevant design/status first, then
   continue implementation.

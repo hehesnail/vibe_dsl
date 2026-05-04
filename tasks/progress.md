@@ -150,6 +150,12 @@ Each checkpoint needs its own direct-runtime correctness proof:
 
 ## Recent Verification
 
+2026-05-04 UTC entrypoint / main-design documentation cleanup:
+
+- `git diff --check` passed.
+- No build or TT-Sim runtime tests were run because this batch only edits
+  top-level entrypoint, README, design, progress, and memory documentation.
+
 2026-05-04 UTC documentation cleanup:
 
 - `git diff --check` passed.

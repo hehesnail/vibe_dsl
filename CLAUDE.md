@@ -9,10 +9,10 @@
 2. `tasks/dev_design/final_blackhole_backend_redesign.md`
 3. `tasks/progress.md`
 4. `tasks/dev_design/README.md`
-5. Relevant current lane docs listed by `tasks/dev_design/README.md`
+5. Relevant active design docs listed by `tasks/dev_design/README.md`
 6. `memory/general_dev.md` / `memory/bugs.md` when debugging or using TT-Sim
 
-## Current Status
+## Status
 
 Do not infer current status from this file.
 The only current status / blocker / next-task board is:

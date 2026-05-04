@@ -12,7 +12,7 @@
 4. `task2_ttprogram_companion_cutover.md`
 5. `task3_runtime_gate_and_workload_cutover.md`
 6. `../progress.md`
-7. Current lane docs listed below
+7. Active design docs listed below
 
 ## Core Contracts
 
@@ -24,7 +24,7 @@
 | `task2_ttprogram_companion_cutover.md` | `TTProgram` 表示层合同；定义 TT-specific target realization。 |
 | `task3_runtime_gate_and_workload_cutover.md` | `ExecutableSpec` / leaf reader 合同；定义 leaf projection、backend admission、runtime-module build 边界。 |
 
-## Current Lane Docs
+## Active Design Docs
 
 | Document | Role |
 | --- | --- |
@@ -52,24 +52,10 @@ Normalized Tile TIR
 Pass 名字、helper、payload、bag、bridge attr
 都不是长期协议边界。
 
-## Current Execution Priority
+## Execution Status
 
 唯一看板是 `tasks/progress.md`。
-
-当前主线：
-
-```text
-T1 Buffer address ABI execution integration (complete)
-  -> T2 Leaf compute / GEMM baseline (complete)
-  -> T3 tensor/value sharding and explicit reshard (complete)
-  -> T4 external accessor / runtime ABI expansion (complete)
-  -> T5 sharded GEMM / layout variants (complete)
-  -> T6 topk (active)
-  -> T7 exact-CB / materialization primitives
-  -> T8 TIR-derived irregular work / indexed access
-  -> T9 workload first paths
-  -> T10 production distributed variants
-```
+本 README 不复制 T1-T10 状态、active task、blocker 或验证记录。
 
 Admission levels
 compile / source-spec / direct runtime / TT-Sim correctness / typed reject

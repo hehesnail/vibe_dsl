@@ -5,7 +5,7 @@
 This is the only overall design document for the Blackhole backend.
 It defines durable architecture contracts, not repo-history logs.
 
-Current execution status, blockers, and latest verification live in
+Execution status, blockers, and latest verification live in
 `tasks/progress.md`.
 Task-level details live in the task design documents listed by
 `tasks/dev_design/README.md`.
@@ -293,7 +293,7 @@ It may not:
 Resource planning belongs to `TTProgram` and `ExecutableSpec` admission,
 not to `TileComputeDAG`.
 
-The active resource-planning surface is:
+The resource-planning surface is:
 
 - `TTHardwareModel`
 - core group plans
@@ -316,7 +316,7 @@ The compiler plans placement classes, pressure, and legality.
 Direct runtime is one `ExecutableSpec` leaf backend.
 It is not the capability ceiling of `TTProgram` or codegen/export.
 
-Current admitted direct-runtime subsets may be narrow.
+Admitted direct-runtime subsets may be narrow.
 That narrowness must surface as backend admission, not as upstream IR shape.
 
 Long-term codegen/export targets TT-Metal
@@ -347,9 +347,9 @@ Family names such as MoE, paged attention, or flash decode are not admission
 units.
 Admission is by explicit subset and capability proof.
 
-## Current Rewrite Direction
+## Operating Direction
 
-The current ordering is:
+The operating order is:
 
 1. Keep the four-layer IR chain as the only semantic path.
 2. Preserve compute at TT-Metal leaf granularity in `Normalized Tile TIR`.

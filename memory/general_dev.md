@@ -2228,3 +2228,10 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   instead of duplicating the full T1-T10 queue, and completed task designs
   should be written as current contracts instead of future implementation
   plans.
+- 2026-05-04 entrypoint docs boundary:
+  Top-level `README.md`, agent entry files, `docs/README.md`, and TT-Sim setup
+  docs should point to the authoritative design/progress entries rather than
+  copying active state.  `tasks/dev_design/README.md` should index design
+  contracts, not repeat the T1-T10 task board.  Source-analysis READMEs should
+  avoid file counts, backend-status tables, and last-updated dates unless those
+  facts are actively maintained.

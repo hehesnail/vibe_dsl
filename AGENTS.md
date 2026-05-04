@@ -93,7 +93,7 @@
 5. `tasks/dev_design/task3_runtime_gate_and_workload_cutover.md` — `ExecutableSpec / leaf reader` 主设计合同
 6. `tasks/progress.md` — 当前执行看板、active task、blocker、下一步
 7. `tasks/dev_design/README.md` — 当前活动设计文档索引
-8. `tasks/dev_design/README.md` 里列出的 current lane docs
+8. `tasks/dev_design/README.md` 里列出的 active design docs
 9. 如果涉及构建/调试/历史问题，再读 `memory/general_dev.md` 和 `memory/bugs.md`
 10. 然后读代码，不要只看文档
 
@@ -220,7 +220,7 @@ cd <当前 checkout 或 worktree>/tilelang_repo
 
 1. 当前 active lane、blocker、下一步统一只看
    `tasks/progress.md`。
-2. 当前 active design / support-lane docs 统一只看
+2. 当前 active design docs 统一只看
    `tasks/dev_design/README.md`。
 3. 历史 cleanup `task0-task5`
    和旧 implementation plan
