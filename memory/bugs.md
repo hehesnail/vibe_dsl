@@ -2530,6 +2530,34 @@
   - The table-indexed pipeline/runtime selectors reported `3 passed`, and the
     broader T8 copy selector reported `5 passed`.
 
+### Two-dimensional index tables were flattened by work-linear order
+
+- **症状**:
+  - A `BlockIndices[bx, by]` staged copy carried only `index_buffer` /
+    `index_value_scale` in the A tile-start descriptor.
+  - Direct runtime read the index table at `work_linear_id`, so a non-symmetric
+    table shaped `(grid_x, grid_y)` produced the sequence
+    `[table[0,0], table[0,1], ...]` instead of the launch-axis order
+    `[table[0,0], table[1,0], ...]`.
+- **根因**:
+  - The descriptor expressed which table to read but not how the TIR table load
+    was addressed.  `work_linear_id` was a hidden addressing assumption that
+    happened to match the first one-dimensional case.
+- **修法**:
+  - Derive table shape from the index-table buffer and table index sources from
+    the TIR `BufferLoad` indices plus `blockIdx.x/y/z` launch-axis tags.
+  - Project `index_table_shape` and `index_table_index_sources` through
+    `TTPerWorkArgSpec`, `ExecutableSpec`, runtime metadata, Python rebuild
+    helpers, and `BlackholeModule` binary serialization.
+  - Direct runtime computes the table element offset from the projected fields
+    and only falls back to `work_linear_id` when no table-address fields are
+    present.
+- **验证**:
+  - The non-symmetric `2x3` direct-runtime case passed through
+    `BlackholeModule`.
+  - The serialized module preserved the table-addressing fields and passed the
+    same correctness check.
+
 ### Ragged bf16 row copy zero-filled TT face pages instead of logical rows
 
 - **症状**:

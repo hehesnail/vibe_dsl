@@ -40,6 +40,8 @@ inline constexpr const char* kAccessRegion = "access_region";
 inline constexpr const char* kAccessRegionIndex = "access_region_index";
 inline constexpr const char* kIndexBuffer = "index_buffer";
 inline constexpr const char* kIndexValueScale = "index_value_scale";
+inline constexpr const char* kIndexTableShape = "index_table_shape";
+inline constexpr const char* kIndexTableIndexSources = "index_table_index_sources";
 
 inline constexpr const char* kDescriptorTileStart = "tile_start";
 inline constexpr const char* kDescriptorTileCount = "tile_count";

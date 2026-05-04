@@ -1567,6 +1567,8 @@ PrimFunc PlanTTKernelABI::SelectComputeBuiltins(const PrimFunc& func) {
   active_serial_loop_order_ranges_.clear();
   block_index_vars_.clear();
   block_index_var_names_.clear();
+  block_index_source_by_var_.clear();
+  index_table_addressing_by_buffer_.clear();
   cb_consumed_compute_input_pages_by_buffer_identity_.clear();
   cb_consumed_compute_input_use_count_by_buffer_identity_.clear();
   buffer_flow_facts_.clear();
@@ -1864,6 +1866,8 @@ PrimFunc PlanTTKernelABI::Transform(const PrimFunc& func) {
   active_serial_loop_order_ranges_.clear();
   block_index_vars_.clear();
   block_index_var_names_.clear();
+  block_index_source_by_var_.clear();
+  index_table_addressing_by_buffer_.clear();
   cb_consumed_compute_input_pages_by_buffer_identity_.clear();
   cb_consumed_compute_input_use_count_by_buffer_identity_.clear();
   buffer_flow_facts_.clear();
@@ -1922,6 +1926,16 @@ PrimFunc PlanTTKernelABI::Transform(const PrimFunc& func) {
         } else if (std::string(iv->thread_tag).rfind("blockIdx.", 0) == 0) {
           block_index_vars_.insert(iv->var.get());
           block_index_var_names_.insert(iv->var->name_hint);
+          if (std::string(iv->thread_tag) == "blockIdx.x") {
+            block_index_source_by_var_[iv->var.get()] =
+                blackhole_runtime_arg_schema::kValueSourceLogicalBlockX;
+          } else if (std::string(iv->thread_tag) == "blockIdx.y") {
+            block_index_source_by_var_[iv->var.get()] =
+                blackhole_runtime_arg_schema::kValueSourceLogicalBlockY;
+          } else if (std::string(iv->thread_tag) == "blockIdx.z") {
+            block_index_source_by_var_[iv->var.get()] =
+                blackhole_runtime_arg_schema::kValueSourceLogicalBlockZ;
+          }
         }
       }
       return;
@@ -2794,6 +2808,16 @@ Stmt PlanTTKernelABI::VisitStmt_(const AttrStmtNode* op) {
     } else if (transport_thread_var) {
       block_index_vars_.insert(iv->var.get());
       block_index_var_names_.insert(iv->var->name_hint);
+      if (thread_tag == "blockIdx.x") {
+        block_index_source_by_var_[iv->var.get()] =
+            blackhole_runtime_arg_schema::kValueSourceLogicalBlockX;
+      } else if (thread_tag == "blockIdx.y") {
+        block_index_source_by_var_[iv->var.get()] =
+            blackhole_runtime_arg_schema::kValueSourceLogicalBlockY;
+      } else if (thread_tag == "blockIdx.z") {
+        block_index_source_by_var_[iv->var.get()] =
+            blackhole_runtime_arg_schema::kValueSourceLogicalBlockZ;
+      }
     }
     if (!select_compute_builtins_only_ && zero_thread_var) {
       active_serial_loop_vars_.push_back(iv->var);
@@ -2808,6 +2832,7 @@ Stmt PlanTTKernelABI::VisitStmt_(const AttrStmtNode* op) {
     } else if (transport_thread_var) {
       block_index_vars_.erase(iv->var.get());
       block_index_var_names_.erase(iv->var->name_hint);
+      block_index_source_by_var_.erase(iv->var.get());
     }
     if (body.same_as(op->body)) {
       return GetRef<Stmt>(op);
@@ -2912,6 +2937,56 @@ Stmt PlanTTKernelABI::VisitStmt_(const DeclBufferNode* op) {
 
 Stmt PlanTTKernelABI::VisitStmt_(const AllocateNode* op) {
   return StmtExprMutator::VisitStmt_(op);
+}
+
+void PlanTTKernelABI::RecordIndexTableAddressing(
+    const std::string& index_buffer, const BufferLoadNode* table_load) {
+  if (index_buffer.empty() || table_load == nullptr) {
+    return;
+  }
+  IndexTableAddressing addressing;
+  addressing.shape.reserve(table_load->buffer->shape.size());
+  for (const PrimExpr& dim : table_load->buffer->shape) {
+    const auto* extent = dim.as<IntImmNode>();
+    if (extent == nullptr || extent->value <= 0) {
+      return;
+    }
+    addressing.shape.push_back(extent->value);
+  }
+  if (addressing.shape.size() != table_load->indices.size()) {
+    return;
+  }
+  auto index_source = [&](PrimExpr expr) -> std::string {
+    while (const auto* cast = expr.as<CastNode>()) {
+      expr = cast->value;
+    }
+    const auto* var = expr.as<VarNode>();
+    if (var == nullptr) {
+      return "";
+    }
+    auto source_it = block_index_source_by_var_.find(var);
+    if (source_it == block_index_source_by_var_.end()) {
+      return "";
+    }
+    return source_it->second;
+  };
+  addressing.index_sources.reserve(table_load->indices.size());
+  for (const PrimExpr& index : table_load->indices) {
+    std::string source = index_source(index);
+    if (source.empty()) {
+      return;
+    }
+    addressing.index_sources.push_back(std::move(source));
+  }
+  auto it = index_table_addressing_by_buffer_.find(index_buffer);
+  if (it != index_table_addressing_by_buffer_.end()) {
+    ICHECK(it->second.shape == addressing.shape &&
+           it->second.index_sources == addressing.index_sources)
+        << "Blackhole index table " << index_buffer
+        << " has inconsistent TIR table addressing evidence";
+    return;
+  }
+  index_table_addressing_by_buffer_[index_buffer] = std::move(addressing);
 }
 
 Stmt PlanTTKernelABI::VisitStmt_(const LetStmtNode* op) {
@@ -3026,6 +3101,7 @@ Stmt PlanTTKernelABI::VisitStmt_(const LetStmtNode* op) {
     const std::string index_buffer = BufferIdentityName(table_load->buffer);
     ICHECK(!index_buffer.empty())
         << "Blackhole table-backed copy index requires named index-table buffer";
+    RecordIndexTableAddressing(index_buffer, table_load);
     std::string arg_name = "a_tile_start_id";
     if (coefficient.has_value() && coefficient.value() == 1) {
       if (!segment_row_start_index_buffer_name_.empty()) {
@@ -3049,6 +3125,7 @@ Stmt PlanTTKernelABI::VisitStmt_(const LetStmtNode* op) {
     const std::string index_buffer = BufferIdentityName(table_load->buffer);
     ICHECK(!index_buffer.empty())
         << "Blackhole ragged row bound requires named index-table buffer";
+    RecordIndexTableAddressing(index_buffer, table_load);
     if (needs_segment_row_start_arg_) {
       if (!segment_row_count_index_buffer_name_.empty()) {
         ICHECK_EQ(segment_row_count_index_buffer_name_, index_buffer)

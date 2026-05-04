@@ -672,6 +672,16 @@ EncodePerWorkArgSpecs(const Array<TTPerWorkArgSpec> &per_work_arg_specs) {
                spec->index_buffer);
       item.Set(::tvm::tl::blackhole_runtime_arg_schema::kIndexValueScale,
                Integer(spec->index_value_scale));
+      if (!spec->index_table_shape.empty()) {
+        ICHECK_EQ(spec->index_table_shape.size(),
+                  spec->index_table_index_sources.size())
+            << "TTPerWorkArgSpec index_table addressing requires one source per shape dimension";
+        item.Set(::tvm::tl::blackhole_runtime_arg_schema::kIndexTableShape,
+                 spec->index_table_shape);
+        item.Set(
+            ::tvm::tl::blackhole_runtime_arg_schema::kIndexTableIndexSources,
+            spec->index_table_index_sources);
+      }
     }
     if (!spec->access_region.empty()) {
       item.Set(::tvm::tl::blackhole_runtime_arg_schema::kAccessRegion,

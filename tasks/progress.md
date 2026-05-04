@@ -23,7 +23,7 @@
 | T6 `topk` | Complete | Existing-TIR row-wise value/index selection runs through direct runtime for fp32 and bf16 values with exact `int32` indices, without a frontend topk op or selection plan. |
 | T7 Exact-CB / materialization primitives | Complete | Exact-CB materialization is admitted through typed live-form/materialization/consumer-binding records, including GEMM post-merge `pack_tile`, source-live `cb_republish`, and seq64 bf16 flash-attn exact-CB partial-combine direct runtime correctness. |
 | T7.5 Exact-CB liveness / allocation cutover | Complete | Covered exact-CB resident tiles use typed TTProgram/ExecutableSpec lifecycle, allocation, and release records; old loop-carried owner maps, materialization-pop fallback, and full-tile/slice ambiguity are fail-closed or deleted from the active path. |
-| T8 Irregular work domains / indexed access | Implementation | Grid-indexed, first one-dimensional table-indexed tile descriptors, first predicate-derived ragged row bounds, and first non-uniform segmented row ranges carry TIR-derived evidence through TT per-work descriptors and direct runtime; broader indexed traversal and broader ragged token/page gates remain open. |
+| T8 Irregular work domains / indexed access | Implementation | Grid-indexed, one-dimensional and launch-axis two-dimensional table-indexed tile descriptors, first predicate-derived ragged row bounds, and first non-uniform segmented row ranges carry TIR-derived evidence through TT per-work descriptors and direct runtime; broader indexed block/page traversal and broader ragged token/page gates remain open. |
 | T9 Workload first paths | Queued | Workload checkpoints decomposed into admitted primitive surfaces with direct-runtime correctness. |
 | T10 Distributed production variants | Queued | Mesh, CCL, NoC/multicast/global scheduling, distributed workload correctness, and production partial-K reduction protocol. |
 
@@ -145,8 +145,8 @@ Every active implementation task uses this acceptance table.
 
 ### T8 Irregular Work / Indexed Access
 
-- Indexed block traversal beyond the admitted one-dimensional table-backed
-  per-work tile-start case, where `BufferLoad` / `BufferStore` indices use an
+- Indexed block/page traversal beyond the admitted launch-axis table-backed
+  per-work tile-start cases, where `BufferLoad` / `BufferStore` indices use an
   operand such as `block_indices`.
 - Broader ragged token/page forms beyond the admitted one-dimensional row-count
   predicate slice, such as `cache_seqlens` in paged decode.
@@ -193,6 +193,37 @@ Each checkpoint needs its own direct-runtime correctness proof:
   `M=320`, `N=352`, `K>=512`, `logical_grid=11x10x2` or larger.
 
 ## Recent Verification
+
+2026-05-05 UTC T8 launch-axis indexed-table checkpoint:
+
+- `cmake --build build -j32` passed.
+- Minimal `BlockIndices[bx, by]` staged copy now lowers to a table-backed
+  A tile-start `TTPerWorkArgSpec` with `value_source=index_table`,
+  `index_buffer=BlockIndices`, `index_table_shape=[2,3]`, and
+  `index_table_index_sources=[logical_block_x,logical_block_y]`, with the
+  descriptor still linked to SpatialPlan `AccessRegion` evidence.
+- Device source consumes `a_tile_start_id` as a projected runtime arg and
+  does not emit a raw `BlockIndices` load.
+- Direct runtime evaluates the index-table element from the projected shape
+  and launch-axis sources instead of flattening by `work_linear_id`; the
+  non-symmetric `2x3` table case passed through `BlackholeModule`.
+- `BlackholeModule` binary serialization preserves the new table addressing
+  fields; the loaded module passed the same direct-runtime correctness check.
+- T8 indexed/ragged/segmented aggregate selectors passed:
+  `test_blackhole_grid_indexed_copy_per_work_specs_expose_typed_descriptors`,
+  `test_blackhole_block_indexed_copy_per_work_spec_uses_index_table_descriptor`,
+  `test_blackhole_block_indexed_2d_copy_per_work_spec_carries_table_addressing`,
+  `test_blackhole_ragged_row_copy_uses_valid_rows_index_table_descriptor`,
+  `test_blackhole_segmented_row_copy_uses_segment_index_table_descriptors`,
+  `test_blackhole_module_direct_call_grid_indexed_copy_multicore_launch`,
+  `test_blackhole_module_direct_call_block_indexed_copy_uses_index_table`,
+  `test_blackhole_module_direct_call_block_indexed_2d_copy_uses_table_addressing`,
+  `test_blackhole_serialized_block_indexed_2d_copy_preserves_table_addressing`,
+  `test_blackhole_module_direct_call_block_indexed_copy_rejects_out_of_range_index_table`,
+  `test_blackhole_module_direct_call_ragged_row_copy_uses_row_count_predicate`,
+  and
+  `test_blackhole_module_direct_call_segmented_row_copy_uses_start_and_count_tables`
+  reported `12 passed`.
 
 2026-05-05 UTC T8 segmented row-segment checkpoint:
 

@@ -189,6 +189,12 @@
   use.  Old buffer-identity live-form maps may be private cursors while
   rendering a validated plan, but they must not remain as active-chain owner
   truth or fallback behavior.
+- Table-backed per-work descriptors need to carry the table address expression,
+  not just the table buffer.  `BlockIndices[bx]` can accidentally work by
+  reading at `work_linear_id`, but `BlockIndices[bx, by]` requires typed
+  `index_table_shape` plus launch-axis `index_table_index_sources` so
+  direct runtime and serialization consume the same TIR-derived addressing
+  contract.
 - For loop-carried exact-CB source rendering, keep the cursor singular and
   lifecycle-backed.  The old shape with separate `identity -> cb` and
   `identity -> buffer` maps plus a completed-state set allowed source lowering

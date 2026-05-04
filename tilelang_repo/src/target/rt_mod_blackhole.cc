@@ -958,6 +958,17 @@ static std::vector<PerWorkArgSpec> ExtractPerWorkArgSpecsFromArray(
     if (auto v = spec_info.Get(::tvm::tl::blackhole_runtime_arg_schema::kIndexValueScale)) {
       spec.index_value_scale = Downcast<Integer>(v.value())->value;
     }
+    if (auto v = spec_info.Get(::tvm::tl::blackhole_runtime_arg_schema::kIndexTableShape)) {
+      for (const auto& extent : Downcast<ffi::Array<ffi::Any>>(v.value())) {
+        spec.index_table_shape.push_back(Downcast<Integer>(extent).IntValue());
+      }
+    }
+    if (auto v = spec_info.Get(
+            ::tvm::tl::blackhole_runtime_arg_schema::kIndexTableIndexSources)) {
+      for (const auto& source : Downcast<ffi::Array<ffi::Any>>(v.value())) {
+        spec.index_table_index_sources.push_back(Downcast<String>(source));
+      }
+    }
     ICHECK(!spec.arg_identity.empty())
         << "Blackhole per-work descriptor requires explicit arg_identity";
     ICHECK(!spec.descriptor_kind.empty())
@@ -973,6 +984,19 @@ static std::vector<PerWorkArgSpec> ExtractPerWorkArgSpecsFromArray(
       ICHECK_GT(spec.index_value_scale, 0)
           << "Blackhole index_table per-work descriptor for "
           << spec.arg_identity << " requires positive index_value_scale";
+      if (!spec.index_table_shape.empty() ||
+          !spec.index_table_index_sources.empty()) {
+        ICHECK_EQ(spec.index_table_shape.size(),
+                  spec.index_table_index_sources.size())
+            << "Blackhole index_table per-work descriptor for "
+            << spec.arg_identity
+            << " requires one table index source per shape dimension";
+        for (int64_t extent : spec.index_table_shape) {
+          ICHECK_GT(extent, 0)
+              << "Blackhole index_table per-work descriptor for "
+              << spec.arg_identity << " requires positive table shape";
+        }
+      }
     }
     per_work_arg_specs.push_back(std::move(spec));
   }
@@ -2529,6 +2553,26 @@ static ffi::Array<ffi::Any> EncodePerWorkArgSpecs(
                     ffi::String(spec.index_buffer));
       spec_info.Set(::tvm::tl::blackhole_runtime_arg_schema::kIndexValueScale,
                     Integer(spec.index_value_scale));
+      if (!spec.index_table_shape.empty()) {
+        ICHECK_EQ(spec.index_table_shape.size(),
+                  spec.index_table_index_sources.size())
+            << "Blackhole index_table per-work descriptor metadata for "
+            << spec.arg_identity
+            << " requires one table index source per shape dimension";
+        ffi::Array<ffi::Any> shape;
+        for (int64_t extent : spec.index_table_shape) {
+          shape.push_back(Integer(extent));
+        }
+        ffi::Array<ffi::Any> sources;
+        for (const std::string& source : spec.index_table_index_sources) {
+          sources.push_back(ffi::String(source));
+        }
+        spec_info.Set(::tvm::tl::blackhole_runtime_arg_schema::kIndexTableShape,
+                      shape);
+        spec_info.Set(
+            ::tvm::tl::blackhole_runtime_arg_schema::kIndexTableIndexSources,
+            sources);
+      }
     }
     if (!spec.access_region.empty()) {
       spec_info.Set(::tvm::tl::blackhole_runtime_arg_schema::kAccessRegion,

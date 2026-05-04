@@ -631,13 +631,26 @@ static TTPerWorkArgSpec MakePerWorkArgSpec(const std::string &arg_kind,
                                            const std::string &access_region = "",
                                            int64_t access_region_index = -1,
                                            const std::string &index_buffer = "",
-                                           int64_t index_value_scale = 1) {
+                                           int64_t index_value_scale = 1,
+                                           const std::vector<int64_t>
+                                               &index_table_shape = {},
+                                           const std::vector<std::string>
+                                               &index_table_index_sources = {}) {
+  Array<Integer> shape;
+  for (int64_t extent : index_table_shape) {
+    shape.push_back(Integer(extent));
+  }
+  Array<String> sources;
+  for (const std::string &source : index_table_index_sources) {
+    sources.push_back(String(source));
+  }
   return TTPerWorkArgSpec(String(arg_kind), String(arg_identity),
                           String(buffer), String(descriptor_kind),
                           String(value_source),
                           static_cast<int64_t>(constant_value),
                           String(access_region), access_region_index,
-                          String(index_buffer), index_value_scale);
+                          String(index_buffer), index_value_scale,
+                          shape, sources);
 }
 
 static TTKernelLaunchSpec MakeLaunchSpec(const std::string &core_type,
@@ -1198,6 +1211,8 @@ void PlanTTKernelABI::StoreAccessorDescriptors(PrimFunc &func) {
       std::string value_source = static_cast<std::string>(spec->value_source);
       std::string index_buffer = static_cast<std::string>(spec->index_buffer);
       int64_t index_value_scale = spec->index_value_scale;
+      std::vector<int64_t> index_table_shape;
+      std::vector<std::string> index_table_index_sources;
       if (static_cast<std::string>(spec->descriptor_kind) ==
               blackhole_runtime_arg_schema::kDescriptorTileStart &&
           !region->index_buffer.empty()) {
@@ -1205,12 +1220,18 @@ void PlanTTKernelABI::StoreAccessorDescriptors(PrimFunc &func) {
         index_buffer = region->index_buffer;
         index_value_scale = region->index_value_scale;
       }
+      auto addressing_it = index_table_addressing_by_buffer_.find(index_buffer);
+      if (addressing_it != index_table_addressing_by_buffer_.end()) {
+        index_table_shape = addressing_it->second.shape;
+        index_table_index_sources = addressing_it->second.index_sources;
+      }
       return MakePerWorkArgSpec(
           static_cast<std::string>(spec->arg_kind),
           static_cast<std::string>(spec->arg_identity),
           static_cast<std::string>(spec->descriptor_kind), value_source, buffer,
           static_cast<uint32_t>(spec->constant_value), region->name,
-          region->index, index_buffer, index_value_scale);
+          region->index, index_buffer, index_value_scale,
+          index_table_shape, index_table_index_sources);
     };
     auto upsert_spec = [&](const TTPerWorkArgSpec &raw_spec) {
       const TTPerWorkArgSpec spec = attach_access_region_evidence(raw_spec);

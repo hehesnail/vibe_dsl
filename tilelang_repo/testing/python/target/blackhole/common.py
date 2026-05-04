@@ -203,6 +203,16 @@ def tt_per_work_arg_specs_to_list(per_work_arg_specs):
         if getattr(spec, "index_buffer", None) is not None and str(spec.index_buffer):
             item["index_buffer"] = str(spec.index_buffer)
             item["index_value_scale"] = int(spec.index_value_scale)
+            if (
+                getattr(spec, "index_table_shape", None) is not None
+                and len(spec.index_table_shape) > 0
+            ):
+                item["index_table_shape"] = [
+                    int(extent) for extent in spec.index_table_shape
+                ]
+                item["index_table_index_sources"] = [
+                    str(source) for source in spec.index_table_index_sources
+                ]
         encoded.append(item)
     return encoded
 
@@ -253,9 +263,35 @@ def make_tt_per_work_arg_specs(per_work_arg_specs):
     make_with_index_table = tilelang.tvm.get_global_func(
         "tl.TTPerWorkArgSpecWithIndexTable"
     )
+    make_with_index_table_addressing = tilelang.tvm.get_global_func(
+        "tl.TTPerWorkArgSpecWithIndexTableAddressing"
+    )
     result = []
     for item in tt_per_work_arg_specs_to_list(per_work_arg_specs):
         if item.get("index_buffer"):
+            if item.get("index_table_shape"):
+                result.append(
+                    make_with_index_table_addressing(
+                        str(item.get("arg_kind", "")),
+                        str(item.get("arg_identity", "")),
+                        str(item.get("buffer", "")),
+                        str(item.get("descriptor_kind", "")),
+                        str(item.get("value_source", "")),
+                        int(item.get("constant_value", 0)),
+                        str(item.get("access_region", "")),
+                        int(item.get("access_region_index", -1)),
+                        str(item.get("index_buffer", "")),
+                        int(item.get("index_value_scale", 1)),
+                        [int(v) for v in item.get("index_table_shape", [])],
+                        [
+                            str(source)
+                            for source in item.get(
+                                "index_table_index_sources", []
+                            )
+                        ],
+                    )
+                )
+                continue
             result.append(
                 make_with_index_table(
                     str(item.get("arg_kind", "")),
@@ -1266,6 +1302,36 @@ def block_indexed_staged_copy_kernel(
         return main
 
     raise ValueError(f"Unsupported block_indexed_staged_copy_kernel dtype: {dtype}")
+
+
+def block_indexed_2d_staged_copy_kernel(
+    grid_x: int,
+    grid_y: int,
+    source_tiles: int,
+    tile_m: int = 32,
+    tile_n: int = 32,
+    dtype: str = "bfloat16",
+):
+    """Define a copy kernel whose input tile comes from a 2D per-work table."""
+    source_m = source_tiles * tile_m
+    output_m = grid_x * grid_y * tile_m
+
+    if dtype == "bfloat16":
+        @T.prim_func
+        def main(
+            A: T.Tensor((source_m, tile_n), "bfloat16"),
+            BlockIndices: T.Tensor((grid_x, grid_y), "int32"),
+            B: T.Tensor((output_m, tile_n), "bfloat16"),
+        ):
+            with T.Kernel(grid_x, grid_y) as (bx, by):
+                A_shared = T.alloc_shared((tile_m, tile_n), "bfloat16")
+                tile_id = BlockIndices[bx, by]
+                T.copy(A[tile_id * tile_m, 0], A_shared)
+                T.copy(A_shared, B[(by * grid_x + bx) * tile_m, 0])
+
+        return main
+
+    raise ValueError(f"Unsupported block_indexed_2d_staged_copy_kernel dtype: {dtype}")
 
 
 def ragged_row_masked_staged_copy_kernel(

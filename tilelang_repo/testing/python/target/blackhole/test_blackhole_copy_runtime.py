@@ -13,6 +13,7 @@ from tvm.tir import stmt_functor
 from .common import (
     assert_tensors_close_or_dump,
     check_blackhole_direct_execution_requirements,
+    block_indexed_2d_staged_copy_kernel,
     block_indexed_staged_copy_kernel,
     extract_blackhole_cb_configs,
     extract_blackhole_total_l1_bytes,
@@ -763,6 +764,110 @@ def test_blackhole_module_direct_call_block_indexed_copy_rejects_out_of_range_in
 
     with pytest.raises(Exception, match="index_table tile_start out of bounds"):
         artifact.codegen_mod["main"](a_torch, block_indices, b_output)
+
+
+def test_blackhole_module_direct_call_block_indexed_2d_copy_uses_table_addressing():
+    can_run, msg = check_blackhole_direct_execution_requirements()
+    if not can_run:
+        pytest.skip(f"Blackhole requirements not met: {msg}")
+
+    grid_x, grid_y, source_tiles = 2, 3, 6
+    a_torch = _bf16_matrix(source_tiles * 32, 32)
+    block_indices = torch.tensor(
+        [
+            [4, 1, 5],
+            [2, 0, 3],
+        ],
+        dtype=torch.int32,
+    )
+    b_output = torch.zeros((grid_x * grid_y * 32, 32), dtype=torch.bfloat16)
+    b_ref = torch.zeros_like(b_output)
+    for by in range(grid_y):
+        for bx in range(grid_x):
+            tile = int(block_indices[bx, by])
+            out_start = (by * grid_x + bx) * 32
+            b_ref[out_start : out_start + 32, :] = a_torch[
+                tile * 32 : (tile + 1) * 32,
+                :,
+            ]
+
+    target = Target("blackhole")
+    kernel = block_indexed_2d_staged_copy_kernel(
+        grid_x=grid_x,
+        grid_y=grid_y,
+        source_tiles=source_tiles,
+    )
+    with target:
+        artifact = lower(kernel, target=target)
+
+    artifact.codegen_mod["main"](a_torch, block_indices, b_output)
+    assert_tensors_close_or_dump(
+        b_output,
+        b_ref,
+        atol=1e-3,
+        rtol=1e-3,
+        failure_message="2D block-indexed direct-call output mismatch",
+    )
+
+
+def test_blackhole_serialized_block_indexed_2d_copy_preserves_table_addressing():
+    can_run, msg = check_blackhole_direct_execution_requirements()
+    if not can_run:
+        pytest.skip(f"Blackhole requirements not met: {msg}")
+
+    grid_x, grid_y, source_tiles = 2, 3, 6
+    a_torch = _bf16_matrix(source_tiles * 32, 32)
+    block_indices = torch.tensor(
+        [
+            [4, 1, 5],
+            [2, 0, 3],
+        ],
+        dtype=torch.int32,
+    )
+    b_output = torch.zeros((grid_x * grid_y * 32, 32), dtype=torch.bfloat16)
+    b_ref = torch.zeros_like(b_output)
+    for by in range(grid_y):
+        for bx in range(grid_x):
+            tile = int(block_indices[bx, by])
+            out_start = (by * grid_x + bx) * 32
+            b_ref[out_start : out_start + 32, :] = a_torch[
+                tile * 32 : (tile + 1) * 32,
+                :,
+            ]
+
+    target = Target("blackhole")
+    kernel = block_indexed_2d_staged_copy_kernel(
+        grid_x=grid_x,
+        grid_y=grid_y,
+        source_tiles=source_tiles,
+    )
+    with target:
+        artifact = lower(kernel, target=target)
+
+    serialized = artifact.codegen_mod.save_to_bytes()
+    assert len(serialized) > 0
+    loader = tvm.get_global_func("ffi.Module.load_from_bytes.blackhole")
+    loaded = loader(serialized)
+    executable_spec = loaded.get_function_metadata("main")
+    descriptors = {
+        (str(spec.get("buffer", "")), str(spec["descriptor_kind"])): spec
+        for spec in executable_spec["per_work_arg_specs"]
+    }
+    a_tile_start = descriptors[("A", "tile_start")]
+    assert [int(v) for v in a_tile_start["index_table_shape"]] == [2, 3]
+    assert [str(v) for v in a_tile_start["index_table_index_sources"]] == [
+        "logical_block_x",
+        "logical_block_y",
+    ]
+
+    loaded["main"](a_torch, block_indices, b_output)
+    assert_tensors_close_or_dump(
+        b_output,
+        b_ref,
+        atol=1e-3,
+        rtol=1e-3,
+        failure_message="Serialized 2D block-indexed direct-call output mismatch",
+    )
 
 
 def test_blackhole_module_direct_call_ragged_row_copy_uses_row_count_predicate():

@@ -301,6 +301,11 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
     int64_t index_value_scale = 1;
   };
 
+  struct IndexTableAddressing {
+    std::vector<int64_t> shape;
+    std::vector<std::string> index_sources;
+  };
+
   /*! \brief Get CB configuration from function attributes */
   CBConfig GetCBConfig() const;
 
@@ -864,6 +869,8 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   void RecordExactComputeOpPlan(const std::string& kind,
                                 const std::string& operation_name,
                                 const std::vector<ComputeOperandPlanSeed>& operands);
+  void RecordIndexTableAddressing(const std::string& index_buffer,
+                                  const tvm::tir::BufferLoadNode* table_load);
 
   // StmtExprMutator overrides
   tvm::tir::Stmt VisitStmt_(const tvm::tir::AttrStmtNode* op) override;
@@ -965,6 +972,8 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   std::vector<std::pair<int, int>> active_serial_loop_order_ranges_;
   std::unordered_set<const tvm::tir::VarNode*> block_index_vars_;
   std::unordered_set<std::string> block_index_var_names_;
+  std::unordered_map<const tvm::tir::VarNode*, std::string> block_index_source_by_var_;
+  std::unordered_map<std::string, IndexTableAddressing> index_table_addressing_by_buffer_;
   std::vector<AccessorDescriptor> accessor_descriptors_;
   std::string current_segment_kind_;
   std::unordered_map<std::string, int> read_accessor_slots_;

@@ -419,6 +419,8 @@ static void WritePerWorkArgSpec(dmlc::Stream* stream, const PerWorkArgSpec& spec
   WriteInt64(stream, spec.access_region_index);
   WriteString(stream, spec.index_buffer);
   WriteInt64(stream, spec.index_value_scale);
+  WriteInt64Vector(stream, spec.index_table_shape);
+  WriteStringVector(stream, spec.index_table_index_sources);
 }
 
 static PerWorkArgSpec ReadPerWorkArgSpec(dmlc::Stream* stream) {
@@ -433,6 +435,10 @@ static PerWorkArgSpec ReadPerWorkArgSpec(dmlc::Stream* stream) {
   spec.access_region_index = ReadInt64(stream, "per_work_arg.access_region_index");
   spec.index_buffer = ReadString(stream, "per_work_arg.index_buffer");
   spec.index_value_scale = ReadInt64(stream, "per_work_arg.index_value_scale");
+  spec.index_table_shape =
+      ReadInt64Vector(stream, "per_work_arg.index_table_shape");
+  spec.index_table_index_sources =
+      ReadStringVector(stream, "per_work_arg.index_table_index_sources");
   return spec;
 }
 
@@ -3494,6 +3500,58 @@ static const PerWorkArgSpec* FindPerWorkArgSpec(const std::vector<PerWorkArgSpec
   return it == per_work_arg_specs.end() ? nullptr : &(*it);
 }
 
+static uint32_t EvaluateIndexTableSource(const std::string& source,
+                                         const DirectRuntimeWorkContext& context) {
+  if (source == tl::blackhole_runtime_arg_schema::kValueSourceWorkLinearId) {
+    return context.work_linear_id;
+  }
+  if (source == tl::blackhole_runtime_arg_schema::kValueSourceLogicalBlockX) {
+    return context.bx;
+  }
+  if (source == tl::blackhole_runtime_arg_schema::kValueSourceLogicalBlockY) {
+    return context.by;
+  }
+  if (source == tl::blackhole_runtime_arg_schema::kValueSourceLogicalBlockZ) {
+    return context.bz;
+  }
+  if (source == tl::blackhole_runtime_arg_schema::kValueSourceLogicalBlockXYLinear) {
+    return context.by * context.logical_grid_x + context.bx;
+  }
+  LOG(FATAL) << "Unsupported Blackhole index_table index source " << source;
+  return 0;
+}
+
+static size_t EvaluateIndexTableElementIndex(const PerWorkArgSpec& spec,
+                                             const DirectRuntimeWorkContext& context) {
+  if (spec.index_table_shape.empty() && spec.index_table_index_sources.empty()) {
+    return static_cast<size_t>(context.work_linear_id);
+  }
+  ICHECK_EQ(spec.index_table_shape.size(), spec.index_table_index_sources.size())
+      << "Blackhole direct runtime index_table per_work_arg_spec for "
+      << spec.arg_identity
+      << " requires one index source per table shape dimension";
+  uint64_t linear_index = 0;
+  for (size_t i = 0; i < spec.index_table_shape.size(); ++i) {
+    const int64_t extent = spec.index_table_shape[i];
+    ICHECK_GT(extent, 0)
+        << "Blackhole direct runtime index_table per_work_arg_spec for "
+        << spec.arg_identity << " requires positive table shape";
+    const uint32_t coord =
+        EvaluateIndexTableSource(spec.index_table_index_sources[i], context);
+    ICHECK_LT(static_cast<uint64_t>(coord), static_cast<uint64_t>(extent))
+        << "Blackhole direct runtime index_table per_work_arg_spec out of bounds for "
+        << spec.arg_identity << ": source="
+        << spec.index_table_index_sources[i] << ", coord=" << coord
+        << ", extent=" << extent << ", index_buffer=" << spec.index_buffer;
+    linear_index =
+        linear_index * static_cast<uint64_t>(extent) + static_cast<uint64_t>(coord);
+    ICHECK_LE(linear_index, static_cast<uint64_t>(std::numeric_limits<size_t>::max()))
+        << "Blackhole direct runtime index_table per_work_arg_spec linear index overflow for "
+        << spec.arg_identity;
+  }
+  return static_cast<size_t>(linear_index);
+}
+
 static uint32_t EvaluatePerWorkArgSpec(const PerWorkArgSpec& spec,
                                        const DirectRuntimeWorkContext& context,
                                        const std::unordered_map<std::string, RuntimeBufferBinding>&
@@ -3544,10 +3602,11 @@ static uint32_t EvaluatePerWorkArgSpec(const PerWorkArgSpec& spec,
         << "Blackhole direct runtime index_table per_work_arg_spec references missing buffer "
         << spec.index_buffer;
     const RuntimeBufferBinding& table = table_it->second;
-    const size_t byte_offset = static_cast<size_t>(context.work_linear_id) * sizeof(int32_t);
+    const size_t table_index = EvaluateIndexTableElementIndex(spec, context);
+    const size_t byte_offset = table_index * sizeof(int32_t);
     ICHECK_LE(byte_offset + sizeof(int32_t), table.host_data.size())
         << "Blackhole direct runtime index_table per_work_arg_spec out of bounds for "
-        << spec.arg_identity << ": work_linear_id=" << context.work_linear_id
+        << spec.arg_identity << ": table_index=" << table_index
         << ", index_buffer=" << spec.index_buffer;
     int32_t table_value = 0;
     std::memcpy(&table_value, table.host_data.data() + byte_offset, sizeof(int32_t));
@@ -4362,6 +4421,14 @@ void BlackholeWrappedFunc::operator()(ffi::PackedArgs args, ffi::Any* rv,
     ICHECK(!per_work_arg.index_buffer.empty())
         << "Blackhole direct runtime index_table per-work binding requires index_buffer for "
         << per_work_arg.arg_identity;
+    if (!per_work_arg.index_table_shape.empty() ||
+        !per_work_arg.index_table_index_sources.empty()) {
+      ICHECK_EQ(per_work_arg.index_table_shape.size(),
+                per_work_arg.index_table_index_sources.size())
+          << "Blackhole direct runtime index_table per-work binding requires one "
+          << "index source per table shape dimension for "
+          << per_work_arg.arg_identity;
+    }
     auto [it, inserted] =
         buffer_is_output_by_name.emplace(per_work_arg.index_buffer, false);
     ICHECK(inserted || !it->second)

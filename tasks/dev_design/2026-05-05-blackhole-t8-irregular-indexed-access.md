@@ -194,6 +194,16 @@ direct runtime evaluates that arg from the projected table descriptor.  The
 device source must not emit a raw `BufferLoad` from the index table to recover
 the tile id.
 
+The next indexed-block slice broadens that same descriptor to table address
+expressions that are not equivalent to `work_linear_id`.  When the TIR address
+uses a table load such as `BlockIndices[bx, by]`, `TTPerWorkArgSpec` must carry
+the index table shape and the logical launch-axis source used for each table
+dimension.  Direct runtime evaluates the table offset from those typed fields
+and the current work context.  It may keep `work_linear_id` as a compatibility
+fallback only when the descriptor has no table-address fields; a descriptor
+that contains `index_table_shape` / `index_table_index_sources` must not
+reinterpret the table by flattened launch order.
+
 ## Validation Plan
 
 Structure:
@@ -267,6 +277,18 @@ Implemented:
 - Direct runtime validates the computed tile start against the target buffer's
   typed materialization page count.  Out-of-range table entries fail closed
   instead of relying on the original TIR guard after source lowering.
+- A two-dimensional `BlockIndices[bx, by]` staged copy is now admitted for the
+  indexed-block traversal slice.  The A tile-start descriptor carries
+  `index_table_shape=[grid_x, grid_y]` and
+  `index_table_index_sources=[logical_block_x, logical_block_y]`, both derived
+  from the TIR table load indices and launch-axis tags.
+- Direct runtime computes the table element offset from those descriptor
+  fields and the current logical work context.  The old `work_linear_id`
+  flattening behavior remains only as a compatibility fallback for descriptors
+  that do not carry table-address fields.
+- The two-dimensional case is covered by direct-runtime correctness and by a
+  serialized-module round trip, so `BlackholeModule` save/load preserves the
+  table addressing contract.
 
 2026-05-05 ragged row-bound slice status:
 
@@ -311,8 +333,8 @@ Implemented:
 
 Still open for T8:
 
-- broader indexed block traversal beyond the first one-dimensional
-  per-work tile-start table descriptor.
+- broader indexed block/page traversal beyond launch-axis addressed per-work
+  tile-start tables.
 - broader ragged token/page forms beyond the first row-count predicate slice.
 
 ## Completion Criteria
