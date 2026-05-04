@@ -2089,6 +2089,33 @@
     runtime；source queue 绿不等价于数值正确，数值绿也不能证明没有
     latent CB overflow/underflow。
 
+#### Larger flash-attn exposes missing exact-CB liveness/resource allocation
+
+- **症状**:
+  - seq64 bf16 flash-attn exact-CB path can pass, but larger seqlen coverage
+    such as 128 / 256 / 512 exposes wrong exact-CB state lifetime.
+  - Generated source can pop a loop-carried state CB at loop exit even though
+    the value is consumed later, or can satisfy a full-tile after-loop
+    consumer from a partial local fragment such as local `acc_o`.
+- **根因**:
+  - exact-CB resident tiles are still handled as emitter-local live-form maps
+    instead of virtual values with def-use, live intervals, physical CB
+    allocation, and release events.
+  - loop-carried values such as flash-attn `acc_o` need initial / body /
+    backedge / loop-exit semantics.  They cannot be recovered reliably from
+    buffer identities or completed-state maps.
+- **当前结论**:
+  - The fix belongs to the explicit chain:
+    `SpatialPlan` carry/live-value evidence ->
+    `TTProgram` exact-CB liveness/allocation ->
+    `ExecutableSpec` projected lifecycle/release records.
+  - Covered old paths must be deleted during cutover: map-based exact-CB
+    owner truth, completed loop-carried state recovery, and local
+    `ReleaseExactInputAfterUse` release decisions must not remain as fallback
+    behavior.
+  - The task-level design is
+    `tasks/dev_design/2026-05-05-blackhole-exact-cb-liveness-allocation.md`.
+
 #### Overbroad sharded distribution work-coverage validation rejects device-local materialization
 
 - **症状**:

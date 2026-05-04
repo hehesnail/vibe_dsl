@@ -38,6 +38,7 @@
 | `2026-05-02-blackhole-tensor-sharding-and-reshard.md` | Tensor/value sharding and explicit reshard design；separates TTNN-style `MemoryConfig` intent from low-level `TTBufferDistributionPlan` address ABI。 |
 | `2026-05-03-blackhole-t4-t5-accessor-and-sharded-gemm.md` | T4 external accessor/runtime ABI expansion and dependent T5 sharded GEMM/layout boundary。 |
 | `2026-05-03-blackhole-t6-topk.md` | T6 standalone value/index selection boundary。 |
+| `2026-05-05-blackhole-exact-cb-liveness-allocation.md` | Exact-CB virtual value liveness、loop-carried lifetime、physical CB allocation、release-event cutover contract。 |
 | `blackhole_first_principles_protocol_audit.md` | Historical fake/legacy protocol audit table。 |
 
 ## Stable Architecture Skeleton

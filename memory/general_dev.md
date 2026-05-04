@@ -182,6 +182,13 @@
   和 typed diagnostics，
   不替代 TT-Metal allocator
   的 physical address assignment。
+- exact-CB resident tile/page lifetime must be planned like virtual-register
+  liveness, not repaired in source emission.  Loop-carried exact-CB values
+  need initial, body, backedge, and loop-exit evidence in the explicit chain;
+  `cb_pop_front` should come from allocator/release events derived from last
+  use.  Old buffer-identity live-form maps may be private cursors while
+  rendering a validated plan, but they must not remain as active-chain owner
+  truth or fallback behavior.
 - CB page 需求和 L1 buffer placement 要分开：
   `page_size`
   /

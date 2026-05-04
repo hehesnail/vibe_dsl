@@ -6,8 +6,9 @@
 
 ## Status
 
-- Date: `2026-05-04`
-- Active task: none; next queued lane is `T8 Irregular work domains / indexed access`
+- Date: `2026-05-05`
+- Active task: Exact-CB liveness/resource-allocation design and cutover;
+  next queued lane remains `T8 Irregular work domains / indexed access`
 - Main chain:
   `Normalized Tile TIR -> SpatialPlan -> TTProgram -> ExecutableSpec`
 
@@ -22,6 +23,7 @@
 | T5 Sharded GEMM / layout variants | Complete | First static external sharded-L1 GEMM layouts pass direct runtime, including single-core, 2x2 multi-core, 110-core many-core all-bf16, and first K-dimension partial-sum correctness path. |
 | T6 `topk` | Complete | Existing-TIR row-wise value/index selection runs through direct runtime for fp32 and bf16 values with exact `int32` indices, without a frontend topk op or selection plan. |
 | T7 Exact-CB / materialization primitives | Complete | Exact-CB materialization is admitted through typed live-form/materialization/consumer-binding records, including GEMM post-merge `pack_tile`, source-live `cb_republish`, and seq64 bf16 flash-attn exact-CB partial-combine direct runtime correctness. |
+| T7.5 Exact-CB liveness / allocation cutover | Design | Exact-CB resident tiles become virtual resources with TTProgram liveness, loop-carried intervals, physical CB allocation, and lifecycle-driven release events; old emitter-map lifecycle paths must be deleted for the covered surface. |
 | T8 Irregular work domains / indexed access | Queued | TIR-derived segmented, ragged, and indexed addressing evidence; no workload metadata registry. |
 | T9 Workload first paths | Queued | Workload checkpoints decomposed into admitted primitive surfaces with direct-runtime correctness. |
 | T10 Distributed production variants | Queued | Mesh, CCL, NoC/multicast/global scheduling, distributed workload correctness, and production partial-K reduction protocol. |
@@ -40,6 +42,13 @@
 - For T6-T10, validators and projection tests are support evidence only.
   An admitted positive path must execute through `BlackholeModule` under the
   repository TT-Sim setup and compare device output against a host reference.
+- Larger flash-attn shapes exposed that exact-CB resident values still need a
+  real liveness/resource-allocation cutover.
+  The design contract is
+  `tasks/dev_design/2026-05-05-blackhole-exact-cb-liveness-allocation.md`.
+  Covered exact-CB paths must use TTProgram lifecycle/allocation records for
+  physical CB choice and release events; the old source-emitter map/fallback
+  lifecycle route is a deletion target, not a compatibility path.
 
 ## Completed Task: T6 `topk`
 
@@ -107,6 +116,22 @@ Every active implementation task uses this acceptance table.
 | Unsupported reason | Unsupported forms fail closed with typed diagnostics before source/runtime guessing. |
 
 ## Remaining Runtime Correctness Gates
+
+### T7.5 Exact-CB Liveness / Allocation Cutover
+
+- TTProgram carries exact-CB virtual values, live intervals, loop-carried
+  backedge/exit evidence, physical CB allocation, and release events for the
+  covered exact-CB surface.
+- Source emission consumes lifecycle/release records for `cb_wait_front`,
+  `cb_push_back`, and `cb_pop_front`; local source helpers do not decide last
+  use or repair loop-carried state with buffer-name maps.
+- Covered old paths are deleted from the active chain:
+  map-based exact-CB owner truth, completed loop-carried state recovery, and
+  local `ReleaseExactInputAfterUse` release decisions cannot remain as
+  fallback behavior.
+- Flash-attn bf16 direct-runtime gates cover seq64 regression plus seqlen 128,
+  256, and 512, or fail only from a typed simulator capability boundary after
+  source/spec admission is proven.
 
 ### T8 Irregular Work / Indexed Access
 
