@@ -23,7 +23,7 @@
 | T6 `topk` | Complete | Existing-TIR row-wise value/index selection runs through direct runtime for fp32 and bf16 values with exact `int32` indices, without a frontend topk op or selection plan. |
 | T7 Exact-CB / materialization primitives | Complete | Exact-CB materialization is admitted through typed live-form/materialization/consumer-binding records, including GEMM post-merge `pack_tile`, source-live `cb_republish`, and seq64 bf16 flash-attn exact-CB partial-combine direct runtime correctness. |
 | T7.5 Exact-CB liveness / allocation cutover | Complete | Covered exact-CB resident tiles use typed TTProgram/ExecutableSpec lifecycle, allocation, and release records; old loop-carried owner maps, materialization-pop fallback, and full-tile/slice ambiguity are fail-closed or deleted from the active path. |
-| T8 Irregular work domains / indexed access | Implementation | Grid-indexed, one-dimensional and launch-axis two-dimensional table-indexed tile descriptors, scaled contiguous indexed-block copies, first sparse two-entry indexed traversal, first predicate-derived ragged row bounds, copy-shaped paged `cache_seqlens`, and first non-uniform segmented row ranges carry TIR-derived evidence through TT per-work descriptors and direct runtime; broader sparse/page traversal and workload-level ragged/grouped gates remain open. |
+| T8 Irregular work domains / indexed access | Implementation | Grid-indexed, one-dimensional and launch-axis two-dimensional table-indexed tile descriptors, scaled contiguous indexed-block copies, first sparse two-entry indexed traversal with per-entry ragged bounds, first predicate-derived ragged row bounds, copy-shaped paged `cache_seqlens`, and first non-uniform segmented row ranges carry TIR-derived evidence through TT per-work descriptors and direct runtime; broader sparse/page traversal and workload-level ragged/grouped gates remain open. |
 | T9 Workload first paths | Queued | Workload checkpoints decomposed into admitted primitive surfaces with direct-runtime correctness. |
 | T10 Distributed production variants | Queued | Mesh, CCL, NoC/multicast/global scheduling, distributed workload correctness, and production partial-K reduction protocol. |
 
@@ -146,10 +146,12 @@ Every active implementation task uses this acceptance table.
 ### T8 Irregular Work / Indexed Access
 
 - Indexed block/page traversal beyond the admitted launch-axis table-backed,
-  contiguous scaled-block, and two-entry sparse cases, where `BufferLoad` /
-  `BufferStore` indices use operands such as broader sparse `block_indices`.
-- Broader ragged token/page forms beyond the admitted one-dimensional row-count
-  and copy-shaped paged `cache_seqlens` predicate slices.
+  contiguous scaled-block, two-entry sparse, and sparse+ragged cases, where
+  `BufferLoad` / `BufferStore` indices use operands such as broader sparse
+  `block_indices`.
+- Broader ragged token/page forms beyond the admitted one-dimensional
+  row-count, per-entry sparse row-bound, and copy-shaped paged
+  `cache_seqlens` predicate slices.
 - Broader segmented/grouped workload use beyond the admitted row-segment copy,
   including grouped GEMM admission in T9.1.
 - In every case, the derived evidence must drive source/runtime addressing.
@@ -193,6 +195,27 @@ Each checkpoint needs its own direct-runtime correctness proof:
   `M=320`, `N=352`, `K>=512`, `logical_grid=11x10x2` or larger.
 
 ## Recent Verification
+
+2026-05-05 UTC T8 sparse indexed plus per-entry ragged checkpoint:
+
+- `cmake --build build -j32` passed.
+- The table-backed per-work runtime-arg seed is now descriptor-kind generic for
+  the admitted indexed copy family: tile-start and valid-row descriptors both
+  preserve their own `index_table_shape` and `index_table_index_sources`.
+- Minimal same-work sparse ragged copy now admits `BlockIndices[bx, 0/1]` and
+  `ValidRows[bx, 0/1]` together.  Source consumes `a_tile_start_id`,
+  `a_tile_start_id_1`, `a_valid_rows`, and `a_valid_rows_1`, with no raw
+  table loads.
+- Direct runtime evaluates each per-work arg from its descriptor and proves
+  bf16 correctness for non-contiguous tiles with independent valid-row counts,
+  including zero-row and partial-row entries.
+- Focused selectors
+  `test_blackhole_sparse_2tile_ragged_copy_uses_per_entry_valid_rows`
+  and
+  `test_blackhole_module_direct_call_sparse_2tile_ragged_copy_uses_per_entry_bounds`
+  reported `2 passed`.
+- T8 indexed/ragged/segmented aggregate selectors including both sparse cases
+  reported `20 passed`.
 
 2026-05-05 UTC T8 sparse two-entry indexed traversal checkpoint:
 

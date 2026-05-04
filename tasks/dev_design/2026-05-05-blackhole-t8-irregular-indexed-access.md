@@ -222,6 +222,14 @@ Constant table dimensions are represented as descriptor literals such as
 Source code consumes only those runtime args; direct runtime evaluates each
 one from the projected descriptor and current work context.
 
+The same rule applies to table-derived ragged bounds.  If one work item has
+multiple independent guarded sparse reads, each bound table load gets its own
+`valid_rows` runtime arg identity, e.g. `a_valid_rows` /
+`a_valid_rows_1`, with table shape and index sources on the corresponding
+`TTPerWorkArgSpec`.  A later row-page reader may use those args to decide
+per-row zero-fill, but it must not collapse distinct guarded reads back into
+one shared `a_valid_rows` value.
+
 ## Validation Plan
 
 Structure:
@@ -322,6 +330,12 @@ Implemented:
   literal table dimension.  Source consumes the two projected runtime args and
   emits no raw index-table read; direct runtime evaluates each arg from the
   descriptor.
+- The sparse two-entry surface also admits independent per-entry row bounds.
+  `ValidRows[bx, 0]` and `ValidRows[bx, 1]` lower to A `valid_rows`
+  descriptors with identities `a_valid_rows` and `a_valid_rows_1`, carrying
+  the same table-addressing shape/source contract.  The row-page reader uses
+  the matching runtime arg for each sparse tile and zero-fills invalid rows
+  independently.
 
 2026-05-05 ragged row-bound slice status:
 
@@ -390,9 +404,10 @@ Implemented:
 Still open for T8:
 
 - broader indexed block/page traversal beyond the admitted launch-axis table
-  addressing, contiguous scaled-block copy, and two-entry sparse copy slices.
-- broader ragged token/page forms beyond the admitted row-count and
-  copy-shaped paged cache-length predicate slices.
+  addressing, contiguous scaled-block copy, two-entry sparse copy, and
+  sparse+ragged two-entry slices.
+- broader ragged token/page forms beyond the admitted row-count, copy-shaped
+  paged cache-length predicate, and per-entry sparse row-bound slices.
 
 ## Completion Criteria
 

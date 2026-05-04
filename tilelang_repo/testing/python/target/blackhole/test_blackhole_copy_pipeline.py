@@ -25,6 +25,7 @@ from .common import (
     extract_blackhole_work_per_core,
     block_indexed_2tile_staged_copy_kernel,
     block_indexed_2d_staged_copy_kernel,
+    block_indexed_sparse_2tile_ragged_staged_copy_kernel,
     block_indexed_sparse_2tile_staged_copy_kernel,
     block_indexed_staged_copy_kernel,
     find_loop_annotation,
@@ -1372,6 +1373,51 @@ def test_blackhole_sparse_2tile_copy_uses_two_index_table_tile_start_descriptors
     ]
     assert int(first["index_value_scale"]) == 1
     assert int(second["index_value_scale"]) == 1
+
+
+def test_blackhole_sparse_2tile_ragged_copy_uses_per_entry_valid_rows():
+    target = Target("blackhole")
+    with target:
+        artifact = lower(
+            block_indexed_sparse_2tile_ragged_staged_copy_kernel(
+                grid_x=3,
+                source_tiles=6,
+            ),
+            target=target,
+        )
+
+    executable_spec = _extract_blackhole_executable_spec(artifact)
+    kernel_spec = _require_blackhole_kernel(
+        executable_spec["kernels"], kind="fused_dataflow", core_type="brisc"
+    )
+    source = str(kernel_spec["source_code"])
+    assert "a_tile_start_id = get_arg_val<uint32_t>" in source
+    assert "a_tile_start_id_1 = get_arg_val<uint32_t>" in source
+    assert "a_valid_rows = get_arg_val<uint32_t>" in source
+    assert "a_valid_rows_1 = get_arg_val<uint32_t>" in source
+    assert "BlockIndices" not in source
+    assert "ValidRows" not in source
+
+    by_identity = {
+        str(spec["arg_identity"]): spec
+        for spec in executable_spec["per_work_arg_specs"]
+        if str(spec.get("buffer", "")) == "A"
+    }
+    for identity, index_buffer, constant_source, descriptor_kind in [
+        ("a_tile_start_id", "BlockIndices", "constant:0", "tile_start"),
+        ("a_tile_start_id_1", "BlockIndices", "constant:1", "tile_start"),
+        ("a_valid_rows", "ValidRows", "constant:0", "valid_rows"),
+        ("a_valid_rows_1", "ValidRows", "constant:1", "valid_rows"),
+    ]:
+        spec = by_identity[identity]
+        assert str(spec["descriptor_kind"]) == descriptor_kind
+        assert str(spec["value_source"]) == "index_table"
+        assert str(spec["index_buffer"]) == index_buffer
+        assert [int(v) for v in spec["index_table_shape"]] == [3, 2]
+        assert [str(v) for v in spec["index_table_index_sources"]] == [
+            "logical_block_x",
+            constant_source,
+        ]
 
 
 def test_blackhole_ragged_row_copy_uses_valid_rows_index_table_descriptor():

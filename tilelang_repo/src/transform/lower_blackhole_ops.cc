@@ -1569,7 +1569,7 @@ PrimFunc PlanTTKernelABI::SelectComputeBuiltins(const PrimFunc& func) {
   block_index_var_names_.clear();
   block_index_source_by_var_.clear();
   index_table_addressing_by_buffer_.clear();
-  indexed_tile_start_runtime_args_.clear();
+  indexed_per_work_runtime_args_.clear();
   cb_consumed_compute_input_pages_by_buffer_identity_.clear();
   cb_consumed_compute_input_use_count_by_buffer_identity_.clear();
   buffer_flow_facts_.clear();
@@ -1865,7 +1865,7 @@ PrimFunc PlanTTKernelABI::Transform(const PrimFunc& func) {
   segment_row_shared_buffer_names_.clear();
   runtime_arg_tile_start_scale_by_name_.clear();
   runtime_arg_tile_start_scale_by_var_.clear();
-  indexed_tile_start_runtime_args_.clear();
+  indexed_per_work_runtime_args_.clear();
   host_buffer_by_compute_operand_buffer_.clear();
   direct_copy_source_by_buffer_identity_.clear();
   buffer_by_identity_.clear();
@@ -3028,33 +3028,45 @@ void PlanTTKernelABI::RecordIndexTableAddressing(
   index_table_addressing_by_buffer_[index_buffer] = std::move(addressing.value());
 }
 
-std::string PlanTTKernelABI::GetOrCreateIndexedTileStartRuntimeArg(
+std::string PlanTTKernelABI::GetOrCreateIndexedPerWorkRuntimeArg(
+    const std::string& arg_prefix,
+    const std::string& descriptor_kind,
     const std::string& index_buffer,
     const IndexTableAddressing& addressing,
     int64_t index_value_scale) {
+  ICHECK(!arg_prefix.empty())
+      << "Blackhole indexed per-work runtime arg requires arg prefix";
+  ICHECK(!descriptor_kind.empty())
+      << "Blackhole indexed per-work runtime arg requires descriptor kind";
   ICHECK(!index_buffer.empty())
-      << "Blackhole indexed tile-start runtime arg requires index table buffer";
+      << "Blackhole indexed per-work runtime arg requires index table buffer";
   ICHECK_GT(index_value_scale, 0)
-      << "Blackhole indexed tile-start runtime arg requires positive value scale";
-  for (const IndexedTileStartRuntimeArg& existing :
-       indexed_tile_start_runtime_args_) {
-    if (existing.index_buffer == index_buffer &&
+      << "Blackhole indexed per-work runtime arg requires positive value scale";
+  int prefix_count = 0;
+  for (const IndexedPerWorkRuntimeArg& existing :
+       indexed_per_work_runtime_args_) {
+    if (existing.arg_name == arg_prefix ||
+        existing.arg_name.rfind(arg_prefix + "_", 0) == 0) {
+      ++prefix_count;
+    }
+    if (existing.descriptor_kind == descriptor_kind &&
+        existing.index_buffer == index_buffer &&
         existing.index_value_scale == index_value_scale &&
         existing.addressing.shape == addressing.shape &&
         existing.addressing.index_sources == addressing.index_sources) {
       return existing.arg_name;
     }
   }
-  IndexedTileStartRuntimeArg arg;
-  arg.arg_name = indexed_tile_start_runtime_args_.empty()
-                     ? "a_tile_start_id"
-                     : "a_tile_start_id_" +
-                           std::to_string(indexed_tile_start_runtime_args_.size());
+  IndexedPerWorkRuntimeArg arg;
+  arg.arg_name = prefix_count == 0
+                     ? arg_prefix
+                     : arg_prefix + "_" + std::to_string(prefix_count);
+  arg.descriptor_kind = descriptor_kind;
   arg.index_buffer = index_buffer;
   arg.index_value_scale = index_value_scale;
   arg.addressing = addressing;
-  indexed_tile_start_runtime_args_.push_back(std::move(arg));
-  return indexed_tile_start_runtime_args_.back().arg_name;
+  indexed_per_work_runtime_args_.push_back(std::move(arg));
+  return indexed_per_work_runtime_args_.back().arg_name;
 }
 
 Stmt PlanTTKernelABI::VisitStmt_(const LetStmtNode* op) {
@@ -3188,7 +3200,9 @@ Stmt PlanTTKernelABI::VisitStmt_(const LetStmtNode* op) {
       ICHECK(addressing.has_value())
           << "Blackhole table-backed tile-start requires explicit index-table "
           << "addressing evidence";
-      arg_name = GetOrCreateIndexedTileStartRuntimeArg(
+      arg_name = GetOrCreateIndexedPerWorkRuntimeArg(
+          "a_tile_start_id",
+          blackhole_runtime_arg_schema::kDescriptorTileStart,
           index_buffer, addressing.value(),
           coefficient.value() / kBlackholeTileRows);
       runtime_arg_tile_start_scale_by_name_[arg_name] =
@@ -3231,9 +3245,18 @@ Stmt PlanTTKernelABI::VisitStmt_(const LetStmtNode* op) {
     }
     ragged_row_bound_index_buffer_name_ = index_buffer;
     needs_ragged_row_bound_arg_ = true;
+    std::optional<IndexTableAddressing> addressing =
+        ExtractIndexTableAddressing(table_load);
+    ICHECK(addressing.has_value())
+        << "Blackhole table-backed valid-row bound requires explicit "
+        << "index-table addressing evidence";
+    const std::string arg_name = GetOrCreateIndexedPerWorkRuntimeArg(
+        "a_valid_rows",
+        blackhole_runtime_arg_schema::kDescriptorValidRows,
+        index_buffer, addressing.value(), 1);
     PrimExpr per_work_valid_rows =
         Call(op->var.dtype(), blackhole_runtime_arg_u32(),
-             {StringImm("a_valid_rows")});
+             {StringImm(arg_name)});
     Stmt rewritten = LetStmt(op->var, per_work_valid_rows, op->body, op->span);
     return StmtExprMutator::VisitStmt_(rewritten.as<LetStmtNode>());
   }

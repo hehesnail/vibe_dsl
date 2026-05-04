@@ -306,8 +306,9 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
     std::vector<std::string> index_sources;
   };
 
-  struct IndexedTileStartRuntimeArg {
+  struct IndexedPerWorkRuntimeArg {
     std::string arg_name;
+    std::string descriptor_kind;
     std::string index_buffer;
     int64_t index_value_scale = 1;
     IndexTableAddressing addressing;
@@ -880,7 +881,9 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
                                   const tvm::tir::BufferLoadNode* table_load);
   std::optional<IndexTableAddressing> ExtractIndexTableAddressing(
       const tvm::tir::BufferLoadNode* table_load) const;
-  std::string GetOrCreateIndexedTileStartRuntimeArg(
+  std::string GetOrCreateIndexedPerWorkRuntimeArg(
+      const std::string& arg_prefix,
+      const std::string& descriptor_kind,
       const std::string& index_buffer,
       const IndexTableAddressing& addressing,
       int64_t index_value_scale);
@@ -930,7 +933,7 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   std::unordered_set<std::string> segment_row_shared_buffer_names_;
   std::unordered_map<std::string, int64_t> runtime_arg_tile_start_scale_by_name_;
   std::unordered_map<const tvm::tir::VarNode*, int64_t> runtime_arg_tile_start_scale_by_var_;
-  std::vector<IndexedTileStartRuntimeArg> indexed_tile_start_runtime_args_;
+  std::vector<IndexedPerWorkRuntimeArg> indexed_per_work_runtime_args_;
   std::unordered_map<std::string, std::string> host_buffer_by_compute_operand_buffer_;
   std::unordered_map<std::string, std::string> direct_copy_source_by_buffer_identity_;
   std::unordered_map<std::string, tvm::tir::Buffer> buffer_by_identity_;
