@@ -2406,6 +2406,34 @@
     live-form ownership.  Do not use unconditional post-reduce untilize as a
     cross-workload bridge.
 
+#### Exact-CB virtual intervals inherited allocator lifetime and hid CB interference
+
+- **症状**:
+  - After adding a validator gate for overlapping exact-CB intervals sharing a
+    physical CB, seq64/128/256/512 flash-attn lowering failed before runtime.
+    The first seq64 failure reported:
+    `exact_cb_interval_acc_s_39_0 [0, 53]` and
+    `exact_cb_interval_acc_s_39_5 [0, 538]` both using the same physical CB.
+- **根因**:
+  - `TTExactCBLiveInterval` construction used the merged CB requirement
+    lifetime as the virtual value begin point.  A CB requirement is an
+    allocator slot and may cover multiple exact-CB versions; it is not the
+    virtual value's semantic lifetime.
+  - `PlanTTCBAlloc` assigned physical CB IDs from IR builtin use intervals
+    without incorporating typed exact-CB interval bounds, so TTProgram
+    lifecycle records and resource allocation could disagree.
+- **修法**:
+  - Build exact-CB virtual interval begin/end from producer/use program-point
+    evidence.
+  - Feed typed exact-CB interval bounds into `PlanTTCBAlloc` before assigning
+    physical CB IDs.
+  - Keep the validator gate: overlapping exact-CB virtual intervals may not
+    share one physical CB.
+- **验证**:
+  - T7.5 selector reported `8 passed, 3 skipped`: the skips remain the typed
+    TT-Sim `tensix_execute_pacr: count=1` boundary for seq128/256/512, while
+    seq64 direct runtime passed.
+
 ## 3. 环境问题速查
 
 | 问题 | 解决 |

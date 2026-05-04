@@ -11,6 +11,7 @@
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
+#include <vector>
 
 #include "common/blackhole_tile_compute_covering.h"
 #include "common/blackhole_tile_compute_legalizer.h"
@@ -1409,6 +1410,24 @@ void ValidateExactCBLifecycleRecords(
 
   std::unordered_map<std::string, int64_t> virtual_value_index_by_name;
   std::unordered_map<int64_t, int64_t> last_use_by_virtual_value_index;
+  std::unordered_set<int64_t> loop_carried_virtual_value_indices;
+  struct ExactCBIntervalRange {
+    int64_t begin_point;
+    int64_t end_point;
+    std::string name;
+  };
+  struct ExactCBAllocatedInterval {
+    int64_t virtual_value_index;
+    int64_t cb_plan_index;
+    int64_t physical_cb_id;
+    int64_t begin_point;
+    int64_t end_point;
+    std::string allocation_name;
+    std::string interval_name;
+  };
+  std::unordered_map<int64_t, ExactCBIntervalRange>
+      interval_by_virtual_value_index;
+  std::vector<ExactCBAllocatedInterval> allocated_intervals;
   for (int64_t index = 0;
        index < static_cast<int64_t>(program->exact_cb_virtual_values.size());
        ++index) {
@@ -1446,6 +1465,16 @@ void ValidateExactCBLifecycleRecords(
         << "TTExactCBVirtualValue requires event_lifetime_kind";
     ICHECK(!value->loop_role.empty())
         << "TTExactCBVirtualValue requires loop_role";
+    const bool value_is_loop_carried =
+        str(value->event_lifetime_kind) == "loop_carried" ||
+        str(value->loop_role) == "loop_carried" ||
+        str(value->loop_role) == "loop_exit";
+    if (value_is_loop_carried) {
+      loop_carried_virtual_value_indices.insert(index);
+      ICHECK_EQ(value->event_lifetime_kind, ffi::String("loop_carried"))
+          << "loop-carried TTExactCBVirtualValue requires loop_carried "
+             "event_lifetime_kind";
+    }
     ICHECK_GT(value->num_pages, 0)
         << "TTExactCBVirtualValue requires positive num_pages";
     ICHECK_GT(value->page_size_bytes, 0)
@@ -1508,6 +1537,23 @@ void ValidateExactCBLifecycleRecords(
       ICHECK_GE(interval->end_point, use_it->second)
           << "TTExactCBLiveInterval end_point must cover last use";
     }
+    if (loop_carried_virtual_value_indices.count(interval->virtual_value_index) != 0U) {
+      ICHECK(interval->loop_carried)
+          << "loop-carried TTExactCBLiveInterval requires loop_carried "
+             "evidence";
+      ICHECK(interval->live_in)
+          << "loop-carried TTExactCBLiveInterval requires live-in evidence";
+      ICHECK(interval->live_out)
+          << "loop-carried TTExactCBLiveInterval requires live-out evidence";
+    }
+    ICHECK(interval_by_virtual_value_index
+               .emplace(interval->virtual_value_index,
+                        ExactCBIntervalRange{interval->begin_point,
+                                             interval->end_point,
+                                             str(interval->name)})
+               .second)
+        << "duplicate TTExactCBLiveInterval for virtual_value "
+        << interval->virtual_value;
   }
 
   std::unordered_map<std::string, int64_t> allocation_index_by_name;
@@ -1554,8 +1600,44 @@ void ValidateExactCBLifecycleRecords(
       ICHECK_GE(allocation->release_program_point, use_it->second)
           << "TTExactCBAllocation must not release before last use";
     }
+    auto interval_it =
+        interval_by_virtual_value_index.find(allocation->virtual_value_index);
+    ICHECK(interval_it != interval_by_virtual_value_index.end())
+        << "TTExactCBAllocation requires matching TTExactCBLiveInterval";
+    allocated_intervals.push_back(ExactCBAllocatedInterval{
+        allocation->virtual_value_index, allocation->cb_plan_index,
+        allocation->physical_cb_id, interval_it->second.begin_point,
+        interval_it->second.end_point, str(allocation->name),
+        interval_it->second.name});
     allocation_virtual_value_index.emplace(index,
                                            allocation->virtual_value_index);
+  }
+
+  auto intervals_overlap = [](const ExactCBAllocatedInterval &lhs,
+                              const ExactCBAllocatedInterval &rhs) {
+    return lhs.begin_point <= rhs.end_point &&
+           rhs.begin_point <= lhs.end_point;
+  };
+  for (size_t lhs_index = 0; lhs_index < allocated_intervals.size();
+       ++lhs_index) {
+    const ExactCBAllocatedInterval &lhs = allocated_intervals[lhs_index];
+    for (size_t rhs_index = lhs_index + 1;
+         rhs_index < allocated_intervals.size(); ++rhs_index) {
+      const ExactCBAllocatedInterval &rhs = allocated_intervals[rhs_index];
+      if (lhs.virtual_value_index == rhs.virtual_value_index ||
+          lhs.cb_plan_index != rhs.cb_plan_index ||
+          lhs.physical_cb_id != rhs.physical_cb_id ||
+          !intervals_overlap(lhs, rhs)) {
+        continue;
+      }
+      ICHECK(false)
+          << "interfering exact-CB intervals must not share physical CB: "
+          << lhs.allocation_name << " interval " << lhs.interval_name
+          << " [" << lhs.begin_point << ", " << lhs.end_point << "] and "
+          << rhs.allocation_name << " interval " << rhs.interval_name
+          << " [" << rhs.begin_point << ", " << rhs.end_point
+          << "] both use physical CB " << lhs.physical_cb_id;
+    }
   }
 
   for (const TTExactCBReleaseEvent &event :

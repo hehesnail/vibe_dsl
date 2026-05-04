@@ -646,6 +646,59 @@ void ApplyIRCBEventsToRequirements(
   }
 }
 
+void ApplyExactCBLiveIntervalsToRequirements(
+    const TTProgram& program,
+    std::vector<CBRequirement>* requirements) {
+  ICHECK(requirements != nullptr);
+  if (program->exact_cb_live_intervals.empty() ||
+      program->exact_cb_allocations.empty()) {
+    return;
+  }
+
+  struct IntervalRange {
+    int begin_point;
+    int end_point;
+  };
+  std::unordered_map<int64_t, IntervalRange> interval_by_virtual_value_index;
+  for (const TTExactCBLiveInterval& interval :
+       program->exact_cb_live_intervals) {
+    ICHECK_GE(interval->virtual_value_index, 0)
+        << "TTExactCBLiveInterval requires virtual_value_index before CB "
+           "allocation";
+    const int begin_point =
+        static_cast<int>(std::max<int64_t>(0, interval->begin_point));
+    const int end_point = static_cast<int>(
+        std::max<int64_t>(interval->begin_point, interval->end_point));
+    ICHECK(interval_by_virtual_value_index
+               .emplace(interval->virtual_value_index,
+                        IntervalRange{begin_point, end_point})
+               .second)
+        << "duplicate TTExactCBLiveInterval for virtual_value "
+        << interval->virtual_value;
+  }
+
+  for (const TTExactCBAllocation& allocation : program->exact_cb_allocations) {
+    ICHECK_GE(allocation->cb_plan_index, 0)
+        << "TTExactCBAllocation requires requirement-index cb_plan_index "
+           "before CB allocation";
+    ICHECK_LT(allocation->cb_plan_index,
+              static_cast<int64_t>(requirements->size()))
+        << "TTExactCBAllocation cb_plan_index out of staged requirement "
+           "range before CB allocation";
+    auto interval_it =
+        interval_by_virtual_value_index.find(allocation->virtual_value_index);
+    ICHECK(interval_it != interval_by_virtual_value_index.end())
+        << "TTExactCBAllocation requires matching TTExactCBLiveInterval before "
+           "CB allocation";
+    CBRequirement& req =
+        requirements->at(static_cast<size_t>(allocation->cb_plan_index));
+    req.lifetime_begin = std::min(req.lifetime_begin,
+                                  interval_it->second.begin_point);
+    req.lifetime_end = std::max(req.lifetime_end,
+                                interval_it->second.end_point);
+  }
+}
+
 std::vector<int> ComputeAutoPopPages(
     const std::vector<CBRequirement>& requirements,
     const std::vector<CBRequirementUseInfo>& use_info,
@@ -932,6 +985,9 @@ PrimFunc PlanTTCBAlloc::Transform(const PrimFunc& func) {
   const std::vector<CBRequirementEventInfo> event_info =
       CollectCBRequirementEventInfo(body_with_auto_pops, static_cast<int>(requirements.size()));
   ApplyIRCBEventsToRequirements(&requirements, event_info);
+  if (auto staged_program = func->GetAttr<TTProgram>(attr::kTLTTProgram)) {
+    ApplyExactCBLiveIntervalsToRequirements(staged_program.value(), &requirements);
+  }
   const std::vector<bool> referenced_requirements = ReferencedRequirementMask(use_info);
   std::vector<CBConfig> configs = AssignCBIds(requirements, referenced_requirements);
 

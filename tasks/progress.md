@@ -127,9 +127,12 @@ Every active implementation task uses this acceptance table.
   use or repair loop-carried state with buffer-name maps.
 - Covered old paths are deleted from the active chain:
   map-based loop-carried exact-CB owner truth and completed loop-carried state
-  recovery are removed.  Remaining non-loop borrowed exact-input last-use
-  release decisions still need to be unified behind the allocator/release
-  surface before T7.5 can be marked complete.
+  recovery are removed.  Non-loop borrowed exact-input last-use source
+  rendering no longer calls the old local `ShouldRelease...` path; it consumes
+  typed release events from the release-policy helper.  Loop-carried exit
+  evidence and physical-CB interval interference are now validator gates.
+  Remaining materialization-pop fallback and the full-tile-only-slice negative
+  gate still block marking T7.5 complete.
 - Flash-attn bf16 direct-runtime gates cover seq64 regression plus seqlen 128,
   256, and 512, or fail only from a typed simulator capability boundary after
   source/spec admission is proven.
@@ -193,12 +196,21 @@ Each checkpoint needs its own direct-runtime correctness proof:
   `completed_loop_carried_buffer_identities_` no longer appear under
   `tilelang_repo/src/transform`, `tilelang_repo/src/target`, or tests.
 - Structure/runtime selector passed:
+  `testing/python/transform/test_blackhole_spatial_ir.py::test_exact_cb_release_source_does_not_keep_local_last_use_fallback`,
   `testing/python/transform/test_blackhole_spatial_ir.py::test_validate_tt_program_consumes_exact_cb_lifecycle_records`,
+  `testing/python/transform/test_blackhole_spatial_ir.py::test_validate_tt_program_rejects_loop_carried_exact_cb_without_exit_evidence`,
+  `testing/python/transform/test_blackhole_spatial_ir.py::test_validate_tt_program_rejects_interfering_exact_cb_intervals_sharing_cb`,
   `testing/python/target/blackhole/test_blackhole_flash_attention_runtime.py::test_blackhole_t7_seq64_mha_bf16_exact_cb_partial_combine_direct_runtime`,
   `test_blackhole_flash_attention_extended_seq_metadata_carries_loop_carried_exact_cb`,
   and
   `test_blackhole_flash_attention_extended_seq_mha_bf16_forward_direct_runtime`
-  reported `5 passed, 3 skipped`.
+  reported `8 passed, 3 skipped`.
+- The physical-CB interference gate first exposed a real positive-path bug:
+  exact-CB virtual intervals were using merged requirement lifetime as their
+  begin point, so later versions on the same requirement appeared live from
+  program point 0.  The interval builder now uses producer/use evidence, and
+  `PlanTTCBAlloc` also feeds exact-CB intervals into requirement lifetime
+  before physical CB assignment.
 - The three skips are the typed simulator boundary for seq128/256/512:
   loop-carried input exact-CB backedge release is admitted in source/spec, but
   current TT-Sim reports `tensix_execute_pacr: count=1` for the compute-side

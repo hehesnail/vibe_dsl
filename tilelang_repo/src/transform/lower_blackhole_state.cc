@@ -328,8 +328,9 @@ int64_t PlanTTKernelABI::EnsureExactCBVirtualValue(
   const TTLiveFormPlan& live_form =
       tt_live_form_plans_[static_cast<size_t>(live_form_index)];
   const CBRequirement& req = cb_requirements_.at(value.cb_id);
+  const int resolved_producer_order = ResolveBorrowedExactInputProducerOrder(value);
   const int producer_order =
-      std::max(0, ResolveBorrowedExactInputProducerOrder(value));
+      resolved_producer_order >= 0 ? resolved_producer_order : req.lifetime_begin;
   const std::string lifetime_kind =
       spatial_lifetime_kind_by_subject_.count(logical_value)
           ? spatial_lifetime_kind_by_subject_.at(logical_value)
@@ -346,9 +347,12 @@ int64_t PlanTTKernelABI::EnsureExactCBVirtualValue(
       String(lifetime_kind), String(loop_role),
       std::max<int64_t>(1, value.num_tiles > 0 ? value.num_tiles : req.num_pages),
       req.page_size, String(req.data_format)));
-  const int64_t begin_point = std::max<int64_t>(0, req.lifetime_begin);
-  const int64_t end_point =
-      std::max<int64_t>(begin_point, std::max<int64_t>(req.lifetime_end, current_order_index));
+  const int64_t consumer_point =
+      std::max<int64_t>(0, current_order_index >= 0 ? current_order_index
+                                                    : req.lifetime_end);
+  const int64_t begin_point = std::max<int64_t>(
+      0, std::min<int64_t>(producer_order, consumer_point));
+  const int64_t end_point = std::max<int64_t>(begin_point, consumer_point);
   tt_exact_cb_live_intervals_.push_back(TTExactCBLiveInterval(
       String("exact_cb_interval_" + SanitizeExactCBNameComponent(logical_value) +
              "_" + std::to_string(value.cb_id) + "_" + std::to_string(virtual_index)),

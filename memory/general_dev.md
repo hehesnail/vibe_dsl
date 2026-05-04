@@ -2312,3 +2312,11 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   `cb_republish` via `tilize_cast_fragment_slice`, tiled `add_tiles`
   partial-combine source, and host-reference correctness through
   `BlackholeModule`.
+- 2026-05-05 exact-CB lifecycle allocation:
+  Exact-CB virtual intervals must be built from producer/use evidence, not from
+  a merged CB requirement lifetime.  Requirement lifetime is an allocator input
+  that may cover several versions of a CB slot; using it as a virtual value's
+  begin point makes later versions look live from program point 0 and can hide
+  real physical-CB interference.  Feed typed exact-CB interval bounds into
+  `PlanTTCBAlloc` before physical CB assignment, then validate that two
+  overlapping virtual intervals never share one physical CB.

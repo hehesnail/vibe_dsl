@@ -196,6 +196,12 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
     bool completed = false;
   };
 
+  enum class ExactCBReleasePolicy {
+    kNever,
+    kAlways,
+    kBorrowedLastUse,
+  };
+
   struct ComputeOperandPlanSeed {
     std::string role;
     tvm::tir::Buffer buffer;
@@ -609,15 +615,15 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
                                                    ExactTiledCBValue* value) const;
   bool TryCreateSelectedSourceLiveExactTiledCBValue(const tvm::tir::Buffer& buffer,
                                                     ExactTiledCBValue* value);
-  bool ShouldReleaseBorrowedExactInputAfterUse(
+  bool BorrowedExactInputHasNoFutureUseAt(
       const ExactTiledCBValue& value,
       int current_order_index) const;
   int ResolveBorrowedExactInputProducerOrder(
       const ExactTiledCBValue& value) const;
-  tvm::ffi::Optional<TTExactCBReleaseEvent> RecordExactCBUseAndMaybeRelease(
+  tvm::ffi::Optional<TTExactCBReleaseEvent> RecordExactCBUseAndReleaseEvent(
       const ExactTiledCBValue& value,
       int current_order_index,
-      bool should_release);
+      ExactCBReleasePolicy release_policy);
   void RecordLoopCarriedExactCBLifecycle(
       const std::string& logical_value,
       const ExactTiledCBValue& value,

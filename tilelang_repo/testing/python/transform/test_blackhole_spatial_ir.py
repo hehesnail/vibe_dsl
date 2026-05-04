@@ -1216,6 +1216,20 @@ def test_blackhole_compute_op_planning_has_no_map_seed_contract_surface():
     assert hits == []
 
 
+def test_exact_cb_release_source_does_not_keep_local_last_use_fallback():
+    source_paths = [
+        REPO_ROOT / "tilelang_repo/src/transform/lower_blackhole_ops.h",
+        REPO_ROOT / "tilelang_repo/src/transform/lower_blackhole_exact_cb.cc",
+    ]
+    hits = _source_tree_rg(
+        r"ShouldReleaseBorrowedExactInputAfterUse|"
+        r"should_release\s*=|"
+        r"RecordExactCBUseAndMaybeRelease\([^;]+should_release",
+        *source_paths,
+    )
+    assert hits == []
+
+
 def test_tile_compute_pattern_table_covers_current_leaf_operation_names():
     pattern_table = tvm.get_global_func("tl.BlackholeTileComputePatternTable")()
     operation_names = {str(pattern["operation_name"]) for pattern in pattern_table}
@@ -1786,6 +1800,150 @@ def test_validate_tt_program_consumes_exact_cb_lifecycle_records():
         global_infos=mod.global_infos,
     )
     with pytest.raises(Exception, match="TTExactCBReleaseEvent.*last use"):
+        tilelang.transform.ValidateTTProgram()(broken)
+
+
+def test_validate_tt_program_rejects_loop_carried_exact_cb_without_exit_evidence():
+    mod = _prepare_blackhole_tt_program_module(
+        mha_example.flashattn.jit_impl.get_tir(
+            1,
+            4,
+            64,
+            32,
+            False,
+            block_M=32,
+            block_N=32,
+            num_stages=1,
+            threads=128,
+        )
+    )
+    main = mod["main"]
+    tt_program = main.attrs["tl.tt_program"]
+    virtual_value, use_event, interval, allocation, release = (
+        _make_exact_cb_lifecycle_records(tt_program)
+    )
+    make_interval = tvm.get_global_func("tl.TTExactCBLiveInterval")
+    missing_exit_interval = make_interval(
+        str(interval.name),
+        str(interval.virtual_value),
+        int(interval.virtual_value_index),
+        int(interval.begin_point),
+        int(interval.end_point),
+        True,
+        False,
+        True,
+        str(interval.interference_class),
+    )
+    broken_program = _rebuild_tt_program(
+        tt_program,
+        exact_cb_virtual_values=[virtual_value],
+        exact_cb_use_events=[use_event],
+        exact_cb_live_intervals=[missing_exit_interval],
+        exact_cb_allocations=[allocation],
+        exact_cb_release_events=[release],
+    )
+    broken = tvm.IRModule(
+        {"main": main.with_attr("tl.tt_program", broken_program)},
+        global_infos=mod.global_infos,
+    )
+    with pytest.raises(Exception, match="loop-carried.*live.*out"):
+        tilelang.transform.ValidateTTProgram()(broken)
+
+
+def test_validate_tt_program_rejects_interfering_exact_cb_intervals_sharing_cb():
+    mod = _prepare_blackhole_tt_program_module(
+        mha_example.flashattn.jit_impl.get_tir(
+            1,
+            4,
+            64,
+            32,
+            False,
+            block_M=32,
+            block_N=32,
+            num_stages=1,
+            threads=128,
+        )
+    )
+    main = mod["main"]
+    tt_program = main.attrs["tl.tt_program"]
+    virtual_value, use_event, interval, allocation, release = (
+        _make_exact_cb_lifecycle_records(tt_program)
+    )
+    make_virtual_value = tvm.get_global_func("tl.TTExactCBVirtualValue")
+    make_use_event = tvm.get_global_func("tl.TTExactCBUseEvent")
+    make_interval = tvm.get_global_func("tl.TTExactCBLiveInterval")
+    make_allocation = tvm.get_global_func("tl.TTExactCBAllocation")
+    make_release = tvm.get_global_func("tl.TTExactCBReleaseEvent")
+
+    other_value = make_virtual_value(
+        f"{virtual_value.name}.other",
+        str(virtual_value.logical_value),
+        str(virtual_value.live_form),
+        int(virtual_value.live_form_index),
+        str(virtual_value.producer_kernel),
+        "other_loop_exit_value",
+        str(virtual_value.event_lifetime_kind),
+        str(virtual_value.loop_role),
+        int(virtual_value.num_pages),
+        int(virtual_value.page_size_bytes),
+        str(virtual_value.data_format),
+    )
+    other_use = make_use_event(
+        f"{other_value.name}.consume",
+        str(other_value.name),
+        1,
+        str(use_event.consumer_kernel),
+        str(use_event.consumer_event),
+        str(use_event.operand_role),
+        44,
+        bool(use_event.requires_full_logical_tile),
+        str(use_event.borrow_kind),
+    )
+    other_interval = make_interval(
+        f"{other_value.name}.interval",
+        str(other_value.name),
+        1,
+        18,
+        44,
+        bool(interval.live_in),
+        bool(interval.live_out),
+        bool(interval.loop_carried),
+        str(interval.interference_class),
+    )
+    other_allocation = make_allocation(
+        f"{other_value.name}.alloc",
+        str(other_value.name),
+        1,
+        str(allocation.cb_plan),
+        int(allocation.cb_plan_index),
+        int(allocation.physical_cb_id),
+        int(allocation.page_count),
+        45,
+        str(allocation.release_reason),
+    )
+    other_release = make_release(
+        f"{other_value.name}.release",
+        str(other_allocation.name),
+        1,
+        str(release.cb_plan),
+        int(release.cb_plan_index),
+        45,
+        int(release.page_count),
+        str(release.reason),
+    )
+    broken_program = _rebuild_tt_program(
+        tt_program,
+        exact_cb_virtual_values=[virtual_value, other_value],
+        exact_cb_use_events=[use_event, other_use],
+        exact_cb_live_intervals=[interval, other_interval],
+        exact_cb_allocations=[allocation, other_allocation],
+        exact_cb_release_events=[release, other_release],
+    )
+    broken = tvm.IRModule(
+        {"main": main.with_attr("tl.tt_program", broken_program)},
+        global_infos=mod.global_infos,
+    )
+    with pytest.raises(Exception, match="interfering.*physical CB"):
         tilelang.transform.ValidateTTProgram()(broken)
 
 

@@ -474,6 +474,23 @@ Required negative gates:
 - T7.5 is not complete until remaining borrowed exact-input last-use release
   decisions are also driven by the allocator/release surface instead of local
   source helper decisions.
+- 2026-05-05 follow-up: borrowed exact-input last-use rendering no longer
+  calls `ShouldReleaseBorrowedExactInputAfterUse` or passes a local
+  `should_release` boolean into release-event recording.  The source renderer
+  consumes an optional typed release event produced through a release-policy
+  helper.  Temporary owned exact inputs and some materialization pops can still
+  render a local consume pop when no cross-boundary live value exists; those
+  are outside the borrowed last-use cutover and remain deletion targets where
+  they cross materialization / loop / transport boundaries.
+- 2026-05-05 follow-up: validator rejects loop-carried exact-CB values whose
+  live interval lacks live-in/live-out evidence, and rejects overlapping
+  exact-CB virtual intervals that share one physical CB.  The interference
+  gate exposed a real positive-path bug: virtual intervals inherited merged
+  CB-requirement lifetime begin points, so later exact-CB versions on the same
+  requirement looked live from program point 0.  The interval builder now uses
+  producer/use evidence for virtual-value begin/end, and `PlanTTCBAlloc`
+  incorporates exact-CB interval bounds into requirement lifetime before
+  assigning physical CB IDs.
 
 ## Completion Criteria
 

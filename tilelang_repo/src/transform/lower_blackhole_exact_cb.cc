@@ -653,7 +653,7 @@ bool PlanTTKernelABI::TryCreateSelectedSourceLiveExactTiledCBValue(const Buffer&
   return true;
 }
 
-bool PlanTTKernelABI::ShouldReleaseBorrowedExactInputAfterUse(
+bool PlanTTKernelABI::BorrowedExactInputHasNoFutureUseAt(
     const ExactTiledCBValue& value, int current_order_index) const {
   if (!value.borrowed_live || !value.buffer.defined() || value.cb_id < 0) {
     return false;
@@ -756,10 +756,10 @@ int PlanTTKernelABI::ResolveBorrowedExactInputProducerOrder(
 }
 
 ffi::Optional<TTExactCBReleaseEvent>
-PlanTTKernelABI::RecordExactCBUseAndMaybeRelease(
+PlanTTKernelABI::RecordExactCBUseAndReleaseEvent(
     const ExactTiledCBValue& value,
     int current_order_index,
-    bool should_release) {
+    ExactCBReleasePolicy release_policy) {
   if (value.cb_id < 0 || value.num_tiles <= 0) {
     return ffi::Optional<TTExactCBReleaseEvent>();
   }
@@ -782,14 +782,27 @@ PlanTTKernelABI::RecordExactCBUseAndMaybeRelease(
       String("compute_consume"), String("input"), std::max(current_order_index, 0),
       /*requires_full_logical_tile=*/true,
       String(value.borrowed_live ? "borrow" : "consume")));
-  if (!should_release) {
+  bool emit_release = false;
+  switch (release_policy) {
+    case ExactCBReleasePolicy::kNever:
+      return ffi::Optional<TTExactCBReleaseEvent>();
+    case ExactCBReleasePolicy::kAlways:
+      emit_release = true;
+      break;
+    case ExactCBReleasePolicy::kBorrowedLastUse:
+      emit_release =
+          BorrowedExactInputHasNoFutureUseAt(value, current_order_index);
+      break;
+  }
+  if (!emit_release) {
     return ffi::Optional<TTExactCBReleaseEvent>();
   }
   const int64_t allocation_index = EnsureExactCBAllocation(
       virtual_value_index, value, current_order_index, "last_use");
-  if (allocation_index < 0) {
-    return ffi::Optional<TTExactCBReleaseEvent>();
-  }
+  ICHECK_GE(allocation_index, 0)
+      << "Exact-CB release requires a typed allocation record for "
+      << (!value.live_identity.empty() ? value.live_identity
+                                       : BufferIdentityName(value.buffer));
   const TTExactCBAllocation& allocation =
       tt_exact_cb_allocations_[static_cast<size_t>(allocation_index)];
   const TTExactCBReleaseEvent release(
@@ -929,17 +942,16 @@ Stmt PlanTTKernelABI::ReleaseExactInputAfterUse(
   if (value.cb_id < 0 || value.num_tiles <= 0) {
     return Stmt();
   }
-  if (!value.borrowed_live) {
-    RecordExactCBUseAndMaybeRelease(value, current_order_index,
-                                    /*should_release=*/true);
-    return MakeBlackholeCall(
-        blackhole_cb_pop_front(), {IntImm32(value.cb_id), IntImm32(value.num_tiles)});
-  }
-  const bool should_release =
-      ShouldReleaseBorrowedExactInputAfterUse(value, current_order_index);
   ffi::Optional<TTExactCBReleaseEvent> release_event =
-      RecordExactCBUseAndMaybeRelease(value, current_order_index, should_release);
-  if (!should_release) {
+      RecordExactCBUseAndReleaseEvent(
+          value, current_order_index,
+          value.borrowed_live ? ExactCBReleasePolicy::kBorrowedLastUse
+                              : ExactCBReleasePolicy::kAlways);
+  if (!release_event) {
+    if (!value.borrowed_live) {
+      return MakeBlackholeCall(
+          blackhole_cb_pop_front(), {IntImm32(value.cb_id), IntImm32(value.num_tiles)});
+    }
     return Stmt();
   }
   if (!value.live_identity.empty()) {
@@ -947,14 +959,10 @@ Stmt PlanTTKernelABI::ReleaseExactInputAfterUse(
   } else {
     ClearTiledCBLiveFormAliases(value.buffer);
   }
-  if (release_event) {
-    return MakeBlackholeCall(
-        blackhole_cb_pop_front(),
-        {IntImm32(static_cast<int>(release_event.value()->cb_plan_index)),
-         IntImm32(static_cast<int>(release_event.value()->page_count))});
-  }
   return MakeBlackholeCall(
-      blackhole_cb_pop_front(), {IntImm32(value.cb_id), IntImm32(value.num_tiles)});
+      blackhole_cb_pop_front(),
+      {IntImm32(static_cast<int>(release_event.value()->cb_plan_index)),
+       IntImm32(static_cast<int>(release_event.value()->page_count))});
 }
 
 PlanTTKernelABI::ExactTiledCBValue PlanTTKernelABI::CreateRowReductionInputCBValue(
@@ -1225,8 +1233,10 @@ Stmt PlanTTKernelABI::MaterializeExactTiledCBToLocalBuffer(const Buffer& dst,
          IntImm32(tile * kTileElements)}));
   }
   ffi::Optional<TTExactCBReleaseEvent> release_event =
-      RecordExactCBUseAndMaybeRelease(cb_value, current_lowering_order_index_,
-                                      pop_front);
+      RecordExactCBUseAndReleaseEvent(
+          cb_value, current_lowering_order_index_,
+          pop_front ? ExactCBReleasePolicy::kAlways
+                    : ExactCBReleasePolicy::kNever);
   if (pop_front) {
     if (release_event) {
       stmts.push_back(MakeBlackholeCall(
