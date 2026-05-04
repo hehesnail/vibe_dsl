@@ -2207,3 +2207,10 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   representation.  Names such as MoE, sparse attention, `group_sizes`,
   `cache_seqlens`, or `block_indices` are only test inputs or operands in TIR
   expressions, not planning semantics by themselves.
+- 2026-05-04 task-boundary audit:
+  T1-T5 are acceptable as explicit address, leaf compute, placement, accessor,
+  and sharded-layout contracts.  T9 workload names are only first-path
+  checkpoints; they must decompose into already admitted primitive surfaces.
+  T10 distributed records are TT target-realization primitives
+  (placement/communication/sync/resource/runtime ABI), not workload-family
+  semantics.

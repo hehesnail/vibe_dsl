@@ -441,6 +441,12 @@ Each workload is a separate first-path checkpoint:
 - T9.5 chunk recurrence / scan
 - T9.6 multi-block flash decode
 
+These workload names are scheduling checkpoints only.  They must decompose into
+the already admitted primitive surfaces: explicit TIR compute/dataflow,
+placement/reshard records, accessor ABI, exact-CB/materialization, and
+TIR-derived irregular work evidence.  T9 must not introduce workload-named
+semantic objects or metadata contracts as owner truth.
+
 ### T10 Distributed Production Variants
 
 - T10.1 mesh / multi-device placement records
@@ -457,6 +463,12 @@ Each workload is a separate first-path checkpoint:
   deleting or folding the current runtime-issued partial-K tile-add special
   path into the typed protocol implementation; no parallel fallback path should
   remain.
+
+T10 records are TT target-realization records: mesh/device placement,
+communication topology, collective operation contracts, NoC/multicast routes,
+sync primitives, resource admission, and executable runtime ABI.  They must be
+derived from explicit placement/dataflow requirements and hardware facts, not
+from workload family names or runtime observations.
 
 ## Support Boundary
 
