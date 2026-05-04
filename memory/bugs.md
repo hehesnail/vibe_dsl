@@ -2338,6 +2338,28 @@
     passes, and the focused flash attention structural selector set reports
     `3 passed`.
 
+#### Row-reduce exact-CB results must not be eagerly untilized before tiled consumers
+
+- **症状**:
+  - seq64 bf16 flash-attn partial-combine source checks failed with
+    `get_tile_address(0)` in the compute source after T6 row-reduce work.
+- **根因**:
+  - `GenerateRowReductionSequence` materialized every row-reduce exact-CB
+    result back into local fragment state to support standalone value/index
+    selection.  In flash-attn, the next real consumer of `scores_sum` is a
+    tiled exact-CB combine, so the local materialization was a stale
+    pre-rewrite reference path.
+- **修法**:
+  - Only materialize a row-reduce exact-CB result to local state when the first
+    future use before the next write is a true reference.  If the first future
+    use is compute or transport consume, keep the value as the typed exact-CB
+    live form.
+- **教训**:
+  - T6 standalone row-reduce/select needs local materialization for scalar
+    reference consumers, but T7 flash reduce/combine must preserve exact-CB
+    live-form ownership.  Do not use unconditional post-reduce untilize as a
+    cross-workload bridge.
+
 ## 3. 环境问题速查
 
 | 问题 | 解决 |

@@ -7,7 +7,7 @@
 ## Status
 
 - Date: `2026-05-04`
-- Active task: `T7 Exact-CB / materialization primitives`
+- Active task: none; next queued lane is `T8 Irregular work domains / indexed access`
 - Main chain:
   `Normalized Tile TIR -> SpatialPlan -> TTProgram -> ExecutableSpec`
 
@@ -21,7 +21,7 @@
 | T4 External accessor / runtime ABI | Complete | External interleaved, 64B page-indexed DRAM, and static sharded-L1 accessors are executable records consumed by source/runtime; unsupported dynamic/common-runtime forms reject from typed records. |
 | T5 Sharded GEMM / layout variants | Complete | First static external sharded-L1 GEMM layouts pass direct runtime, including single-core, 2x2 multi-core, 110-core many-core all-bf16, and first K-dimension partial-sum correctness path. |
 | T6 `topk` | Complete | Existing-TIR row-wise value/index selection runs through direct runtime for fp32 and bf16 values with exact `int32` indices, without a frontend topk op or selection plan. |
-| T7 Exact-CB / materialization primitives | Active | A GEMM post-merge cast consumer exact-CB `pack_tile` slice has direct-runtime coverage; wider source-live-form materialization, partial combine, and multi-block flash exact-CB correctness remain open. |
+| T7 Exact-CB / materialization primitives | Complete | Exact-CB materialization is admitted through typed live-form/materialization/consumer-binding records, including GEMM post-merge `pack_tile`, source-live `cb_republish`, and seq64 bf16 flash-attn exact-CB partial-combine direct runtime correctness. |
 | T8 Irregular work domains / indexed access | Queued | TIR-derived segmented, ragged, and indexed addressing evidence; no workload metadata registry. |
 | T9 Workload first paths | Queued | Workload checkpoints decomposed into admitted primitive surfaces with direct-runtime correctness. |
 | T10 Distributed production variants | Queued | Mesh, CCL, NoC/multicast/global scheduling, distributed workload correctness, and production partial-K reduction protocol. |
@@ -66,6 +66,33 @@ Unsupported axis/layout/generalized value-index variants remain outside the
 admitted T6 subset and must fail closed through the existing typed legality
 surface until a later task broadens that subset.
 
+## Completed Task: T7 Exact-CB / Materialization
+
+T7 admits exact-CB materialization as a typed backend contract instead of a
+source-name or runtime fallback surface.
+
+The completed subset covers:
+
+- `TTLiveFormPlan`, `TTMaterializationPlan`, and `TTConsumerBindingPlan`
+  records for source live forms, materialized CB tile forms, publication
+  protocol, and consumer binding;
+- GEMM post-merge cast-consumer exact-CB `cb_republish` / `pack_tile`
+  correctness through direct runtime;
+- seq64 bf16 flash-attn MHA direct runtime where the same lowered artifact
+  proves no exact-CB unsupported reasons, one-page publish/consume event
+  windows, `acc_s -> acc_s_cast` `cb_republish` via
+  `tilize_cast_fragment_slice`, device-side tiled partial combine, and host
+  reference correctness;
+- typed reject boundaries for unsupported materialization/event forms before
+  runtime execution.
+
+No frontend materialization op, alternate runtime combiner, mailbox fallback,
+legacy payload, or source-name semantic recovery is part of the T7 contract.
+
+Wider workload surfaces that reuse these primitives remain in later lanes:
+T8 derives irregular/ragged/indexed work from TIR, T9 admits workload-first
+paths, and T10 owns production distributed / fused partial-reduction protocols.
+
 ## Required Verification
 
 Every active implementation task uses this acceptance table.
@@ -80,21 +107,6 @@ Every active implementation task uses this acceptance table.
 | Unsupported reason | Unsupported forms fail closed with typed diagnostics before source/runtime guessing. |
 
 ## Remaining Runtime Correctness Gates
-
-### T7 Exact-CB / Materialization
-
-- Current positive coverage includes the GEMM post-merge cast consumer
-  exact-CB `cb_republish` / `pack_tile` path through direct runtime.  That is
-  useful coverage but does not discharge the wider T7 gates below.
-- bf16 source-live-form materialization where one kernel publishes an
-  intermediate value and a later kernel consumes the materialized form.
-- At least one admitted exact-CB publish/consume multi-kernel path through
-  direct runtime.  Unsupported multi-page events must reject with typed
-  reasons, but the admitted subset still needs positive runtime correctness.
-- Device-produced partial combine over two or more partial values, compared
-  with a host reference.
-- bf16 multi-block flash-attn or flash-decode exact-CB case exercising
-  producer/consumer lifetime and combine behavior.
 
 ### T8 Irregular Work / Indexed Access
 
@@ -146,33 +158,31 @@ Each checkpoint needs its own direct-runtime correctness proof:
 
 ## Recent Verification
 
-2026-05-04 UTC T6 existing-TIR topk direct-runtime admission:
+2026-05-04 UTC T6/T7 completion verification:
 
 - `cmake --build build -j32` passed.
-- T6 topk runtime passed:
-  `testing/python/target/blackhole/test_blackhole_topk_runtime.py` reported
-  `4 passed`.  Coverage includes the no-selection-plan contract test, fp32
-  single-work, fp32 multi-work `M=320,N=128,k=6,blk_m=64`, and bf16 values
-  with exact `int32` indices.
 - Leaf compute runtime regression passed:
   `testing/python/target/blackhole/test_blackhole_leaf_compute_runtime.py`
   reported `17 passed, 1 skipped`.
+- T6 topk runtime plus T7 flash exact-CB/partial-combine selectors passed:
+  `testing/python/target/blackhole/test_blackhole_topk_runtime.py`,
+  `test_blackhole_flash_attention_seq64_bf16_metadata_admits_multi_block_direct_runtime_contract`,
+  `test_blackhole_flash_attention_seq64_mha_bf16_forward_direct_runtime`,
+  `test_blackhole_flash_attention_seq64_gqa_bf16_forward_direct_runtime`,
+  `test_blackhole_t7_seq64_mha_bf16_exact_cb_partial_combine_direct_runtime`,
+  `test_flash_attention_seq64_bf16_compute_source_accumulates_clear_accum_false_gemm_via_tiled_merge_protocol`,
+  `test_flash_attention_seq64_bf16_compute_source_keeps_cb_events_queue_consistent`,
+  and
+  `test_flash_attention_seq64_bf16_pv_merge_consumes_scaled_acc_o_live_form`
+  reported `11 passed`.
 - T7 exact-CB / GEMM regression subset passed:
   `testing/python/target/blackhole/test_blackhole_gemm.py::test_blackhole_gemm_post_merge_cast_consumer_uses_pack_tile_materialization`,
   `testing/python/target/blackhole/test_blackhole_gemm.py::test_blackhole_t7_exact_cb_gemm_post_merge_cast_consumer_direct_runtime`,
+  `testing/python/target/blackhole/test_blackhole_gemm.py::test_blackhole_gemm_post_merge_cast_consumer_without_zero_preclear_keeps_materialization_gate`,
   and
   `testing/python/target/blackhole/test_blackhole_gemm.py::test_blackhole_gemm_direct_runtime_preserves_clear_accum_false_fragment_for_cast_consumer`
-  reported `3 passed`.
-- Flash attention structural regression selectors passed:
-  `test_flash_attention_small_bf16_compute_source_publishes_output_via_typed_pack_path`,
-  `test_flash_attention_small_bf16_compute_source_keeps_acc_s_cast_cb_pages_consistent`,
-  and
-  `test_flash_attention_seq64_bf16_compute_source_keeps_cb_events_queue_consistent`
-  reported `3 passed`.
-- The historical selector
-  `test_blackhole_flash_attention_small_bf16_forward_direct_runtime` does not
-  exist in the current checkout; the current active flash coverage is
-  structural/source queue validation, not direct runtime.
+  reported `4 passed`.
+- `git diff --check` passed.
 
 2026-05-04 UTC entrypoint / main-design documentation cleanup:
 

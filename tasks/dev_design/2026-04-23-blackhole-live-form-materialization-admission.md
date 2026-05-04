@@ -83,6 +83,9 @@ text:
 - `pack_tile`
 - exact CB republish when event lifetime, source live form, and consumer
   binding are all proven
+- device tiled partial combine when the producer and consumer CB windows are
+  typed as single-event exact-CB pages and the lowered artifact remains
+  direct-runtime admitted
 
 Adding a protocol requires:
 
@@ -107,6 +110,12 @@ Direct-runtime rejection must use typed, queryable reasons such as:
 - multi-block runtime path not admitted
 - missing full-logical-tile proof
 - simulator capability boundary
+
+The current positive direct-runtime subset includes seq64 bf16 flash-attn MHA:
+the same lowered artifact must show no exact-CB unsupported reasons,
+single-page publish/consume event windows, `acc_s -> acc_s_cast`
+`cb_republish` through `tilize_cast_fragment_slice`, tiled device partial
+combine, and host-reference correctness.
 
 Current standalone row `reduce_tile` is schema/source-complete through the
 full-tile reduce CB to rank-1 writer path: the writer consumes the compute
@@ -138,6 +147,9 @@ Required validation covers:
 - exact-CB consumers release borrowed live pages at the consumption point when
   no later consumer can legally read that live form; later producers must not
   repair stale pages with a separate semantic discard path
+- row-reduce exact-CB results remain in their typed live form when the next
+  consumer before the next write is compute or transport; local untilize is
+  reserved for true reference consumers
 - direct runtime rejects unsupported surfaces before execution
 
 Runtime tests are support-surface gates only after the typed plans and

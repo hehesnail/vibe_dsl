@@ -1133,7 +1133,56 @@ Stmt PlanTTKernelABI::GenerateRowReductionSequence(const RowReductionMatch& matc
     emit.Push(out.cb_id, out.num_tiles);
   }
   const Buffer live_form_dst = match.live_form_dst.defined() ? match.live_form_dst : match.dst;
-  stmts.push_back(MaterializeExactTiledCBToLocalBuffer(match.dst, out, /*pop_front=*/false));
+  auto future_reference_precedes_live_cb_consume = [&]() {
+    int first_reference_order = -1;
+    int first_live_cb_consume_order = -1;
+    int next_write_order = -1;
+    for (const std::string& identity : CollectBufferFlowIdentities(match.dst)) {
+      auto it = buffer_flow_facts_.find(identity);
+      if (it == buffer_flow_facts_.end()) {
+        continue;
+      }
+      for (const BlackholeBufferFlowEvent& event : it->second.events) {
+        if (event.order_index <= current_lowering_order_index_) {
+          continue;
+        }
+        if (event.kind == BlackholeBufferFlowEventKind::kWrite &&
+            (next_write_order < 0 || event.order_index < next_write_order)) {
+          next_write_order = event.order_index;
+        }
+      }
+    }
+    for (const std::string& identity : CollectBufferFlowIdentities(match.dst)) {
+      auto it = buffer_flow_facts_.find(identity);
+      if (it == buffer_flow_facts_.end()) {
+        continue;
+      }
+      for (const BlackholeBufferFlowEvent& event : it->second.events) {
+        if (event.order_index <= current_lowering_order_index_) {
+          continue;
+        }
+        if (next_write_order >= 0 && event.order_index > next_write_order) {
+          continue;
+        }
+        if (event.kind == BlackholeBufferFlowEventKind::kReference &&
+            (first_reference_order < 0 || event.order_index < first_reference_order)) {
+          first_reference_order = event.order_index;
+        }
+        if ((event.kind == BlackholeBufferFlowEventKind::kComputeConsume ||
+             event.kind == BlackholeBufferFlowEventKind::kTransportConsume) &&
+            (first_live_cb_consume_order < 0 ||
+             event.order_index < first_live_cb_consume_order)) {
+          first_live_cb_consume_order = event.order_index;
+        }
+      }
+    }
+    return first_reference_order >= 0 &&
+           (first_live_cb_consume_order < 0 ||
+            first_reference_order < first_live_cb_consume_order);
+  };
+  if (future_reference_precedes_live_cb_consume()) {
+    stmts.push_back(MaterializeExactTiledCBToLocalBuffer(match.dst, out, /*pop_front=*/false));
+  }
   InvalidateLastFragmentFillValue(match.dst);
   if (live_form_dst.defined() && !SameBufferIdentity(live_form_dst, match.dst)) {
     InvalidateLastFragmentFillValue(live_form_dst);

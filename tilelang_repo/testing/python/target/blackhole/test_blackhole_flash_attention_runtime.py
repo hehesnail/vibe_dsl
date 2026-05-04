@@ -68,6 +68,73 @@ def _has_multi_page_republish_event(metadata):
     )
 
 
+def _assert_t7_seq64_mha_exact_cb_partial_combine_contract(metadata):
+    reasons = [str(reason) for reason in metadata.get("direct_runtime_unsupported_reasons", [])]
+    assert reasons == []
+    assert not any(MULTI_PAGE_EXACT_CB_REPUBLISH_REASON in reason for reason in reasons)
+    assert not any(MULTI_BLOCK_EXACT_CB_REPUBLISH_REASON in reason for reason in reasons)
+
+    cb_by_name = {str(config["name"]): config for config in metadata["cb_configs"]}
+    for cb_name in ("K_shared", "V_shared", "acc_s_cast"):
+        cb = cb_by_name[cb_name]
+        assert int(cb["num_pages"]) == 2
+        assert int(cb["publish_pages_per_event"]) == 1
+        assert int(cb["consume_pages_per_event"]) == 1
+
+    materialization_plans = {
+        str(plan["target_buffer"]): plan for plan in metadata["materialization_plans"]
+    }
+    acc_s_cast_plan = materialization_plans["acc_s_cast"]
+    assert str(acc_s_cast_plan["source_live_form"]) == "live_form_acc_s"
+    assert str(acc_s_cast_plan["materialization_protocol"]) == "cb_republish"
+    assert str(acc_s_cast_plan["publication_protocol"]) == "tilize_cast_fragment_slice"
+    assert str(acc_s_cast_plan["produced_live_form"]) == "live_form_acc_s_cast"
+
+    live_form_plans = {
+        str(plan["name"]): plan for plan in metadata["live_form_plans"]
+    }
+    assert str(live_form_plans["live_form_acc_s"]["physical_form"]) == "thread_distributed_slice"
+    assert str(live_form_plans["live_form_acc_s_cast"]["physical_form"]) == "cb_materialized_tile"
+    assert (
+        str(live_form_plans["live_form_acc_s_cast"]["ownership_kind"])
+        == "materialized_cb_pages_single_event"
+    )
+
+    compute_source = str(
+        next(
+            kernel["source_code"]
+            for kernel in metadata["kernels"]
+            if str(kernel["kind"]) == "compute" and str(kernel["core_type"]) == "trisc"
+        )
+    )
+    assert "tilelang_add_fragment(dst, src, num_elements);" not in compute_source
+    assert "tilelang_get_cb_write_ptr_bytes" not in compute_source
+    assert "get_tile_address(0)" not in compute_source
+    assert "add_tiles_init(" in compute_source
+    assert "add_tiles(" in compute_source
+
+    merge_pairs = re.findall(r"add_tiles_init\((\d+), (\d+)\);", compute_source)
+    assert merge_pairs
+    merge_window_pattern = re.compile(
+        r"add_tiles_init\((\d+), (\d+)\);.*?add_tiles\(\1, \2, 0, 0, 0\);.*?"
+        r"pack_tile\(0, (\d+)(?:, \d+)?\);",
+        re.DOTALL,
+    )
+    merge_windows = list(merge_window_pattern.finditer(compute_source))
+    assert merge_windows
+    assert all("tile_regs_commit()" in window.group(0) for window in merge_windows)
+    assert all("tile_regs_wait()" in window.group(0) for window in merge_windows)
+
+    merge_cb_ids = {cb_id for pair in merge_pairs for cb_id in pair}
+    merge_output_cb_ids = {window.group(3) for window in merge_windows}
+    for cb_id in merge_cb_ids:
+        assert re.search(rf"cb_wait_front\({cb_id},\s*\d+\);", compute_source)
+    for cb_id in merge_output_cb_ids:
+        assert re.search(rf"cb_reserve_back\({cb_id},\s*\d+\);", compute_source)
+        assert re.search(rf"cb_push_back\({cb_id},\s*\d+\);", compute_source)
+    assert any(f"cb_pop_front({cb_id}, 1);" in compute_source for cb_id in merge_cb_ids)
+
+
 def test_blackhole_flash_attention_runtime_gate_is_queryable():
     can_run, msg = check_blackhole_direct_execution_requirements()
     assert isinstance(can_run, bool)
@@ -677,6 +744,54 @@ def test_blackhole_flash_attention_seq64_mha_bf16_forward_direct_runtime():
         atol=5e-2,
         rtol=5e-2,
         failure_message="Blackhole seq64 MHA bf16 flash-attention forward mismatch",
+    )
+
+
+def test_blackhole_t7_seq64_mha_bf16_exact_cb_partial_combine_direct_runtime():
+    can_run, msg = check_blackhole_direct_execution_requirements()
+    if not can_run:
+        pytest.skip(f"Blackhole requirements not met: {msg}")
+
+    batch = 1
+    heads = 4
+    seq_len = 64
+    dim = 32
+    is_causal = False
+    block_M = 32
+    block_N = 32
+    num_stages = 1
+    threads = 128
+
+    torch.manual_seed(0)
+    q = torch.randn(batch, seq_len, heads, dim, dtype=BLACKHOLE_FLASH_ATTENTION_TORCH_DTYPE)
+    k = torch.randn(batch, seq_len, heads, dim, dtype=BLACKHOLE_FLASH_ATTENTION_TORCH_DTYPE)
+    v = torch.randn(batch, seq_len, heads, dim, dtype=BLACKHOLE_FLASH_ATTENTION_TORCH_DTYPE)
+    out = torch.zeros_like(q)
+
+    kernel = blackhole_mha_example.flashattn.jit_impl.get_tir(
+        batch,
+        heads,
+        seq_len,
+        dim,
+        is_causal,
+        block_M=block_M,
+        block_N=block_N,
+        num_stages=num_stages,
+        threads=threads,
+    )
+    artifact, metadata = _lower_blackhole_flash_attention_metadata(kernel)
+    _assert_t7_seq64_mha_exact_cb_partial_combine_contract(metadata)
+    artifact.codegen_mod["main"](q, k, v, out)
+
+    ref = blackhole_mha_example.ref_program(q, k, v, is_causal=is_causal).to(dtype=out.dtype)
+    assert_tensors_close_or_dump(
+        out,
+        ref,
+        atol=5e-2,
+        rtol=5e-2,
+        failure_message=(
+            "Blackhole T7 seq64 MHA bf16 exact-CB partial-combine direct runtime mismatch"
+        ),
     )
 
 

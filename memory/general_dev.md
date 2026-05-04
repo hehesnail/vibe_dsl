@@ -2289,3 +2289,13 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   producer reserve for the same CB can be duplicate; track allocation-reserve
   credit and consume it on `cb_push_back` instead of blindly skipping all later
   reserves while the handle is in scope.
+- 2026-05-04 T7 exact-CB / materialization completion boundary:
+  Do not broaden exact-CB support by adding frontend ops, selection plans,
+  runtime-only combiners, mailbox fallbacks, or source-name recovery.  The
+  admitted direct-runtime proof is the same lowered artifact carrying typed
+  live-form / materialization / consumer-binding records into
+  `ExecutableSpec`: seq64 bf16 flash-attn MHA must show no exact-CB unsupported
+  reasons, single-page publish/consume event windows, `acc_s -> acc_s_cast`
+  `cb_republish` via `tilize_cast_fragment_slice`, tiled `add_tiles`
+  partial-combine source, and host-reference correctness through
+  `BlackholeModule`.
