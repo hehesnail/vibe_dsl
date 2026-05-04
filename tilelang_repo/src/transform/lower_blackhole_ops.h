@@ -43,6 +43,7 @@
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 namespace tvm {
@@ -144,6 +145,22 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
     return tt_consumer_binding_plans_;
   }
 
+  tvm::ffi::Array<TTExactCBVirtualValue> GetTTExactCBVirtualValues() const {
+    return tt_exact_cb_virtual_values_;
+  }
+  tvm::ffi::Array<TTExactCBUseEvent> GetTTExactCBUseEvents() const {
+    return tt_exact_cb_use_events_;
+  }
+  tvm::ffi::Array<TTExactCBLiveInterval> GetTTExactCBLiveIntervals() const {
+    return tt_exact_cb_live_intervals_;
+  }
+  tvm::ffi::Array<TTExactCBAllocation> GetTTExactCBAllocations() const {
+    return tt_exact_cb_allocations_;
+  }
+  tvm::ffi::Array<TTExactCBReleaseEvent> GetTTExactCBReleaseEvents() const {
+    return tt_exact_cb_release_events_;
+  }
+
   /*! \brief Get staged CB plans synthesized during selection/lowering.
    *
    * The staged plans already own the CB requirement contract. Before PlanTTCBAlloc
@@ -170,6 +187,13 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
     bool producer_live = false;
     bool borrowed_live = false;
     std::string live_identity;
+  };
+
+  struct LoopCarriedExactCBState {
+    tvm::tir::Buffer buffer;
+    int cb_id = -1;
+    int program_point = -1;
+    bool completed = false;
   };
 
   struct ComputeOperandPlanSeed {
@@ -348,6 +372,21 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   /*! \brief Return the SpatialPlan materialization boundary for a boundary index. */
   const SpatialMaterializationBoundaryRef* FindSpatialMaterializationBoundaryRef(
       int64_t materialization_boundary_index) const;
+
+  std::optional<SpatialLiveValueRef> FindSpatialLiveValueRef(
+      const std::string& subject) const;
+  int64_t EnsureExactCBLiveFormPlan(
+      const std::string& logical_value,
+      const ExactTiledCBValue& value);
+  int64_t EnsureExactCBVirtualValue(
+      const std::string& logical_value,
+      const ExactTiledCBValue& value,
+      int current_order_index);
+  int64_t EnsureExactCBAllocation(
+      int64_t virtual_value_index,
+      const ExactTiledCBValue& value,
+      int release_program_point,
+      const std::string& release_reason);
 
   /*! \brief Load compute-region buffer to physical accumulator bindings from compute regions. */
   void LoadPhysicalComputeBufferBindings(const tvm::tir::PrimFunc& func);
@@ -563,11 +602,38 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
                                       ExactTiledCBValue* value) const;
   bool TryCreateExactOutputLiveTiledCBValue(const tvm::tir::Buffer& buffer,
                                             ExactTiledCBValue* value) const;
+  bool TryCreateLoopCarriedExactInputStateCBValue(
+      const tvm::tir::Buffer& buffer,
+      ExactTiledCBValue* value) const;
+  bool TryCreateLoopCarriedExactOutputStateCBValue(const tvm::tir::Buffer& buffer,
+                                                   ExactTiledCBValue* value) const;
   bool TryCreateSelectedSourceLiveExactTiledCBValue(const tvm::tir::Buffer& buffer,
                                                     ExactTiledCBValue* value);
   bool ShouldReleaseBorrowedExactInputAfterUse(
       const ExactTiledCBValue& value,
       int current_order_index) const;
+  int ResolveBorrowedExactInputProducerOrder(
+      const ExactTiledCBValue& value) const;
+  tvm::ffi::Optional<TTExactCBReleaseEvent> RecordExactCBUseAndMaybeRelease(
+      const ExactTiledCBValue& value,
+      int current_order_index,
+      bool should_release);
+  void RecordLoopCarriedExactCBLifecycle(
+      const std::string& logical_value,
+      const ExactTiledCBValue& value,
+      int program_point);
+  void RememberLoopCarriedExactCBState(
+      const std::string& logical_value,
+      const ExactTiledCBValue& value,
+      int program_point);
+  const LoopCarriedExactCBState* FindLoopCarriedExactCBState(
+      const std::string& logical_value) const;
+  bool HasLoopCarriedExactCBState(const std::string& logical_value) const;
+  int GetLoopCarriedExactCBId(const std::string& logical_value) const;
+  tvm::tir::Buffer GetLoopCarriedExactCBBuffer(
+      const std::string& logical_value) const;
+  void MarkLoopCarriedExactCBStateCompleted(
+      const std::string& logical_value);
   tvm::tir::Stmt ReleaseExactInputAfterUse(
       const ExactTiledCBValue& value,
       int current_order_index);
@@ -589,6 +655,15 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   tvm::tir::Stmt MaterializeExactTiledCBToLocalBuffer(const tvm::tir::Buffer& dst,
                                                       const ExactTiledCBValue& cb_value,
                                                       bool pop_front = true);
+  bool IsActiveLoopCarriedBuffer(const tvm::tir::Buffer& buffer) const;
+  bool IsCompletedLoopCarriedBuffer(const tvm::tir::Buffer& buffer) const;
+  std::unordered_set<std::string> CollectLoopCarriedBufferIdentities(
+      const tvm::tir::Stmt& body) const;
+  tvm::tir::Stmt InitializeLoopCarriedExactLiveForms(
+      const std::unordered_set<std::string>& loop_carried_identities);
+  bool ShouldMaterializeLoopCarriedExactOutput(const tvm::tir::Buffer& dst) const;
+  tvm::tir::Stmt MaterializeLoopCarriedExactOutput(const tvm::tir::Buffer& dst,
+                                                   const ExactTiledCBValue& cb_value);
   tvm::tir::Stmt AttachExactOutputLiveFormMarker(const tvm::tir::Buffer& dst,
                                                  const ExactTiledCBValue& cb_value,
                                                  const tvm::tir::Stmt& body) const;
@@ -686,7 +761,8 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   bool MatchDirectFragmentCast(const tvm::tir::ForNode* op, FragmentCastMatch* match) const;
   tvm::tir::Stmt GenerateFragmentCastSequence(const FragmentCastMatch& match,
                                               bool publish_cb = false,
-                                              int current_order_index = -1);
+                                              int current_order_index = -1,
+                                              bool allow_force_publish_from_fact = true);
   void LoadBufferFlowFacts(const BlackholeLoweringSupportFacts& lowering_support_facts);
   std::vector<std::string> CollectBufferFlowIdentities(const tvm::tir::Buffer& buffer) const;
   bool HasInterveningBufferWrite(const tvm::tir::Buffer& buffer,
@@ -705,6 +781,14 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   FutureBufferUses ClassifyFutureBufferIdentityReadsBeforeNextWrite(
       const std::string& buffer_identity,
       int current_order_index) const;
+  FutureBufferUses ClassifyFutureBufferIdentityReadsBeforeNextWriteUntilOrder(
+      const std::string& buffer_identity,
+      int current_order_index,
+      int upper_bound_order_index) const;
+  FutureBufferUses ClassifyFutureLiveCBReadsBeforeNextWriteUntilOrder(
+      const tvm::tir::Buffer& buffer,
+      int current_order_index,
+      int upper_bound_order_index) const;
   bool BufferIdentityHasWriteAtOrder(const std::string& buffer_identity,
                                      int order_index) const;
   bool HasFutureExactLiveFormTileComputeConsume(
@@ -727,7 +811,9 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   void RecordTiledCBLiveFormAliases(const tvm::tir::Buffer& buffer, int cb_id);
   void ClearTiledCBLiveFormAliases(const tvm::tir::Buffer& buffer);
   void ClearTiledCBLiveFormIdentity(const std::string& identity);
+  void MarkLocalOnlyLiveFormAliases(const tvm::tir::Buffer& buffer);
   void InvalidateLastFragmentFillValue(const tvm::tir::Buffer& buffer);
+  void InvalidateLastFragmentFillValueIdentity(const std::string& identity);
   void ClearSelectedSourceLiveProducer(const tvm::tir::Buffer& buffer);
   void RecordSelectedSourceLiveProducer(const tvm::tir::Buffer& buffer);
   bool HasSelectedSourceLiveProducer(const tvm::tir::Buffer& buffer) const;
@@ -835,6 +921,7 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   std::unordered_map<const tvm::tir::VarNode*, int64_t> thread_index_var_static_extents_;
   std::unordered_map<const tvm::tir::VarNode*, int64_t> loop_var_static_extents_;
   std::vector<tvm::tir::Var> active_serial_loop_vars_;
+  std::vector<std::pair<int, int>> active_serial_loop_order_ranges_;
   std::unordered_set<const tvm::tir::VarNode*> block_index_vars_;
   std::unordered_set<std::string> block_index_var_names_;
   std::vector<AccessorDescriptor> accessor_descriptors_;
@@ -848,14 +935,24 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   std::vector<tvm::tir::Stmt> execution_ordered_stmts_;
   std::unordered_map<std::string, int> buffer_live_form_cb_by_buffer_identity_;
   std::unordered_map<std::string, int> buffer_live_form_order_by_buffer_identity_;
+  std::unordered_map<int, int> buffer_live_form_order_by_cb_id_;
   std::unordered_map<std::string, int> exact_output_live_form_cb_by_buffer_identity_;
   std::unordered_map<std::string, int> exact_output_live_form_order_by_buffer_identity_;
+  std::unordered_map<int, int> exact_output_live_form_order_by_cb_id_;
   std::unordered_map<std::string, ExactTiledCBValue>
       exact_output_live_form_value_by_buffer_identity_;
+  std::unordered_map<std::string, int> invalidated_live_form_order_by_buffer_identity_;
+  std::unordered_set<std::string> local_only_live_form_buffer_identities_;
+  std::vector<std::unordered_set<std::string>> active_loop_carried_buffer_identity_stack_;
+  std::unordered_map<std::string, LoopCarriedExactCBState>
+      loop_carried_exact_cb_state_by_logical_value_;
   std::unordered_set<std::string> selected_source_live_producer_buffers_;
+  std::unordered_map<std::string, int> selected_source_live_producer_order_by_buffer_identity_;
   std::unordered_set<std::string> seeded_cb_requirement_names_;
   std::vector<SpatialMaterializationBoundaryRef> spatial_materialization_boundaries_;
   std::unordered_map<int64_t, size_t> spatial_materialization_boundary_position_by_index_;
+  std::unordered_map<std::string, SpatialLiveValueRef> spatial_live_value_by_subject_;
+  std::unordered_map<std::string, std::string> spatial_lifetime_kind_by_subject_;
   std::unordered_map<std::string, tvm::PrimExpr> last_fragment_fill_value_by_buffer_identity_;
   std::unordered_map<const tvm::tir::VarNode*, tvm::PrimExpr> last_fragment_fill_value_by_data_;
   std::unordered_map<std::string, std::vector<int64_t>> logical_buffer_shapes_;
@@ -869,6 +966,14 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   tvm::ffi::Array<TTLiveFormPlan> tt_live_form_plans_;
   tvm::ffi::Array<TTMaterializationPlan> tt_materialization_plans_;
   tvm::ffi::Array<TTConsumerBindingPlan> tt_consumer_binding_plans_;
+  tvm::ffi::Array<TTExactCBVirtualValue> tt_exact_cb_virtual_values_;
+  tvm::ffi::Array<TTExactCBUseEvent> tt_exact_cb_use_events_;
+  tvm::ffi::Array<TTExactCBLiveInterval> tt_exact_cb_live_intervals_;
+  tvm::ffi::Array<TTExactCBAllocation> tt_exact_cb_allocations_;
+  tvm::ffi::Array<TTExactCBReleaseEvent> tt_exact_cb_release_events_;
+  std::unordered_map<std::string, int64_t> tt_exact_cb_live_form_index_by_logical_value_;
+  std::unordered_map<std::string, int64_t> tt_exact_cb_virtual_index_by_key_;
+  std::unordered_map<std::string, int64_t> tt_exact_cb_allocation_index_by_key_;
   std::vector<TileComputeDAGLoweringDecision> tile_compute_dag_lowering_decisions_;
   std::vector<bool> tile_compute_dag_lowering_decision_consumed_;
   std::optional<TileComputeDAGLoweringDecision> active_tile_compute_dag_lowering_decision_;

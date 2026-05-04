@@ -1541,7 +1541,17 @@ PrimFunc PlanTTKernelABI::SelectComputeBuiltins(const PrimFunc& func) {
   broadcast_cols_rhs_buffers_.clear();
   broadcast_cols_source_buffers_.clear();
   selected_source_live_producer_buffers_.clear();
+  selected_source_live_producer_order_by_buffer_identity_.clear();
   seeded_cb_requirement_names_.clear();
+  loop_carried_exact_cb_state_by_logical_value_.clear();
+  tt_exact_cb_virtual_values_.clear();
+  tt_exact_cb_use_events_.clear();
+  tt_exact_cb_live_intervals_.clear();
+  tt_exact_cb_allocations_.clear();
+  tt_exact_cb_release_events_.clear();
+  tt_exact_cb_live_form_index_by_logical_value_.clear();
+  tt_exact_cb_virtual_index_by_key_.clear();
+  tt_exact_cb_allocation_index_by_key_.clear();
   last_fragment_fill_value_by_buffer_identity_.clear();
   last_fragment_fill_value_by_data_.clear();
   LoadPhysicalComputeBufferBindings(func);
@@ -1551,6 +1561,7 @@ PrimFunc PlanTTKernelABI::SelectComputeBuiltins(const PrimFunc& func) {
   thread_index_var_static_extents_.clear();
   loop_var_static_extents_.clear();
   active_serial_loop_vars_.clear();
+  active_serial_loop_order_ranges_.clear();
   block_index_vars_.clear();
   block_index_var_names_.clear();
   cb_consumed_compute_input_pages_by_buffer_identity_.clear();
@@ -1559,15 +1570,21 @@ PrimFunc PlanTTKernelABI::SelectComputeBuiltins(const PrimFunc& func) {
   execution_ordered_stmts_.clear();
   buffer_live_form_cb_by_buffer_identity_.clear();
   buffer_live_form_order_by_buffer_identity_.clear();
+  buffer_live_form_order_by_cb_id_.clear();
   exact_output_live_form_cb_by_buffer_identity_.clear();
   exact_output_live_form_order_by_buffer_identity_.clear();
+  exact_output_live_form_order_by_cb_id_.clear();
   exact_output_live_form_value_by_buffer_identity_.clear();
+  invalidated_live_form_order_by_buffer_identity_.clear();
+  local_only_live_form_buffer_identities_.clear();
   stmt_order_index_by_node_.clear();
   current_lowering_order_index_ = -1;
   requires_compute_segment_ = false;
   logical_tile_layout_specs_by_buffer_.clear();
   spatial_materialization_boundaries_.clear();
   spatial_materialization_boundary_position_by_index_.clear();
+  spatial_live_value_by_subject_.clear();
+  spatial_lifetime_kind_by_subject_.clear();
   buffer_materialization_facts_by_target_buffer_.clear();
   tt_compute_op_plans_.clear();
   tile_compute_dag_lowering_decisions_.clear();
@@ -1838,6 +1855,7 @@ PrimFunc PlanTTKernelABI::Transform(const PrimFunc& func) {
   thread_index_var_static_extents_.clear();
   loop_var_static_extents_.clear();
   active_serial_loop_vars_.clear();
+  active_serial_loop_order_ranges_.clear();
   block_index_vars_.clear();
   block_index_var_names_.clear();
   cb_consumed_compute_input_pages_by_buffer_identity_.clear();
@@ -1846,10 +1864,17 @@ PrimFunc PlanTTKernelABI::Transform(const PrimFunc& func) {
   execution_ordered_stmts_.clear();
   buffer_live_form_cb_by_buffer_identity_.clear();
   buffer_live_form_order_by_buffer_identity_.clear();
+  buffer_live_form_order_by_cb_id_.clear();
   exact_output_live_form_cb_by_buffer_identity_.clear();
   exact_output_live_form_order_by_buffer_identity_.clear();
+  exact_output_live_form_order_by_cb_id_.clear();
   exact_output_live_form_value_by_buffer_identity_.clear();
+  invalidated_live_form_order_by_buffer_identity_.clear();
+  local_only_live_form_buffer_identities_.clear();
+  active_loop_carried_buffer_identity_stack_.clear();
+  loop_carried_exact_cb_state_by_logical_value_.clear();
   selected_source_live_producer_buffers_.clear();
+  selected_source_live_producer_order_by_buffer_identity_.clear();
   seeded_cb_requirement_names_.clear();
   stmt_order_index_by_node_.clear();
   current_lowering_order_index_ = -1;
@@ -1862,6 +1887,14 @@ PrimFunc PlanTTKernelABI::Transform(const PrimFunc& func) {
   tt_live_form_plans_.clear();
   tt_materialization_plans_.clear();
   tt_consumer_binding_plans_.clear();
+  tt_exact_cb_virtual_values_.clear();
+  tt_exact_cb_use_events_.clear();
+  tt_exact_cb_live_intervals_.clear();
+  tt_exact_cb_allocations_.clear();
+  tt_exact_cb_release_events_.clear();
+  tt_exact_cb_live_form_index_by_logical_value_.clear();
+  tt_exact_cb_virtual_index_by_key_.clear();
+  tt_exact_cb_allocation_index_by_key_.clear();
   logical_buffer_shapes_.clear();
   compute_physical_buffers_by_data_.clear();
   compute_physical_buffers_by_identity_.clear();
@@ -2620,14 +2653,48 @@ Stmt PlanTTKernelABI::VisitStmt_(const AttrStmtNode* op) {
     Stmt body = VisitStmt(op->body);
     const auto* cb_id = op->value.as<IntImmNode>();
     const auto* data = op->node.as<VarNode>();
+    auto is_active_loop_carried_identity = [&](const std::string& identity) {
+      if (identity.empty()) {
+        return false;
+      }
+      for (auto stack_it = active_loop_carried_buffer_identity_stack_.rbegin();
+           stack_it != active_loop_carried_buffer_identity_stack_.rend(); ++stack_it) {
+        if (stack_it->count(identity) != 0U) {
+          return true;
+        }
+      }
+      return false;
+    };
     auto record_identity = [&](const std::string& identity) {
       if (identity.empty() || cb_id == nullptr) {
+        return;
+      }
+      if (is_active_loop_carried_identity(identity)) {
+        return;
+      }
+      auto invalidated_it = invalidated_live_form_order_by_buffer_identity_.find(identity);
+      if (invalidated_it != invalidated_live_form_order_by_buffer_identity_.end()) {
+        if (current_lowering_order_index_ >= 0 &&
+            current_lowering_order_index_ < invalidated_it->second) {
+          return;
+        }
+        invalidated_live_form_order_by_buffer_identity_.erase(invalidated_it);
+      }
+      const auto tombstone_order_it =
+          exact_output_live_form_order_by_buffer_identity_.find(identity);
+      const bool has_live_cb =
+          exact_output_live_form_cb_by_buffer_identity_.find(identity) !=
+          exact_output_live_form_cb_by_buffer_identity_.end();
+      if (!has_live_cb && current_lowering_order_index_ >= 0 &&
+          tombstone_order_it != exact_output_live_form_order_by_buffer_identity_.end() &&
+          tombstone_order_it->second >= current_lowering_order_index_) {
         return;
       }
       exact_output_live_form_cb_by_buffer_identity_[identity] =
           static_cast<int>(cb_id->value);
       exact_output_live_form_value_by_buffer_identity_[identity].cb_id =
           static_cast<int>(cb_id->value);
+      local_only_live_form_buffer_identities_.erase(identity);
       if (current_lowering_order_index_ >= 0) {
         exact_output_live_form_order_by_buffer_identity_[identity] =
             current_lowering_order_index_;
@@ -2723,14 +2790,14 @@ void PlanTTKernelABI::LoadExactOutputLiveFormMarkers(const Stmt& body) {
     if (order_it != stmt_order_index_by_node_.end()) {
       return order_it->second;
     }
-    int first_body_order = std::numeric_limits<int>::max();
+    int last_body_order = -1;
     tir::PostOrderVisit(attr->body, [&](const ObjectRef& node) {
       auto body_order_it = stmt_order_index_by_node_.find(node.get());
       if (body_order_it != stmt_order_index_by_node_.end()) {
-        first_body_order = std::min(first_body_order, body_order_it->second);
+        last_body_order = std::max(last_body_order, body_order_it->second);
       }
     });
-    return first_body_order == std::numeric_limits<int>::max() ? -1 : first_body_order;
+    return last_body_order;
   };
   tir::PostOrderVisit(body, [&](const ObjectRef& node) {
     const auto* attr = node.as<AttrStmtNode>();
@@ -3231,6 +3298,28 @@ Stmt PlanTTKernelABI::VisitStmt_(const SeqStmtNode* op) {
       if (!match_explicit_fragment_fill(fill_stmt, &fill_match) || !fill_match.dst.defined()) {
         return false;
       }
+      auto future_loop_carries_fill_dst = [&]() -> bool {
+        const std::vector<std::string> fill_identities =
+            CollectBufferFlowIdentities(fill_match.dst);
+        for (int next_index = stmt_index + 1;
+             next_index < static_cast<int>(op->seq.size()); ++next_index) {
+          const auto* loop = op->seq[next_index].as<ForNode>();
+          if (loop == nullptr) {
+            continue;
+          }
+          const std::unordered_set<std::string> loop_carried =
+              CollectLoopCarriedBufferIdentities(loop->body);
+          for (const std::string& identity : fill_identities) {
+            if (!identity.empty() && loop_carried.count(identity) != 0U) {
+              return true;
+            }
+          }
+        }
+        return false;
+      };
+      if (future_loop_carries_fill_dst()) {
+        return false;
+      }
       const Buffer physical_dst = ResolvePhysicalComputeBuffer(fill_match.dst);
       const Buffer dst = physical_dst.defined() ? physical_dst : fill_match.dst;
       const std::string scope = GetStorageScope(dst);
@@ -3254,7 +3343,7 @@ Stmt PlanTTKernelABI::VisitStmt_(const SeqStmtNode* op) {
 
     auto is_initial_identity_state_copy_before_clear_row_reduce =
         [&](const Stmt& copy_stmt, const Stmt& fill_stmt, const Stmt& reduce_stmt,
-            const Stmt& combine_stmt) -> bool {
+            const Stmt& combine_stmt, int stmt_index) -> bool {
       auto blackhole_compute_operation = [](const CallNode* call) -> const StringImmNode* {
         if (!call || !call->op->IsInstance<OpNode>() || call->args.empty()) {
           return nullptr;
@@ -3281,6 +3370,30 @@ Stmt PlanTTKernelABI::VisitStmt_(const SeqStmtNode* op) {
       const Buffer copy_src = buffer_arg(copy_call, 1);
       const Buffer copy_dst = buffer_arg(copy_call, 2);
       if (!copy_src.defined() || !copy_dst.defined()) {
+        return false;
+      }
+      if (IsActiveLoopCarriedBuffer(copy_src)) {
+        return false;
+      }
+      auto prior_serial_loop_carries_copy_src = [&]() -> bool {
+        const std::vector<std::string> copy_src_identities =
+            CollectBufferFlowIdentities(copy_src);
+        for (int prev_index = 0; prev_index < stmt_index; ++prev_index) {
+          const auto* loop = op->seq[prev_index].as<ForNode>();
+          if (loop == nullptr) {
+            continue;
+          }
+          const std::unordered_set<std::string> loop_carried =
+              CollectLoopCarriedBufferIdentities(loop->body);
+          for (const std::string& identity : copy_src_identities) {
+            if (!identity.empty() && loop_carried.count(identity) != 0U) {
+              return true;
+            }
+          }
+        }
+        return false;
+      };
+      if (prior_serial_loop_carries_copy_src()) {
         return false;
       }
 
@@ -3397,13 +3510,370 @@ Stmt PlanTTKernelABI::VisitStmt_(const SeqStmtNode* op) {
     }
     if (i + 3 < static_cast<int>(op->seq.size()) &&
         is_initial_identity_state_copy_before_clear_row_reduce(
-            op->seq[i], op->seq[i + 1], op->seq[i + 2], op->seq[i + 3])) {
+            op->seq[i], op->seq[i + 1], op->seq[i + 2], op->seq[i + 3], i)) {
       preserve_definitions_or_drop(op->seq[i]);
       continue;
     }
     rewritten.push_back(VisitStmt(op->seq[i]));
   }
   return SeqStmt::Flatten(rewritten);
+}
+
+std::unordered_set<std::string> PlanTTKernelABI::CollectLoopCarriedBufferIdentities(
+    const Stmt& body) const {
+  struct AccessState {
+    bool saw_write = false;
+    bool read_before_write = false;
+    bool has_write = false;
+  };
+  std::unordered_map<std::string, AccessState> state_by_identity;
+
+  auto record_buffer = [&](const Buffer& buffer, bool is_write) {
+    if (!buffer.defined()) {
+      return;
+    }
+    for (const std::string& identity : CollectBufferFlowIdentities(buffer)) {
+      if (identity.empty()) {
+        continue;
+      }
+      AccessState& state = state_by_identity[identity];
+      if (is_write) {
+        state.saw_write = true;
+        state.has_write = true;
+      } else if (!state.saw_write) {
+        state.read_before_write = true;
+      }
+    }
+  };
+
+  auto record_buffer_arg = [&](const CallNode* call, size_t index, bool is_write) {
+    if (call == nullptr || index >= call->args.size()) {
+      return;
+    }
+    if (IsBufferLikeExpr(call->args[index])) {
+      record_buffer(NormalizeToBufferRegion(call->args[index])->buffer, is_write);
+      return;
+    }
+    if (const auto* data = call->args[index].as<VarNode>()) {
+      auto physical_it = compute_physical_buffers_by_data_.find(data);
+      if (physical_it != compute_physical_buffers_by_data_.end()) {
+        record_buffer(physical_it->second, is_write);
+      }
+    }
+  };
+
+  class Collector : public StmtExprVisitor {
+   public:
+    Collector(const PlanTTKernelABI* abi,
+              std::function<void(const Buffer&, bool)> record_buffer,
+              std::function<void(const CallNode*, size_t, bool)> record_buffer_arg)
+        : abi_(abi),
+          record_buffer_(std::move(record_buffer)),
+          record_buffer_arg_(std::move(record_buffer_arg)) {}
+
+    void VisitStmt_(const BufferStoreNode* op) final {
+      for (const PrimExpr& index : op->indices) {
+        VisitExpr(index);
+      }
+      VisitExpr(op->value);
+      record_buffer_(op->buffer, /*is_write=*/true);
+    }
+
+    void VisitExpr_(const BufferLoadNode* op) final {
+      for (const PrimExpr& index : op->indices) {
+        VisitExpr(index);
+      }
+      record_buffer_(op->buffer, /*is_write=*/false);
+    }
+
+    void VisitExpr_(const CallNode* op) final {
+      bool handled = false;
+      if (op->op->IsInstance<OpNode>()) {
+        const Op call_op = Downcast<Op>(op->op);
+        if (call_op->name == "tl.blackhole.cast_fragment_slice" && op->args.size() >= 2U) {
+          record_buffer_arg_(op, 1, /*is_write=*/false);
+          record_buffer_arg_(op, 0, /*is_write=*/true);
+          handled = true;
+        } else if (call_op->name == "tl.blackhole.fill_fragment" && !op->args.empty()) {
+          record_buffer_arg_(op, 0, /*is_write=*/true);
+          handled = true;
+        }
+        if (call_op->name == blackhole_tile_compute_schema::kOpName && !op->args.empty()) {
+          if (const auto* operation = op->args[0].as<StringImmNode>()) {
+            if (const BlackholeTileComputePattern* pattern =
+                    FindBlackholeTileComputePattern(operation->value)) {
+              for (const BlackholeTileComputeCallOperand& operand :
+                   pattern->blackhole_compute_operands) {
+                switch (operand.role) {
+                  case BlackholeTileComputeOperandRole::kInput:
+                  case BlackholeTileComputeOperandRole::kLhs:
+                  case BlackholeTileComputeOperandRole::kRhs:
+                  case BlackholeTileComputeOperandRole::kA:
+                  case BlackholeTileComputeOperandRole::kB:
+                  case BlackholeTileComputeOperandRole::kScaler:
+                    record_buffer_arg_(op, operand.arg_index, /*is_write=*/false);
+                    break;
+                  case BlackholeTileComputeOperandRole::kOutput:
+                  case BlackholeTileComputeOperandRole::kC:
+                    break;
+                }
+              }
+              for (const BlackholeTileComputeCallOperand& operand :
+                   pattern->blackhole_compute_operands) {
+                if (operand.role == BlackholeTileComputeOperandRole::kOutput ||
+                    operand.role == BlackholeTileComputeOperandRole::kC) {
+                  record_buffer_arg_(op, operand.arg_index, /*is_write=*/true);
+                }
+              }
+              handled = true;
+            }
+          }
+        }
+      }
+
+      RowReductionMatch reduce_match;
+      if (abi_->MatchExplicitTileReduce(op, &reduce_match)) {
+        record_buffer_(reduce_match.src, /*is_write=*/false);
+        if (reduce_match.accumulate_existing) {
+          record_buffer_(reduce_match.dst, /*is_write=*/false);
+        }
+        record_buffer_(reduce_match.dst, /*is_write=*/true);
+        handled = true;
+      }
+
+      FragmentCastMatch cast_match;
+      if (abi_->MatchExplicitTileTypecast(op, &cast_match)) {
+        record_buffer_(cast_match.src, /*is_write=*/false);
+        record_buffer_(cast_match.dst, /*is_write=*/true);
+        handled = true;
+      }
+
+      if (abi_->IsMatmulCall(op)) {
+        record_buffer_arg_(op, 0, /*is_write=*/false);
+        record_buffer_arg_(op, 1, /*is_write=*/false);
+        record_buffer_arg_(op, 2, /*is_write=*/true);
+        handled = true;
+      }
+
+      if (!handled) {
+        StmtExprVisitor::VisitExpr_(op);
+      }
+    }
+
+   private:
+    const PlanTTKernelABI* abi_;
+    std::function<void(const Buffer&, bool)> record_buffer_;
+    std::function<void(const CallNode*, size_t, bool)> record_buffer_arg_;
+  };
+
+  Collector collector(this, record_buffer, record_buffer_arg);
+  collector(body);
+
+  std::unordered_set<std::string> loop_carried;
+  for (const auto& [identity, state] : state_by_identity) {
+    if (state.read_before_write && state.has_write) {
+      loop_carried.insert(identity);
+    }
+  }
+  return loop_carried;
+}
+
+Stmt PlanTTKernelABI::InitializeLoopCarriedExactLiveForms(
+    const std::unordered_set<std::string>& loop_carried_identities) {
+  std::vector<Stmt> stmts;
+  std::unordered_set<int> initialized_cb_ids;
+  auto loop_carried_program_point = [&]() {
+    int program_point = current_lowering_order_index_;
+    if (!active_serial_loop_order_ranges_.empty()) {
+      const auto& loop_range = active_serial_loop_order_ranges_.back();
+      if (loop_range.second >= 0) {
+        program_point = loop_range.second;
+      }
+    }
+    return program_point;
+  };
+
+  auto resolve_identity_buffer = [&](const std::string& identity) -> Buffer {
+    auto physical_it = compute_physical_buffers_by_identity_.find(identity);
+    if (physical_it != compute_physical_buffers_by_identity_.end() &&
+        physical_it->second.defined()) {
+      return physical_it->second;
+    }
+    auto buffer_it = buffer_by_identity_.find(identity);
+    if (buffer_it != buffer_by_identity_.end() && buffer_it->second.defined()) {
+      return buffer_it->second;
+    }
+    return Buffer();
+  };
+
+  for (const auto& [identity, cb_id] : exact_output_live_form_cb_by_buffer_identity_) {
+    if (identity.empty() || HasLoopCarriedExactCBState(identity)) {
+      continue;
+    }
+    Buffer buffer = resolve_identity_buffer(identity);
+    if (!buffer.defined() || GetStorageScope(buffer) != "blackhole.acc" ||
+        !IsSingleFullTileLogicalMatrix(buffer)) {
+      continue;
+    }
+    ExactTiledCBValue state_value;
+    state_value.buffer = buffer;
+    state_value.cb_id = cb_id;
+    state_value.borrowed_live = true;
+    state_value.live_identity = identity;
+    PopulateExactTiledCBValueShape(buffer, &state_value);
+    RefineExactTiledCBValueShapeFromRequirement(&state_value);
+    RememberLoopCarriedExactCBState(identity, state_value,
+                                    loop_carried_program_point());
+  }
+
+  for (const std::string& identity : loop_carried_identities) {
+    if (identity.empty() || HasLoopCarriedExactCBState(identity)) {
+      continue;
+    }
+    Buffer buffer = resolve_identity_buffer(identity);
+    if (!buffer.defined() || !IsSingleFullTileLogicalMatrix(buffer)) {
+      continue;
+    }
+
+    PrimExpr fill_value;
+    auto fill_it = last_fragment_fill_value_by_buffer_identity_.find(identity);
+    if (fill_it != last_fragment_fill_value_by_buffer_identity_.end()) {
+      fill_value = fill_it->second;
+    } else if (!TryGetLastFragmentFillValue(buffer, &fill_value)) {
+      ExactTiledCBValue existing_value;
+      if (TryCreateExactOutputLiveTiledCBValue(buffer, &existing_value) ||
+          TryCreateLiveExactTiledCBValue(buffer, &existing_value)) {
+        if (!existing_value.buffer.defined()) {
+          existing_value.buffer = buffer;
+        }
+        RememberLoopCarriedExactCBState(identity, existing_value,
+                                        loop_carried_program_point());
+        for (const std::string& alias : CollectBufferFlowIdentities(buffer)) {
+          if (!alias.empty() && loop_carried_identities.count(alias) != 0U) {
+            ExactTiledCBValue alias_value = existing_value;
+            alias_value.live_identity = alias;
+            RememberLoopCarriedExactCBState(alias, alias_value,
+                                            loop_carried_program_point());
+          }
+        }
+      }
+      continue;
+    }
+
+    const std::string live_form_name =
+        BufferIdentityName(buffer) + "_loop_carried_live_form_" +
+        std::to_string(next_requirement_index_);
+    Buffer live_form_buffer =
+        tir::decl_buffer(buffer->shape, ExactTiledCBStorageDType(buffer->dtype),
+                         live_form_name, GetStorageScope(buffer));
+    const int live_form_cb_id = AllocateRequirementIndex(live_form_buffer, CBType::kIntermediate);
+    ExactTiledCBValue initial_value;
+    initial_value.buffer = buffer;
+    initial_value.cb_id = live_form_cb_id;
+    initial_value.borrowed_live = true;
+    initial_value.live_identity = identity;
+    PopulateExactTiledCBValueShape(buffer, &initial_value);
+    RefineExactTiledCBValueShapeFromRequirement(&initial_value);
+
+    const DataType storage_dtype = ExactTiledCBStorageDType(buffer->dtype);
+    SetRequirementPageLayout(live_form_cb_id,
+                             kBlackholeTileRows * kBlackholeTileCols * storage_dtype.bytes(),
+                             initial_value.num_tiles);
+    auto& req = cb_requirements_.at(live_form_cb_id);
+    req.data_format = DataTypeToDataFormatForBlackhole(storage_dtype);
+    req.flow_class = CBFlowClass::kState;
+    req.publish_pages_per_event =
+        std::max(req.publish_pages_per_event, initial_value.num_tiles);
+    req.consume_pages_per_event =
+        std::max(req.consume_pages_per_event, initial_value.num_tiles);
+
+    ExactTiledCBValue live_form_state = initial_value;
+    live_form_state.buffer = live_form_buffer;
+    RememberLoopCarriedExactCBState(identity, live_form_state,
+                                    loop_carried_program_point());
+    for (const std::string& alias : CollectBufferFlowIdentities(buffer)) {
+      if (!alias.empty() && loop_carried_identities.count(alias) != 0U) {
+        ExactTiledCBValue alias_value = live_form_state;
+        alias_value.live_identity = alias;
+        RememberLoopCarriedExactCBState(alias, alias_value,
+                                        loop_carried_program_point());
+      }
+    }
+    if (initialized_cb_ids.insert(live_form_cb_id).second) {
+      Stmt publish = PublishConstantToExactTiledCB(buffer, fill_value, initial_value);
+      stmts.push_back(AttachExactOutputLiveFormMarker(buffer, initial_value, publish));
+    }
+    RecordTiledCBLiveFormAliases(buffer, live_form_cb_id);
+  }
+
+  if (stmts.empty()) {
+    return Stmt();
+  }
+  return MaybeWrapComputeSegment(SeqStmt::Flatten(stmts));
+}
+
+bool PlanTTKernelABI::IsActiveLoopCarriedBuffer(const Buffer& buffer) const {
+  if (!buffer.defined() || active_loop_carried_buffer_identity_stack_.empty()) {
+    return false;
+  }
+  const std::vector<std::string> identities = CollectBufferFlowIdentities(buffer);
+  for (auto stack_it = active_loop_carried_buffer_identity_stack_.rbegin();
+       stack_it != active_loop_carried_buffer_identity_stack_.rend(); ++stack_it) {
+    for (const std::string& identity : identities) {
+      if (!identity.empty() && stack_it->count(identity) != 0U) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+bool PlanTTKernelABI::IsCompletedLoopCarriedBuffer(const Buffer& buffer) const {
+  if (!buffer.defined() || loop_carried_exact_cb_state_by_logical_value_.empty()) {
+    return false;
+  }
+  const std::vector<std::string> identities = CollectBufferFlowIdentities(buffer);
+  for (const std::string& identity : identities) {
+    const LoopCarriedExactCBState* state = FindLoopCarriedExactCBState(identity);
+    if (state != nullptr && state->completed) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool PlanTTKernelABI::ShouldMaterializeLoopCarriedExactOutput(const Buffer& dst) const {
+  if (IsActiveLoopCarriedBuffer(dst)) {
+    if (IsSingleFullTileLogicalMatrix(dst)) {
+      const FutureBufferUses future_uses =
+          ClassifyFutureBufferUses(dst, current_lowering_order_index_);
+      return future_uses.has_reference ||
+             FutureWritePrecedesFutureComputeConsume(dst, current_lowering_order_index_);
+    }
+    return true;
+  }
+  if (!IsCompletedLoopCarriedBuffer(dst)) {
+    return false;
+  }
+  const FutureBufferUses future_uses =
+      ClassifyFutureBufferUses(dst, current_lowering_order_index_);
+  return future_uses.has_reference ||
+         FutureWritePrecedesFutureComputeConsume(dst, current_lowering_order_index_);
+}
+
+Stmt PlanTTKernelABI::MaterializeLoopCarriedExactOutput(
+    const Buffer& dst, const ExactTiledCBValue& cb_value) {
+  if (!ShouldMaterializeLoopCarriedExactOutput(dst)) {
+    return Stmt();
+  }
+  InvalidateLastFragmentFillValue(dst);
+  ClearSelectedSourceLiveProducer(dst);
+  ClearTiledCBLiveFormAliases(dst);
+  MarkLocalOnlyLiveFormAliases(dst);
+  Stmt materialize = MaterializeExactTiledCBToLocalBuffer(dst, cb_value, /*pop_front=*/true);
+  ClearTiledCBLiveFormAliases(dst);
+  MarkLocalOnlyLiveFormAliases(dst);
+  return materialize;
 }
 
 Stmt PlanTTKernelABI::VisitStmt_(const ForNode* op) {
@@ -3558,9 +4028,108 @@ Stmt PlanTTKernelABI::VisitStmt_(const ForNode* op) {
   if (!select_compute_builtins_only_) {
     active_serial_loop_vars_.push_back(op->loop_var);
   }
+  auto compute_loop_body_order_range = [&]() -> std::pair<int, int> {
+    int min_order = std::numeric_limits<int>::max();
+    int max_order = -1;
+    for (const Stmt& stmt : CollectExecutionOrderedStmts(op->body)) {
+      auto order_it = stmt_order_index_by_node_.find(stmt.get());
+      if (order_it == stmt_order_index_by_node_.end()) {
+        continue;
+      }
+      min_order = std::min(min_order, order_it->second);
+      max_order = std::max(max_order, order_it->second);
+    }
+    if (max_order < 0) {
+      return {-1, -1};
+    }
+    return {min_order, max_order};
+  };
+  active_serial_loop_order_ranges_.push_back(compute_loop_body_order_range());
+  const std::unordered_set<std::string> loop_carried_identities =
+      CollectLoopCarriedBufferIdentities(op->body);
+  active_loop_carried_buffer_identity_stack_.push_back(loop_carried_identities);
+  Stmt loop_carried_init = InitializeLoopCarriedExactLiveForms(loop_carried_identities);
   Stmt lowered = StmtExprMutator::VisitStmt_(op);
+  auto resolve_loop_carried_identity_buffer = [&](const std::string& identity) -> Buffer {
+    Buffer state_buffer = GetLoopCarriedExactCBBuffer(identity);
+    if (state_buffer.defined()) {
+      return state_buffer;
+    }
+    auto buffer_it = buffer_by_identity_.find(identity);
+    if (buffer_it != buffer_by_identity_.end() && buffer_it->second.defined()) {
+      return buffer_it->second;
+    }
+    auto physical_it = compute_physical_buffers_by_identity_.find(identity);
+    if (physical_it != compute_physical_buffers_by_identity_.end() &&
+        physical_it->second.defined()) {
+      return physical_it->second;
+    }
+    return Buffer();
+  };
+  auto should_drop_loop_carried_exit_pop = [&](const Stmt& stmt) -> bool {
+    const auto* eval = stmt.as<EvaluateNode>();
+    if (eval == nullptr) {
+      return false;
+    }
+    const auto* call = eval->value.as<CallNode>();
+    if (call == nullptr || !call->op->IsInstance<OpNode>() || call->args.size() < 2U) {
+      return false;
+    }
+    const Op call_op = Downcast<Op>(call->op);
+    if (!call_op.same_as(blackhole_cb_pop_front())) {
+      return false;
+    }
+    const auto* cb_id = call->args[0].as<IntImmNode>();
+    if (cb_id == nullptr) {
+      return false;
+    }
+    for (const std::string& identity : loop_carried_identities) {
+      if (GetLoopCarriedExactCBId(identity) != cb_id->value) {
+        continue;
+      }
+      Buffer buffer = resolve_loop_carried_identity_buffer(identity);
+      if (!buffer.defined()) {
+        continue;
+      }
+      const Buffer physical = ResolvePhysicalComputeBuffer(buffer);
+      const Buffer state_buffer = physical.defined() ? physical : buffer;
+      if (!state_buffer.defined() || GetStorageScope(state_buffer) != "blackhole.acc" ||
+          !IsSingleFullTileLogicalMatrix(state_buffer)) {
+        continue;
+      }
+      const auto& loop_range = active_serial_loop_order_ranges_.back();
+      const int future_query_order = loop_range.second >= 0 ? loop_range.second
+                                                            : current_lowering_order_index_;
+      const FutureBufferUses future_uses =
+          ClassifyFutureBufferUses(buffer, future_query_order);
+      if (future_uses.has_compute_consume || future_uses.has_transport_consume ||
+          future_uses.has_reference) {
+        return true;
+      }
+    }
+    return false;
+  };
+  if (const auto* seq = lowered.as<SeqStmtNode>()) {
+    if (!seq->seq.empty() && should_drop_loop_carried_exit_pop(seq->seq.back())) {
+      Array<Stmt> kept;
+      for (size_t i = 0; i + 1 < seq->seq.size(); ++i) {
+        kept.push_back(seq->seq[i]);
+      }
+      lowered = SeqStmt::Flatten(kept);
+    }
+  }
+  active_loop_carried_buffer_identity_stack_.pop_back();
+  active_serial_loop_order_ranges_.pop_back();
+  for (const std::string& identity : loop_carried_identities) {
+    InvalidateLastFragmentFillValueIdentity(identity);
+    MarkLoopCarriedExactCBStateCompleted(identity);
+  }
   if (!select_compute_builtins_only_) {
     active_serial_loop_vars_.pop_back();
+  }
+  if (loop_carried_init.defined()) {
+    std::vector<Stmt> loop_with_init{loop_carried_init, lowered};
+    return SeqStmt::Flatten(loop_with_init);
   }
   return lowered;
 }
@@ -3569,8 +4138,59 @@ Stmt PlanTTKernelABI::VisitStmt_(const ForNode* op) {
 // Note: We only override specific node types and return the original node
 // for unmatched patterns to avoid deep recursion that causes stack overflow.
 Stmt PlanTTKernelABI::VisitStmt_(const EvaluateNode* op) {
+  auto should_drop_completed_loop_carried_state_pop = [&](const CallNode* call) -> bool {
+    if (call == nullptr || !active_loop_carried_buffer_identity_stack_.empty() ||
+        !call->op->IsInstance<OpNode>() || call->args.size() < 2U) {
+      return false;
+    }
+    const Op call_op = Downcast<Op>(call->op);
+    if (!call_op.same_as(blackhole_cb_pop_front())) {
+      return false;
+    }
+    const auto* cb_id = call->args[0].as<IntImmNode>();
+    if (cb_id == nullptr) {
+      return false;
+    }
+    for (const auto& [identity, state] : loop_carried_exact_cb_state_by_logical_value_) {
+      if (state.cb_id != cb_id->value || !state.completed) {
+        continue;
+      }
+      Buffer buffer;
+      auto buffer_it = buffer_by_identity_.find(identity);
+      if (buffer_it != buffer_by_identity_.end() && buffer_it->second.defined()) {
+        buffer = buffer_it->second;
+      } else if (state.buffer.defined()) {
+        buffer = state.buffer;
+      } else {
+        auto physical_it = compute_physical_buffers_by_identity_.find(identity);
+        if (physical_it != compute_physical_buffers_by_identity_.end() &&
+            physical_it->second.defined()) {
+          buffer = physical_it->second;
+        }
+      }
+      if (!buffer.defined()) {
+        continue;
+      }
+      const Buffer physical = ResolvePhysicalComputeBuffer(buffer);
+      const Buffer state_buffer = physical.defined() ? physical : buffer;
+      if (!state_buffer.defined() || GetStorageScope(state_buffer) != "blackhole.acc" ||
+          !IsSingleFullTileLogicalMatrix(state_buffer)) {
+        continue;
+      }
+      const FutureBufferUses future_uses =
+          ClassifyFutureBufferUses(buffer, current_lowering_order_index_);
+      if (future_uses.has_compute_consume || future_uses.has_transport_consume ||
+          future_uses.has_reference) {
+        return true;
+      }
+    }
+    return false;
+  };
   if (select_compute_builtins_only_) {
     if (const auto* call = op->value.as<CallNode>()) {
+      if (should_drop_completed_loop_carried_state_pop(call)) {
+        return Evaluate(IntImm32(0));
+      }
       FragmentCastMatch explicit_typecast_match;
       if (MatchExplicitTileTypecast(call, &explicit_typecast_match)) {
         return GetRef<Stmt>(op);
@@ -3601,7 +4221,12 @@ Stmt PlanTTKernelABI::VisitStmt_(const EvaluateNode* op) {
         InvalidateLastFragmentFillValue(out_buffer);
         ClearTiledCBLiveFormAliases(out_buffer);
         ClearSelectedSourceLiveProducer(out_buffer);
-        if (IsSingleFullTileMatmulOutput(call)) {
+        const auto* clear_accum = call->args.size() > 9 ? call->args[9].as<IntImmNode>() : nullptr;
+        const bool matmul_publishes_c_directly = clear_accum != nullptr && clear_accum->value != 0;
+        const bool selected_source_shape_is_stable =
+            matmul_publishes_c_directly || active_loop_carried_buffer_identity_stack_.empty();
+        if (IsSingleFullTileMatmulOutput(call) && selected_source_shape_is_stable &&
+            !IsActiveLoopCarriedBuffer(out_buffer)) {
           RecordSelectedSourceLiveProducer(out_buffer);
         }
       }
@@ -3609,6 +4234,9 @@ Stmt PlanTTKernelABI::VisitStmt_(const EvaluateNode* op) {
     return GetRef<Stmt>(op);
   }
   if (const auto* call = op->value.as<CallNode>()) {
+    if (should_drop_completed_loop_carried_state_pop(call)) {
+      return Evaluate(IntImm32(0));
+    }
     if (Stmt explicit_compute = LowerExplicitTileComputeCall(call);
         explicit_compute.defined()) {
       return explicit_compute;

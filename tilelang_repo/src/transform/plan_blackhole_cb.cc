@@ -426,9 +426,65 @@ std::vector<int> CollectOutstandingReservedPages(const tir::Stmt& body,
   return collector.Take();
 }
 
+std::vector<int> CollectMaxPhysicalOutstandingPages(const tir::Stmt& body, int cb_count) {
+  class Collector final : public tir::StmtExprVisitor {
+   public:
+    explicit Collector(int cb_count)
+        : reserved_pages_(std::max(0, cb_count), 0),
+          front_pages_(std::max(0, cb_count), 0),
+          max_outstanding_pages_(std::max(0, cb_count), 0) {}
+
+    using tir::StmtExprVisitor::VisitExpr_;
+
+    void Collect(const tir::Stmt& body) { VisitStmt(body); }
+
+    void VisitExpr_(const tir::CallNode* op) final {
+      if (op->args.size() < 2U) {
+        tir::StmtExprVisitor::VisitExpr_(op);
+        return;
+      }
+      const auto* cb_id = op->args[0].as<IntImmNode>();
+      const auto* pages = op->args[1].as<IntImmNode>();
+      if (cb_id != nullptr && pages != nullptr && cb_id->value >= 0 &&
+          cb_id->value < static_cast<int64_t>(reserved_pages_.size()) && pages->value > 0) {
+        const int id = static_cast<int>(cb_id->value);
+        const int page_count = static_cast<int>(pages->value);
+        if (IsBlackholeOp(op, "tl.blackhole.cb_reserve_back")) {
+          reserved_pages_[id] += page_count;
+        } else if (IsBlackholeOp(op, "tl.blackhole.cb_push_back")) {
+          reserved_pages_[id] = std::max(0, reserved_pages_[id] - page_count);
+          front_pages_[id] += page_count;
+        } else if (IsBlackholeOp(op, "tl.blackhole.cb_pop_front")) {
+          front_pages_[id] = std::max(0, front_pages_[id] - page_count);
+        }
+        max_outstanding_pages_[id] =
+            std::max(max_outstanding_pages_[id], reserved_pages_[id] + front_pages_[id]);
+      }
+      tir::StmtExprVisitor::VisitExpr_(op);
+    }
+
+    std::vector<int> Take() { return std::move(max_outstanding_pages_); }
+
+   private:
+    std::vector<int> reserved_pages_;
+    std::vector<int> front_pages_;
+    std::vector<int> max_outstanding_pages_;
+  };
+
+  Collector collector(cb_count);
+  collector.Collect(body);
+  return collector.Take();
+}
+
 bool CanAutoManageStateFront(const CBRequirement& req) {
   return (req.type == CBType::kOutput || req.type == CBType::kIntermediate) &&
          req.flow_class == CBFlowClass::kState && req.initial_reserve_pages == 0;
+}
+
+bool IsDirectLocalStateConfig(const CBConfig& config) {
+  return config.role == "intermediate" && config.flow_class == CBFlowClass::kState &&
+         config.initial_reserve_pages == 0 && config.publish_pages_per_event == 0 &&
+         config.consume_pages_per_event == 0;
 }
 
 tir::Stmt MakeCBPopFrontStmt(int requirement_index, int pages) {
@@ -879,13 +935,8 @@ PrimFunc PlanTTCBAlloc::Transform(const PrimFunc& func) {
   const std::vector<bool> referenced_requirements = ReferencedRequirementMask(use_info);
   std::vector<CBConfig> configs = AssignCBIds(requirements, referenced_requirements);
 
-  // Validate the allocation
-  ICHECK(Validate(configs))
-      << "PlanTTCBAlloc: CB allocation exceeds Blackhole per-core constraints";
-
   // Create mutable copy and store CB configuration
   PrimFunc new_func = func;
-  StoreCBConfig(new_func, configs);
   std::unordered_map<int, int> cb_id_by_requirement_index;
   for (const auto& config : configs) {
     for (int requirement_index : config.requirement_indices) {
@@ -894,6 +945,26 @@ PrimFunc PlanTTCBAlloc::Transform(const PrimFunc& func) {
   }
   tir::Stmt physical_cb_body =
       RewriteCBIdsInIR(body_with_auto_pops, cb_id_by_requirement_index);
+  int max_physical_cb_id = -1;
+  for (const CBConfig& config : configs) {
+    max_physical_cb_id = std::max(max_physical_cb_id, config.cb_id);
+  }
+  const std::vector<int> max_outstanding_pages =
+      CollectMaxPhysicalOutstandingPages(physical_cb_body, max_physical_cb_id + 1);
+  for (CBConfig& config : configs) {
+    if (config.cb_id >= 0 &&
+        config.cb_id < static_cast<int>(max_outstanding_pages.size()) &&
+        max_outstanding_pages[config.cb_id] > config.num_pages) {
+      config.num_pages = max_outstanding_pages[config.cb_id];
+      config.total_size = config.page_size * config.num_pages;
+    }
+  }
+
+  // Validate the allocation
+  ICHECK(Validate(configs))
+      << "PlanTTCBAlloc: CB allocation exceeds Blackhole per-core constraints";
+
+  StoreCBConfig(new_func, configs);
   physical_cb_body = InsertPhysicalPopsBeforeBlockingReserve(physical_cb_body, configs);
   new_func.CopyOnWrite()->body = physical_cb_body;
   cb_configs_ = configs;
@@ -1077,6 +1148,14 @@ std::vector<CBConfig> PlanTTCBAlloc::AssignCBIds(
     config.total_size = config.page_size * config.num_pages;
 
     configs.push_back(config);
+  }
+
+  for (CBConfig& config : configs) {
+    if (IsDirectLocalStateConfig(config)) {
+      config.num_pages =
+          std::max(config.num_pages, static_cast<int>(config.requirement_indices.size()));
+      config.total_size = config.page_size * config.num_pages;
+    }
   }
 
   return configs;

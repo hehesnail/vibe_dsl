@@ -228,6 +228,11 @@
    CB binding、rank-1 scalar page writeback、final writer barrier/pop 都修正后，
    放开 direct-runtime gate 真跑仍在 workload enqueue 后命中
    `UnimplementedFunctionality: tensix_execute_pacr: count=1`。
+   2026-05-05 另确认：bf16 flash-attn seq128/256/512 的 loop-carried
+   input exact-CB backedge source/spec admission 后，当前 TT-Sim 也会命中
+   同一 `tensix_execute_pacr: count=1` fatal；seq64 accumulator-only
+   loop-carried exact-CB direct runtime 仍是正例，因此 gate 必须按 typed
+   input-CB backedge release 收窄。
 4. 当 direct runtime 首次命中这三类 taxonomy 时，
    应先把它和 target contract 回归分开判断。
 

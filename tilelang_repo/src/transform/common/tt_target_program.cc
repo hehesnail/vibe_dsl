@@ -1210,6 +1210,175 @@ TTConsumerBindingPlan::TTConsumerBindingPlan(
   data_ = std::move(n);
 }
 
+void TTExactCBVirtualValueNode::RegisterReflection() {
+  namespace refl = tvm::ffi::reflection;
+  refl::ObjectDef<TTExactCBVirtualValueNode>()
+      .def_ro("name", &TTExactCBVirtualValueNode::name)
+      .def_ro("logical_value", &TTExactCBVirtualValueNode::logical_value)
+      .def_ro("live_form", &TTExactCBVirtualValueNode::live_form)
+      .def_ro("live_form_index", &TTExactCBVirtualValueNode::live_form_index)
+      .def_ro("producer_kernel", &TTExactCBVirtualValueNode::producer_kernel)
+      .def_ro("producer_event", &TTExactCBVirtualValueNode::producer_event)
+      .def_ro("event_lifetime_kind",
+              &TTExactCBVirtualValueNode::event_lifetime_kind)
+      .def_ro("loop_role", &TTExactCBVirtualValueNode::loop_role)
+      .def_ro("num_pages", &TTExactCBVirtualValueNode::num_pages)
+      .def_ro("page_size_bytes", &TTExactCBVirtualValueNode::page_size_bytes)
+      .def_ro("data_format", &TTExactCBVirtualValueNode::data_format);
+}
+
+TTExactCBVirtualValue::TTExactCBVirtualValue(
+    ffi::String name, ffi::String logical_value, ffi::String live_form,
+    int64_t live_form_index, ffi::String producer_kernel,
+    ffi::String producer_event, ffi::String event_lifetime_kind,
+    ffi::String loop_role, int64_t num_pages, int64_t page_size_bytes,
+    ffi::String data_format) {
+  auto n = ffi::make_object<TTExactCBVirtualValueNode>();
+  n->name = std::move(name);
+  n->logical_value = std::move(logical_value);
+  n->live_form = std::move(live_form);
+  n->live_form_index = live_form_index;
+  n->producer_kernel = std::move(producer_kernel);
+  n->producer_event = std::move(producer_event);
+  n->event_lifetime_kind = std::move(event_lifetime_kind);
+  n->loop_role = std::move(loop_role);
+  n->num_pages = num_pages;
+  n->page_size_bytes = page_size_bytes;
+  n->data_format = std::move(data_format);
+  data_ = std::move(n);
+}
+
+void TTExactCBUseEventNode::RegisterReflection() {
+  namespace refl = tvm::ffi::reflection;
+  refl::ObjectDef<TTExactCBUseEventNode>()
+      .def_ro("name", &TTExactCBUseEventNode::name)
+      .def_ro("virtual_value", &TTExactCBUseEventNode::virtual_value)
+      .def_ro("virtual_value_index",
+              &TTExactCBUseEventNode::virtual_value_index)
+      .def_ro("consumer_kernel", &TTExactCBUseEventNode::consumer_kernel)
+      .def_ro("consumer_event", &TTExactCBUseEventNode::consumer_event)
+      .def_ro("operand_role", &TTExactCBUseEventNode::operand_role)
+      .def_ro("program_point", &TTExactCBUseEventNode::program_point)
+      .def_ro("requires_full_logical_tile",
+              &TTExactCBUseEventNode::requires_full_logical_tile)
+      .def_ro("borrow_kind", &TTExactCBUseEventNode::borrow_kind);
+}
+
+TTExactCBUseEvent::TTExactCBUseEvent(
+    ffi::String name, ffi::String virtual_value, int64_t virtual_value_index,
+    ffi::String consumer_kernel, ffi::String consumer_event,
+    ffi::String operand_role, int64_t program_point,
+    bool requires_full_logical_tile, ffi::String borrow_kind) {
+  auto n = ffi::make_object<TTExactCBUseEventNode>();
+  n->name = std::move(name);
+  n->virtual_value = std::move(virtual_value);
+  n->virtual_value_index = virtual_value_index;
+  n->consumer_kernel = std::move(consumer_kernel);
+  n->consumer_event = std::move(consumer_event);
+  n->operand_role = std::move(operand_role);
+  n->program_point = program_point;
+  n->requires_full_logical_tile = requires_full_logical_tile;
+  n->borrow_kind = std::move(borrow_kind);
+  data_ = std::move(n);
+}
+
+void TTExactCBLiveIntervalNode::RegisterReflection() {
+  namespace refl = tvm::ffi::reflection;
+  refl::ObjectDef<TTExactCBLiveIntervalNode>()
+      .def_ro("name", &TTExactCBLiveIntervalNode::name)
+      .def_ro("virtual_value", &TTExactCBLiveIntervalNode::virtual_value)
+      .def_ro("virtual_value_index",
+              &TTExactCBLiveIntervalNode::virtual_value_index)
+      .def_ro("begin_point", &TTExactCBLiveIntervalNode::begin_point)
+      .def_ro("end_point", &TTExactCBLiveIntervalNode::end_point)
+      .def_ro("live_in", &TTExactCBLiveIntervalNode::live_in)
+      .def_ro("live_out", &TTExactCBLiveIntervalNode::live_out)
+      .def_ro("loop_carried", &TTExactCBLiveIntervalNode::loop_carried)
+      .def_ro("interference_class",
+              &TTExactCBLiveIntervalNode::interference_class);
+}
+
+TTExactCBLiveInterval::TTExactCBLiveInterval(
+    ffi::String name, ffi::String virtual_value, int64_t virtual_value_index,
+    int64_t begin_point, int64_t end_point, bool live_in, bool live_out,
+    bool loop_carried, ffi::String interference_class) {
+  auto n = ffi::make_object<TTExactCBLiveIntervalNode>();
+  n->name = std::move(name);
+  n->virtual_value = std::move(virtual_value);
+  n->virtual_value_index = virtual_value_index;
+  n->begin_point = begin_point;
+  n->end_point = end_point;
+  n->live_in = live_in;
+  n->live_out = live_out;
+  n->loop_carried = loop_carried;
+  n->interference_class = std::move(interference_class);
+  data_ = std::move(n);
+}
+
+void TTExactCBAllocationNode::RegisterReflection() {
+  namespace refl = tvm::ffi::reflection;
+  refl::ObjectDef<TTExactCBAllocationNode>()
+      .def_ro("name", &TTExactCBAllocationNode::name)
+      .def_ro("virtual_value", &TTExactCBAllocationNode::virtual_value)
+      .def_ro("virtual_value_index",
+              &TTExactCBAllocationNode::virtual_value_index)
+      .def_ro("cb_plan", &TTExactCBAllocationNode::cb_plan)
+      .def_ro("cb_plan_index", &TTExactCBAllocationNode::cb_plan_index)
+      .def_ro("physical_cb_id", &TTExactCBAllocationNode::physical_cb_id)
+      .def_ro("page_count", &TTExactCBAllocationNode::page_count)
+      .def_ro("release_program_point",
+              &TTExactCBAllocationNode::release_program_point)
+      .def_ro("release_reason", &TTExactCBAllocationNode::release_reason);
+}
+
+TTExactCBAllocation::TTExactCBAllocation(
+    ffi::String name, ffi::String virtual_value, int64_t virtual_value_index,
+    ffi::String cb_plan, int64_t cb_plan_index, int64_t physical_cb_id,
+    int64_t page_count, int64_t release_program_point,
+    ffi::String release_reason) {
+  auto n = ffi::make_object<TTExactCBAllocationNode>();
+  n->name = std::move(name);
+  n->virtual_value = std::move(virtual_value);
+  n->virtual_value_index = virtual_value_index;
+  n->cb_plan = std::move(cb_plan);
+  n->cb_plan_index = cb_plan_index;
+  n->physical_cb_id = physical_cb_id;
+  n->page_count = page_count;
+  n->release_program_point = release_program_point;
+  n->release_reason = std::move(release_reason);
+  data_ = std::move(n);
+}
+
+void TTExactCBReleaseEventNode::RegisterReflection() {
+  namespace refl = tvm::ffi::reflection;
+  refl::ObjectDef<TTExactCBReleaseEventNode>()
+      .def_ro("name", &TTExactCBReleaseEventNode::name)
+      .def_ro("allocation", &TTExactCBReleaseEventNode::allocation)
+      .def_ro("allocation_index",
+              &TTExactCBReleaseEventNode::allocation_index)
+      .def_ro("cb_plan", &TTExactCBReleaseEventNode::cb_plan)
+      .def_ro("cb_plan_index", &TTExactCBReleaseEventNode::cb_plan_index)
+      .def_ro("program_point", &TTExactCBReleaseEventNode::program_point)
+      .def_ro("page_count", &TTExactCBReleaseEventNode::page_count)
+      .def_ro("reason", &TTExactCBReleaseEventNode::reason);
+}
+
+TTExactCBReleaseEvent::TTExactCBReleaseEvent(
+    ffi::String name, ffi::String allocation, int64_t allocation_index,
+    ffi::String cb_plan, int64_t cb_plan_index, int64_t program_point,
+    int64_t page_count, ffi::String reason) {
+  auto n = ffi::make_object<TTExactCBReleaseEventNode>();
+  n->name = std::move(name);
+  n->allocation = std::move(allocation);
+  n->allocation_index = allocation_index;
+  n->cb_plan = std::move(cb_plan);
+  n->cb_plan_index = cb_plan_index;
+  n->program_point = program_point;
+  n->page_count = page_count;
+  n->reason = std::move(reason);
+  data_ = std::move(n);
+}
+
 void TTRuntimeArgSpecNode::RegisterReflection() {
   namespace refl = tvm::ffi::reflection;
   refl::ObjectDef<TTRuntimeArgSpecNode>()
@@ -1418,6 +1587,14 @@ void TTProgramNode::RegisterReflection() {
       .def_ro("live_form_plans", &TTProgramNode::live_form_plans)
       .def_ro("materialization_plans", &TTProgramNode::materialization_plans)
       .def_ro("consumer_binding_plans", &TTProgramNode::consumer_binding_plans)
+      .def_ro("exact_cb_virtual_values",
+              &TTProgramNode::exact_cb_virtual_values)
+      .def_ro("exact_cb_use_events", &TTProgramNode::exact_cb_use_events)
+      .def_ro("exact_cb_live_intervals",
+              &TTProgramNode::exact_cb_live_intervals)
+      .def_ro("exact_cb_allocations", &TTProgramNode::exact_cb_allocations)
+      .def_ro("exact_cb_release_events",
+              &TTProgramNode::exact_cb_release_events)
       .def_ro("resource_demands", &TTProgramNode::resource_demands)
       .def_ro("resource_pressure_reports",
               &TTProgramNode::resource_pressure_reports);
@@ -1443,6 +1620,11 @@ TTProgram::TTProgram(
     ffi::Array<TTLiveFormPlan> live_form_plans,
     ffi::Array<TTMaterializationPlan> materialization_plans,
     ffi::Array<TTConsumerBindingPlan> consumer_binding_plans,
+    ffi::Array<TTExactCBVirtualValue> exact_cb_virtual_values,
+    ffi::Array<TTExactCBUseEvent> exact_cb_use_events,
+    ffi::Array<TTExactCBLiveInterval> exact_cb_live_intervals,
+    ffi::Array<TTExactCBAllocation> exact_cb_allocations,
+    ffi::Array<TTExactCBReleaseEvent> exact_cb_release_events,
     ffi::Array<TTResourceDemand> resource_demands,
     ffi::Array<TTResourcePressureReport> resource_pressure_reports) {
   auto n = ffi::make_object<TTProgramNode>();
@@ -1470,6 +1652,11 @@ TTProgram::TTProgram(
   n->live_form_plans = std::move(live_form_plans);
   n->materialization_plans = std::move(materialization_plans);
   n->consumer_binding_plans = std::move(consumer_binding_plans);
+  n->exact_cb_virtual_values = std::move(exact_cb_virtual_values);
+  n->exact_cb_use_events = std::move(exact_cb_use_events);
+  n->exact_cb_live_intervals = std::move(exact_cb_live_intervals);
+  n->exact_cb_allocations = std::move(exact_cb_allocations);
+  n->exact_cb_release_events = std::move(exact_cb_release_events);
   n->resource_demands = std::move(resource_demands);
   n->resource_pressure_reports = std::move(resource_pressure_reports);
   data_ = std::move(n);
@@ -1506,6 +1693,11 @@ TVM_FFI_STATIC_INIT_BLOCK() {
   RegisterNodeReflection<TTLiveFormPlanNode>();
   RegisterNodeReflection<TTMaterializationPlanNode>();
   RegisterNodeReflection<TTConsumerBindingPlanNode>();
+  RegisterNodeReflection<TTExactCBVirtualValueNode>();
+  RegisterNodeReflection<TTExactCBUseEventNode>();
+  RegisterNodeReflection<TTExactCBLiveIntervalNode>();
+  RegisterNodeReflection<TTExactCBAllocationNode>();
+  RegisterNodeReflection<TTExactCBReleaseEventNode>();
   RegisterNodeReflection<TTRuntimeArgSpecNode>();
   RegisterNodeReflection<TTCompileTimeArgSpecNode>();
   RegisterNodeReflection<TTAccessorSpecNode>();
@@ -1949,6 +2141,65 @@ TVM_FFI_STATIC_INIT_BLOCK() {
             std::move(materialization_plan));
       });
   refl::GlobalDef().def(
+      "tl.TTExactCBVirtualValue",
+      [](ffi::String name, ffi::String logical_value, ffi::String live_form,
+         int64_t live_form_index, ffi::String producer_kernel,
+         ffi::String producer_event, ffi::String event_lifetime_kind,
+         ffi::String loop_role, int64_t num_pages, int64_t page_size_bytes,
+         ffi::String data_format) {
+        return TTExactCBVirtualValue(
+            std::move(name), std::move(logical_value), std::move(live_form),
+            live_form_index, std::move(producer_kernel),
+            std::move(producer_event), std::move(event_lifetime_kind),
+            std::move(loop_role), num_pages, page_size_bytes,
+            std::move(data_format));
+      });
+  refl::GlobalDef().def(
+      "tl.TTExactCBUseEvent",
+      [](ffi::String name, ffi::String virtual_value,
+         int64_t virtual_value_index, ffi::String consumer_kernel,
+         ffi::String consumer_event, ffi::String operand_role,
+         int64_t program_point, bool requires_full_logical_tile,
+         ffi::String borrow_kind) {
+        return TTExactCBUseEvent(
+            std::move(name), std::move(virtual_value), virtual_value_index,
+            std::move(consumer_kernel), std::move(consumer_event),
+            std::move(operand_role), program_point, requires_full_logical_tile,
+            std::move(borrow_kind));
+      });
+  refl::GlobalDef().def(
+      "tl.TTExactCBLiveInterval",
+      [](ffi::String name, ffi::String virtual_value,
+         int64_t virtual_value_index, int64_t begin_point, int64_t end_point,
+         bool live_in, bool live_out, bool loop_carried,
+         ffi::String interference_class) {
+        return TTExactCBLiveInterval(
+            std::move(name), std::move(virtual_value), virtual_value_index,
+            begin_point, end_point, live_in, live_out, loop_carried,
+            std::move(interference_class));
+      });
+  refl::GlobalDef().def(
+      "tl.TTExactCBAllocation",
+      [](ffi::String name, ffi::String virtual_value,
+         int64_t virtual_value_index, ffi::String cb_plan,
+         int64_t cb_plan_index, int64_t physical_cb_id, int64_t page_count,
+         int64_t release_program_point, ffi::String release_reason) {
+        return TTExactCBAllocation(
+            std::move(name), std::move(virtual_value), virtual_value_index,
+            std::move(cb_plan), cb_plan_index, physical_cb_id, page_count,
+            release_program_point, std::move(release_reason));
+      });
+  refl::GlobalDef().def(
+      "tl.TTExactCBReleaseEvent",
+      [](ffi::String name, ffi::String allocation, int64_t allocation_index,
+         ffi::String cb_plan, int64_t cb_plan_index, int64_t program_point,
+         int64_t page_count, ffi::String reason) {
+        return TTExactCBReleaseEvent(
+            std::move(name), std::move(allocation), allocation_index,
+            std::move(cb_plan), cb_plan_index, program_point, page_count,
+            std::move(reason));
+      });
+  refl::GlobalDef().def(
       "tl.TTRuntimeArgSpec",
       [](ffi::String name, ffi::String kind, ffi::String dtype,
          ffi::String buffer, ffi::String identity, int64_t core_x,
@@ -2034,6 +2285,11 @@ TVM_FFI_STATIC_INIT_BLOCK() {
          ffi::Array<TTLiveFormPlan> live_form_plans,
          ffi::Array<TTMaterializationPlan> materialization_plans,
          ffi::Array<TTConsumerBindingPlan> consumer_binding_plans,
+         ffi::Array<TTExactCBVirtualValue> exact_cb_virtual_values,
+         ffi::Array<TTExactCBUseEvent> exact_cb_use_events,
+         ffi::Array<TTExactCBLiveInterval> exact_cb_live_intervals,
+         ffi::Array<TTExactCBAllocation> exact_cb_allocations,
+         ffi::Array<TTExactCBReleaseEvent> exact_cb_release_events,
          ffi::Array<TTResourceDemand> resource_demands,
          ffi::Array<TTResourcePressureReport> resource_pressure_reports) {
 	        return TTProgram(
@@ -2051,6 +2307,9 @@ TVM_FFI_STATIC_INIT_BLOCK() {
             std::move(semaphore_plans), std::move(compute_sync_plans),
             std::move(dst_layout_plans), std::move(live_form_plans),
             std::move(materialization_plans), std::move(consumer_binding_plans),
+            std::move(exact_cb_virtual_values),
+            std::move(exact_cb_use_events), std::move(exact_cb_live_intervals),
+            std::move(exact_cb_allocations), std::move(exact_cb_release_events),
             std::move(resource_demands), std::move(resource_pressure_reports));
       });
 }

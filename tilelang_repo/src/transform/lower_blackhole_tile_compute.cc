@@ -1180,19 +1180,30 @@ Stmt PlanTTKernelABI::GenerateRowReductionSequence(const RowReductionMatch& matc
            (first_live_cb_consume_order < 0 ||
             first_reference_order < first_live_cb_consume_order);
   };
-  if (future_reference_precedes_live_cb_consume()) {
+  const bool materialize_loop_carried =
+      ShouldMaterializeLoopCarriedExactOutput(live_form_dst);
+  if (!materialize_loop_carried && future_reference_precedes_live_cb_consume()) {
     stmts.push_back(MaterializeExactTiledCBToLocalBuffer(match.dst, out, /*pop_front=*/false));
   }
   InvalidateLastFragmentFillValue(match.dst);
   if (live_form_dst.defined() && !SameBufferIdentity(live_form_dst, match.dst)) {
     InvalidateLastFragmentFillValue(live_form_dst);
   }
-  RecordExactOutputLiveForm(live_form_dst, out);
+  if (materialize_loop_carried) {
+    if (Stmt materialize = MaterializeLoopCarriedExactOutput(live_form_dst, out);
+        materialize.defined()) {
+      stmts.push_back(materialize);
+    }
+  } else {
+    RecordExactOutputLiveForm(live_form_dst, out);
+  }
 
   Stmt body = SeqStmt::Flatten(stmts);
   body = tir::DeclBuffer(scaler_local, body);
   body = tir::Allocate(scaler_local->data, scaler_local->dtype, scaler_local->shape, Bool(1), body);
-  body = AttachExactOutputLiveFormMarker(live_form_dst, out, body);
+  if (!materialize_loop_carried) {
+    body = AttachExactOutputLiveFormMarker(live_form_dst, out, body);
+  }
   return MaybeWrapComputeSegment(body);
 }
 
@@ -1259,15 +1270,19 @@ Stmt PlanTTKernelABI::GenerateCopyTileSequence(const Buffer& src, const Buffer& 
                            {{"input", src, "identity"},
                             {"output", dst, "identity"}});
   ExactTiledCBValue live_value;
-  if (TryCreateExactOutputLiveTiledCBValue(src, &live_value) ||
-      TryCreateLiveExactTiledCBValue(src, &live_value)) {
+  const bool force_local_loop_carried =
+      (IsActiveLoopCarriedBuffer(src) || IsCompletedLoopCarriedBuffer(src)) &&
+      !IsSingleFullTileLogicalMatrix(src);
+  if (!force_local_loop_carried &&
+      (TryCreateExactOutputLiveTiledCBValue(src, &live_value) ||
+       TryCreateLiveExactTiledCBValue(src, &live_value))) {
     RecordTiledCBLiveFormAliases(dst, live_value.cb_id);
     InvalidateLastFragmentFillValue(dst);
     return Evaluate(IntImm32(0));
   }
 
   PrimExpr fill_value;
-  if (TryGetLastFragmentFillValue(src, &fill_value)) {
+  if (!force_local_loop_carried && TryGetLastFragmentFillValue(src, &fill_value)) {
     const std::string dst_name = BufferIdentityName(dst);
     if (!dst_name.empty()) {
       ClearTiledCBLiveFormIdentity(dst_name);
@@ -1291,15 +1306,20 @@ Stmt PlanTTKernelABI::GenerateCopyTileSequence(const Buffer& src, const Buffer& 
       cast_match.num_elements = IntImm(DataType::Int(32), logical_extent);
     }
   }
-  return GenerateFragmentCastSequence(cast_match, /*publish_cb=*/false);
+  return GenerateFragmentCastSequence(
+      cast_match, /*publish_cb=*/false, /*current_order_index=*/-1,
+      /*allow_force_publish_from_fact=*/!force_local_loop_carried);
 }
 
 Stmt PlanTTKernelABI::GenerateBinaryMaxTileSequence(const Buffer& dst, const Buffer& rhs) {
   ExactTiledCBValue lhs_in = CreateExactInputCBValue(dst, "binary_max_lhs");
   ExactTiledCBValue rhs_in = CreateExactInputCBValue(rhs, "binary_max_rhs");
-  ExactTiledCBValue out = CreateEmptyExactTiledCBValue(
-      dst, "binary_max_out",
-      ExactOutputCBTypeForBuffer(dst, current_lowering_order_index_));
+  ExactTiledCBValue out;
+  if (!TryCreateLoopCarriedExactOutputStateCBValue(dst, &out)) {
+    out = CreateEmptyExactTiledCBValue(
+        dst, "binary_max_out",
+        ExactOutputCBTypeForBuffer(dst, current_lowering_order_index_));
+  }
   RecordExactComputeOpPlan("binary", "binary_max_tile",
                            {{"lhs", dst, "identity"},
                             {"rhs", rhs, "identity"},
@@ -1343,8 +1363,40 @@ Stmt PlanTTKernelABI::GenerateBinaryMaxTileSequence(const Buffer& dst, const Buf
     stmts.push_back(release);
   }
   emit.Push(out.cb_id, out.num_tiles);
-  RecordExactOutputLiveForm(dst, out);
-  Stmt body = AttachExactOutputLiveFormMarker(dst, out, SeqStmt::Flatten(stmts));
+  const bool materialize_loop_carried = ShouldMaterializeLoopCarriedExactOutput(dst);
+  const FutureBufferUses future_uses =
+      ClassifyFutureBufferUses(dst, current_lowering_order_index_);
+  const bool materialize_completed_loop_carried_before_compute_consume =
+      !materialize_loop_carried && IsCompletedLoopCarriedBuffer(dst) &&
+      future_uses.has_compute_consume;
+  const bool materialize_local_state =
+      materialize_loop_carried ||
+      materialize_completed_loop_carried_before_compute_consume;
+  if (materialize_local_state) {
+    if (Stmt materialize =
+            materialize_loop_carried
+                ? MaterializeLoopCarriedExactOutput(dst, out)
+                : [&]() {
+                    InvalidateLastFragmentFillValue(dst);
+                    ClearSelectedSourceLiveProducer(dst);
+                    ClearTiledCBLiveFormAliases(dst);
+                    MarkLocalOnlyLiveFormAliases(dst);
+                    Stmt local_materialize =
+                        MaterializeExactTiledCBToLocalBuffer(dst, out, /*pop_front=*/true);
+                    ClearTiledCBLiveFormAliases(dst);
+                    MarkLocalOnlyLiveFormAliases(dst);
+                    return local_materialize;
+                  }();
+        materialize.defined()) {
+      stmts.push_back(materialize);
+    }
+  } else {
+    RecordExactOutputLiveForm(dst, out);
+  }
+  Stmt body = SeqStmt::Flatten(stmts);
+  if (!materialize_local_state) {
+    body = AttachExactOutputLiveFormMarker(dst, out, body);
+  }
   return MaybeWrapComputeSegment(body);
 }
 
@@ -1355,9 +1407,12 @@ Stmt PlanTTKernelABI::GenerateBinaryTileSequence(const Buffer& dst,
                                                   const Op& tile_op) {
   ExactTiledCBValue lhs_in = CreateExactInputCBValue(dst, operation_name + "_lhs");
   ExactTiledCBValue rhs_in = CreateExactInputCBValue(rhs, operation_name + "_rhs");
-  ExactTiledCBValue out = CreateEmptyExactTiledCBValue(
-      dst, operation_name + "_out",
-      ExactOutputCBTypeForBuffer(dst, current_lowering_order_index_));
+  ExactTiledCBValue out;
+  if (!TryCreateLoopCarriedExactOutputStateCBValue(dst, &out)) {
+    out = CreateEmptyExactTiledCBValue(
+        dst, operation_name + "_out",
+        ExactOutputCBTypeForBuffer(dst, current_lowering_order_index_));
+  }
   RecordExactComputeOpPlan("binary", operation_name,
                            {{"lhs", dst, "identity"},
                             {"rhs", rhs, "identity"},
@@ -1396,8 +1451,18 @@ Stmt PlanTTKernelABI::GenerateBinaryTileSequence(const Buffer& dst,
     stmts.push_back(release);
   }
   emit.Push(out.cb_id, out.num_tiles);
-  RecordExactOutputLiveForm(dst, out);
-  Stmt body = AttachExactOutputLiveFormMarker(dst, out, SeqStmt::Flatten(stmts));
+  const bool materialize_loop_carried = ShouldMaterializeLoopCarriedExactOutput(dst);
+  if (materialize_loop_carried) {
+    if (Stmt materialize = MaterializeLoopCarriedExactOutput(dst, out); materialize.defined()) {
+      stmts.push_back(materialize);
+    }
+  } else {
+    RecordExactOutputLiveForm(dst, out);
+  }
+  Stmt body = SeqStmt::Flatten(stmts);
+  if (!materialize_loop_carried) {
+    body = AttachExactOutputLiveFormMarker(dst, out, body);
+  }
   return MaybeWrapComputeSegment(body);
 }
 
@@ -1419,10 +1484,18 @@ Stmt PlanTTKernelABI::GenerateBroadcastColsBinaryTileSequence(
   if (!TryCreateBroadcastColsSourceLiveExactTiledCBValue(rhs, &rhs_in)) {
     rhs_in = CreateExactInputCBValue(rhs, operation_name + "_rhs");
   }
-  ExactTiledCBValue out = CreateEmptyExactTiledCBValue(
-      dst, operation_name + "_out",
-      ExactOutputCBTypeForBuffer(dst, current_lowering_order_index_));
+  ExactTiledCBValue out;
+  if (!TryCreateLoopCarriedExactOutputStateCBValue(dst, &out)) {
+    out = CreateEmptyExactTiledCBValue(
+        dst, operation_name + "_out",
+        ExactOutputCBTypeForBuffer(dst, current_lowering_order_index_));
+  }
   const auto [logical_rows, logical_cols] = GetLogicalMatrixShape(dst);
+  const bool materialize_loop_carried = ShouldMaterializeLoopCarriedExactOutput(dst);
+  const bool materialize_completed_loop_carried_before_rewrite =
+      !materialize_loop_carried && IsCompletedLoopCarriedBuffer(dst) && logical_rows > 1 &&
+      logical_cols > 1 &&
+      FutureWritePrecedesFutureComputeConsume(dst, current_lowering_order_index_);
   const int tiles_per_row =
       logical_rows > 0 && logical_cols > 0
           ? std::max(1, CeilDivToInt(logical_cols, kBlackholeTileCols))
@@ -1469,8 +1542,33 @@ Stmt PlanTTKernelABI::GenerateBroadcastColsBinaryTileSequence(
     stmts.push_back(release);
   }
   emit.Push(out.cb_id, out.num_tiles);
-  RecordExactOutputLiveForm(dst, out);
-  Stmt body = AttachExactOutputLiveFormMarker(dst, out, SeqStmt::Flatten(stmts));
+  const bool materialize_local_state =
+      materialize_loop_carried || materialize_completed_loop_carried_before_rewrite;
+  if (materialize_local_state) {
+    Stmt materialize =
+        materialize_loop_carried
+            ? MaterializeLoopCarriedExactOutput(dst, out)
+            : [&]() {
+                InvalidateLastFragmentFillValue(dst);
+                ClearSelectedSourceLiveProducer(dst);
+                ClearTiledCBLiveFormAliases(dst);
+                MarkLocalOnlyLiveFormAliases(dst);
+                Stmt local_materialize =
+                    MaterializeExactTiledCBToLocalBuffer(dst, out, /*pop_front=*/true);
+                ClearTiledCBLiveFormAliases(dst);
+                MarkLocalOnlyLiveFormAliases(dst);
+                return local_materialize;
+              }();
+    if (materialize.defined()) {
+      stmts.push_back(materialize);
+    }
+  } else {
+    RecordExactOutputLiveForm(dst, out);
+  }
+  Stmt body = SeqStmt::Flatten(stmts);
+  if (!materialize_local_state) {
+    body = AttachExactOutputLiveFormMarker(dst, out, body);
+  }
   return MaybeWrapComputeSegment(body);
 }
 
@@ -1478,9 +1576,12 @@ Stmt PlanTTKernelABI::GenerateUnaryTileSequence(
     const Buffer& input, const Buffer& output, const std::string& operation_name,
     const Op& init_op, const Op& tile_op, const PrimExpr& num_elements) {
   ExactTiledCBValue input_cb = CreateExactInputCBValue(input, operation_name + "_input");
-  ExactTiledCBValue out = CreateEmptyExactTiledCBValue(
-      output, operation_name + "_out",
-      ExactOutputCBTypeForBuffer(output, current_lowering_order_index_));
+  ExactTiledCBValue out;
+  if (!TryCreateLoopCarriedExactOutputStateCBValue(output, &out)) {
+    out = CreateEmptyExactTiledCBValue(
+        output, operation_name + "_out",
+        ExactOutputCBTypeForBuffer(output, current_lowering_order_index_));
+  }
   RefineExactTiledCBValueShapeFromNumElements(&out, num_elements);
   RefineExactTiledCBValueShapeFromNumElements(
       &out, IntImm(DataType::Int(64), input_cb.num_elements));
@@ -1515,9 +1616,19 @@ Stmt PlanTTKernelABI::GenerateUnaryTileSequence(
     stmts.push_back(release);
   }
   emit.Push(out.cb_id, out.num_tiles);
-  RecordExactOutputLiveForm(output, out);
+  const bool materialize_loop_carried = ShouldMaterializeLoopCarriedExactOutput(output);
+  if (materialize_loop_carried) {
+    if (Stmt materialize = MaterializeLoopCarriedExactOutput(output, out); materialize.defined()) {
+      stmts.push_back(materialize);
+    }
+  } else {
+    RecordExactOutputLiveForm(output, out);
+  }
 
-  Stmt body = AttachExactOutputLiveFormMarker(output, out, SeqStmt::Flatten(stmts));
+  Stmt body = SeqStmt::Flatten(stmts);
+  if (!materialize_loop_carried) {
+    body = AttachExactOutputLiveFormMarker(output, out, body);
+  }
   return MaybeWrapComputeSegment(body);
 }
 

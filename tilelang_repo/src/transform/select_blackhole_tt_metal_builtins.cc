@@ -32,7 +32,10 @@ TTProgram WithStagedCBAndComputeOpPlans(const TTProgram& program,
                    program->core_groups, std::move(cb_plans), program->semaphore_plans,
                    program->compute_sync_plans, program->dst_layout_plans,
                    program->live_form_plans, program->materialization_plans,
-                   program->consumer_binding_plans, program->resource_demands,
+                   program->consumer_binding_plans,
+                   program->exact_cb_virtual_values, program->exact_cb_use_events,
+                   program->exact_cb_live_intervals, program->exact_cb_allocations,
+                   program->exact_cb_release_events, program->resource_demands,
                    program->resource_pressure_reports);
 }
 

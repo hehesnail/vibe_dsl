@@ -50,6 +50,11 @@ constexpr const char *kDirectRuntimeUnsupportedReasons =
 constexpr const char *kLiveFormPlans = "live_form_plans";
 constexpr const char *kMaterializationPlans = "materialization_plans";
 constexpr const char *kConsumerBindingPlans = "consumer_binding_plans";
+constexpr const char *kExactCBVirtualValues = "exact_cb_virtual_values";
+constexpr const char *kExactCBUseEvents = "exact_cb_use_events";
+constexpr const char *kExactCBLiveIntervals = "exact_cb_live_intervals";
+constexpr const char *kExactCBAllocations = "exact_cb_allocations";
+constexpr const char *kExactCBReleaseEvents = "exact_cb_release_events";
 constexpr const char *kResourcePressureReports = "resource_pressure_reports";
 } // namespace executable_key
 
@@ -853,6 +858,104 @@ inline Array<Any> EncodeConsumerBindingPlans(
   return encoded;
 }
 
+inline Array<Any> EncodeExactCBVirtualValues(
+    const Array<TTExactCBVirtualValue> &virtual_values) {
+  Array<Any> encoded;
+  for (const TTExactCBVirtualValue &value : virtual_values) {
+    Map<String, Any> item;
+    item.Set("name", value->name);
+    item.Set("logical_value", value->logical_value);
+    item.Set("live_form", value->live_form);
+    item.Set("live_form_index", Integer(value->live_form_index));
+    item.Set("producer_kernel", value->producer_kernel);
+    item.Set("producer_event", value->producer_event);
+    item.Set("event_lifetime_kind", value->event_lifetime_kind);
+    item.Set("loop_role", value->loop_role);
+    item.Set("num_pages", Integer(value->num_pages));
+    item.Set("page_size_bytes", Integer(value->page_size_bytes));
+    item.Set("data_format", value->data_format);
+    encoded.push_back(item);
+  }
+  return encoded;
+}
+
+inline Array<Any>
+EncodeExactCBUseEvents(const Array<TTExactCBUseEvent> &use_events) {
+  Array<Any> encoded;
+  for (const TTExactCBUseEvent &event : use_events) {
+    Map<String, Any> item;
+    item.Set("name", event->name);
+    item.Set("virtual_value", event->virtual_value);
+    item.Set("virtual_value_index", Integer(event->virtual_value_index));
+    item.Set("consumer_kernel", event->consumer_kernel);
+    item.Set("consumer_event", event->consumer_event);
+    item.Set("operand_role", event->operand_role);
+    item.Set("program_point", Integer(event->program_point));
+    item.Set("requires_full_logical_tile",
+             Bool(event->requires_full_logical_tile));
+    item.Set("borrow_kind", event->borrow_kind);
+    encoded.push_back(item);
+  }
+  return encoded;
+}
+
+inline Array<Any> EncodeExactCBLiveIntervals(
+    const Array<TTExactCBLiveInterval> &live_intervals) {
+  Array<Any> encoded;
+  for (const TTExactCBLiveInterval &interval : live_intervals) {
+    Map<String, Any> item;
+    item.Set("name", interval->name);
+    item.Set("virtual_value", interval->virtual_value);
+    item.Set("virtual_value_index", Integer(interval->virtual_value_index));
+    item.Set("begin_point", Integer(interval->begin_point));
+    item.Set("end_point", Integer(interval->end_point));
+    item.Set("live_in", Bool(interval->live_in));
+    item.Set("live_out", Bool(interval->live_out));
+    item.Set("loop_carried", Bool(interval->loop_carried));
+    item.Set("interference_class", interval->interference_class);
+    encoded.push_back(item);
+  }
+  return encoded;
+}
+
+inline Array<Any>
+EncodeExactCBAllocations(const Array<TTExactCBAllocation> &allocations) {
+  Array<Any> encoded;
+  for (const TTExactCBAllocation &allocation : allocations) {
+    Map<String, Any> item;
+    item.Set("name", allocation->name);
+    item.Set("virtual_value", allocation->virtual_value);
+    item.Set("virtual_value_index", Integer(allocation->virtual_value_index));
+    item.Set("cb_plan", allocation->cb_plan);
+    item.Set("cb_plan_index", Integer(allocation->cb_plan_index));
+    item.Set("physical_cb_id", Integer(allocation->physical_cb_id));
+    item.Set("page_count", Integer(allocation->page_count));
+    item.Set("release_program_point",
+             Integer(allocation->release_program_point));
+    item.Set("release_reason", allocation->release_reason);
+    encoded.push_back(item);
+  }
+  return encoded;
+}
+
+inline Array<Any> EncodeExactCBReleaseEvents(
+    const Array<TTExactCBReleaseEvent> &release_events) {
+  Array<Any> encoded;
+  for (const TTExactCBReleaseEvent &event : release_events) {
+    Map<String, Any> item;
+    item.Set("name", event->name);
+    item.Set("allocation", event->allocation);
+    item.Set("allocation_index", Integer(event->allocation_index));
+    item.Set("cb_plan", event->cb_plan);
+    item.Set("cb_plan_index", Integer(event->cb_plan_index));
+    item.Set("program_point", Integer(event->program_point));
+    item.Set("page_count", Integer(event->page_count));
+    item.Set("reason", event->reason);
+    encoded.push_back(item);
+  }
+  return encoded;
+}
+
 inline Array<Any> EncodeSegmentPlan(const TTProgram &program) {
   Array<Any> segments;
   for (const TTKernel &kernel : program->kernels) {
@@ -1297,6 +1400,42 @@ MaterializeBlackholeExecutableProjection(const TTProgram &program) {
     executable.Set(String(executable_key::kConsumerBindingPlans),
                    consumer_binding_plans);
   }
+
+  Array<Any> exact_cb_virtual_values =
+      EncodeExactCBVirtualValues(program->exact_cb_virtual_values);
+  if (!exact_cb_virtual_values.empty()) {
+    executable.Set(String(executable_key::kExactCBVirtualValues),
+                   exact_cb_virtual_values);
+  }
+
+  Array<Any> exact_cb_use_events =
+      EncodeExactCBUseEvents(program->exact_cb_use_events);
+  if (!exact_cb_use_events.empty()) {
+    executable.Set(String(executable_key::kExactCBUseEvents),
+                   exact_cb_use_events);
+  }
+
+  Array<Any> exact_cb_live_intervals =
+      EncodeExactCBLiveIntervals(program->exact_cb_live_intervals);
+  if (!exact_cb_live_intervals.empty()) {
+    executable.Set(String(executable_key::kExactCBLiveIntervals),
+                   exact_cb_live_intervals);
+  }
+
+  Array<Any> exact_cb_allocations =
+      EncodeExactCBAllocations(program->exact_cb_allocations);
+  if (!exact_cb_allocations.empty()) {
+    executable.Set(String(executable_key::kExactCBAllocations),
+                   exact_cb_allocations);
+  }
+
+  Array<Any> exact_cb_release_events =
+      EncodeExactCBReleaseEvents(program->exact_cb_release_events);
+  if (!exact_cb_release_events.empty()) {
+    executable.Set(String(executable_key::kExactCBReleaseEvents),
+                   exact_cb_release_events);
+  }
+
   Array<Any> resource_pressure_reports =
       EncodeResourcePressureReports(program->resource_pressure_reports);
   if (!resource_pressure_reports.empty()) {

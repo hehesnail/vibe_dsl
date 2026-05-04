@@ -869,6 +869,142 @@ struct ConsumerBindingPlanSpec {
   }
 };
 
+struct ExactCBVirtualValueSpec {
+  std::string name;
+  std::string logical_value;
+  std::string live_form;
+  int64_t live_form_index = -1;
+  std::string producer_kernel;
+  std::string producer_event;
+  std::string event_lifetime_kind;
+  std::string loop_role;
+  uint32_t num_pages = 0;
+  uint32_t page_size_bytes = 0;
+  std::string data_format;
+
+  void Save(dmlc::JSONWriter* writer) const {
+    writer->BeginObject();
+    writer->WriteObjectKeyValue("name", name);
+    writer->WriteObjectKeyValue("logical_value", logical_value);
+    writer->WriteObjectKeyValue("live_form", live_form);
+    writer->WriteObjectKeyValue("live_form_index", live_form_index);
+    writer->WriteObjectKeyValue("producer_kernel", producer_kernel);
+    writer->WriteObjectKeyValue("producer_event", producer_event);
+    writer->WriteObjectKeyValue("event_lifetime_kind", event_lifetime_kind);
+    writer->WriteObjectKeyValue("loop_role", loop_role);
+    writer->WriteObjectKeyValue("num_pages", static_cast<int64_t>(num_pages));
+    writer->WriteObjectKeyValue("page_size_bytes",
+                                static_cast<int64_t>(page_size_bytes));
+    writer->WriteObjectKeyValue("data_format", data_format);
+    writer->EndObject();
+  }
+};
+
+struct ExactCBUseEventSpec {
+  std::string name;
+  std::string virtual_value;
+  int64_t virtual_value_index = -1;
+  std::string consumer_kernel;
+  std::string consumer_event;
+  std::string operand_role;
+  int64_t program_point = -1;
+  bool requires_full_logical_tile = false;
+  std::string borrow_kind;
+
+  void Save(dmlc::JSONWriter* writer) const {
+    writer->BeginObject();
+    writer->WriteObjectKeyValue("name", name);
+    writer->WriteObjectKeyValue("virtual_value", virtual_value);
+    writer->WriteObjectKeyValue("virtual_value_index", virtual_value_index);
+    writer->WriteObjectKeyValue("consumer_kernel", consumer_kernel);
+    writer->WriteObjectKeyValue("consumer_event", consumer_event);
+    writer->WriteObjectKeyValue("operand_role", operand_role);
+    writer->WriteObjectKeyValue("program_point", program_point);
+    writer->WriteObjectKeyValue("requires_full_logical_tile",
+                                requires_full_logical_tile);
+    writer->WriteObjectKeyValue("borrow_kind", borrow_kind);
+    writer->EndObject();
+  }
+};
+
+struct ExactCBLiveIntervalSpec {
+  std::string name;
+  std::string virtual_value;
+  int64_t virtual_value_index = -1;
+  int64_t begin_point = -1;
+  int64_t end_point = -1;
+  bool live_in = false;
+  bool live_out = false;
+  bool loop_carried = false;
+  std::string interference_class;
+
+  void Save(dmlc::JSONWriter* writer) const {
+    writer->BeginObject();
+    writer->WriteObjectKeyValue("name", name);
+    writer->WriteObjectKeyValue("virtual_value", virtual_value);
+    writer->WriteObjectKeyValue("virtual_value_index", virtual_value_index);
+    writer->WriteObjectKeyValue("begin_point", begin_point);
+    writer->WriteObjectKeyValue("end_point", end_point);
+    writer->WriteObjectKeyValue("live_in", live_in);
+    writer->WriteObjectKeyValue("live_out", live_out);
+    writer->WriteObjectKeyValue("loop_carried", loop_carried);
+    writer->WriteObjectKeyValue("interference_class", interference_class);
+    writer->EndObject();
+  }
+};
+
+struct ExactCBAllocationSpec {
+  std::string name;
+  std::string virtual_value;
+  int64_t virtual_value_index = -1;
+  std::string cb_plan;
+  int64_t cb_plan_index = -1;
+  uint32_t physical_cb_id = 0;
+  uint32_t page_count = 0;
+  int64_t release_program_point = -1;
+  std::string release_reason;
+
+  void Save(dmlc::JSONWriter* writer) const {
+    writer->BeginObject();
+    writer->WriteObjectKeyValue("name", name);
+    writer->WriteObjectKeyValue("virtual_value", virtual_value);
+    writer->WriteObjectKeyValue("virtual_value_index", virtual_value_index);
+    writer->WriteObjectKeyValue("cb_plan", cb_plan);
+    writer->WriteObjectKeyValue("cb_plan_index", cb_plan_index);
+    writer->WriteObjectKeyValue("physical_cb_id",
+                                static_cast<int64_t>(physical_cb_id));
+    writer->WriteObjectKeyValue("page_count", static_cast<int64_t>(page_count));
+    writer->WriteObjectKeyValue("release_program_point",
+                                release_program_point);
+    writer->WriteObjectKeyValue("release_reason", release_reason);
+    writer->EndObject();
+  }
+};
+
+struct ExactCBReleaseEventSpec {
+  std::string name;
+  std::string allocation;
+  int64_t allocation_index = -1;
+  std::string cb_plan;
+  int64_t cb_plan_index = -1;
+  int64_t program_point = -1;
+  uint32_t page_count = 0;
+  std::string reason;
+
+  void Save(dmlc::JSONWriter* writer) const {
+    writer->BeginObject();
+    writer->WriteObjectKeyValue("name", name);
+    writer->WriteObjectKeyValue("allocation", allocation);
+    writer->WriteObjectKeyValue("allocation_index", allocation_index);
+    writer->WriteObjectKeyValue("cb_plan", cb_plan);
+    writer->WriteObjectKeyValue("cb_plan_index", cb_plan_index);
+    writer->WriteObjectKeyValue("program_point", program_point);
+    writer->WriteObjectKeyValue("page_count", static_cast<int64_t>(page_count));
+    writer->WriteObjectKeyValue("reason", reason);
+    writer->EndObject();
+  }
+};
+
 /*!
  * \brief Per-kernel source and argument metadata.
  */
@@ -959,6 +1095,11 @@ struct ExecutableSpec {
   std::vector<LiveFormPlanSpec> live_form_plans;
   std::vector<MaterializationPlanSpec> materialization_plans;
   std::vector<ConsumerBindingPlanSpec> consumer_binding_plans;
+  std::vector<ExactCBVirtualValueSpec> exact_cb_virtual_values;
+  std::vector<ExactCBUseEventSpec> exact_cb_use_events;
+  std::vector<ExactCBLiveIntervalSpec> exact_cb_live_intervals;
+  std::vector<ExactCBAllocationSpec> exact_cb_allocations;
+  std::vector<ExactCBReleaseEventSpec> exact_cb_release_events;
   std::vector<std::string> direct_runtime_unsupported_reasons;
 
   // TVM runtime invocation metadata retained during Stage 0.
@@ -1011,6 +1152,21 @@ struct ExecutableSpec {
     }
     if (!consumer_binding_plans.empty()) {
       writer->WriteObjectKeyValue("consumer_binding_plans", consumer_binding_plans);
+    }
+    if (!exact_cb_virtual_values.empty()) {
+      writer->WriteObjectKeyValue("exact_cb_virtual_values", exact_cb_virtual_values);
+    }
+    if (!exact_cb_use_events.empty()) {
+      writer->WriteObjectKeyValue("exact_cb_use_events", exact_cb_use_events);
+    }
+    if (!exact_cb_live_intervals.empty()) {
+      writer->WriteObjectKeyValue("exact_cb_live_intervals", exact_cb_live_intervals);
+    }
+    if (!exact_cb_allocations.empty()) {
+      writer->WriteObjectKeyValue("exact_cb_allocations", exact_cb_allocations);
+    }
+    if (!exact_cb_release_events.empty()) {
+      writer->WriteObjectKeyValue("exact_cb_release_events", exact_cb_release_events);
     }
     if (!direct_runtime_unsupported_reasons.empty()) {
       writer->WriteObjectKeyValue("direct_runtime_unsupported_reasons",

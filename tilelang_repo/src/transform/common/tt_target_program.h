@@ -941,6 +941,148 @@ public:
                                              TTConsumerBindingPlanNode);
 };
 
+class TTExactCBVirtualValueNode : public Object {
+public:
+  ffi::String name;
+  ffi::String logical_value;
+  ffi::String live_form;
+  int64_t live_form_index = -1;
+  ffi::String producer_kernel;
+  ffi::String producer_event;
+  ffi::String event_lifetime_kind;
+  ffi::String loop_role;
+  int64_t num_pages = 0;
+  int64_t page_size_bytes = 0;
+  ffi::String data_format;
+
+  static void RegisterReflection();
+  TVM_FFI_DECLARE_OBJECT_INFO_FINAL("tl.TTExactCBVirtualValue",
+                                    TTExactCBVirtualValueNode, Object);
+};
+
+class TTExactCBVirtualValue : public ObjectRef {
+public:
+  TVM_DLL TTExactCBVirtualValue(
+      ffi::String name, ffi::String logical_value, ffi::String live_form,
+      int64_t live_form_index, ffi::String producer_kernel,
+      ffi::String producer_event, ffi::String event_lifetime_kind,
+      ffi::String loop_role, int64_t num_pages, int64_t page_size_bytes,
+      ffi::String data_format);
+  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(TTExactCBVirtualValue, ObjectRef,
+                                             TTExactCBVirtualValueNode);
+};
+
+class TTExactCBUseEventNode : public Object {
+public:
+  ffi::String name;
+  ffi::String virtual_value;
+  int64_t virtual_value_index = -1;
+  ffi::String consumer_kernel;
+  ffi::String consumer_event;
+  ffi::String operand_role;
+  int64_t program_point = -1;
+  bool requires_full_logical_tile = false;
+  ffi::String borrow_kind;
+
+  static void RegisterReflection();
+  TVM_FFI_DECLARE_OBJECT_INFO_FINAL("tl.TTExactCBUseEvent",
+                                    TTExactCBUseEventNode, Object);
+};
+
+class TTExactCBUseEvent : public ObjectRef {
+public:
+  TVM_DLL TTExactCBUseEvent(
+      ffi::String name, ffi::String virtual_value,
+      int64_t virtual_value_index, ffi::String consumer_kernel,
+      ffi::String consumer_event, ffi::String operand_role,
+      int64_t program_point, bool requires_full_logical_tile,
+      ffi::String borrow_kind);
+  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(TTExactCBUseEvent, ObjectRef,
+                                             TTExactCBUseEventNode);
+};
+
+class TTExactCBLiveIntervalNode : public Object {
+public:
+  ffi::String name;
+  ffi::String virtual_value;
+  int64_t virtual_value_index = -1;
+  int64_t begin_point = -1;
+  int64_t end_point = -1;
+  bool live_in = false;
+  bool live_out = false;
+  bool loop_carried = false;
+  ffi::String interference_class;
+
+  static void RegisterReflection();
+  TVM_FFI_DECLARE_OBJECT_INFO_FINAL("tl.TTExactCBLiveInterval",
+                                    TTExactCBLiveIntervalNode, Object);
+};
+
+class TTExactCBLiveInterval : public ObjectRef {
+public:
+  TVM_DLL TTExactCBLiveInterval(
+      ffi::String name, ffi::String virtual_value,
+      int64_t virtual_value_index, int64_t begin_point, int64_t end_point,
+      bool live_in, bool live_out, bool loop_carried,
+      ffi::String interference_class);
+  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(TTExactCBLiveInterval, ObjectRef,
+                                             TTExactCBLiveIntervalNode);
+};
+
+class TTExactCBAllocationNode : public Object {
+public:
+  ffi::String name;
+  ffi::String virtual_value;
+  int64_t virtual_value_index = -1;
+  ffi::String cb_plan;
+  int64_t cb_plan_index = -1;
+  int64_t physical_cb_id = -1;
+  int64_t page_count = 0;
+  int64_t release_program_point = -1;
+  ffi::String release_reason;
+
+  static void RegisterReflection();
+  TVM_FFI_DECLARE_OBJECT_INFO_FINAL("tl.TTExactCBAllocation",
+                                    TTExactCBAllocationNode, Object);
+};
+
+class TTExactCBAllocation : public ObjectRef {
+public:
+  TVM_DLL TTExactCBAllocation(
+      ffi::String name, ffi::String virtual_value,
+      int64_t virtual_value_index, ffi::String cb_plan,
+      int64_t cb_plan_index, int64_t physical_cb_id, int64_t page_count,
+      int64_t release_program_point, ffi::String release_reason);
+  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(TTExactCBAllocation, ObjectRef,
+                                             TTExactCBAllocationNode);
+};
+
+class TTExactCBReleaseEventNode : public Object {
+public:
+  ffi::String name;
+  ffi::String allocation;
+  int64_t allocation_index = -1;
+  ffi::String cb_plan;
+  int64_t cb_plan_index = -1;
+  int64_t program_point = -1;
+  int64_t page_count = 0;
+  ffi::String reason;
+
+  static void RegisterReflection();
+  TVM_FFI_DECLARE_OBJECT_INFO_FINAL("tl.TTExactCBReleaseEvent",
+                                    TTExactCBReleaseEventNode, Object);
+};
+
+class TTExactCBReleaseEvent : public ObjectRef {
+public:
+  TVM_DLL TTExactCBReleaseEvent(
+      ffi::String name, ffi::String allocation, int64_t allocation_index,
+      ffi::String cb_plan, int64_t cb_plan_index, int64_t program_point,
+      int64_t page_count, ffi::String reason);
+  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(TTExactCBReleaseEvent, ObjectRef,
+                                             TTExactCBReleaseEventNode);
+};
+
 class TTRuntimeArgSpecNode : public Object {
 public:
   ffi::String name;
@@ -1125,6 +1267,11 @@ public:
   ffi::Array<TTLiveFormPlan> live_form_plans;
   ffi::Array<TTMaterializationPlan> materialization_plans;
   ffi::Array<TTConsumerBindingPlan> consumer_binding_plans;
+  ffi::Array<TTExactCBVirtualValue> exact_cb_virtual_values;
+  ffi::Array<TTExactCBUseEvent> exact_cb_use_events;
+  ffi::Array<TTExactCBLiveInterval> exact_cb_live_intervals;
+  ffi::Array<TTExactCBAllocation> exact_cb_allocations;
+  ffi::Array<TTExactCBReleaseEvent> exact_cb_release_events;
   ffi::Array<TTResourceDemand> resource_demands;
   ffi::Array<TTResourcePressureReport> resource_pressure_reports;
 
@@ -1156,6 +1303,11 @@ public:
             ffi::Array<TTLiveFormPlan> live_form_plans,
             ffi::Array<TTMaterializationPlan> materialization_plans,
             ffi::Array<TTConsumerBindingPlan> consumer_binding_plans,
+            ffi::Array<TTExactCBVirtualValue> exact_cb_virtual_values,
+            ffi::Array<TTExactCBUseEvent> exact_cb_use_events,
+            ffi::Array<TTExactCBLiveInterval> exact_cb_live_intervals,
+            ffi::Array<TTExactCBAllocation> exact_cb_allocations,
+            ffi::Array<TTExactCBReleaseEvent> exact_cb_release_events,
             ffi::Array<TTResourceDemand> resource_demands,
             ffi::Array<TTResourcePressureReport> resource_pressure_reports);
   TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(TTProgram, ObjectRef,

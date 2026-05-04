@@ -426,6 +426,11 @@ struct TTProgramSlices {
   Array<TTLiveFormPlan> live_form_plans;
   Array<TTMaterializationPlan> materialization_plans;
   Array<TTConsumerBindingPlan> consumer_binding_plans;
+  Array<TTExactCBVirtualValue> exact_cb_virtual_values;
+  Array<TTExactCBUseEvent> exact_cb_use_events;
+  Array<TTExactCBLiveInterval> exact_cb_live_intervals;
+  Array<TTExactCBAllocation> exact_cb_allocations;
+  Array<TTExactCBReleaseEvent> exact_cb_release_events;
   Array<TTResourceDemand> resource_demands;
   Array<TTResourcePressureReport> resource_pressure_reports;
 };
@@ -456,6 +461,11 @@ TTProgramSlices UnpackTTProgram(const TTProgram &program) {
   slices.live_form_plans = program->live_form_plans;
   slices.materialization_plans = program->materialization_plans;
   slices.consumer_binding_plans = program->consumer_binding_plans;
+  slices.exact_cb_virtual_values = program->exact_cb_virtual_values;
+  slices.exact_cb_use_events = program->exact_cb_use_events;
+  slices.exact_cb_live_intervals = program->exact_cb_live_intervals;
+  slices.exact_cb_allocations = program->exact_cb_allocations;
+  slices.exact_cb_release_events = program->exact_cb_release_events;
   slices.resource_demands = program->resource_demands;
   slices.resource_pressure_reports = program->resource_pressure_reports;
   return slices;
@@ -478,6 +488,11 @@ TTProgram PackTTProgram(TTProgramSlices slices) {
       std::move(slices.dst_layout_plans), std::move(slices.live_form_plans),
       std::move(slices.materialization_plans),
       std::move(slices.consumer_binding_plans),
+      std::move(slices.exact_cb_virtual_values),
+      std::move(slices.exact_cb_use_events),
+      std::move(slices.exact_cb_live_intervals),
+      std::move(slices.exact_cb_allocations),
+      std::move(slices.exact_cb_release_events),
       std::move(slices.resource_demands),
       std::move(slices.resource_pressure_reports));
 }
@@ -2151,6 +2166,64 @@ Array<TTMaterializationPlan> RemapMaterializationCBRequirementIndices(
   return remapped;
 }
 
+std::unordered_map<int64_t, int64_t> BuildCBPlanIndexByRequirementIndex(
+    const Array<TTCBPlan> &cb_plans) {
+  std::unordered_map<int64_t, int64_t> cb_plan_index_by_requirement_index;
+  for (int64_t cb_plan_index = 0;
+       cb_plan_index < static_cast<int64_t>(cb_plans.size()); ++cb_plan_index) {
+    const TTCBPlan &cb_plan = cb_plans[static_cast<size_t>(cb_plan_index)];
+    for (const Integer &index : cb_plan->requirement_indices) {
+      cb_plan_index_by_requirement_index[index->value] = cb_plan_index;
+    }
+  }
+  return cb_plan_index_by_requirement_index;
+}
+
+Array<TTExactCBAllocation> RemapExactCBAllocationRequirementIndices(
+    const Array<TTExactCBAllocation> &allocations,
+    const Array<TTCBPlan> &cb_plans) {
+  const std::unordered_map<int64_t, int64_t> cb_plan_index_by_requirement_index =
+      BuildCBPlanIndexByRequirementIndex(cb_plans);
+  Array<TTExactCBAllocation> remapped;
+  for (const TTExactCBAllocation &allocation : allocations) {
+    const int64_t requirement_index = allocation->cb_plan_index;
+    auto it = cb_plan_index_by_requirement_index.find(requirement_index);
+    const int64_t cb_plan_index =
+        it != cb_plan_index_by_requirement_index.end() ? it->second
+                                                       : requirement_index;
+    ICHECK_GE(cb_plan_index, 0);
+    ICHECK_LT(cb_plan_index, static_cast<int64_t>(cb_plans.size()))
+        << "TTExactCBAllocation requirement index " << requirement_index
+        << " was not assigned a physical TTCBPlan";
+    const TTCBPlan &cb_plan = cb_plans[static_cast<size_t>(cb_plan_index)];
+    remapped.push_back(TTExactCBAllocation(
+        allocation->name, allocation->virtual_value,
+        allocation->virtual_value_index, cb_plan->name, cb_plan_index,
+        cb_plan->cb_id, allocation->page_count,
+        allocation->release_program_point, allocation->release_reason));
+  }
+  return remapped;
+}
+
+Array<TTExactCBReleaseEvent> RemapExactCBReleaseRequirementIndices(
+    const Array<TTExactCBReleaseEvent> &release_events,
+    const Array<TTExactCBAllocation> &allocations) {
+  Array<TTExactCBReleaseEvent> remapped;
+  for (const TTExactCBReleaseEvent &release : release_events) {
+    ICHECK_GE(release->allocation_index, 0);
+    ICHECK_LT(release->allocation_index,
+              static_cast<int64_t>(allocations.size()))
+        << "TTExactCBReleaseEvent allocation_index out of bounds";
+    const TTExactCBAllocation &allocation =
+        allocations[static_cast<size_t>(release->allocation_index)];
+    remapped.push_back(TTExactCBReleaseEvent(
+        release->name, allocation->name, release->allocation_index,
+        allocation->cb_plan, allocation->cb_plan_index,
+        release->program_point, release->page_count, release->reason));
+  }
+  return remapped;
+}
+
 Array<TTExecutionPlan> BuildExecutionPlans(const SpatialPlan &plan,
                                            const Array<TTKernel> &kernels) {
   Array<ffi::String> kernel_names;
@@ -2233,6 +2306,11 @@ tvm::transform::Pass PlanTTCompute() {
       slices.live_form_plans = planner.GetTTLiveFormPlans();
       slices.materialization_plans = planner.GetTTMaterializationPlans();
       slices.consumer_binding_plans = planner.GetTTConsumerBindingPlans();
+      slices.exact_cb_virtual_values = planner.GetTTExactCBVirtualValues();
+      slices.exact_cb_use_events = planner.GetTTExactCBUseEvents();
+      slices.exact_cb_live_intervals = planner.GetTTExactCBLiveIntervals();
+      slices.exact_cb_allocations = planner.GetTTExactCBAllocations();
+      slices.exact_cb_release_events = planner.GetTTExactCBReleaseEvents();
       slices.compute_op_plans = AttachComputeOpKernelPlanIndices(
           planner.GetTTComputeOpPlans(), slices.kernel_plans);
       if (slices.resource_demands.empty()) {
@@ -2267,6 +2345,10 @@ tvm::transform::Pass PlanTTTransport() {
       slices.cb_plans = BuildCBPlans(planner.GetCBConfigs());
       slices.materialization_plans = RemapMaterializationCBRequirementIndices(
           slices.materialization_plans, slices.cb_plans);
+      slices.exact_cb_allocations = RemapExactCBAllocationRequirementIndices(
+          slices.exact_cb_allocations, slices.cb_plans);
+      slices.exact_cb_release_events = RemapExactCBReleaseRequirementIndices(
+          slices.exact_cb_release_events, slices.exact_cb_allocations);
       slices.transport_plans = BuildTransportPlans(spatial_plan);
       if (slices.resource_demands.empty()) {
         slices.resource_demands =

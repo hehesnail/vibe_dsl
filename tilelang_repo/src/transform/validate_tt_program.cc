@@ -1375,6 +1375,232 @@ void ValidateSpatialLiveReferences(const TTProgram &program,
   }
 }
 
+bool HasExactCBSlices(const TTProgram &program) {
+  return !program->exact_cb_virtual_values.empty() ||
+         !program->exact_cb_use_events.empty() ||
+         !program->exact_cb_live_intervals.empty() ||
+         !program->exact_cb_allocations.empty() ||
+         !program->exact_cb_release_events.empty();
+}
+
+void ValidateExactCBLifecycleRecords(
+    const TTProgram &program,
+    const std::unordered_set<std::string> &kernel_names) {
+  if (!HasExactCBSlices(program)) {
+    return;
+  }
+
+  ICHECK(!program->exact_cb_virtual_values.empty())
+      << "TTProgram exact-CB lifecycle requires virtual values";
+
+  std::unordered_map<std::string, int64_t> live_form_index_by_name;
+  for (int64_t index = 0;
+       index < static_cast<int64_t>(program->live_form_plans.size());
+       ++index) {
+    live_form_index_by_name.emplace(str(program->live_form_plans[index]->name),
+                                    index);
+  }
+
+  std::unordered_map<std::string, int64_t> cb_plan_index_by_name;
+  for (int64_t index = 0;
+       index < static_cast<int64_t>(program->cb_plans.size()); ++index) {
+    cb_plan_index_by_name.emplace(str(program->cb_plans[index]->name), index);
+  }
+
+  std::unordered_map<std::string, int64_t> virtual_value_index_by_name;
+  std::unordered_map<int64_t, int64_t> last_use_by_virtual_value_index;
+  for (int64_t index = 0;
+       index < static_cast<int64_t>(program->exact_cb_virtual_values.size());
+       ++index) {
+    const TTExactCBVirtualValue &value =
+        program->exact_cb_virtual_values[index];
+    ICHECK(!value->name.empty()) << "TTExactCBVirtualValue requires name";
+    ICHECK(virtual_value_index_by_name.emplace(str(value->name), index).second)
+        << "duplicate TTExactCBVirtualValue name " << value->name;
+    ICHECK(!value->logical_value.empty())
+        << "TTExactCBVirtualValue requires logical_value";
+    ICHECK(!value->live_form.empty())
+        << "TTExactCBVirtualValue requires live_form";
+    ICHECK_GE(value->live_form_index, 0)
+        << "TTExactCBVirtualValue requires live_form_index";
+    ICHECK_LT(value->live_form_index,
+              static_cast<int64_t>(program->live_form_plans.size()))
+        << "TTExactCBVirtualValue live_form_index out of bounds";
+    const TTLiveFormPlan &live_form =
+        program->live_form_plans[static_cast<size_t>(value->live_form_index)];
+    ICHECK_EQ(value->live_form, live_form->name)
+        << "TTExactCBVirtualValue live_form must match indexed TTLiveFormPlan";
+    ICHECK_EQ(value->logical_value, live_form->logical_value)
+        << "TTExactCBVirtualValue logical_value must match live_form";
+    ICHECK(live_form_index_by_name.count(str(value->live_form)))
+        << "TTExactCBVirtualValue references unknown live_form "
+        << value->live_form;
+    ICHECK(!value->producer_kernel.empty())
+        << "TTExactCBVirtualValue requires producer_kernel";
+    ICHECK(kernel_names.count(str(value->producer_kernel)))
+        << "TTExactCBVirtualValue references unknown producer_kernel "
+        << value->producer_kernel;
+    ICHECK(!value->producer_event.empty())
+        << "TTExactCBVirtualValue requires producer_event";
+    ICHECK(!value->event_lifetime_kind.empty())
+        << "TTExactCBVirtualValue requires event_lifetime_kind";
+    ICHECK(!value->loop_role.empty())
+        << "TTExactCBVirtualValue requires loop_role";
+    ICHECK_GT(value->num_pages, 0)
+        << "TTExactCBVirtualValue requires positive num_pages";
+    ICHECK_GT(value->page_size_bytes, 0)
+        << "TTExactCBVirtualValue requires positive page_size_bytes";
+    ICHECK(!value->data_format.empty())
+        << "TTExactCBVirtualValue requires data_format";
+  }
+
+  auto check_virtual_reference = [&](const ffi::String &name,
+                                     int64_t index,
+                                     const char *context) {
+    ICHECK(!name.empty()) << context << " requires virtual_value";
+    ICHECK_GE(index, 0) << context << " requires virtual_value_index";
+    ICHECK_LT(index,
+              static_cast<int64_t>(program->exact_cb_virtual_values.size()))
+        << context << " virtual_value_index out of bounds";
+    const TTExactCBVirtualValue &value =
+        program->exact_cb_virtual_values[static_cast<size_t>(index)];
+    ICHECK_EQ(name, value->name)
+        << context
+        << " virtual_value must match indexed TTExactCBVirtualValue";
+  };
+
+  for (const TTExactCBUseEvent &event : program->exact_cb_use_events) {
+    ICHECK(!event->name.empty()) << "TTExactCBUseEvent requires name";
+    check_virtual_reference(event->virtual_value, event->virtual_value_index,
+                            "TTExactCBUseEvent");
+    ICHECK(!event->consumer_kernel.empty())
+        << "TTExactCBUseEvent requires consumer_kernel";
+    ICHECK(kernel_names.count(str(event->consumer_kernel)))
+        << "TTExactCBUseEvent references unknown consumer_kernel "
+        << event->consumer_kernel;
+    ICHECK(!event->consumer_event.empty())
+        << "TTExactCBUseEvent requires consumer_event";
+    ICHECK(!event->operand_role.empty())
+        << "TTExactCBUseEvent requires operand_role";
+    ICHECK_GE(event->program_point, 0)
+        << "TTExactCBUseEvent requires program_point";
+    ICHECK(!event->borrow_kind.empty())
+        << "TTExactCBUseEvent requires borrow_kind";
+    int64_t &last_use = last_use_by_virtual_value_index[event->virtual_value_index];
+    last_use = std::max(last_use, event->program_point);
+  }
+
+  for (const TTExactCBLiveInterval &interval :
+       program->exact_cb_live_intervals) {
+    ICHECK(!interval->name.empty()) << "TTExactCBLiveInterval requires name";
+    check_virtual_reference(interval->virtual_value,
+                            interval->virtual_value_index,
+                            "TTExactCBLiveInterval");
+    ICHECK_GE(interval->begin_point, 0)
+        << "TTExactCBLiveInterval requires begin_point";
+    ICHECK_GE(interval->end_point, interval->begin_point)
+        << "TTExactCBLiveInterval requires end_point >= begin_point";
+    ICHECK(!interval->interference_class.empty())
+        << "TTExactCBLiveInterval requires interference_class";
+    auto use_it =
+        last_use_by_virtual_value_index.find(interval->virtual_value_index);
+    if (use_it != last_use_by_virtual_value_index.end()) {
+      ICHECK_GE(interval->end_point, use_it->second)
+          << "TTExactCBLiveInterval end_point must cover last use";
+    }
+  }
+
+  std::unordered_map<std::string, int64_t> allocation_index_by_name;
+  std::unordered_map<int64_t, int64_t> allocation_virtual_value_index;
+  for (int64_t index = 0;
+       index < static_cast<int64_t>(program->exact_cb_allocations.size());
+       ++index) {
+    const TTExactCBAllocation &allocation =
+        program->exact_cb_allocations[index];
+    ICHECK(!allocation->name.empty()) << "TTExactCBAllocation requires name";
+    ICHECK(allocation_index_by_name.emplace(str(allocation->name), index)
+               .second)
+        << "duplicate TTExactCBAllocation name " << allocation->name;
+    check_virtual_reference(allocation->virtual_value,
+                            allocation->virtual_value_index,
+                            "TTExactCBAllocation");
+    ICHECK(!allocation->cb_plan.empty())
+        << "TTExactCBAllocation requires cb_plan";
+    ICHECK_GE(allocation->cb_plan_index, 0)
+        << "TTExactCBAllocation requires cb_plan_index";
+    ICHECK_LT(allocation->cb_plan_index,
+              static_cast<int64_t>(program->cb_plans.size()))
+        << "TTExactCBAllocation cb_plan_index out of bounds";
+    const TTCBPlan &cb =
+        program->cb_plans[static_cast<size_t>(allocation->cb_plan_index)];
+    ICHECK_EQ(allocation->cb_plan, cb->name)
+        << "TTExactCBAllocation cb_plan must match indexed TTCBPlan";
+    ICHECK(cb_plan_index_by_name.count(str(allocation->cb_plan)))
+        << "TTExactCBAllocation references unknown cb_plan "
+        << allocation->cb_plan;
+    ICHECK_EQ(allocation->physical_cb_id, cb->cb_id)
+        << "TTExactCBAllocation physical_cb_id must match TTCBPlan cb_id";
+    ICHECK_GT(allocation->page_count, 0)
+        << "TTExactCBAllocation requires positive page_count";
+    ICHECK_LE(allocation->page_count, cb->num_pages)
+        << "TTExactCBAllocation page_count must fit TTCBPlan num_pages";
+    ICHECK_GE(allocation->release_program_point, 0)
+        << "TTExactCBAllocation requires release_program_point";
+    ICHECK(!allocation->release_reason.empty())
+        << "TTExactCBAllocation requires release_reason";
+    auto use_it =
+        last_use_by_virtual_value_index.find(allocation->virtual_value_index);
+    if (use_it != last_use_by_virtual_value_index.end()) {
+      ICHECK_GE(allocation->release_program_point, use_it->second)
+          << "TTExactCBAllocation must not release before last use";
+    }
+    allocation_virtual_value_index.emplace(index,
+                                           allocation->virtual_value_index);
+  }
+
+  for (const TTExactCBReleaseEvent &event :
+       program->exact_cb_release_events) {
+    ICHECK(!event->name.empty()) << "TTExactCBReleaseEvent requires name";
+    ICHECK(!event->allocation.empty())
+        << "TTExactCBReleaseEvent requires allocation";
+    ICHECK_GE(event->allocation_index, 0)
+        << "TTExactCBReleaseEvent requires allocation_index";
+    ICHECK_LT(event->allocation_index,
+              static_cast<int64_t>(program->exact_cb_allocations.size()))
+        << "TTExactCBReleaseEvent allocation_index out of bounds";
+    const TTExactCBAllocation &allocation =
+        program->exact_cb_allocations[static_cast<size_t>(
+            event->allocation_index)];
+    ICHECK_EQ(event->allocation, allocation->name)
+        << "TTExactCBReleaseEvent allocation must match indexed allocation";
+    ICHECK(!event->cb_plan.empty()) << "TTExactCBReleaseEvent requires cb_plan";
+    ICHECK_GE(event->cb_plan_index, 0)
+        << "TTExactCBReleaseEvent requires cb_plan_index";
+    ICHECK_EQ(event->cb_plan_index, allocation->cb_plan_index)
+        << "TTExactCBReleaseEvent cb_plan_index must match allocation";
+    ICHECK_EQ(event->cb_plan, allocation->cb_plan)
+        << "TTExactCBReleaseEvent cb_plan must match allocation";
+    ICHECK_GE(event->program_point, 0)
+        << "TTExactCBReleaseEvent requires program_point";
+    ICHECK_GT(event->page_count, 0)
+        << "TTExactCBReleaseEvent requires positive page_count";
+    ICHECK_LE(event->page_count, allocation->page_count)
+        << "TTExactCBReleaseEvent page_count must fit allocation";
+    ICHECK(!event->reason.empty()) << "TTExactCBReleaseEvent requires reason";
+    const int64_t virtual_value_index =
+        allocation_virtual_value_index.at(event->allocation_index);
+    auto use_it = last_use_by_virtual_value_index.find(virtual_value_index);
+    if (use_it != last_use_by_virtual_value_index.end()) {
+      ICHECK_GE(event->program_point, use_it->second)
+          << "TTExactCBReleaseEvent must not release before last use";
+    }
+    ICHECK_EQ(event->program_point, allocation->release_program_point)
+        << "TTExactCBReleaseEvent program_point must match allocation release";
+    ICHECK_EQ(event->reason, allocation->release_reason)
+        << "TTExactCBReleaseEvent reason must match allocation";
+  }
+}
+
 void CheckTTProgram(
     const TTProgram &program, const SpatialPlan &spatial_plan,
     const std::optional<TTHardwareModel> &maybe_hardware_model) {
@@ -1671,6 +1897,7 @@ void CheckTTProgram(
   ValidateConsumerBindingPlans(program, live_form_names,
                                static_cast<int64_t>(program->abi_plans.size()));
   ValidateSpatialLiveReferences(program, spatial_plan);
+  ValidateExactCBLifecycleRecords(program, kernel_names);
 
   for (const TTTransportPlan &transport : program->transport_plans) {
     ICHECK(!transport->kind.empty()) << "TTTransportPlan requires kind";

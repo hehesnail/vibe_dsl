@@ -963,6 +963,152 @@ static ConsumerBindingPlanSpec ReadConsumerBindingPlanSpec(dmlc::Stream* stream)
   return spec;
 }
 
+static void WriteExactCBVirtualValueSpec(dmlc::Stream* stream,
+                                         const ExactCBVirtualValueSpec& spec) {
+  WriteString(stream, spec.name);
+  WriteString(stream, spec.logical_value);
+  WriteString(stream, spec.live_form);
+  WriteInt64(stream, spec.live_form_index);
+  WriteString(stream, spec.producer_kernel);
+  WriteString(stream, spec.producer_event);
+  WriteString(stream, spec.event_lifetime_kind);
+  WriteString(stream, spec.loop_role);
+  WriteUInt32(stream, spec.num_pages);
+  WriteUInt32(stream, spec.page_size_bytes);
+  WriteString(stream, spec.data_format);
+}
+
+static ExactCBVirtualValueSpec ReadExactCBVirtualValueSpec(dmlc::Stream* stream) {
+  ExactCBVirtualValueSpec spec;
+  spec.name = ReadString(stream, "exact_cb_virtual_value.name");
+  spec.logical_value = ReadString(stream, "exact_cb_virtual_value.logical_value");
+  spec.live_form = ReadString(stream, "exact_cb_virtual_value.live_form");
+  spec.live_form_index = ReadInt64(stream, "exact_cb_virtual_value.live_form_index");
+  spec.producer_kernel = ReadString(stream, "exact_cb_virtual_value.producer_kernel");
+  spec.producer_event = ReadString(stream, "exact_cb_virtual_value.producer_event");
+  spec.event_lifetime_kind =
+      ReadString(stream, "exact_cb_virtual_value.event_lifetime_kind");
+  spec.loop_role = ReadString(stream, "exact_cb_virtual_value.loop_role");
+  spec.num_pages = ReadUInt32(stream, "exact_cb_virtual_value.num_pages");
+  spec.page_size_bytes =
+      ReadUInt32(stream, "exact_cb_virtual_value.page_size_bytes");
+  spec.data_format = ReadString(stream, "exact_cb_virtual_value.data_format");
+  return spec;
+}
+
+static void WriteExactCBUseEventSpec(dmlc::Stream* stream,
+                                     const ExactCBUseEventSpec& spec) {
+  WriteString(stream, spec.name);
+  WriteString(stream, spec.virtual_value);
+  WriteInt64(stream, spec.virtual_value_index);
+  WriteString(stream, spec.consumer_kernel);
+  WriteString(stream, spec.consumer_event);
+  WriteString(stream, spec.operand_role);
+  WriteInt64(stream, spec.program_point);
+  WriteBool(stream, spec.requires_full_logical_tile);
+  WriteString(stream, spec.borrow_kind);
+}
+
+static ExactCBUseEventSpec ReadExactCBUseEventSpec(dmlc::Stream* stream) {
+  ExactCBUseEventSpec spec;
+  spec.name = ReadString(stream, "exact_cb_use_event.name");
+  spec.virtual_value = ReadString(stream, "exact_cb_use_event.virtual_value");
+  spec.virtual_value_index =
+      ReadInt64(stream, "exact_cb_use_event.virtual_value_index");
+  spec.consumer_kernel = ReadString(stream, "exact_cb_use_event.consumer_kernel");
+  spec.consumer_event = ReadString(stream, "exact_cb_use_event.consumer_event");
+  spec.operand_role = ReadString(stream, "exact_cb_use_event.operand_role");
+  spec.program_point = ReadInt64(stream, "exact_cb_use_event.program_point");
+  spec.requires_full_logical_tile =
+      ReadBool(stream, "exact_cb_use_event.requires_full_logical_tile");
+  spec.borrow_kind = ReadString(stream, "exact_cb_use_event.borrow_kind");
+  return spec;
+}
+
+static void WriteExactCBLiveIntervalSpec(dmlc::Stream* stream,
+                                         const ExactCBLiveIntervalSpec& spec) {
+  WriteString(stream, spec.name);
+  WriteString(stream, spec.virtual_value);
+  WriteInt64(stream, spec.virtual_value_index);
+  WriteInt64(stream, spec.begin_point);
+  WriteInt64(stream, spec.end_point);
+  WriteBool(stream, spec.live_in);
+  WriteBool(stream, spec.live_out);
+  WriteBool(stream, spec.loop_carried);
+  WriteString(stream, spec.interference_class);
+}
+
+static ExactCBLiveIntervalSpec ReadExactCBLiveIntervalSpec(dmlc::Stream* stream) {
+  ExactCBLiveIntervalSpec spec;
+  spec.name = ReadString(stream, "exact_cb_live_interval.name");
+  spec.virtual_value = ReadString(stream, "exact_cb_live_interval.virtual_value");
+  spec.virtual_value_index =
+      ReadInt64(stream, "exact_cb_live_interval.virtual_value_index");
+  spec.begin_point = ReadInt64(stream, "exact_cb_live_interval.begin_point");
+  spec.end_point = ReadInt64(stream, "exact_cb_live_interval.end_point");
+  spec.live_in = ReadBool(stream, "exact_cb_live_interval.live_in");
+  spec.live_out = ReadBool(stream, "exact_cb_live_interval.live_out");
+  spec.loop_carried = ReadBool(stream, "exact_cb_live_interval.loop_carried");
+  spec.interference_class =
+      ReadString(stream, "exact_cb_live_interval.interference_class");
+  return spec;
+}
+
+static void WriteExactCBAllocationSpec(dmlc::Stream* stream,
+                                       const ExactCBAllocationSpec& spec) {
+  WriteString(stream, spec.name);
+  WriteString(stream, spec.virtual_value);
+  WriteInt64(stream, spec.virtual_value_index);
+  WriteString(stream, spec.cb_plan);
+  WriteInt64(stream, spec.cb_plan_index);
+  WriteUInt32(stream, spec.physical_cb_id);
+  WriteUInt32(stream, spec.page_count);
+  WriteInt64(stream, spec.release_program_point);
+  WriteString(stream, spec.release_reason);
+}
+
+static ExactCBAllocationSpec ReadExactCBAllocationSpec(dmlc::Stream* stream) {
+  ExactCBAllocationSpec spec;
+  spec.name = ReadString(stream, "exact_cb_allocation.name");
+  spec.virtual_value = ReadString(stream, "exact_cb_allocation.virtual_value");
+  spec.virtual_value_index =
+      ReadInt64(stream, "exact_cb_allocation.virtual_value_index");
+  spec.cb_plan = ReadString(stream, "exact_cb_allocation.cb_plan");
+  spec.cb_plan_index = ReadInt64(stream, "exact_cb_allocation.cb_plan_index");
+  spec.physical_cb_id = ReadUInt32(stream, "exact_cb_allocation.physical_cb_id");
+  spec.page_count = ReadUInt32(stream, "exact_cb_allocation.page_count");
+  spec.release_program_point =
+      ReadInt64(stream, "exact_cb_allocation.release_program_point");
+  spec.release_reason = ReadString(stream, "exact_cb_allocation.release_reason");
+  return spec;
+}
+
+static void WriteExactCBReleaseEventSpec(dmlc::Stream* stream,
+                                         const ExactCBReleaseEventSpec& spec) {
+  WriteString(stream, spec.name);
+  WriteString(stream, spec.allocation);
+  WriteInt64(stream, spec.allocation_index);
+  WriteString(stream, spec.cb_plan);
+  WriteInt64(stream, spec.cb_plan_index);
+  WriteInt64(stream, spec.program_point);
+  WriteUInt32(stream, spec.page_count);
+  WriteString(stream, spec.reason);
+}
+
+static ExactCBReleaseEventSpec ReadExactCBReleaseEventSpec(dmlc::Stream* stream) {
+  ExactCBReleaseEventSpec spec;
+  spec.name = ReadString(stream, "exact_cb_release_event.name");
+  spec.allocation = ReadString(stream, "exact_cb_release_event.allocation");
+  spec.allocation_index =
+      ReadInt64(stream, "exact_cb_release_event.allocation_index");
+  spec.cb_plan = ReadString(stream, "exact_cb_release_event.cb_plan");
+  spec.cb_plan_index = ReadInt64(stream, "exact_cb_release_event.cb_plan_index");
+  spec.program_point = ReadInt64(stream, "exact_cb_release_event.program_point");
+  spec.page_count = ReadUInt32(stream, "exact_cb_release_event.page_count");
+  spec.reason = ReadString(stream, "exact_cb_release_event.reason");
+  return spec;
+}
+
 static void WriteKernelSpec(dmlc::Stream* stream, const KernelSpec& spec) {
   WriteString(stream, spec.name);
   WriteString(stream, spec.kind);
@@ -1038,6 +1184,16 @@ static void WriteExecutableSpec(dmlc::Stream* stream, const ExecutableSpec& spec
       stream, spec.materialization_plans, WriteMaterializationPlanSpec);
   WriteVectorField<ConsumerBindingPlanSpec>(
       stream, spec.consumer_binding_plans, WriteConsumerBindingPlanSpec);
+  WriteVectorField<ExactCBVirtualValueSpec>(
+      stream, spec.exact_cb_virtual_values, WriteExactCBVirtualValueSpec);
+  WriteVectorField<ExactCBUseEventSpec>(
+      stream, spec.exact_cb_use_events, WriteExactCBUseEventSpec);
+  WriteVectorField<ExactCBLiveIntervalSpec>(
+      stream, spec.exact_cb_live_intervals, WriteExactCBLiveIntervalSpec);
+  WriteVectorField<ExactCBAllocationSpec>(
+      stream, spec.exact_cb_allocations, WriteExactCBAllocationSpec);
+  WriteVectorField<ExactCBReleaseEventSpec>(
+      stream, spec.exact_cb_release_events, WriteExactCBReleaseEventSpec);
   WriteStringVector(stream, spec.direct_runtime_unsupported_reasons);
   WriteStringVector(stream, spec.tvm_arg_names);
   WriteDLDataTypeVector(stream, spec.tvm_arg_types);
@@ -1074,6 +1230,16 @@ static ExecutableSpec ReadExecutableSpec(dmlc::Stream* stream) {
       stream, "executable.materialization_plans", ReadMaterializationPlanSpec);
   spec.consumer_binding_plans = ReadVectorField<ConsumerBindingPlanSpec>(
       stream, "executable.consumer_binding_plans", ReadConsumerBindingPlanSpec);
+  spec.exact_cb_virtual_values = ReadVectorField<ExactCBVirtualValueSpec>(
+      stream, "executable.exact_cb_virtual_values", ReadExactCBVirtualValueSpec);
+  spec.exact_cb_use_events = ReadVectorField<ExactCBUseEventSpec>(
+      stream, "executable.exact_cb_use_events", ReadExactCBUseEventSpec);
+  spec.exact_cb_live_intervals = ReadVectorField<ExactCBLiveIntervalSpec>(
+      stream, "executable.exact_cb_live_intervals", ReadExactCBLiveIntervalSpec);
+  spec.exact_cb_allocations = ReadVectorField<ExactCBAllocationSpec>(
+      stream, "executable.exact_cb_allocations", ReadExactCBAllocationSpec);
+  spec.exact_cb_release_events = ReadVectorField<ExactCBReleaseEventSpec>(
+      stream, "executable.exact_cb_release_events", ReadExactCBReleaseEventSpec);
   spec.direct_runtime_unsupported_reasons = ReadStringVector(
       stream, "executable.direct_runtime_unsupported_reasons");
   spec.tvm_arg_names = ReadStringVector(stream, "executable.tvm_arg_names");

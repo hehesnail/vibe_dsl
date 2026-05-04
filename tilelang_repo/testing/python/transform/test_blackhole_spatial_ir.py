@@ -617,6 +617,11 @@ def _rebuild_tt_program(
     live_form_plans=None,
     materialization_plans=None,
     consumer_binding_plans=None,
+    exact_cb_virtual_values=None,
+    exact_cb_use_events=None,
+    exact_cb_live_intervals=None,
+    exact_cb_allocations=None,
+    exact_cb_release_events=None,
     resource_demands=None,
     resource_pressure_reports=None,
     core_groups=None,
@@ -660,6 +665,21 @@ def _rebuild_tt_program(
         list(program.consumer_binding_plans)
         if consumer_binding_plans is None
         else consumer_binding_plans,
+        list(program.exact_cb_virtual_values)
+        if exact_cb_virtual_values is None
+        else exact_cb_virtual_values,
+        list(program.exact_cb_use_events)
+        if exact_cb_use_events is None
+        else exact_cb_use_events,
+        list(program.exact_cb_live_intervals)
+        if exact_cb_live_intervals is None
+        else exact_cb_live_intervals,
+        list(program.exact_cb_allocations)
+        if exact_cb_allocations is None
+        else exact_cb_allocations,
+        list(program.exact_cb_release_events)
+        if exact_cb_release_events is None
+        else exact_cb_release_events,
         list(program.resource_demands)
         if resource_demands is None
         else resource_demands,
@@ -896,6 +916,82 @@ def _rebuild_tt_consumer_binding_plan(
         str(plan.target_buffer),
         str(plan.materialization_plan),
     )
+
+
+def _make_exact_cb_lifecycle_records(program):
+    make_virtual_value = tvm.get_global_func("tl.TTExactCBVirtualValue")
+    make_use_event = tvm.get_global_func("tl.TTExactCBUseEvent")
+    make_interval = tvm.get_global_func("tl.TTExactCBLiveInterval")
+    make_allocation = tvm.get_global_func("tl.TTExactCBAllocation")
+    make_release = tvm.get_global_func("tl.TTExactCBReleaseEvent")
+    live_form_index, live_form = next(
+        (index, plan)
+        for index, plan in enumerate(program.live_form_plans)
+        if str(plan.physical_form) == "cb_materialized_tile"
+    )
+    cb_plan_index, cb_plan = next(
+        (index, plan)
+        for index, plan in enumerate(program.cb_plans)
+        if str(plan.flow_class) == "state" and int(plan.num_pages) > 0
+    )
+
+    virtual_value = make_virtual_value(
+        f"{live_form.logical_value}.loop_exit.value",
+        str(live_form.logical_value),
+        str(live_form.name),
+        live_form_index,
+        str(live_form.producer_kernel),
+        "loop_exit_value",
+        "loop_carried",
+        "loop_exit",
+        int(cb_plan.num_pages),
+        int(cb_plan.page_size_bytes),
+        str(cb_plan.data_format),
+    )
+    use_event = make_use_event(
+        f"{live_form.logical_value}.final_consume",
+        str(virtual_value.name),
+        0,
+        "compute",
+        "mul_tiles_bcast_cols",
+        "lhs",
+        42,
+        True,
+        "borrow",
+    )
+    interval = make_interval(
+        f"{live_form.logical_value}.loop_exit.interval",
+        str(virtual_value.name),
+        0,
+        17,
+        42,
+        True,
+        True,
+        True,
+        "intermediate_exact_cb",
+    )
+    allocation = make_allocation(
+        f"{live_form.logical_value}.loop_exit.alloc",
+        str(virtual_value.name),
+        0,
+        str(cb_plan.name),
+        cb_plan_index,
+        int(cb_plan.cb_id),
+        1,
+        43,
+        "last_use",
+    )
+    release = make_release(
+        f"{live_form.logical_value}.loop_exit.release",
+        str(allocation.name),
+        0,
+        str(cb_plan.name),
+        cb_plan_index,
+        43,
+        1,
+        "last_use",
+    )
+    return virtual_value, use_event, interval, allocation, release
 
 
 def _rebuild_tt_reshard_plan(
@@ -1623,6 +1719,74 @@ def test_validate_tt_program_consumes_typed_resource_pressure_report():
     )
     with pytest.raises(Exception, match="ResourcePressureReport unsupported"):
         tilelang.transform.ValidateTTProgram()(rejected)
+
+
+def test_validate_tt_program_consumes_exact_cb_lifecycle_records():
+    mod = _prepare_blackhole_tt_program_module(
+        mha_example.flashattn.jit_impl.get_tir(
+            1,
+            4,
+            64,
+            32,
+            False,
+            block_M=32,
+            block_N=32,
+            num_stages=1,
+            threads=128,
+        )
+    )
+    main = mod["main"]
+    tt_program = main.attrs["tl.tt_program"]
+    lifecycle_records = _make_exact_cb_lifecycle_records(tt_program)
+
+    program_with_lifecycle = _rebuild_tt_program(
+        tt_program,
+        exact_cb_virtual_values=[lifecycle_records[0]],
+        exact_cb_use_events=[lifecycle_records[1]],
+        exact_cb_live_intervals=[lifecycle_records[2]],
+        exact_cb_allocations=[lifecycle_records[3]],
+        exact_cb_release_events=[lifecycle_records[4]],
+    )
+    valid = tvm.IRModule(
+        {"main": main.with_attr("tl.tt_program", program_with_lifecycle)},
+        global_infos=mod.global_infos,
+    )
+    tilelang.transform.ValidateTTProgram()(valid)
+    projected = tilelang.transform.MaterializeBlackholeExecutable()(valid)
+    executable = projected["main"].attrs["tl.blackhole_executable"]
+    assert "exact_cb_virtual_values" in executable
+    assert "exact_cb_use_events" in executable
+    assert "exact_cb_live_intervals" in executable
+    assert "exact_cb_allocations" in executable
+    assert "exact_cb_release_events" in executable
+    assert str(executable["exact_cb_release_events"][0]["reason"]) == "last_use"
+
+    broken_release = _make_exact_cb_lifecycle_records(tt_program)[4]
+    make_release = tvm.get_global_func("tl.TTExactCBReleaseEvent")
+    premature_release = make_release(
+        str(broken_release.name),
+        str(broken_release.allocation),
+        int(broken_release.allocation_index),
+        str(broken_release.cb_plan),
+        int(broken_release.cb_plan_index),
+        41,
+        int(broken_release.page_count),
+        str(broken_release.reason),
+    )
+    broken_program = _rebuild_tt_program(
+        tt_program,
+        exact_cb_virtual_values=[lifecycle_records[0]],
+        exact_cb_use_events=[lifecycle_records[1]],
+        exact_cb_live_intervals=[lifecycle_records[2]],
+        exact_cb_allocations=[lifecycle_records[3]],
+        exact_cb_release_events=[premature_release],
+    )
+    broken = tvm.IRModule(
+        {"main": main.with_attr("tl.tt_program", broken_program)},
+        global_infos=mod.global_infos,
+    )
+    with pytest.raises(Exception, match="TTExactCBReleaseEvent.*last use"):
+        tilelang.transform.ValidateTTProgram()(broken)
 
 
 def test_executable_projection_carries_resource_pressure_report():

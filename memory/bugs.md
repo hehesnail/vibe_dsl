@@ -22,6 +22,25 @@
     还是 TileLang target contract 回归，再继续分析
   - 当前已确认 `fp16` unpack 只是其中一个显式 gate，不是唯一约束面
 
+### loop-carried input exact-CB backedge 在 TT-Sim 上需要 typed `pacr count=1` gate
+
+- **现象**:
+  - bf16 flash-attn seq128/256/512 source/spec 已能投出 loop-carried
+    exact-CB virtual value、interval、allocation、release event，但 direct
+    runtime 在当前 TT-Sim 上会进程级 fatal：
+    `UnimplementedFunctionality: tensix_execute_pacr: count=1`
+  - seq64 accumulator-only loop-carried exact-CB state 仍能 direct runtime
+    正确执行，不应被同一个 gate 误伤
+- **当前结论**:
+  - admission gate 应看 typed ExecutableSpec：只有
+    `loop_backedge_transfer` release 对应 input-role physical CB 时才加
+    simulator boundary reason
+  - 不要用 workload 名字、buffer 名字或 Python test skip 来兜底；先证明
+    exact-CB lifecycle/source/spec admission，再由 runtime metadata 暴露 typed
+    simulator reason
+  - 如果后续 TT-Sim 支持该 PACR 形态，删除这个 gate 时要保留 seq64 正例和
+    seq128/256/512 source/spec exact-CB metadata 断言
+
 ### TT-Sim 上的较大 `float16` flash-attn runtime 属于 simulator fp16 boundary
 
 - **现象**:

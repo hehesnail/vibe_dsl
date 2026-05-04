@@ -454,6 +454,27 @@ Required negative gates:
 - full-tile consumer with only slice/local-fragment coverage rejects before
   source/runtime.
 
+2026-05-05 checkpoint status:
+
+- TTProgram and ExecutableSpec now carry exact-CB virtual values, use events,
+  live intervals, allocations, and release events for the covered flash
+  loop-carried surface.
+- The old loop-carried cb/buffer twin maps and completed-state recovery set
+  were removed from active source lowering.  Loop-carried source rendering now
+  uses one `LoopCarriedExactCBState` cursor, and every write to that cursor
+  goes through the lifecycle-record helper.
+- Seq128, seq256, and seq512 bf16 MHA source/spec gates prove the loop-carried
+  exact-CB records for `acc_o` and the matching allocation/release records.
+  Current TT-Sim direct runtime is fail-closed with a typed simulator reason
+  when loop-carried input exact-CB backedge release would hit
+  `tensix_execute_pacr: count=1`.
+- Seq64 remains the positive direct-runtime correctness gate; the simulator
+  gate is intentionally scoped to loop-carried input exact-CB backedge release,
+  so accumulator-only loop state is not rejected.
+- T7.5 is not complete until remaining borrowed exact-input last-use release
+  decisions are also driven by the allocator/release surface instead of local
+  source helper decisions.
+
 ## Completion Criteria
 
 This design is implemented only when:

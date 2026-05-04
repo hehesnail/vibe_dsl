@@ -189,6 +189,12 @@
   use.  Old buffer-identity live-form maps may be private cursors while
   rendering a validated plan, but they must not remain as active-chain owner
   truth or fallback behavior.
+- For loop-carried exact-CB source rendering, keep the cursor singular and
+  lifecycle-backed.  The old shape with separate `identity -> cb` and
+  `identity -> buffer` maps plus a completed-state set allowed source lowering
+  to rebuild ownership independently.  The current safer shape is one
+  `LoopCarriedExactCBState` cursor whose writes go through the typed lifecycle
+  helper, with completed state stored on that cursor.
 - CB page 需求和 L1 buffer placement 要分开：
   `page_size`
   /

@@ -23,7 +23,7 @@
 | T5 Sharded GEMM / layout variants | Complete | First static external sharded-L1 GEMM layouts pass direct runtime, including single-core, 2x2 multi-core, 110-core many-core all-bf16, and first K-dimension partial-sum correctness path. |
 | T6 `topk` | Complete | Existing-TIR row-wise value/index selection runs through direct runtime for fp32 and bf16 values with exact `int32` indices, without a frontend topk op or selection plan. |
 | T7 Exact-CB / materialization primitives | Complete | Exact-CB materialization is admitted through typed live-form/materialization/consumer-binding records, including GEMM post-merge `pack_tile`, source-live `cb_republish`, and seq64 bf16 flash-attn exact-CB partial-combine direct runtime correctness. |
-| T7.5 Exact-CB liveness / allocation cutover | Design | Exact-CB resident tiles become virtual resources with TTProgram liveness, loop-carried intervals, physical CB allocation, and lifecycle-driven release events; old emitter-map lifecycle paths must be deleted for the covered surface. |
+| T7.5 Exact-CB liveness / allocation cutover | Implementation | Exact-CB resident tiles now project typed TTProgram/ExecutableSpec lifecycle records for the covered flash loop-carried surface; the old loop-carried cb/buffer twin maps and completed-state set are removed from the active source path. |
 | T8 Irregular work domains / indexed access | Queued | TIR-derived segmented, ragged, and indexed addressing evidence; no workload metadata registry. |
 | T9 Workload first paths | Queued | Workload checkpoints decomposed into admitted primitive surfaces with direct-runtime correctness. |
 | T10 Distributed production variants | Queued | Mesh, CCL, NoC/multicast/global scheduling, distributed workload correctness, and production partial-K reduction protocol. |
@@ -126,9 +126,10 @@ Every active implementation task uses this acceptance table.
   `cb_push_back`, and `cb_pop_front`; local source helpers do not decide last
   use or repair loop-carried state with buffer-name maps.
 - Covered old paths are deleted from the active chain:
-  map-based exact-CB owner truth, completed loop-carried state recovery, and
-  local `ReleaseExactInputAfterUse` release decisions cannot remain as
-  fallback behavior.
+  map-based loop-carried exact-CB owner truth and completed loop-carried state
+  recovery are removed.  Remaining non-loop borrowed exact-input last-use
+  release decisions still need to be unified behind the allocator/release
+  surface before T7.5 can be marked complete.
 - Flash-attn bf16 direct-runtime gates cover seq64 regression plus seqlen 128,
   256, and 512, or fail only from a typed simulator capability boundary after
   source/spec admission is proven.
@@ -182,6 +183,27 @@ Each checkpoint needs its own direct-runtime correctness proof:
   `M=320`, `N=352`, `K>=512`, `logical_grid=11x10x2` or larger.
 
 ## Recent Verification
+
+2026-05-05 UTC T7.5 exact-CB liveness/allocation checkpoint:
+
+- `cmake --build build -j32` passed.
+- Old loop-carried source fallback symbols were removed from active source:
+  `loop_carried_live_form_cb_by_buffer_identity_`,
+  `loop_carried_live_form_buffer_by_buffer_identity_`, and
+  `completed_loop_carried_buffer_identities_` no longer appear under
+  `tilelang_repo/src/transform`, `tilelang_repo/src/target`, or tests.
+- Structure/runtime selector passed:
+  `testing/python/transform/test_blackhole_spatial_ir.py::test_validate_tt_program_consumes_exact_cb_lifecycle_records`,
+  `testing/python/target/blackhole/test_blackhole_flash_attention_runtime.py::test_blackhole_t7_seq64_mha_bf16_exact_cb_partial_combine_direct_runtime`,
+  `test_blackhole_flash_attention_extended_seq_metadata_carries_loop_carried_exact_cb`,
+  and
+  `test_blackhole_flash_attention_extended_seq_mha_bf16_forward_direct_runtime`
+  reported `5 passed, 3 skipped`.
+- The three skips are the typed simulator boundary for seq128/256/512:
+  loop-carried input exact-CB backedge release is admitted in source/spec, but
+  current TT-Sim reports `tensix_execute_pacr: count=1` for the compute-side
+  pack path.  Seq64 remains a positive direct-runtime correctness gate.
+- `git diff --check` passed.
 
 2026-05-04 UTC T6/T7 completion verification:
 

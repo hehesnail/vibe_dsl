@@ -109,6 +109,24 @@ int64_t StaticIntValueOrDefault(const PrimExpr& expr, int64_t default_value = 0)
   return default_value;
 }
 
+int CeilDivToInt(int64_t value, int64_t divisor) {
+  ICHECK_GT(divisor, 0);
+  ICHECK_GE(value, 0);
+  return static_cast<int>((value + divisor - 1) / divisor);
+}
+
+std::string DataTypeToDataFormatForBlackhole(DataType dtype) {
+  if (dtype.is_bfloat16()) return "Float16_b";
+  if (dtype.is_float16()) return "Float16";
+  if (dtype.is_float() && dtype.bits() == 32) return "Float32";
+  if (dtype.is_float() && dtype.bits() == 8) return "Bfp8";
+  if (dtype.is_uint() && dtype.bits() == 32) return "UInt32";
+  if (dtype.is_uint() && dtype.bits() == 16) return "UInt16";
+  if (dtype.is_int() && dtype.bits() == 32) return "Int32";
+  if (dtype.is_int() && dtype.bits() == 16) return "Int16";
+  return "Float16_b";
+}
+
 int64_t ProductIntegerArrayField(const Map<String, Any>& map, const char* key,
                                  int64_t default_value = 0) {
   auto it = map.find(String(key));
@@ -276,10 +294,11 @@ bool PlanTTKernelABI::MatchDirectFragmentCast(const ForNode* op,
 
 Stmt PlanTTKernelABI::GenerateFragmentCastSequence(const FragmentCastMatch& match,
                                                     bool publish_cb,
-                                                    int current_order_index) {
+                                                    int current_order_index,
+                                                    bool allow_force_publish_from_fact) {
   InvalidateLastFragmentFillValue(match.dst);
   const bool force_publish_from_fact =
-      GetStorageScope(match.dst) == "blackhole.acc" &&
+      allow_force_publish_from_fact && GetStorageScope(match.dst) == "blackhole.acc" &&
       FindBufferMaterializationFact(match.dst) != nullptr;
   const bool publish_result = publish_cb || force_publish_from_fact;
   PrimExpr num_elements_expr = match.num_elements;
@@ -293,27 +312,50 @@ Stmt PlanTTKernelABI::GenerateFragmentCastSequence(const FragmentCastMatch& matc
   const std::string dst_buffer_name = BufferIdentityName(match.dst);
   const Buffer physical_dst = ResolvePhysicalComputeBuffer(match.dst);
   const Buffer physical_src = ResolvePhysicalComputeBuffer(match.src);
+  Buffer publish_buffer;
+  bool publish_to_existing_compute_input = false;
+  int consumed_compute_input_pages = 0;
   if (match.src->dtype != match.dst->dtype) {
     RecordExactComputeOpPlan("unary", "typecast_tile",
                              {{"input", match.src, "identity"},
                               {"output", match.dst, "identity"}});
   }
   if (publish_result) {
-    cb_id = AllocateRequirementIndex(match.dst, CBType::kIntermediate);
+    publish_buffer = match.dst;
+    for (const std::string& buffer_identity : CollectBufferFlowIdentities(match.dst)) {
+      auto consumed_it = cb_consumed_compute_input_pages_by_buffer_identity_.find(buffer_identity);
+      if (consumed_it != cb_consumed_compute_input_pages_by_buffer_identity_.end()) {
+        consumed_compute_input_pages =
+            std::max(consumed_compute_input_pages, consumed_it->second);
+      }
+      auto existing_req_it = buffer_identity_to_req_index_.find(buffer_identity);
+      if (existing_req_it != buffer_identity_to_req_index_.end() &&
+          existing_req_it->second >= 0 &&
+          existing_req_it->second < static_cast<int>(cb_requirements_.size())) {
+        const CBRequirement& existing_req = cb_requirements_.at(existing_req_it->second);
+        if (existing_req.type == CBType::kInput &&
+            (existing_req.consume_pages_per_event > 0 || consumed_compute_input_pages > 0)) {
+          publish_to_existing_compute_input = true;
+          auto buffer_it = buffer_by_identity_.find(buffer_identity);
+          if (buffer_it != buffer_by_identity_.end() && buffer_it->second.defined()) {
+            publish_buffer = buffer_it->second;
+          }
+        }
+      }
+    }
+    if (GetStorageScope(match.dst) == "blackhole.acc" &&
+        !publish_to_existing_compute_input) {
+      publish_buffer = CreateEphemeralBufferLike(match.dst, "cast_publish");
+    }
+    cb_id = AllocateRequirementIndex(publish_buffer, CBType::kIntermediate);
     ICHECK_GE(cb_id, 0);
     ICHECK_LT(cb_id, static_cast<int>(cb_requirements_.size()));
     num_pages = std::max(
         1, cb_requirements_[cb_id].publish_pages_per_event > 0
                ? cb_requirements_[cb_id].publish_pages_per_event
                : cb_requirements_[cb_id].num_pages);
-    int consumed_compute_input_pages = 0;
-    for (const std::string& buffer_identity : CollectBufferFlowIdentities(match.dst)) {
-      auto it = cb_consumed_compute_input_pages_by_buffer_identity_.find(buffer_identity);
-      if (it != cb_consumed_compute_input_pages_by_buffer_identity_.end()) {
-        consumed_compute_input_pages = std::max(consumed_compute_input_pages, it->second);
-      }
-    }
-    if (consumed_compute_input_pages > 0) {
+    if (consumed_compute_input_pages > 0 &&
+        StaticIntValueOrDefault(num_elements_expr, int64_t{0}) <= 0) {
       num_pages = std::max(num_pages, consumed_compute_input_pages);
       auto& req = cb_requirements_[cb_id];
       SetRequirementPageLayout(cb_id, req.page_size,
@@ -415,6 +457,22 @@ Stmt PlanTTKernelABI::GenerateFragmentCastSequence(const FragmentCastMatch& matc
                 : buffer_materialization::kTilizeCastFragmentSlice);
       }
     }
+    const int64_t logical_elements = StaticIntValueOrDefault(num_elements_expr, int64_t{0});
+    if (logical_elements > 0) {
+      constexpr int64_t kTileElements = 32 * 32;
+      const int logical_pages = CeilDivToInt(logical_elements, kTileElements);
+      num_pages = publish_to_existing_compute_input
+                      ? std::max(logical_pages, consumed_compute_input_pages)
+                      : logical_pages;
+      const DataType publish_dtype =
+          publish_buffer.defined() ? publish_buffer->dtype : match.dst->dtype;
+      auto& req = cb_requirements_[cb_id];
+      SetRequirementPageLayout(cb_id, 32 * 32 * publish_dtype.bytes(),
+                               std::max(req.num_pages, num_pages));
+      req.publish_pages_per_event = std::max(req.publish_pages_per_event, num_pages);
+      req.consume_pages_per_event = std::max(req.consume_pages_per_event, num_pages);
+      req.data_format = DataTypeToDataFormatForBlackhole(publish_dtype);
+    }
   }
   if (use_tiled_republish_materialization) {
     ExactTiledCBValue live_source;
@@ -481,16 +539,9 @@ Stmt PlanTTKernelABI::GenerateFragmentCastSequence(const FragmentCastMatch& matc
                                           {IntImm32(0), IntImm32(cb_id), IntImm32(tile)}));
         stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_release(), {}));
       }
-      if (current_order_index >= 0) {
-        const FutureBufferUses future_uses =
-            ClassifyFutureLiveCBReadsBeforeNextWrite(match.src, current_order_index);
-        if (!future_uses.has_compute_consume && !future_uses.has_transport_consume &&
-            !future_uses.has_reference) {
-          stmts.push_back(MakeBlackholeCall(blackhole_cb_pop_front(),
-                                            {IntImm32(live_source.cb_id),
-                                             IntImm32(live_source.num_tiles)}));
-          ClearTiledCBLiveFormAliases(match.src);
-        }
+      if (Stmt release = ReleaseExactInputAfterUse(live_source, current_order_index);
+          release.defined()) {
+        stmts.push_back(release);
       }
       stmts.push_back(MakeBlackholeCall(tir::builtin::blackhole_cb_push_back(),
                                         {IntImm32(cb_id), IntImm32(num_pages)}));
@@ -516,6 +567,16 @@ Stmt PlanTTKernelABI::GenerateFragmentCastSequence(const FragmentCastMatch& matc
                              match.dst_offset, match.src_offset, num_elements_expr,
                              tiled_republish_row_width}));
     }
+    RecordTiledCBLiveFormAliases(match.dst, cb_id);
+  } else if (publish_result) {
+    stmts.push_back(MakeBlackholeCall(blackhole_cb_reserve_back(),
+                                      {IntImm32(cb_id), IntImm32(num_pages)}));
+    stmts.push_back(MakeBlackholeCall(tir::builtin::blackhole_cast_fragment_slice(),
+                                      {physical_dst->data, physical_src->data, match.dst_offset,
+                                       match.src_offset, num_elements_expr}));
+    stmts.push_back(MakeBlackholeCall(tir::builtin::blackhole_tilize_local_fragment_slice(),
+                                      {physical_dst->data, IntImm32(cb_id), match.dst_offset,
+                                       num_elements_expr, match.row_width, match.dst_offset}));
     RecordTiledCBLiveFormAliases(match.dst, cb_id);
   } else {
     stmts.push_back(MakeBlackholeCall(tir::builtin::blackhole_cast_fragment_slice(),

@@ -238,6 +238,7 @@ class CodeGenBlackhole : public CodeGenCHost {
   void PrintResolvedCBId(const tvm::PrimExpr &expr, std::ostream &os) const;
   int GetCBPageSize(int cb_id) const;
   int GetCBNumPages(int cb_id) const;
+  std::string GetCBDataFormat(int cb_id) const;
   std::string GetCBHeadVar(int cb_id) const;
   std::string GetCBTailVar(int cb_id) const;
  void RegisterActiveCBWritePtrBinding(int cb_id, const std::string& var_name,
@@ -293,6 +294,7 @@ class CodeGenBlackhole : public CodeGenCHost {
   std::vector<PerWorkArgSpecBinding> per_work_arg_bindings_;
   std::unordered_map<int, int> cb_page_size_by_id_;
   std::unordered_map<int, int> cb_num_pages_by_id_;
+  std::unordered_map<int, std::string> cb_data_format_by_id_;
   std::unordered_map<std::string, int> cb_id_by_requirement_name_;
   std::unordered_map<std::string, int> cb_num_pages_by_requirement_name_;
   std::unordered_map<std::string, int> cb_publish_pages_by_requirement_name_;

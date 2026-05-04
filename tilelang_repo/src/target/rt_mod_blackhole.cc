@@ -1533,6 +1533,203 @@ static std::vector<ConsumerBindingPlanSpec> ExtractConsumerBindingPlans(const ti
   return plans;
 }
 
+static std::vector<ExactCBVirtualValueSpec> ExtractExactCBVirtualValues(
+    const tir::PrimFunc& f) {
+  std::vector<ExactCBVirtualValueSpec> values;
+  auto items = tl::tt_program_projection::GetExecutableArrayField(
+      f, "Blackhole executable spec extraction",
+      tl::tt_program_projection::executable_key::kExactCBVirtualValues);
+  for (const auto& item_any : items) {
+    auto item = RequireMap(item_any, "Blackhole executable exact_cb_virtual_values item");
+    ExactCBVirtualValueSpec value;
+    if (auto field = item.Get("name")) value.name = Downcast<String>(field.value());
+    if (auto field = item.Get("logical_value")) {
+      value.logical_value = Downcast<String>(field.value());
+    }
+    if (auto field = item.Get("live_form")) value.live_form = Downcast<String>(field.value());
+    if (auto field = item.Get("live_form_index")) {
+      value.live_form_index = Downcast<Integer>(field.value())->value;
+    }
+    if (auto field = item.Get("producer_kernel")) {
+      value.producer_kernel = Downcast<String>(field.value());
+    }
+    if (auto field = item.Get("producer_event")) {
+      value.producer_event = Downcast<String>(field.value());
+    }
+    if (auto field = item.Get("event_lifetime_kind")) {
+      value.event_lifetime_kind = Downcast<String>(field.value());
+    }
+    if (auto field = item.Get("loop_role")) value.loop_role = Downcast<String>(field.value());
+    if (auto field = item.Get("num_pages")) {
+      value.num_pages = static_cast<uint32_t>(Downcast<Integer>(field.value())->value);
+    }
+    if (auto field = item.Get("page_size_bytes")) {
+      value.page_size_bytes =
+          static_cast<uint32_t>(Downcast<Integer>(field.value())->value);
+    }
+    if (auto field = item.Get("data_format")) {
+      value.data_format = Downcast<String>(field.value());
+    }
+    if (!value.name.empty()) {
+      values.push_back(std::move(value));
+    }
+  }
+  return values;
+}
+
+static std::vector<ExactCBUseEventSpec> ExtractExactCBUseEvents(
+    const tir::PrimFunc& f) {
+  std::vector<ExactCBUseEventSpec> events;
+  auto items = tl::tt_program_projection::GetExecutableArrayField(
+      f, "Blackhole executable spec extraction",
+      tl::tt_program_projection::executable_key::kExactCBUseEvents);
+  for (const auto& item_any : items) {
+    auto item = RequireMap(item_any, "Blackhole executable exact_cb_use_events item");
+    ExactCBUseEventSpec event;
+    if (auto field = item.Get("name")) event.name = Downcast<String>(field.value());
+    if (auto field = item.Get("virtual_value")) {
+      event.virtual_value = Downcast<String>(field.value());
+    }
+    if (auto field = item.Get("virtual_value_index")) {
+      event.virtual_value_index = Downcast<Integer>(field.value())->value;
+    }
+    if (auto field = item.Get("consumer_kernel")) {
+      event.consumer_kernel = Downcast<String>(field.value());
+    }
+    if (auto field = item.Get("consumer_event")) {
+      event.consumer_event = Downcast<String>(field.value());
+    }
+    if (auto field = item.Get("operand_role")) {
+      event.operand_role = Downcast<String>(field.value());
+    }
+    if (auto field = item.Get("program_point")) {
+      event.program_point = Downcast<Integer>(field.value())->value;
+    }
+    if (auto field = item.Get("requires_full_logical_tile")) {
+      event.requires_full_logical_tile = Downcast<Bool>(field.value());
+    }
+    if (auto field = item.Get("borrow_kind")) {
+      event.borrow_kind = Downcast<String>(field.value());
+    }
+    if (!event.name.empty()) {
+      events.push_back(std::move(event));
+    }
+  }
+  return events;
+}
+
+static std::vector<ExactCBLiveIntervalSpec> ExtractExactCBLiveIntervals(
+    const tir::PrimFunc& f) {
+  std::vector<ExactCBLiveIntervalSpec> intervals;
+  auto items = tl::tt_program_projection::GetExecutableArrayField(
+      f, "Blackhole executable spec extraction",
+      tl::tt_program_projection::executable_key::kExactCBLiveIntervals);
+  for (const auto& item_any : items) {
+    auto item = RequireMap(item_any, "Blackhole executable exact_cb_live_intervals item");
+    ExactCBLiveIntervalSpec interval;
+    if (auto field = item.Get("name")) interval.name = Downcast<String>(field.value());
+    if (auto field = item.Get("virtual_value")) {
+      interval.virtual_value = Downcast<String>(field.value());
+    }
+    if (auto field = item.Get("virtual_value_index")) {
+      interval.virtual_value_index = Downcast<Integer>(field.value())->value;
+    }
+    if (auto field = item.Get("begin_point")) {
+      interval.begin_point = Downcast<Integer>(field.value())->value;
+    }
+    if (auto field = item.Get("end_point")) {
+      interval.end_point = Downcast<Integer>(field.value())->value;
+    }
+    if (auto field = item.Get("live_in")) interval.live_in = Downcast<Bool>(field.value());
+    if (auto field = item.Get("live_out")) interval.live_out = Downcast<Bool>(field.value());
+    if (auto field = item.Get("loop_carried")) {
+      interval.loop_carried = Downcast<Bool>(field.value());
+    }
+    if (auto field = item.Get("interference_class")) {
+      interval.interference_class = Downcast<String>(field.value());
+    }
+    if (!interval.name.empty()) {
+      intervals.push_back(std::move(interval));
+    }
+  }
+  return intervals;
+}
+
+static std::vector<ExactCBAllocationSpec> ExtractExactCBAllocations(
+    const tir::PrimFunc& f) {
+  std::vector<ExactCBAllocationSpec> allocations;
+  auto items = tl::tt_program_projection::GetExecutableArrayField(
+      f, "Blackhole executable spec extraction",
+      tl::tt_program_projection::executable_key::kExactCBAllocations);
+  for (const auto& item_any : items) {
+    auto item = RequireMap(item_any, "Blackhole executable exact_cb_allocations item");
+    ExactCBAllocationSpec allocation;
+    if (auto field = item.Get("name")) allocation.name = Downcast<String>(field.value());
+    if (auto field = item.Get("virtual_value")) {
+      allocation.virtual_value = Downcast<String>(field.value());
+    }
+    if (auto field = item.Get("virtual_value_index")) {
+      allocation.virtual_value_index = Downcast<Integer>(field.value())->value;
+    }
+    if (auto field = item.Get("cb_plan")) allocation.cb_plan = Downcast<String>(field.value());
+    if (auto field = item.Get("cb_plan_index")) {
+      allocation.cb_plan_index = Downcast<Integer>(field.value())->value;
+    }
+    if (auto field = item.Get("physical_cb_id")) {
+      allocation.physical_cb_id =
+          static_cast<uint32_t>(Downcast<Integer>(field.value())->value);
+    }
+    if (auto field = item.Get("page_count")) {
+      allocation.page_count =
+          static_cast<uint32_t>(Downcast<Integer>(field.value())->value);
+    }
+    if (auto field = item.Get("release_program_point")) {
+      allocation.release_program_point = Downcast<Integer>(field.value())->value;
+    }
+    if (auto field = item.Get("release_reason")) {
+      allocation.release_reason = Downcast<String>(field.value());
+    }
+    if (!allocation.name.empty()) {
+      allocations.push_back(std::move(allocation));
+    }
+  }
+  return allocations;
+}
+
+static std::vector<ExactCBReleaseEventSpec> ExtractExactCBReleaseEvents(
+    const tir::PrimFunc& f) {
+  std::vector<ExactCBReleaseEventSpec> events;
+  auto items = tl::tt_program_projection::GetExecutableArrayField(
+      f, "Blackhole executable spec extraction",
+      tl::tt_program_projection::executable_key::kExactCBReleaseEvents);
+  for (const auto& item_any : items) {
+    auto item = RequireMap(item_any, "Blackhole executable exact_cb_release_events item");
+    ExactCBReleaseEventSpec event;
+    if (auto field = item.Get("name")) event.name = Downcast<String>(field.value());
+    if (auto field = item.Get("allocation")) {
+      event.allocation = Downcast<String>(field.value());
+    }
+    if (auto field = item.Get("allocation_index")) {
+      event.allocation_index = Downcast<Integer>(field.value())->value;
+    }
+    if (auto field = item.Get("cb_plan")) event.cb_plan = Downcast<String>(field.value());
+    if (auto field = item.Get("cb_plan_index")) {
+      event.cb_plan_index = Downcast<Integer>(field.value())->value;
+    }
+    if (auto field = item.Get("program_point")) {
+      event.program_point = Downcast<Integer>(field.value())->value;
+    }
+    if (auto field = item.Get("page_count")) {
+      event.page_count = static_cast<uint32_t>(Downcast<Integer>(field.value())->value);
+    }
+    if (auto field = item.Get("reason")) event.reason = Downcast<String>(field.value());
+    if (!event.name.empty()) {
+      events.push_back(std::move(event));
+    }
+  }
+  return events;
+}
+
 static std::vector<PerWorkArgSpec> ExtractPerWorkArgSpecs(const tir::PrimFunc& f) {
   auto segment_plan = RequireExecutableArrayField(
       f, "Blackhole executable spec extraction",
@@ -1830,6 +2027,11 @@ static ExecutableSpec ExtractExecutableSpecFromDeviceFunc(const tir::PrimFunc& f
   spec.live_form_plans = ExtractLiveFormPlans(f);
   spec.materialization_plans = ExtractMaterializationPlans(f);
   spec.consumer_binding_plans = ExtractConsumerBindingPlans(f);
+  spec.exact_cb_virtual_values = ExtractExactCBVirtualValues(f);
+  spec.exact_cb_use_events = ExtractExactCBUseEvents(f);
+  spec.exact_cb_live_intervals = ExtractExactCBLiveIntervals(f);
+  spec.exact_cb_allocations = ExtractExactCBAllocations(f);
+  spec.exact_cb_release_events = ExtractExactCBReleaseEvents(f);
   spec.direct_runtime_unsupported_reasons = ExtractDirectRuntimeUnsupportedReasons(f);
   ExtractSegmentPlan(f, &spec);
   return spec;
@@ -3048,6 +3250,45 @@ static void EnforceStandalonePacrLeafSimulatorGate(ExecutableSpec* spec) {
   }
 }
 
+static bool HasLoopCarriedInputExactCBBackedgeRelease(const ExecutableSpec& spec) {
+  std::unordered_map<std::string, const ExactCBAllocationSpec*> allocation_by_name;
+  for (const ExactCBAllocationSpec& allocation : spec.exact_cb_allocations) {
+    allocation_by_name.emplace(allocation.name, &allocation);
+  }
+  std::unordered_map<uint32_t, const CBConfig*> cb_config_by_id;
+  for (const CBConfig& cb : spec.cb_configs) {
+    cb_config_by_id.emplace(cb.cb_id, &cb);
+  }
+  for (const ExactCBReleaseEventSpec& event : spec.exact_cb_release_events) {
+    if (event.reason != "loop_backedge_transfer") {
+      continue;
+    }
+    auto allocation_it = allocation_by_name.find(event.allocation);
+    if (allocation_it == allocation_by_name.end()) {
+      continue;
+    }
+    auto cb_it = cb_config_by_id.find(allocation_it->second->physical_cb_id);
+    if (cb_it == cb_config_by_id.end()) {
+      continue;
+    }
+    if (cb_it->second->role == "input") {
+      return true;
+    }
+  }
+  return false;
+}
+
+static void EnforceLoopCarriedExactCBPacrSimulatorGate(ExecutableSpec* spec) {
+  ICHECK(spec != nullptr);
+  if (!HasLoopCarriedInputExactCBBackedgeRelease(*spec)) {
+    return;
+  }
+  AppendDirectRuntimeUnsupportedReason(
+      spec,
+      "loop-carried exact-CB backedge direct runtime is gated: TT-Sim reports "
+      "tensix_execute_pacr: count=1 for the admitted compute-side pack path");
+}
+
 static const BufferDistributionSpec* FindBufferDistributionSpec(
     const ExecutableSpec& spec, const std::string& buffer_name) {
   auto it = std::find_if(
@@ -3707,6 +3948,7 @@ ffi::Module BuildTileLangBlackhole(IRModule mod, Target target) {
     EnforceExactLiveFormMultiPageRepublishGate(&spec_it->second);
     EnforceExplicitBufferRoleSchemaGate(&spec_it->second);
     EnforceStandalonePacrLeafSimulatorGate(&spec_it->second);
+    EnforceLoopCarriedExactCBPacrSimulatorGate(&spec_it->second);
   }
   for (const auto& kv : host_to_device) {
     auto host_it = func_info_map.find(kv.first);
@@ -3722,6 +3964,16 @@ ffi::Module BuildTileLangBlackhole(IRModule mod, Target target) {
       host_it->second.live_form_plans = device_it->second.live_form_plans;
       host_it->second.materialization_plans = device_it->second.materialization_plans;
       host_it->second.consumer_binding_plans = device_it->second.consumer_binding_plans;
+      host_it->second.exact_cb_virtual_values =
+          device_it->second.exact_cb_virtual_values;
+      host_it->second.exact_cb_use_events =
+          device_it->second.exact_cb_use_events;
+      host_it->second.exact_cb_live_intervals =
+          device_it->second.exact_cb_live_intervals;
+      host_it->second.exact_cb_allocations =
+          device_it->second.exact_cb_allocations;
+      host_it->second.exact_cb_release_events =
+          device_it->second.exact_cb_release_events;
       host_it->second.per_work_arg_specs = device_it->second.per_work_arg_specs;
       host_it->second.direct_runtime_unsupported_reasons =
           device_it->second.direct_runtime_unsupported_reasons;
@@ -3810,6 +4062,7 @@ ffi::Module BuildTileLangBlackholeWithoutHost(IRModule mod, Target target) {
     EnforceExactLiveFormMultiPageRepublishGate(&spec_it->second);
     EnforceExplicitBufferRoleSchemaGate(&spec_it->second);
     EnforceStandalonePacrLeafSimulatorGate(&spec_it->second);
+    EnforceLoopCarriedExactCBPacrSimulatorGate(&spec_it->second);
   }
   for (const auto& kv : host_to_device) {
     auto host_it = func_info_map.find(kv.first);
@@ -3825,6 +4078,16 @@ ffi::Module BuildTileLangBlackholeWithoutHost(IRModule mod, Target target) {
       host_it->second.live_form_plans = device_it->second.live_form_plans;
       host_it->second.materialization_plans = device_it->second.materialization_plans;
       host_it->second.consumer_binding_plans = device_it->second.consumer_binding_plans;
+      host_it->second.exact_cb_virtual_values =
+          device_it->second.exact_cb_virtual_values;
+      host_it->second.exact_cb_use_events =
+          device_it->second.exact_cb_use_events;
+      host_it->second.exact_cb_live_intervals =
+          device_it->second.exact_cb_live_intervals;
+      host_it->second.exact_cb_allocations =
+          device_it->second.exact_cb_allocations;
+      host_it->second.exact_cb_release_events =
+          device_it->second.exact_cb_release_events;
       host_it->second.per_work_arg_specs = device_it->second.per_work_arg_specs;
       host_it->second.direct_runtime_unsupported_reasons =
           device_it->second.direct_runtime_unsupported_reasons;

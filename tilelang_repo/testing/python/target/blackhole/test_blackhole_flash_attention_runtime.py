@@ -24,6 +24,10 @@ BLACKHOLE_FLASH_ATTENTION_DTYPE_EXPR = "T.bfloat16"
 BLACKHOLE_FLASH_ATTENTION_TORCH_DTYPE = torch.bfloat16
 MULTI_PAGE_EXACT_CB_REPUBLISH_REASON = "multi-page exact CB-republish live-form"
 MULTI_BLOCK_EXACT_CB_REPUBLISH_REASON = "multi-block exact CB-republish"
+LOOP_CARRIED_EXACT_CB_PACR_REASON = (
+    "loop-carried exact-CB backedge direct runtime is gated: TT-Sim reports "
+    "tensix_execute_pacr: count=1 for the admitted compute-side pack path"
+)
 
 
 def _load_flash_attention_module_with_dtype(module_path, dtype_expr=BLACKHOLE_FLASH_ATTENTION_DTYPE_EXPR):
@@ -791,6 +795,100 @@ def test_blackhole_t7_seq64_mha_bf16_exact_cb_partial_combine_direct_runtime():
         rtol=5e-2,
         failure_message=(
             "Blackhole T7 seq64 MHA bf16 exact-CB partial-combine direct runtime mismatch"
+        ),
+    )
+
+
+@pytest.mark.parametrize("seq_len", [128, 256, 512])
+def test_blackhole_flash_attention_extended_seq_metadata_carries_loop_carried_exact_cb(seq_len):
+    kernel = blackhole_mha_example.flashattn.jit_impl.get_tir(
+        1,
+        4,
+        seq_len,
+        32,
+        False,
+        block_M=32,
+        block_N=32,
+        num_stages=1,
+        threads=128,
+    )
+    _, metadata = _lower_blackhole_flash_attention_metadata(kernel)
+
+    reasons = [str(reason) for reason in metadata.get("direct_runtime_unsupported_reasons", [])]
+    assert reasons == [LOOP_CARRIED_EXACT_CB_PACR_REASON]
+
+    virtual_values = list(metadata.get("exact_cb_virtual_values", []))
+    intervals = list(metadata.get("exact_cb_live_intervals", []))
+    allocations = list(metadata.get("exact_cb_allocations", []))
+    releases = list(metadata.get("exact_cb_release_events", []))
+
+    acc_o_values = [
+        value
+        for value in virtual_values
+        if str(value["logical_value"]) == "acc_o"
+        and str(value["event_lifetime_kind"]) == "loop_carried"
+    ]
+    assert acc_o_values
+    acc_o_names = {str(value["name"]) for value in acc_o_values}
+
+    assert any(
+        str(interval["virtual_value"]) in acc_o_names
+        and bool(interval["loop_carried"])
+        and bool(interval["live_in"])
+        and bool(interval["live_out"])
+        for interval in intervals
+    )
+    assert any(str(allocation["virtual_value"]) in acc_o_names for allocation in allocations)
+    assert any(
+        str(release["allocation"]) == str(allocation["name"])
+        for allocation in allocations
+        if str(allocation["virtual_value"]) in acc_o_names
+        for release in releases
+    )
+
+
+@pytest.mark.parametrize("seq_len", [128, 256, 512])
+def test_blackhole_flash_attention_extended_seq_mha_bf16_forward_direct_runtime(seq_len):
+    can_run, msg = check_blackhole_direct_execution_requirements()
+    if not can_run:
+        pytest.skip(f"Blackhole requirements not met: {msg}")
+
+    batch = 1
+    heads = 4
+    dim = 32
+    is_causal = False
+    block_M = 32
+    block_N = 32
+    num_stages = 1
+    threads = 128
+
+    torch.manual_seed(0)
+    q = torch.randn(batch, seq_len, heads, dim, dtype=BLACKHOLE_FLASH_ATTENTION_TORCH_DTYPE)
+    k = torch.randn(batch, seq_len, heads, dim, dtype=BLACKHOLE_FLASH_ATTENTION_TORCH_DTYPE)
+    v = torch.randn(batch, seq_len, heads, dim, dtype=BLACKHOLE_FLASH_ATTENTION_TORCH_DTYPE)
+    out = torch.zeros_like(q)
+
+    kernel = blackhole_mha_example.flashattn.jit_impl.get_tir(
+        batch,
+        heads,
+        seq_len,
+        dim,
+        is_causal,
+        block_M=block_M,
+        block_N=block_N,
+        num_stages=num_stages,
+        threads=threads,
+    )
+    _run_blackhole_flash_attention(kernel, q, k, v, out)
+
+    ref = blackhole_mha_example.ref_program(q, k, v, is_causal=is_causal).to(dtype=out.dtype)
+    assert_tensors_close_or_dump(
+        out,
+        ref,
+        atol=5e-2,
+        rtol=5e-2,
+        failure_message=(
+            f"Blackhole seq{seq_len} MHA bf16 flash-attention forward mismatch"
         ),
     )
 
