@@ -446,7 +446,10 @@ Each workload is a separate first-path checkpoint:
   ids, remote NOC routes, transport choice, accumulation order, and final
   writer timing projected through `TTProgram` / `ExecutableSpec`.  This is the
   acceptance item for replacing the current blocking z-wave reduction with a
-  single-launch or fused-launch semaphore/NoC protocol.
+  single-launch or fused-launch semaphore/NoC protocol.  Completion requires
+  deleting or folding the current runtime-issued partial-K tile-add special
+  path into the typed protocol implementation; no parallel fallback path should
+  remain.
 
 ## Support Boundary
 

@@ -342,6 +342,9 @@ source/spec/direct-runtime admission or precise typed rejects.
    ownership, partial scratch placement, semaphore ids, remote NOC routes,
    transport choice, accumulation order, and final writer timing are explicit
    `TTProgram` / `ExecutableSpec` records.
+9. After that production protocol is admitted, delete or fold the current
+   runtime-issued partial-K tile-add reduction path into the typed protocol
+   implementation.  It must not remain as a second special-case execution path.
 
 ## Completion Criteria
 

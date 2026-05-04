@@ -2192,6 +2192,8 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   `C` back on device.  Host readback happens only after the device reductions.
   This is a valid direct-runtime correctness barrier, but it should not be
   documented as a production single-launch semaphore/atomic reduce protocol.
+  Once the typed production reducer protocol exists, remove or fold this
+  runtime-issued tile-add path into that protocol; do not keep both paths.
   Codegen for writer kernels must understand `logical_block_xy_linear` as
   both `blockIdx.x = xy % grid_x` and `blockIdx.y = (xy / grid_x) % grid_y`;
   otherwise partial-K writers can silently write every partial to tile 0 even

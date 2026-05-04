@@ -180,6 +180,10 @@ That follow-up must add typed `TTProgram` / `ExecutableSpec` records for:
 
 Only after those records are projected and validated may K-sharded GEMM claim a
 single-launch or fused-launch semaphore/NoC partial-reduce implementation.
+When that production protocol lands, the current runtime-issued blocking
+z-wave tile-add reduction path must be deleted or folded into the typed
+protocol implementation.  It must not remain as a parallel special-case
+execution path.
 
 ## Validation
 
