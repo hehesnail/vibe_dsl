@@ -20,7 +20,7 @@
 | T3 Tensor/value sharding and explicit reshard | Complete | `T.MemoryConfig`, placement intents, tensor memory-config plans, op sharding contracts, placement resolution, and first `interleaved_to_sharded` staged-copy conversion are typed and projected. |
 | T4 External accessor / runtime ABI | Complete | External interleaved, 64B page-indexed DRAM, and static sharded-L1 accessors are executable records consumed by source/runtime; unsupported dynamic/common-runtime forms reject from typed records. |
 | T5 Sharded GEMM / layout variants | Complete | First static external sharded-L1 GEMM layouts pass direct runtime, including single-core, 2x2 multi-core, 110-core many-core all-bf16, and first K-dimension partial-sum correctness path. |
-| T6 `topk` | Runtime complete / cleanup required | Existing-TIR row-wise value/index selection runs through direct runtime for fp32 and bf16 values with exact `int32` indices, without a frontend topk op or selection plan. The backend still uses a dedicated row-rank scan emitter; final cleanup is generic typed compute-region/reduction lowering. |
+| T6 `topk` | Runtime complete / cleanup required | Existing-TIR row-wise value/index selection runs through direct runtime for fp32 and bf16 values with exact `int32` indices, without a frontend topk op or selection plan. The backend still uses a limited typed repeated row-reduce scan emitter; final cleanup is generic typed compute-region/reduction lowering. |
 | T7 Exact-CB / materialization primitives | Complete | Exact-CB materialization is admitted through typed live-form/materialization/consumer-binding records, including GEMM post-merge `pack_tile`, source-live `cb_republish`, and seq64 bf16 flash-attn exact-CB partial-combine direct runtime correctness. |
 | T7.5 Exact-CB liveness / allocation cutover | Complete | Covered exact-CB resident tiles use typed TTProgram/ExecutableSpec lifecycle, allocation, and release records; old loop-carried owner maps, materialization-pop fallback, and full-tile/slice ambiguity are fail-closed or deleted from the active path. |
 | T8 Irregular work domains / indexed access | Implementation / cleanup required | Grid-indexed, table-indexed, sparse, ragged, paged, segmented, and T9.1 segmented-A grouped GEMM surfaces execute through direct runtime. Indexed/ragged truth is owned by `AccessRegion` plus typed per-work bindings; public per-work schema no longer carries `index_table_*`, workload-shaped row names, or topk/selection fields. |
@@ -31,12 +31,14 @@
 
 - Runtime/codegen must consume `ExecutableSpec` leaf records; no source-name,
   argument-position, accessor-string, or runtime observation recovery.
-- Architecture audit `2026-05-05`: completed-task status must distinguish
-  runtime coverage from final architecture cleanliness.  T6 still has a
-  dedicated `CodeGenBlackhole::TryEmitRowRankReductionScanKernel` path for
-  value/index row selection.  It is not a frontend `topk` op or selection
-  plan, but it is still a case-shaped backend emitter and must be cleaned up
-  into a generic typed compute-region/reduction lowering.
+- Architecture audit `2026-05-06`: completed-task status must distinguish
+  runtime coverage from final architecture cleanliness.  T6 now routes its
+  value/index selection through
+  `CodeGenBlackhole::TryEmitTypedRowReduceScanKernel`, consuming typed
+  `reduce_tile` compute records and generic segment bodies.  It is not a
+  frontend `topk` op or selection plan, but it is still a limited paired
+  value/index backend emitter and must be cleaned up into generic typed
+  compute-region/reduction lowering.
 - IR-first audit `2026-05-05`: do not add workload-shaped schema such as
   topk/selection/index-table side channels.  Current T8 cleanup moved sparse
   indexed truth back to `SpatialPlan`: same-subject indexed reads keep
@@ -104,11 +106,11 @@ global stores.  No `T.topk`, `tl.blackhole.topk`, `TTSelectionPlan`,
 `selection_plans`, external runner, source-name recovery, or raw compute-side
 host pointer path is part of the contract.
 
-The architecture cleanup is still open: the active code path is a dedicated
-`TryEmitRowRankReductionScanKernel` emitter keyed to value/index row
-selection records and generated output-CB naming.  That historical runtime
-bring-up artifact must move into a generic typed compute-region / reduction
-lowering before T6 is architecturally clean.
+The architecture cleanup is still open: the active code path is a limited
+`TryEmitTypedRowReduceScanKernel` emitter keyed to typed paired
+value/index `reduce_tile` records and generated output-CB records.  That
+historical runtime bring-up artifact must move into a generic typed
+compute-region / reduction lowering before T6 is architecturally clean.
 
 Unsupported axis/layout/generalized value-index variants remain outside the
 admitted T6 subset and must fail closed through typed legality diagnostics.
@@ -313,8 +315,8 @@ Each checkpoint needs its own direct-runtime correctness proof:
   accessor runtime reported `9 passed`.
 - Remaining same-family implementation risks are not public-schema fields but
   still need cleanup: the pass-local bound/base/extent value routing state in
-  `PlanTTKernelABI`, and the dedicated row-rank value/index scan emitter for
-  T6 until generic typed reduce/scan lowering replaces it.
+  `PlanTTKernelABI`, and the limited value/index repeated row-reduce scan
+  emitter for T6 until generic typed reduce/scan lowering replaces it.
 
 2026-05-06 UTC generic per-work binding analysis checkpoint:
 
@@ -340,8 +342,8 @@ Each checkpoint needs its own direct-runtime correctness proof:
   sparse-ragged, ragged-row, two-segment, and paged-valid-row projection; and
   the matching TT-Sim direct-runtime cases reported `15 passed`.
 - Remaining same-family implementation risk after this checkpoint is the T6
-  dedicated row-rank value/index scan emitter until generic typed reduce/scan
-  lowering replaces it.
+  limited value/index repeated row-reduce scan emitter until generic typed
+  reduce/scan lowering replaces it.
 
 2026-05-05 UTC IR-first per-work schema cleanup checkpoint:
 
@@ -362,8 +364,9 @@ Each checkpoint needs its own direct-runtime correctness proof:
   use generic `per_work_value`, `per_work_value_1`, ... identities.  Workload
   or row/page shaped identities are not schema.
 - T6 emitted source symbols and markers no longer expose topk/selection
-  protocol names.  The dedicated row-rank backend scan remains explicit
-  cleanup debt until generic typed compute-region lowering replaces it.
+  protocol names.  The limited value/index repeated row-reduce backend scan
+  remains explicit cleanup debt until generic typed compute-region lowering
+  replaces it.
 - `cmake --build build -j32` passed.
 - Focused structural/projection selector covering schema whitelist,
   value-expression bindings, indexed/ragged/segmented/paged projection,
@@ -389,13 +392,14 @@ Each checkpoint needs its own direct-runtime correctness proof:
   with the Blackhole lowering-support files so these deleted side-channel
   names cannot silently re-enter.
 - Remaining similar-looking code is classified separately: T6 still has the
-  documented dedicated row-rank backend scan emitter; `guard_mask_to_cb`
-  is a generic internal leaf builtin for guard mask materialization, replacing
-  the former row-bound public builtin name; and `bound/base value table
-  buffer` names are pass-local mechanics that must not become public
-  TTProgram / ExecutableSpec schema.  The next schema-risk audit target is
-  consumption-side semantic recovery through `arg_kind` / value-expr buffer
-  materialization inference, not another workload-shaped schema extension.
+  documented limited repeated row-reduce backend scan emitter;
+  `guard_mask_to_cb` is a generic internal leaf builtin for guard mask
+  materialization, replacing the former row-bound public builtin name; and
+  `bound/base value table buffer` names are pass-local mechanics that must
+  not become public TTProgram / ExecutableSpec schema.  The next schema-risk
+  audit target is consumption-side semantic recovery through `arg_kind` /
+  value-expr buffer materialization inference, not another workload-shaped
+  schema extension.
 
 2026-05-05 UTC guard-mask leaf cleanup checkpoint:
 
@@ -516,6 +520,36 @@ Each checkpoint needs its own direct-runtime correctness proof:
   run; baseline GEMM direct runtime timeout is tracked as a runtime
   verification limitation for this checkpoint rather than proof of the
   segment-body change.
+
+2026-05-06 UTC T6 IR-first codegen cleanup checkpoint:
+
+- Audited the user-called-out schema family beyond `page_value_arg_name`:
+  public schema/source guards now cover `topk` / selection surfaces,
+  index-table-shaped fields, row/page-shaped workload fields, and stale
+  compute-shaped value sources.  The active T6 debt is no longer public
+  schema, but the limited typed repeated row-reduce emitter remains cleanup
+  debt until generic compute-region reduction lowering replaces it.
+- Removed the row-rank named codegen surface from T6.  The remaining limited
+  path is `TryEmitTypedRowReduceScanKernel`, consumes typed `reduce_tile`
+  compute records, and emits neutral `__tl_reduce_*` / `kReduceIterations`
+  source names instead of `__tl_rank_*` / `kRankExtent`.
+- Fixed a generic codegen/runtime mismatch exposed by T6: codegen now resolves
+  CB operation operands through `ExecutableSpec.cb_configs[*].requirement_indices`
+  to the physical `cb_id`, and structural tests reject unresolved requirement
+  indices in kernel source.
+- Fixed the enqueue hang exposed by TT-Sim: thread-lane codegen now analyzes
+  use through the current core's emitted body, so loop-invariant publish bodies
+  scalarize without being polluted by compute-local stores that are skipped on
+  data-movement cores.  Source guards assert the reader publishes exactly the
+  input CB page count instead of serializing the same CB event under the
+  `threadIdx.x` lane loop.
+- `cmake --build build -j32` passed.
+- Focused structural selectors reported `4 passed`: T6 source/projection
+  guard, no topk/selection named protocol surface, T8 descriptor fallback
+  guard, and public schema field guard.
+- TT-Sim direct-runtime selectors passed after the fix:
+  T6 bf16 values + int32 indices `1 passed`; T6 fp32 single-work `1 passed`;
+  T6 fp32 multi-work `1 passed`.
 
 2026-05-05 UTC T9.2 paged GQA decode checkpoint:
 

@@ -2626,3 +2626,15 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   guarded-copy behavior is then a property of generic per-work data appearing
   in the expression, while tile-origin scale normalization follows
   `value_usage=buffer_tile_origin`.
+- 2026-05-06 Blackhole CB/codegen identity:
+  Codegen must treat `TTCBPlan.requirement_indices` as aliases for the final
+  physical `cb_id` carried by `ExecutableSpec.cb_configs`; emitting the
+  requirement index into `cb_wait_front`, `get_write_ptr`, or
+  `tilelang_cb_write_ptr_bytes_direct` creates a hidden side channel between
+  pre-allocation IR and leaf source.  Resolve CB operands at emission time
+  through the executable record and guard generated source against unresolved
+  requirement indices.  Thread-lane emission analysis must count only the body
+  that the current core will actually emit; compute-local `blackhole.acc`
+  stores skipped on data-movement cores must not force a loop-invariant CB
+  publish under `threadIdx.x`.  Serializing the same publish overproduces CB
+  pages and can turn into a TT-Sim enqueue hang.

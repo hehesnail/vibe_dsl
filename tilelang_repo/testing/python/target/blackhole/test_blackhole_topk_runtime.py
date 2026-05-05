@@ -1,3 +1,5 @@
+import re
+
 import pytest
 import torch
 
@@ -13,7 +15,7 @@ from .test_blackhole_copy_pipeline import _extract_blackhole_executable_spec
 
 
 VALUE_INDEX_SELECTION_MARKER = (
-    "Existing TIR row-rank reduction lowered as one typed compute scan."
+    "Existing TIR repeated reductions lowered from typed compute records."
 )
 
 
@@ -88,11 +90,55 @@ def _kernel_source(executable_spec, kind):
     )
 
 
+def _assert_kernel_sources_use_physical_cb_ids(executable_spec):
+    physical_cb_ids = {int(cb["cb_id"]) for cb in executable_spec["cb_configs"]}
+    unresolved_requirement_indices = {
+        int(requirement_index)
+        for cb in executable_spec["cb_configs"]
+        for requirement_index in cb.get("requirement_indices", [])
+        if int(requirement_index) != int(cb["cb_id"])
+    }
+    assert unresolved_requirement_indices
+
+    cb_id_uses = set()
+    cb_api_patterns = [
+        r"\bcb_(?:reserve_back|push_back|wait_front|pop_front)\((\d+)\s*,",
+        r"\bget_(?:read|write)_ptr\((\d+)\)",
+        r"\bCircularBuffer\s+[A-Za-z_][A-Za-z0-9_]*\((\d+)\)",
+        r"\btilelang_cb_write_ptr_bytes_direct\((\d+)\)",
+        r"\bpack_reconfig_data_format(?:<true>)?\((\d+)\)",
+        r"\bpack_tile\([^,]+,\s*(\d+)\s*,",
+    ]
+    for kernel in executable_spec["kernels"]:
+        source = str(kernel["source_code"])
+        for pattern in cb_api_patterns:
+            cb_id_uses.update(int(match) for match in re.findall(pattern, source))
+
+    assert cb_id_uses
+    assert cb_id_uses <= physical_cb_ids
+    assert cb_id_uses.isdisjoint(unresolved_requirement_indices)
+
+
+def _assert_reader_emits_one_input_publish_event(executable_spec):
+    reader_source = _kernel_source(executable_spec, "reader")
+    pushed_cb_ids = {
+        int(match)
+        for match in re.findall(r"\bcb_push_back\((\d+)\s*,\s*1\)", reader_source)
+    }
+    assert len(pushed_cb_ids) == 1
+    input_cb_id = next(iter(pushed_cb_ids))
+    input_cb = next(cb for cb in executable_spec["cb_configs"] if int(cb["cb_id"]) == input_cb_id)
+    assert reader_source.count("noc_async_read_tile") == int(input_cb["num_pages"])
+    assert not re.search(r"for \([^\n]*\) \{\s*cb_reserve_back", reader_source)
+
+
 def test_blackhole_existing_tir_value_index_selection_projects_contracts():
     artifact = _lower_blackhole(existing_tir_value_index_selection_kernel())
     executable_spec = _extract_blackhole_executable_spec(artifact)
 
     assert "selection_plans" not in executable_spec
+    _assert_kernel_sources_use_physical_cb_ids(executable_spec)
+    _assert_reader_emits_one_input_publish_event(executable_spec)
 
     runtime_buffers = {
         str(arg["buffer"]): str(arg["kind"])
@@ -111,12 +157,16 @@ def test_blackhole_existing_tir_value_index_selection_projects_contracts():
 
     reader_source = _kernel_source(executable_spec, "reader")
     compute_source = _kernel_source(executable_spec, "compute")
+    writer_source = _kernel_source(executable_spec, "writer")
     assert "logits_addr" in reader_source
     assert "TensorAccessorArgs<0>()" in reader_source
     assert "noc_async_read_tile" in reader_source
     assert "Argument 0: logits" not in compute_source
     assert "((float*)logits)" not in compute_source
     assert "logits[" not in compute_source
+    for local_compute_name in ["max_val", "max_idx", "expand_max_idx", "logits_frag"]:
+        assert local_compute_name not in reader_source
+        assert local_compute_name not in writer_source
     assert VALUE_INDEX_SELECTION_MARKER in compute_source
     assert "topk" not in compute_source
     assert "__tl_topk" not in compute_source

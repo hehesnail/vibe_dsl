@@ -1276,9 +1276,6 @@ def test_t8_per_work_runtime_values_use_generic_value_expr_not_case_schema():
         "logical_block_z",
         "logical_block_xy_linear",
         "logical_block_yx_linear",
-        "logical_block_z_offset",
-        "compute_op_reduction_extent",
-        "compute_op_output_x_extent",
         "value_expr",
         "constant",
     }
@@ -1319,6 +1316,11 @@ def test_t6_value_index_scan_codegen_has_no_topk_named_protocol_surface():
     for forbidden in [
         "InferSelectionRankExtent",
         "TryEmitValueIndexSelectionKernel",
+        "InferRowRankReductionExtent",
+        "TryEmitRowRankReductionScanKernel",
+        "row-rank",
+        "__tl_rank_",
+        "kRankExtent",
         "__tl_topk",
         "kTopK",
     ]:

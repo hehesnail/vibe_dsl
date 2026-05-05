@@ -56,20 +56,26 @@ also admissible once the emitted scaler fill/pack sequence initializes
 PACK/UNPACK format state correctly.
 
 The current T6 implementation admits the existing TIR value/index selection
-shape by recognizing the typed value reduce plus typed `int32` index reduce
-records and emitting one backend value/index scan over the reader-materialized
-input CB.  That scan publishes the value and index output CB pages consumed by
-the normal writer path.  This replaces the unsupported standalone
+shape by consuming the typed value reduce plus typed `int32` index reduce
+records and emitting one backend repeated row-reduce scan over the
+reader-materialized input CB.  That scan publishes the value and index output
+CB pages consumed by the normal writer path.  Data-movement segment source
+generation skips residual compute-local `blackhole.acc` stores by the generic
+core-type / storage-scope rule, not by value/index names.  CB operands are
+resolved through `cb_configs.requirement_indices -> cb_id` so generated source
+uses the physical CB identity from the executable record, and thread emission
+analysis filters through the current core's emitted body so the BRISC reader
+emits one input-CB publish event instead of serializing a loop-invariant
+`threadIdx.x` publish.  This replaces the unsupported standalone
 `Int32 reduce_tile<MAX, REDUCE_ROW>` execution shape without adding a frontend
 topk op, `TTSelectionPlan`, `selection_plans`, or a source-name side channel.
 
-Architecture audit `2026-05-05`: this is runtime-complete but not a clean final
-lowering pattern.  `CodeGenBlackhole::TryEmitRowRankReductionScanKernel` is still
-a dedicated backend emitter for a value/index row-selection shape, and it uses
-generated output-CB naming to bind the value/index result pages.  The desired
-cleanup is to express the same semantics through a generic typed compute-region
-/ reduction lowering, or to delete this path once the normal compute chain can
-represent and validate it without a case-shaped emitter.
+Architecture audit `2026-05-06`: this is runtime-complete but not a clean final
+lowering pattern.  `CodeGenBlackhole::TryEmitTypedRowReduceScanKernel` is still
+a limited backend emitter for a paired value/index repeated row-reduce shape.
+The desired cleanup is to express the same semantics through a generic typed
+compute-region / reduction lowering, or to delete this path once the normal
+compute chain can represent and validate it without a case-shaped emitter.
 
 ## Contract
 

@@ -57,7 +57,7 @@ class CodeGenBlackhole : public CodeGenCHost {
   // Generate generic kernel_main entry point (IR-driven, no hardcoded paths)
   void GenerateGenericKernelMain(const tvm::tir::PrimFunc &f,
                                  const std::string &func_name);
-  bool TryEmitRowRankReductionScanKernel(const tvm::tir::PrimFunc &f);
+  bool TryEmitTypedRowReduceScanKernel(const tvm::tir::PrimFunc &f);
 
   // Override visitor to handle TT-Metal builtin calls
   void VisitExpr_(const tvm::tir::CallNode *op,
@@ -81,6 +81,7 @@ class CodeGenBlackhole : public CodeGenCHost {
 
   // Skip C-array allocation for CB-backed shared buffers.
   void VisitStmt_(const tvm::tir::AllocateNode *op) override;
+  void VisitStmt_(const tvm::tir::BufferStoreNode *op) override;
 
   // Override storage scope printing for Blackhole memory types
   void PrintStorageScope(const std::string &scope,
@@ -297,6 +298,7 @@ class CodeGenBlackhole : public CodeGenCHost {
   std::unordered_map<int, int> cb_page_size_by_id_;
   std::unordered_map<int, int> cb_num_pages_by_id_;
   std::unordered_map<int, std::string> cb_data_format_by_id_;
+  std::unordered_map<int, int> cb_id_by_requirement_index_;
   std::unordered_map<std::string, int> cb_id_by_requirement_name_;
   std::unordered_map<std::string, int> cb_num_pages_by_requirement_name_;
   std::unordered_map<std::string, int> cb_publish_pages_by_requirement_name_;

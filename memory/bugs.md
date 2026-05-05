@@ -3080,6 +3080,37 @@
     current TT-Sim run, so direct GEMM correctness was not used as completion
     evidence for this checkpoint.
 
+### T6 value/index direct runtime hung after enqueue from unresolved CB identities and BRISC lane overpublish
+
+- **症状**:
+  - T6 value/index selection source projection built, but TT-Sim direct
+    runtime for fp32 and bf16 values stayed after
+    `enqueue multi-core workload`.
+  - Watcher changed the symptom into a BRISC NOC error on the first DRAM read,
+    while a simple bf16 copy with the same DRAM base address still passed.
+- **根因**:
+  - Generated source mixed pre-allocation CB requirement indices with physical
+    CB ids: reader wrote CB 7, compute waited on CB 21, compute published
+    16/17, and writer waited on 1/4.  The executable record already carried
+    the correct `requirement_indices -> cb_id` mapping, but codegen did not
+    consume it for constant CB operands.
+  - After CB identity was fixed, BRISC reader source still serialized the same
+    loop-invariant input publish under the `threadIdx.x` lane loop, producing
+    128 copies of an 8-page input event for a compute kernel that consumes one
+    event.
+- **修法**:
+  - Load `cb_configs.requirement_indices` in `CodeGenBlackhole` and resolve
+    all CB operation operands to the physical `cb_id` during source emission.
+  - Make thread-lane use analysis follow the current core's emitted body so a
+    loop-invariant CB publish is emitted once even when skipped compute-local
+    stores mention `threadIdx.x`, and guard source projection against both
+    unresolved requirement indices and CB reserve/publish under a thread loop.
+- **验证**:
+  - `cmake --build build -j32` passed.
+  - Focused projection/source/schema selectors reported `4 passed`.
+  - TT-Sim T6 direct runtime passed for bf16 values with int32 indices, fp32
+    single-work, and fp32 multi-work.
+
 ## 3. 环境问题速查
 
 | 问题 | 解决 |
