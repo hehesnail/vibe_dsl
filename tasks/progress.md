@@ -210,7 +210,11 @@ Each checkpoint needs its own direct-runtime correctness proof:
   `index_value_scale` helper path in TT lowering was deleted; there is no
   second table-addressing evaluator behind the public schema.  The remaining
   compute-segment row-bound routing is a pass-local flag, not an
-  `a_valid_rows` name predicate.
+  `per_work_row_count` name predicate.
+- Public per-work runtime arg identities for row/page descriptors are generic
+  `per_work_row_start`, `per_work_row_count`, and `per_work_page_index`;
+  workload-shaped identities such as valid-rows, segmented-row, or
+  ragged-page names are not schema.
 - T6 emitted source symbols and markers no longer expose topk/selection
   protocol names.  The dedicated row-rank backend scan remains explicit
   cleanup debt until generic typed compute-region lowering replaces it.

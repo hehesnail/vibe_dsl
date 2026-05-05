@@ -2002,7 +2002,7 @@ Stmt PlanTTKernelABI::GenerateStagedCopyLoopSequence(
 
       auto make_page_index_arg = []() {
         return Call(DataType::UInt(32), blackhole_runtime_arg_u32(),
-                    {StringImm("a_ragged_page_index")});
+                    {StringImm(kBlackholePerWorkPageIndexArg)});
       };
 
       struct RewriteResult {

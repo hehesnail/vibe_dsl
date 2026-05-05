@@ -179,7 +179,7 @@ row expression gets its own row-start runtime arg identity, and each
 matching guarded `SegmentCounts[...]` table load gets its own
 row-count identity.  Row-page source rendering must use the runtime
 arg present in the current TIR access/predicate, not a hardcoded singleton
-`a_segment_row_start` / `a_segment_row_count` pair.  Because this path uses
+`per_work_row_start` / `per_work_row_count` pair.  Because this path uses
 64-byte row pages, the source page id is the TIR-derived row start plus the
 local row; it must not reuse a full-tile `base_tile_index` or divide the row
 start by the tile height.
@@ -249,11 +249,11 @@ serialized TIR expression; `index_buffer`, `index_value_scale`,
 
 The same rule applies to table-derived ragged bounds.  If one work item has
 multiple independent guarded sparse reads, each bound table load gets its own
-row-count runtime arg identity, e.g. `a_valid_rows` /
-`a_valid_rows_1`, with a distinct `value_expr` on the corresponding
+row-count runtime arg identity, e.g. `per_work_row_count` /
+`per_work_row_count_1`, with a distinct `value_expr` on the corresponding
 `TTPerWorkArgSpec`.  A later row-page reader may use those args to decide
 per-row zero-fill, but it must not collapse distinct guarded reads back into
-one shared `a_valid_rows` value.
+one shared `per_work_row_count` value.
 
 The next sparse slice broadens this from exactly two entries to more than two
 entries in the same logical work item.  The contract is not a special
@@ -369,7 +369,7 @@ Implemented:
   and emits no raw index-table read.
 - The sparse two-entry surface also admits independent per-entry row bounds.
   `ValidRows[bx, 0]` and `ValidRows[bx, 1]` lower to A `row_count`
-  descriptors with identities `a_valid_rows` and `a_valid_rows_1`, carrying
+  descriptors with identities `per_work_row_count` and `per_work_row_count_1`, carrying
   distinct `value_expr` evidence.  The row-page reader uses the matching
   runtime arg for each sparse tile and zero-fills invalid rows
   independently.
@@ -394,7 +394,7 @@ Implemented:
   `value_expr` equality plus the matched `AccessRegion.index_exprs`, not from
   a second table-shape/index-source object.
 - Compute-segment admission for row-bound runtime args is carried by a
-  pass-local control flag.  It must not be inferred from an `a_valid_rows`
+  pass-local control flag.  It must not be inferred from a `per_work_row_count`
   prefix or any other runtime-arg naming convention.
 - Direct runtime no longer falls back to `work_linear_id` for table-backed
   descriptors with missing value evidence.  `value_source=value_expr` requires
@@ -407,7 +407,7 @@ Implemented:
 - A minimal `RowCounts[bx]` staged copy is admitted as the first
   predicate-derived ragged bound descriptor.
 - The TIR predicate `i < valid_rows`, where `valid_rows` is bound by a real
-  `BufferLoad` from the row-count table, is lowered to an `a_valid_rows`
+  `BufferLoad` from the row-count table, is lowered to a `per_work_row_count`
   runtime arg with `TTPerWorkArgSpec` descriptor kind `row_count` and
   `value_source=value_expr`.
 - The reader source consumes the projected per-work arg, reads only valid
@@ -451,10 +451,10 @@ Implemented:
 - A minimal non-uniform row segment copy is admitted as the first
   segmented/grouped dispatch surface.
 - The row start table is used in the TIR source address expression and lowers
-  to an `a_segment_row_start` runtime arg with descriptor kind
+  to a `per_work_row_start` runtime arg with descriptor kind
   `row_start` and `value_source=value_expr`.
 - The row count table is used in the TIR guarded-copy predicate and lowers to
-  an `a_segment_row_count` runtime arg with descriptor kind `row_count` and
+  a `per_work_row_count` runtime arg with descriptor kind `row_count` and
   `value_source=value_expr`.
 - Source consumes those two projected per-work descriptors and must not emit
   raw source reads from `SegmentOffsets` / `SegmentCounts`.

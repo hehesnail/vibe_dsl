@@ -1869,11 +1869,11 @@ def test_blackhole_t9_grouped_gemm_projects_segmented_a_descriptors():
     reader_source = str(reader["source_code"])
     compute_source = str(compute["source_code"])
 
-    assert "a_segment_row_start = get_arg_val<uint32_t>" in reader_source
-    assert "a_segment_row_count = get_arg_val<uint32_t>" in reader_source
+    assert "per_work_row_start = get_arg_val<uint32_t>" in reader_source
+    assert "per_work_row_count = get_arg_val<uint32_t>" in reader_source
     assert "GroupOffsets" not in reader_source
     assert "GroupSizes" not in reader_source
-    assert "(a_segment_row_start / 32)" not in reader_source
+    assert "(per_work_row_start / 32)" not in reader_source
     assert "matmul_tiles(" in compute_source
 
     a_accessor = next(

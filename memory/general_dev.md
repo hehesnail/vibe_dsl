@@ -2515,6 +2515,9 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   pass-local table-addressing object such as `IndexTableAddressing`,
   `index_buffer`, or `index_value_scale`; per-work runtime-arg identity should
   deduplicate from structural `value_expr` equality plus matched
-  `AccessRegion.index_exprs`.  If a per-work runtime arg must be admitted to
-  a compute segment, carry that as pass-local control state; do not infer it
-  from an `a_valid_rows`-style name prefix.
+  `AccessRegion.index_exprs`.  Use generic public identities such as
+  `per_work_row_start`, `per_work_row_count`, and `per_work_page_index`, not
+  workload-shaped names like valid-rows / segmented-row / ragged-page.  If a
+  per-work runtime arg must be admitted to a compute segment, carry that as
+  pass-local control state; do not infer it from a `per_work_row_count`-style
+  name prefix.

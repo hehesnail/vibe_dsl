@@ -412,7 +412,7 @@ EnsureSegmentBufferRuntimeArgs(const std::string &segment_kind,
     }
     push_existing_or_synthesized("work_linear_id", "work_linear_id");
     const bool input_addressed_by_row_segment =
-        FindRuntimeArgIndex(existing_runtime_args, "a_segment_row_start") >= 0;
+        FindRuntimeArgIndex(existing_runtime_args, kBlackholePerWorkRowStartArg) >= 0;
     if (!resolved_input_buffer_names.empty() && !input_addressed_by_row_segment) {
       push_existing_or_synthesized("a_tile_start_id", "a_tile_start_id", "",
                                    true);
@@ -983,26 +983,26 @@ void PlanTTKernelABI::StoreSegmentPlan(PrimFunc &func) {
   };
   auto append_row_bound_runtime_args = [&](Array<Any>* runtime_args) {
     if (needs_ragged_row_bound_arg_ &&
-        !has_indexed_per_work_runtime_arg("a_valid_rows")) {
+        !has_indexed_per_work_runtime_arg(kBlackholePerWorkRowCountArg)) {
       runtime_args->push_back(
-          MakeRuntimeArg("a_valid_rows", "a_valid_rows", "uint32", "",
+          MakeRuntimeArg(kBlackholePerWorkRowCountArg, kBlackholePerWorkRowCountArg, "uint32", "",
                          true));
     }
     if (needs_ragged_page_index_arg_) {
       runtime_args->push_back(MakeRuntimeArg(
-          "a_ragged_page_index", "a_ragged_page_index", "uint32", "",
+          kBlackholePerWorkPageIndexArg, kBlackholePerWorkPageIndexArg, "uint32", "",
           true));
     }
     if (needs_segment_row_start_arg_ &&
-        !has_indexed_per_work_runtime_arg("a_segment_row_start")) {
+        !has_indexed_per_work_runtime_arg(kBlackholePerWorkRowStartArg)) {
       runtime_args->push_back(MakeRuntimeArg(
-          "a_segment_row_start", "a_segment_row_start", "uint32", "",
+          kBlackholePerWorkRowStartArg, kBlackholePerWorkRowStartArg, "uint32", "",
           true));
     }
     if (needs_segment_row_count_arg_ &&
-        !has_indexed_per_work_runtime_arg("a_segment_row_count")) {
+        !has_indexed_per_work_runtime_arg(kBlackholePerWorkRowCountArg)) {
       runtime_args->push_back(MakeRuntimeArg(
-          "a_segment_row_count", "a_segment_row_count", "uint32", "",
+          kBlackholePerWorkRowCountArg, kBlackholePerWorkRowCountArg, "uint32", "",
           true));
     }
   };
@@ -1435,7 +1435,7 @@ void PlanTTKernelABI::StoreAccessorDescriptors(PrimFunc &func) {
             blackhole_runtime_arg_schema::kValueSourceConstant,
             copy_input_buffer_name, 1));
       }
-      if (runtime_args_contain_kind("a_ragged_page_index")) {
+      if (runtime_args_contain_kind(kBlackholePerWorkPageIndexArg)) {
         const std::string bound_subject =
             !ragged_row_bound_subject_buffer_name_.empty()
                 ? ragged_row_bound_subject_buffer_name_
@@ -1445,8 +1445,8 @@ void PlanTTKernelABI::StoreAccessorDescriptors(PrimFunc &func) {
                 ? ragged_page_index_value_source_
                 : blackhole_runtime_arg_schema::kValueSourceLogicalBlockY;
         upsert_spec(MakePerWorkArgSpec(
-            "a_ragged_page_index",
-            runtime_arg_identity_for_kind("a_ragged_page_index"),
+            kBlackholePerWorkPageIndexArg,
+            runtime_arg_identity_for_kind(kBlackholePerWorkPageIndexArg),
             blackhole_runtime_arg_schema::kDescriptorPageIndex,
             value_source,
             bound_subject));

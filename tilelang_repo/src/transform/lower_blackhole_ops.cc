@@ -3642,7 +3642,7 @@ Stmt PlanTTKernelABI::VisitStmt_(const LetStmtNode* op) {
       needs_segment_row_start_arg_ = true;
       descriptor_kind = blackhole_runtime_arg_schema::kDescriptorRowStart;
       arg_name = GetOrCreateIndexedPerWorkRuntimeArg(
-          "a_segment_row_start",
+          kBlackholePerWorkRowStartArg,
           descriptor_kind,
           subject_buffer, subject_index_exprs, op->value, false);
     } else if (coefficient.has_value() &&
@@ -3709,7 +3709,7 @@ Stmt PlanTTKernelABI::VisitStmt_(const LetStmtNode* op) {
       segment_row_count_table_buffer_name_ = table_buffer;
       needs_segment_row_count_arg_ = true;
       const std::string arg_name = GetOrCreateIndexedPerWorkRuntimeArg(
-          "a_segment_row_count",
+          kBlackholePerWorkRowCountArg,
           blackhole_runtime_arg_schema::kDescriptorRowCount,
           subject_buffer, subject_index_exprs, op->value, false);
       for (const SubjectAccessCandidate& alias_access : subject_accesses) {
@@ -3736,7 +3736,7 @@ Stmt PlanTTKernelABI::VisitStmt_(const LetStmtNode* op) {
     ragged_row_bound_table_buffer_name_ = table_buffer;
     needs_ragged_row_bound_arg_ = true;
     const std::string arg_name = GetOrCreateIndexedPerWorkRuntimeArg(
-        "a_valid_rows",
+        kBlackholePerWorkRowCountArg,
         blackhole_runtime_arg_schema::kDescriptorRowCount,
         subject_buffer, subject_index_exprs, op->value, true);
     for (const SubjectAccessCandidate& alias_access : subject_accesses) {

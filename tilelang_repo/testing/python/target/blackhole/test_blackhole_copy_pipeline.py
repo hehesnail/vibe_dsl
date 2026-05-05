@@ -1396,8 +1396,8 @@ def test_blackhole_sparse_2tile_ragged_copy_uses_per_entry_valid_rows():
     source = str(kernel_spec["source_code"])
     assert "a_tile_start_id = get_arg_val<uint32_t>" in source
     assert "a_tile_start_id_1 = get_arg_val<uint32_t>" in source
-    assert "a_valid_rows = get_arg_val<uint32_t>" in source
-    assert "a_valid_rows_1 = get_arg_val<uint32_t>" in source
+    assert "per_work_row_count = get_arg_val<uint32_t>" in source
+    assert "per_work_row_count_1 = get_arg_val<uint32_t>" in source
     assert "BlockIndices" not in source
     assert "ValidRows" not in source
 
@@ -1409,8 +1409,8 @@ def test_blackhole_sparse_2tile_ragged_copy_uses_per_entry_valid_rows():
     for identity, index_buffer, constant_source, descriptor_kind in [
         ("a_tile_start_id", "BlockIndices", "constant:0", "tile_start"),
         ("a_tile_start_id_1", "BlockIndices", "constant:1", "tile_start"),
-        ("a_valid_rows", "ValidRows", "constant:0", "row_count"),
-        ("a_valid_rows_1", "ValidRows", "constant:1", "row_count"),
+        ("per_work_row_count", "ValidRows", "constant:0", "row_count"),
+        ("per_work_row_count_1", "ValidRows", "constant:1", "row_count"),
     ]:
         spec = by_identity[identity]
         assert str(spec["descriptor_kind"]) == descriptor_kind
@@ -1437,9 +1437,9 @@ def test_blackhole_sparse_3tile_ragged_copy_scales_per_entry_descriptors():
         "a_tile_start_id",
         "a_tile_start_id_1",
         "a_tile_start_id_2",
-        "a_valid_rows",
-        "a_valid_rows_1",
-        "a_valid_rows_2",
+        "per_work_row_count",
+        "per_work_row_count_1",
+        "per_work_row_count_2",
     ]:
         assert f"{identity} = get_arg_val<uint32_t>" in source
     assert "BlockIndices" not in source
@@ -1451,9 +1451,9 @@ def test_blackhole_sparse_3tile_ragged_copy_scales_per_entry_descriptors():
         "a_tile_start_id",
         "a_tile_start_id_1",
         "a_tile_start_id_2",
-        "a_valid_rows",
-        "a_valid_rows_1",
-        "a_valid_rows_2",
+        "per_work_row_count",
+        "per_work_row_count_1",
+        "per_work_row_count_2",
     ]:
         assert bool(runtime_args_by_identity[identity]["requires_per_work_descriptor"])
 
@@ -1466,9 +1466,9 @@ def test_blackhole_sparse_3tile_ragged_copy_scales_per_entry_descriptors():
         ("a_tile_start_id", "BlockIndices", "constant:0", "tile_start"),
         ("a_tile_start_id_1", "BlockIndices", "constant:1", "tile_start"),
         ("a_tile_start_id_2", "BlockIndices", "constant:2", "tile_start"),
-        ("a_valid_rows", "ValidRows", "constant:0", "row_count"),
-        ("a_valid_rows_1", "ValidRows", "constant:1", "row_count"),
-        ("a_valid_rows_2", "ValidRows", "constant:2", "row_count"),
+        ("per_work_row_count", "ValidRows", "constant:0", "row_count"),
+        ("per_work_row_count_1", "ValidRows", "constant:1", "row_count"),
+        ("per_work_row_count_2", "ValidRows", "constant:2", "row_count"),
     ]:
         spec = by_identity[identity]
         assert str(spec["descriptor_kind"]) == descriptor_kind
@@ -1493,7 +1493,7 @@ def test_blackhole_per_work_runtime_arg_requirement_is_explicit_not_kind_suffix(
             runtime_args = []
             for arg in segment.get("runtime_args", []):
                 mutated_arg = dict(arg)
-                if str(mutated_arg.get("identity", "")) == "a_valid_rows_1":
+                if str(mutated_arg.get("identity", "")) == "per_work_row_count_1":
                     mutated_arg["kind"] = "generic_per_work_u32"
                     mutated_arg["requires_per_work_descriptor"] = True
                 runtime_args.append(mutated_arg)
@@ -1501,7 +1501,7 @@ def test_blackhole_per_work_runtime_arg_requirement_is_explicit_not_kind_suffix(
             mutated["per_work_arg_specs"] = [
                 dict(spec)
                 for spec in segment.get("per_work_arg_specs", [])
-                if str(spec.get("arg_identity", "")) != "a_valid_rows_1"
+                if str(spec.get("arg_identity", "")) != "per_work_row_count_1"
             ]
             mutated_segments.append(mutated)
         return mutated_segments
@@ -1525,10 +1525,10 @@ def test_blackhole_ragged_row_copy_uses_valid_rows_index_table_descriptor():
         executable_spec["kernels"], kind="fused_dataflow", core_type="brisc"
     )
     source = str(kernel_spec["source_code"])
-    assert "a_valid_rows = get_arg_val<uint32_t>" in source
+    assert "per_work_row_count = get_arg_val<uint32_t>" in source
     assert "RowCounts" not in source
     assert "dst_words[i] = 0u" in source
-    assert "__tl_page_row < static_cast<int32_t>(a_valid_rows)" in source
+    assert "__tl_page_row < static_cast<int32_t>(per_work_row_count)" in source
     assert "noc_async_read(" in source
     assert "noc_async_write(" in source
 
@@ -1566,9 +1566,9 @@ def test_blackhole_segmented_row_copy_uses_segment_index_table_descriptors():
         executable_spec["kernels"], kind="fused_dataflow", core_type="brisc"
     )
     source = str(kernel_spec["source_code"])
-    assert "a_segment_row_start = get_arg_val<uint32_t>" in source
-    assert "a_segment_row_count = get_arg_val<uint32_t>" in source
-    assert "a_segment_row_start / 32" not in source
+    assert "per_work_row_start = get_arg_val<uint32_t>" in source
+    assert "per_work_row_count = get_arg_val<uint32_t>" in source
+    assert "per_work_row_start / 32" not in source
     assert "a_tile_start_id = get_arg_val<uint32_t>" not in source
     assert "a_tile_num_tiles = get_arg_val<uint32_t>" not in source
     assert "a_tile_stride = get_arg_val<uint32_t>" not in source
@@ -1623,12 +1623,12 @@ def test_blackhole_two_segment_row_copy_uses_per_range_descriptors():
         executable_spec["kernels"], kind="fused_dataflow", core_type="brisc"
     )
     source = str(kernel_spec["source_code"])
-    assert "a_segment_row_start = get_arg_val<uint32_t>" in source
-    assert "a_segment_row_start_1 = get_arg_val<uint32_t>" in source
-    assert "a_segment_row_count = get_arg_val<uint32_t>" in source
-    assert "a_segment_row_count_1 = get_arg_val<uint32_t>" in source
-    assert "a_segment_row_start / 32" not in source
-    assert "a_segment_row_start_1 / 32" not in source
+    assert "per_work_row_start = get_arg_val<uint32_t>" in source
+    assert "per_work_row_start_1 = get_arg_val<uint32_t>" in source
+    assert "per_work_row_count = get_arg_val<uint32_t>" in source
+    assert "per_work_row_count_1 = get_arg_val<uint32_t>" in source
+    assert "per_work_row_start / 32" not in source
+    assert "per_work_row_start_1 / 32" not in source
     assert "a_tile_start_id = get_arg_val<uint32_t>" not in source
     assert "SegmentOffsets" not in source
     assert "SegmentCounts" not in source
@@ -1639,10 +1639,10 @@ def test_blackhole_two_segment_row_copy_uses_per_range_descriptors():
         if str(spec.get("buffer", "")) == "A"
     }
     for identity, index_buffer, constant_source, descriptor_kind in [
-        ("a_segment_row_start", "SegmentOffsets", "constant:0", "row_start"),
-        ("a_segment_row_start_1", "SegmentOffsets", "constant:1", "row_start"),
-        ("a_segment_row_count", "SegmentCounts", "constant:0", "row_count"),
-        ("a_segment_row_count_1", "SegmentCounts", "constant:1", "row_count"),
+        ("per_work_row_start", "SegmentOffsets", "constant:0", "row_start"),
+        ("per_work_row_start_1", "SegmentOffsets", "constant:1", "row_start"),
+        ("per_work_row_count", "SegmentCounts", "constant:0", "row_count"),
+        ("per_work_row_count_1", "SegmentCounts", "constant:1", "row_count"),
     ]:
         spec = by_identity[identity]
         assert str(spec["descriptor_kind"]) == descriptor_kind
@@ -1667,8 +1667,8 @@ def test_blackhole_paged_cache_len_copy_uses_page_table_and_ragged_page_descript
     )
     source = str(kernel_spec["source_code"])
     assert "a_tile_start_id = get_arg_val<uint32_t>" in source
-    assert "a_valid_rows = get_arg_val<uint32_t>" in source
-    assert "a_ragged_page_index = get_arg_val<uint32_t>" in source
+    assert "per_work_row_count = get_arg_val<uint32_t>" in source
+    assert "per_work_page_index = get_arg_val<uint32_t>" in source
     assert "PageTable" not in source
     assert "CacheSeqLens" not in source
 
@@ -1705,8 +1705,8 @@ def test_blackhole_paged_valid_rows_copy_uses_per_page_row_bounds():
     )
     source = str(kernel_spec["source_code"])
     assert "a_tile_start_id = get_arg_val<uint32_t>" in source
-    assert "a_valid_rows = get_arg_val<uint32_t>" in source
-    assert "a_ragged_page_index = get_arg_val<uint32_t>" not in source
+    assert "per_work_row_count = get_arg_val<uint32_t>" in source
+    assert "per_work_page_index = get_arg_val<uint32_t>" not in source
     assert "PageTable" not in source
     assert "PageValidRows" not in source
 

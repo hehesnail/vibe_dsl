@@ -51,6 +51,9 @@ namespace tl {
 
 constexpr const char* kTLBlackholeTTMetalBuiltinSelection =
     "tl.blackhole_tt_metal_builtin_selection";
+constexpr const char* kBlackholePerWorkRowStartArg = "per_work_row_start";
+constexpr const char* kBlackholePerWorkRowCountArg = "per_work_row_count";
+constexpr const char* kBlackholePerWorkPageIndexArg = "per_work_page_index";
 
 tvm::transform::Pass SelectBlackholeTTMetalBuiltins();
 
