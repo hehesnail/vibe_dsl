@@ -1065,6 +1065,100 @@ AttachComputeOpKernelPlanIndices(const Array<TTComputeOpPlan> &compute_op_plans,
   return updated;
 }
 
+bool IsComputeOperandOutputRole(const std::string &role) {
+  return role == "c" || role == "output" || role == "out" ||
+         role == "dst" || role == "result";
+}
+
+void AppendUniqueInteger(Array<Integer> *values, const Integer &value) {
+  ICHECK(values != nullptr);
+  for (const Integer &existing : *values) {
+    if (existing.IntValue() == value.IntValue()) {
+      return;
+    }
+  }
+  values->push_back(value);
+}
+
+Array<TTComputeOpPlan> AttachComputeOperandBoundaryCBRequirementIndices(
+    const Array<TTComputeOpPlan> &compute_op_plans,
+    const Array<TTExactCBVirtualValue> &exact_cb_virtual_values,
+    const Array<TTExactCBAllocation> &exact_cb_allocations,
+    const Array<TTCBPlan> &cb_plans) {
+  if (compute_op_plans.empty() || exact_cb_virtual_values.empty() ||
+      exact_cb_allocations.empty() || cb_plans.empty()) {
+    return compute_op_plans;
+  }
+
+  std::unordered_map<std::string, Array<Integer>>
+      allocated_requirement_indices_by_logical_value;
+  for (const TTExactCBAllocation &allocation : exact_cb_allocations) {
+    const int64_t virtual_value_index = allocation->virtual_value_index;
+    const int64_t cb_plan_index = allocation->cb_plan_index;
+    if (virtual_value_index < 0 ||
+        virtual_value_index >=
+            static_cast<int64_t>(exact_cb_virtual_values.size()) ||
+        cb_plan_index < 0 ||
+        cb_plan_index >= static_cast<int64_t>(cb_plans.size())) {
+      continue;
+    }
+    const TTExactCBVirtualValue &virtual_value =
+        exact_cb_virtual_values[static_cast<size_t>(virtual_value_index)];
+    const std::string logical_value = str(virtual_value->logical_value);
+    if (logical_value.empty()) {
+      continue;
+    }
+    Array<Integer> &indices =
+        allocated_requirement_indices_by_logical_value[logical_value];
+    const TTCBPlan &cb_plan = cb_plans[static_cast<size_t>(cb_plan_index)];
+    for (const Integer &index : cb_plan->requirement_indices) {
+      AppendUniqueInteger(&indices, index);
+    }
+  }
+  if (allocated_requirement_indices_by_logical_value.empty()) {
+    return compute_op_plans;
+  }
+
+  Array<TTComputeOpPlan> updated;
+  for (const TTComputeOpPlan &plan : compute_op_plans) {
+    Array<TTComputeOperandBindingPlan> operand_bindings;
+    bool changed = false;
+    for (const TTComputeOperandBindingPlan &binding : plan->operand_bindings) {
+      Array<Integer> cb_requirement_indices = binding->cb_requirement_indices;
+      const std::string role = str(binding->role);
+      if (!IsComputeOperandOutputRole(role)) {
+        auto allocated_it =
+            allocated_requirement_indices_by_logical_value.find(
+                str(binding->buffer));
+        if (allocated_it !=
+                allocated_requirement_indices_by_logical_value.end() &&
+            !allocated_it->second.empty()) {
+          cb_requirement_indices = allocated_it->second;
+          changed = true;
+        }
+      }
+      operand_bindings.push_back(TTComputeOperandBindingPlan(
+          binding->role, binding->buffer, binding->host_buffer,
+          binding->tensor_dtype, binding->cb_dtype, binding->transform_kind,
+          cb_requirement_indices));
+    }
+    if (!changed) {
+      updated.push_back(plan);
+      continue;
+    }
+    updated.push_back(TTComputeOpPlan(
+        plan->name, plan->kernel_name, plan->kernel_plan_index, plan->kind,
+        plan->operation_name, plan->enabled, operand_bindings,
+        plan->problem_shape_axes, plan->problem_shape, plan->tile_shape,
+        plan->block_shape, plan->subblock_shape, plan->accumulator_dtype,
+        plan->mbarrier_buffer, plan->mbarrier_scope, plan->mbarrier_index_exprs,
+        plan->tile_compute_dag_node_id, plan->tile_compute_source_emitter,
+        plan->tile_compute_materialization_policy,
+        plan->tile_compute_fanout_use_count, plan->tile_compute_fanout_policy));
+  }
+  return updated;
+}
+
 String DeriveTransportDeliveryKind(const DataflowEdge &edge) {
   if (edge->crosses_phase) {
     return String("phase_boundary_materialized");
@@ -2413,6 +2507,9 @@ tvm::transform::Pass PlanTTTransport() {
           slices.exact_cb_allocations, slices.cb_plans);
       slices.exact_cb_release_events = RemapExactCBReleaseRequirementIndices(
           slices.exact_cb_release_events, slices.exact_cb_allocations);
+      slices.compute_op_plans = AttachComputeOperandBoundaryCBRequirementIndices(
+          slices.compute_op_plans, slices.exact_cb_virtual_values,
+          slices.exact_cb_allocations, slices.cb_plans);
       slices.transport_plans = BuildTransportPlans(spatial_plan);
       if (slices.resource_demands.empty()) {
         slices.resource_demands =

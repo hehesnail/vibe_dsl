@@ -551,6 +551,12 @@ static bool ExtractComputeOp(const ffi::Map<ffi::String, ffi::Any>& spec_info,
       if (auto host_buffer = binding_info.Get("host_buffer")) {
         binding.host_buffer = Downcast<String>(host_buffer.value());
       }
+      if (auto indices = binding_info.Get("cb_requirement_indices")) {
+        for (const auto& index : Downcast<ffi::Array<ffi::Any>>(indices.value())) {
+          binding.cb_requirement_indices.push_back(
+              Downcast<Integer>(index).IntValue());
+        }
+      }
       ICHECK(!binding.role.empty()) << "Blackhole compute operand binding requires role";
       ICHECK(!binding.buffer.empty())
           << "Blackhole compute operand binding for role " << binding.role
@@ -676,6 +682,13 @@ static ffi::Map<ffi::String, ffi::Any> EncodeKernelComputeOp(
     encoded_binding.Set("buffer", ffi::String(binding.buffer));
     if (!binding.host_buffer.empty()) {
       encoded_binding.Set("host_buffer", ffi::String(binding.host_buffer));
+    }
+    if (!binding.cb_requirement_indices.empty()) {
+      ffi::Array<ffi::Any> indices;
+      for (int64_t index : binding.cb_requirement_indices) {
+        indices.push_back(Integer(index));
+      }
+      encoded_binding.Set("cb_requirement_indices", indices);
     }
     operand_bindings.push_back(encoded_binding);
   }

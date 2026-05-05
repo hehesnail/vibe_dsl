@@ -380,6 +380,7 @@ struct ComputeOperandBindingSpec {
   std::string role;
   std::string buffer;
   std::string host_buffer;
+  std::vector<int64_t> cb_requirement_indices;
 
   void Save(dmlc::JSONWriter* writer) const {
     writer->BeginObject();
@@ -387,6 +388,10 @@ struct ComputeOperandBindingSpec {
     writer->WriteObjectKeyValue("buffer", buffer);
     if (!host_buffer.empty()) {
       writer->WriteObjectKeyValue("host_buffer", host_buffer);
+    }
+    if (!cb_requirement_indices.empty()) {
+      writer->WriteObjectKeyValue("cb_requirement_indices",
+                                  cb_requirement_indices);
     }
     writer->EndObject();
   }

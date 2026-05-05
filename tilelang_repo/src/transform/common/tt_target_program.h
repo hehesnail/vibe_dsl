@@ -285,6 +285,7 @@ public:
   ffi::String tensor_dtype;
   ffi::String cb_dtype;
   ffi::String transform_kind;
+  ffi::Array<Integer> cb_requirement_indices;
 
   static void RegisterReflection();
   TVM_FFI_DECLARE_OBJECT_INFO_FINAL("tl.TTComputeOperandBindingPlan",
@@ -297,7 +298,9 @@ public:
                                       ffi::String host_buffer,
                                       ffi::String tensor_dtype,
                                       ffi::String cb_dtype,
-                                      ffi::String transform_kind);
+                                      ffi::String transform_kind,
+                                      ffi::Array<Integer> cb_requirement_indices =
+                                          ffi::Array<Integer>());
   TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(TTComputeOperandBindingPlan,
                                              ObjectRef,
                                              TTComputeOperandBindingPlanNode);

@@ -62,26 +62,28 @@ reader-materialized input CB.  That scan publishes the value and index output
 CB pages consumed by the normal writer path.  Data-movement segment source
 generation skips residual compute-local `blackhole.acc` stores by the generic
 core-type / storage-scope rule, not by value/index names.  CB operands are
-resolved through executable `cb_configs` metadata rather than source-name
-suffixes: operation operands consume `requirement_indices -> cb_id`, and the
-remaining paired output CBs are selected from typed output channel properties
-instead of `<buffer>_reduce_out` names.  Thread emission analysis filters
-through the current core's emitted body so the BRISC reader emits one input-CB
-publish event instead of serializing a loop-invariant `threadIdx.x` publish.
-This replaces the unsupported standalone
+resolved through executable `cb_configs` metadata and explicit compute operand
+bindings: `TTComputeOperandBindingPlan.cb_requirement_indices` links each
+recorded operand to the CB requirement(s) allocated by `TTCBPlan`, and codegen
+resolves those requirement indices to the physical `cb_id`.  Paired value /
+index outputs are therefore not selected by `<buffer>_reduce_out` suffixes,
+requirement names, data-format channel guessing, or value/index-local roles.
+Thread emission analysis filters through the current core's emitted body so
+the BRISC reader emits one input-CB publish event instead of serializing a
+loop-invariant `threadIdx.x` publish.  This replaces the unsupported standalone
 `Int32 reduce_tile<MAX, REDUCE_ROW>` execution shape without adding a frontend
 topk op, `TTSelectionPlan`, `selection_plans`, or a source-name side channel.
 
 Architecture audit `2026-05-06`: this is runtime-complete but not a clean final
 lowering pattern.  The source path now enters through
 `CodeGenBlackhole::TryEmitTypedComputeRegionKernel` and uses typed compute
-records plus primary/ordinal output channels instead of value/index-local
-codegen roles or output-CB name suffix matching.  It is still a limited
-repeated row-reduction backend projection, not the final generic DAG /
-compute-region lowering.  The desired cleanup is to express the same semantics
-through generic typed compute-region / reduction lowering with explicit
-compute-operand-to-CB links, or to delete this path once the normal compute
-chain can represent and validate it without a limited emitter.
+records plus explicit operand-to-CB requirement links instead of value/index
+local codegen roles, output-CB name suffix matching, requirement-name lookup,
+or output data-format guessing.  It is still a limited repeated row-reduction
+backend projection, not the final generic DAG / compute-region lowering.  The
+desired cleanup is to express the same semantics through generic typed
+compute-region / reduction lowering, or to delete this path once the normal
+compute chain can represent and validate it without a limited emitter.
 
 ## Contract
 
@@ -137,6 +139,11 @@ value/index correctness.
   indices.
 - Compute consumes the input through the typed reader CB materialization; it
   does not read raw host argument pointers.
+- Compute operand bindings carry explicit `cb_requirement_indices`.  For
+  exact-CB values, final TTProgram attachment points non-output operands at
+  the boundary exact-CB allocation that the reader or prior producer actually
+  publishes; operator-internal CBs stay in exact-CB lifecycle/allocation
+  records and are not used as boundary operand links.
 - Tie behavior matches the authored TIR: the mask/index reduce shape selects
   the highest column index for equal values.
 - Output publication follows the existing writer event protocol.  bf16 value

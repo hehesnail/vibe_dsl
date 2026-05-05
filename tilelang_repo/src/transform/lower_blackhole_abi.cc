@@ -2162,12 +2162,21 @@ void PlanTTKernelABI::RecordExactComputeOpPlan(
     }
     const std::string data_format =
         DataTypeToDataFormatForBlackhole(operand.buffer->dtype);
+    const int cb_requirement_index =
+        operand.cb_requirement_index >= 0
+            ? operand.cb_requirement_index
+            : FindRequirementIndexForBuffer(operand.buffer);
+    Array<Integer> cb_requirement_indices;
+    if (cb_requirement_index >= 0) {
+      cb_requirement_indices.push_back(Integer(cb_requirement_index));
+    }
     operand_bindings.push_back(TTComputeOperandBindingPlan(
         String(operand.role), String(buffer_name),
         String(ResolveHostBufferForComputeOperand(operand.buffer)),
         String(data_format), String(data_format),
         String(operand.transform_kind.empty() ? "identity"
-                                              : operand.transform_kind)));
+                                              : operand.transform_kind),
+        cb_requirement_indices));
   }
   if (operand_bindings.empty()) {
     return;

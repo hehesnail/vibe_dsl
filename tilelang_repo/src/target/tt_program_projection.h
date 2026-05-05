@@ -377,6 +377,9 @@ EncodeComputeOperandBindingPlan(const TTComputeOperandBindingPlan &binding) {
   if (!binding->transform_kind.empty()) {
     item.Set("transform_kind", binding->transform_kind);
   }
+  if (!binding->cb_requirement_indices.empty()) {
+    item.Set("cb_requirement_indices", binding->cb_requirement_indices);
+  }
   return item;
 }
 

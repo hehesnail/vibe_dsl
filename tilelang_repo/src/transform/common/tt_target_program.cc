@@ -412,13 +412,16 @@ void TTComputeOperandBindingPlanNode::RegisterReflection() {
       .def_ro("tensor_dtype", &TTComputeOperandBindingPlanNode::tensor_dtype)
       .def_ro("cb_dtype", &TTComputeOperandBindingPlanNode::cb_dtype)
       .def_ro("transform_kind",
-              &TTComputeOperandBindingPlanNode::transform_kind);
+              &TTComputeOperandBindingPlanNode::transform_kind)
+      .def_ro("cb_requirement_indices",
+              &TTComputeOperandBindingPlanNode::cb_requirement_indices);
 }
 
 TTComputeOperandBindingPlan::TTComputeOperandBindingPlan(
     ffi::String role, ffi::String buffer, ffi::String host_buffer,
     ffi::String tensor_dtype, ffi::String cb_dtype,
-    ffi::String transform_kind) {
+    ffi::String transform_kind,
+    ffi::Array<Integer> cb_requirement_indices) {
   auto n = ffi::make_object<TTComputeOperandBindingPlanNode>();
   n->role = std::move(role);
   n->buffer = std::move(buffer);
@@ -426,6 +429,7 @@ TTComputeOperandBindingPlan::TTComputeOperandBindingPlan(
   n->tensor_dtype = std::move(tensor_dtype);
   n->cb_dtype = std::move(cb_dtype);
   n->transform_kind = std::move(transform_kind);
+  n->cb_requirement_indices = std::move(cb_requirement_indices);
   data_ = std::move(n);
 }
 
@@ -1881,14 +1885,15 @@ TVM_FFI_STATIC_INIT_BLOCK() {
             std::move(inserted_by), std::move(admission_status),
             std::move(unsupported_reason));
       });
-	  refl::GlobalDef().def("tl.TTComputeOperandBindingPlan",
+  refl::GlobalDef().def("tl.TTComputeOperandBindingPlan",
                         [](ffi::String role, ffi::String buffer,
                            ffi::String host_buffer, ffi::String tensor_dtype,
                            ffi::String cb_dtype, ffi::String transform_kind) {
                           return TTComputeOperandBindingPlan(
                               std::move(role), std::move(buffer),
                               std::move(host_buffer), std::move(tensor_dtype),
-                              std::move(cb_dtype), std::move(transform_kind));
+                              std::move(cb_dtype), std::move(transform_kind),
+                              ffi::Array<Integer>());
                         });
   refl::GlobalDef().def(
       "tl.TTComputeOpPlan",

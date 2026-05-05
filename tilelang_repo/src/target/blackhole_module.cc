@@ -523,6 +523,7 @@ static void WriteComputeOperandBindingSpec(dmlc::Stream* stream,
   WriteString(stream, spec.role);
   WriteString(stream, spec.buffer);
   WriteString(stream, spec.host_buffer);
+  WriteInt64Vector(stream, spec.cb_requirement_indices);
 }
 
 static ComputeOperandBindingSpec ReadComputeOperandBindingSpec(dmlc::Stream* stream) {
@@ -530,6 +531,8 @@ static ComputeOperandBindingSpec ReadComputeOperandBindingSpec(dmlc::Stream* str
   spec.role = ReadString(stream, "compute_operand.role");
   spec.buffer = ReadString(stream, "compute_operand.buffer");
   spec.host_buffer = ReadString(stream, "compute_operand.host_buffer");
+  spec.cb_requirement_indices =
+      ReadInt64Vector(stream, "compute_operand.cb_requirement_indices");
   return spec;
 }
 

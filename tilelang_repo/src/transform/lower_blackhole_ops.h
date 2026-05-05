@@ -209,6 +209,7 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
     std::string role;
     tvm::tir::Buffer buffer;
     std::string transform_kind;
+    int cb_requirement_index = -1;
   };
 
   struct AccessorDescriptor {

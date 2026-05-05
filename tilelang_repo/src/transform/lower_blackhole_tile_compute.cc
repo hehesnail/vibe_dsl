@@ -1019,14 +1019,16 @@ Stmt PlanTTKernelABI::GenerateRowReductionSequence(const RowReductionMatch& matc
   }
   ExactTiledCBValue scaler = CreateReduceScalerExactTiledCBValue();
   RecordExactComputeOpPlan("reduce", "reduce_tile",
-                           {{"input", match.src, "identity"},
-                            {"scaler", scaler.buffer, "identity"},
-                            {"output", accumulate_existing ? reduced.buffer : match.dst, "identity"}});
+                           {{"input", match.src, "identity", src_in.cb_id},
+                            {"scaler", scaler.buffer, "identity", scaler.cb_id},
+                            {"output",
+                             accumulate_existing ? reduced.buffer : match.dst,
+                             "identity", reduced.cb_id}});
   if (accumulate_existing) {
     RecordExactComputeOpPlan("binary", match.kind == "sum" ? "add_tiles" : "binary_max_tile",
-                             {{"lhs", match.dst, "identity"},
-                              {"rhs", reduced.buffer, "identity"},
-                              {"output", match.dst, "identity"}});
+                             {{"lhs", match.dst, "identity", dst_in.cb_id},
+                              {"rhs", reduced.buffer, "identity", reduced.cb_id},
+                              {"output", match.dst, "identity", out.cb_id}});
   }
 
   const Buffer scaler_local = scaler.buffer;

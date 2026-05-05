@@ -489,6 +489,15 @@ void ValidateComputeOperandBindingPlan(
         << "TTComputeOperandBindingPlan unsupported transform_kind "
         << binding->transform_kind;
   }
+  std::unordered_set<int64_t> cb_requirement_indices;
+  for (const Integer &index : binding->cb_requirement_indices) {
+    ICHECK_GE(index.IntValue(), 0)
+        << "TTComputeOperandBindingPlan cb_requirement_indices must be "
+           "non-negative";
+    ICHECK(cb_requirement_indices.insert(index.IntValue()).second)
+        << "TTComputeOperandBindingPlan duplicate cb_requirement_index "
+        << index.IntValue();
+  }
 }
 
 BlackholeTileComputeCoveringDecision
@@ -1842,6 +1851,12 @@ void CheckTTProgram(
       tensor_memory_config_subjects.insert(str(memory_config->subject));
     }
   }
+  std::unordered_set<int64_t> cb_requirement_indices;
+  for (const TTCBPlan &cb_plan : program->cb_plans) {
+    for (const Integer &index : cb_plan->requirement_indices) {
+      cb_requirement_indices.insert(index.IntValue());
+    }
+  }
   for (int64_t compute_op_index = 0;
        compute_op_index < static_cast<int64_t>(program->compute_op_plans.size());
        ++compute_op_index) {
@@ -1856,6 +1871,12 @@ void CheckTTProgram(
         << "duplicate TTComputeOpPlan name " << compute_op_plan->name;
     for (const TTComputeOperandBindingPlan &binding :
          compute_op_plan->operand_bindings) {
+      for (const Integer &index : binding->cb_requirement_indices) {
+        ICHECK(cb_requirement_indices.count(index.IntValue()) != 0U)
+            << "TTComputeOperandBindingPlan cb_requirement_index "
+            << index.IntValue() << " for compute op " << compute_op_plan->name
+            << " is not owned by any TTCBPlan";
+      }
       if (!tensor_memory_config_subjects.count(str(binding->buffer))) {
         continue;
       }

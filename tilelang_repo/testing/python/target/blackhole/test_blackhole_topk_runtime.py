@@ -183,6 +183,55 @@ def test_blackhole_existing_tir_value_index_selection_projects_contracts():
     assert reasons == []
 
 
+def test_blackhole_existing_tir_value_index_selection_compute_operands_link_cbs():
+    artifact = _lower_blackhole(existing_tir_value_index_selection_kernel())
+    executable_spec = _extract_blackhole_executable_spec(artifact)
+
+    cb_by_requirement_index = {
+        int(requirement_index): cb
+        for cb in executable_spec["cb_configs"]
+        for requirement_index in cb.get("requirement_indices", [])
+    }
+    assert cb_by_requirement_index
+    reader_source = _kernel_source(executable_spec, "reader")
+    reader_published_cb_ids = {
+        int(match)
+        for match in re.findall(r"\bcb_push_back\((\d+)\s*,\s*1\)", reader_source)
+    }
+
+    executable_compute_ops = [
+        op
+        for kernel in executable_spec["kernels"]
+        for op in kernel.get("compute_ops", [])
+    ]
+    reduce_ops = [
+        op
+        for op in executable_compute_ops
+        if str(op["kind"]) == "reduce" and str(op["operation_name"]) == "reduce_tile"
+    ]
+    assert len(reduce_ops) == 2
+
+    for op in reduce_ops:
+        for binding in op["operand_bindings"]:
+            requirement_indices = [
+                int(index) for index in binding.get("cb_requirement_indices", [])
+            ]
+            assert requirement_indices
+            assert all(index in cb_by_requirement_index for index in requirement_indices)
+
+    primary_reduce = next(
+        op for op in reduce_ops if str(op["accumulator_dtype"]) in {"Float32", "Float16_b"}
+    )
+    primary_input = next(
+        binding for binding in primary_reduce["operand_bindings"] if str(binding["role"]) == "input"
+    )
+    primary_input_cb_ids = {
+        int(cb_by_requirement_index[int(index)]["cb_id"])
+        for index in primary_input["cb_requirement_indices"]
+    }
+    assert primary_input_cb_ids <= reader_published_cb_ids
+
+
 def _make_unique_topk_logits(M, N, torch_dtype):
     pattern = ((torch.arange(N, dtype=torch.float32) * 37) % N) / float(N)
     return pattern.unsqueeze(0).repeat(M, 1).to(torch_dtype)

@@ -1060,6 +1060,8 @@ bool CodeGenBlackhole::TryEmitTypedComputeRegionKernel(const tvm::tir::PrimFunc&
     std::string output_buffer;
     std::string host_buffer;
     std::string accumulator_dtype;
+    std::vector<int64_t> input_cb_requirement_indices;
+    std::vector<int64_t> output_cb_requirement_indices;
   };
   std::vector<ReduceOpInfo> reduce_ops;
   for (const ffi::Any& segment_any :
@@ -1082,11 +1084,17 @@ bool CodeGenBlackhole::TryEmitTypedComputeRegionKernel(const tvm::tir::PrimFunc&
         auto binding = binding_any.as<ffi::Map<ffi::String, ffi::Any>>().value_or(
             ffi::Map<ffi::String, ffi::Any>());
         const std::string role = MapGetString(binding, "role");
+        std::vector<int64_t> cb_requirement_indices;
+        for (const ffi::Any& index_any : MapGetArray(binding, "cb_requirement_indices")) {
+          cb_requirement_indices.push_back(Downcast<Integer>(index_any).IntValue());
+        }
         if (role == "input") {
           info.input_buffer = MapGetString(binding, "buffer");
+          info.input_cb_requirement_indices = std::move(cb_requirement_indices);
         } else if (role == "output") {
           info.output_buffer = MapGetString(binding, "buffer");
           info.host_buffer = MapGetString(binding, "host_buffer");
+          info.output_cb_requirement_indices = std::move(cb_requirement_indices);
         }
       }
       reduce_ops.push_back(info);
@@ -1147,59 +1155,57 @@ bool CodeGenBlackhole::TryEmitTypedComputeRegionKernel(const tvm::tir::PrimFunc&
     result.data_format = MapGetString(cb, "data_format");
     return result;
   };
-  auto cb_has_exact_requirement_name = [&](const ffi::Map<ffi::String, ffi::Any>& cb,
-                                           const std::string& requirement_name) -> bool {
-    if (MapGetString(cb, "name") == requirement_name) {
-      return true;
+  auto cb_requirement_indices =
+      [&](const ffi::Map<ffi::String, ffi::Any>& cb) -> std::vector<int64_t> {
+    std::vector<int64_t> indices;
+    for (const ffi::Any& index_any : MapGetArray(cb, "requirement_indices")) {
+      indices.push_back(Downcast<Integer>(index_any).IntValue());
     }
-    if (auto names = cb.Get("requirement_names")) {
-      for (const ffi::Any& name_any : Downcast<ffi::Array<ffi::Any>>(names.value())) {
-        if (static_cast<std::string>(Downcast<ffi::String>(name_any)) == requirement_name) {
-          return true;
-        }
-      }
-    }
-    return false;
+    return indices;
   };
-  auto find_cb_by_requirement_name = [&](const std::string& requirement_name,
-                                         const std::string& role) -> CBInfo {
-    for (const ffi::Any& cb_any : GetCBConfigsForCodegen(f)) {
-      auto cb = cb_any.as<ffi::Map<ffi::String, ffi::Any>>().value_or(
-          ffi::Map<ffi::String, ffi::Any>());
-      if (cb.empty() || MapGetString(cb, "role") != role) {
-        continue;
-      }
-      if (!cb_has_exact_requirement_name(cb, requirement_name)) {
-        continue;
-      }
-      return read_cb_info(cb);
-    }
-    return CBInfo();
-  };
-  auto find_unique_output_cb_by_channel = [&](bool ordinal_channel) -> CBInfo {
+  auto find_cb_by_requirement_index = [&](int64_t requirement_index) -> CBInfo {
     CBInfo result;
     int matches = 0;
     for (const ffi::Any& cb_any : GetCBConfigsForCodegen(f)) {
       auto cb = cb_any.as<ffi::Map<ffi::String, ffi::Any>>().value_or(
           ffi::Map<ffi::String, ffi::Any>());
-      if (cb.empty() || MapGetString(cb, "role") != "output") {
+      if (cb.empty()) {
         continue;
       }
-      CBInfo candidate = read_cb_info(cb);
-      const bool candidate_is_ordinal = candidate.data_format == "Int32";
-      if (candidate_is_ordinal != ordinal_channel) {
+      const std::vector<int64_t> indices = cb_requirement_indices(cb);
+      if (std::find(indices.begin(), indices.end(), requirement_index) ==
+          indices.end()) {
         continue;
       }
-      result = candidate;
+      result = read_cb_info(cb);
       ++matches;
     }
     return matches == 1 ? result : CBInfo();
   };
+  auto find_cb_for_binding_requirements =
+      [&](const std::vector<int64_t>& requirement_indices) -> CBInfo {
+    CBInfo result;
+    bool found = false;
+    for (int64_t requirement_index : requirement_indices) {
+      CBInfo candidate = find_cb_by_requirement_index(requirement_index);
+      if (candidate.id < 0) {
+        return CBInfo();
+      }
+      if (found && candidate.id != result.id) {
+        return CBInfo();
+      }
+      result = candidate;
+      found = true;
+    }
+    return found ? result : CBInfo();
+  };
 
   const CBInfo input_cb =
-      find_cb_by_requirement_name(primary_record->input_buffer, "intermediate");
-  const CBInfo primary_out_cb = find_unique_output_cb_by_channel(false);
-  const CBInfo ordinal_out_cb = find_unique_output_cb_by_channel(true);
+      find_cb_for_binding_requirements(primary_record->input_cb_requirement_indices);
+  const CBInfo primary_out_cb =
+      find_cb_for_binding_requirements(primary_record->output_cb_requirement_indices);
+  const CBInfo ordinal_out_cb =
+      find_cb_for_binding_requirements(ordinal_record->output_cb_requirement_indices);
   if (input_cb.id < 0 || primary_out_cb.id < 0 || ordinal_out_cb.id < 0 ||
       input_cb.num_pages <= 0 || primary_out_cb.num_pages <= 0 || ordinal_out_cb.num_pages <= 0) {
     return false;

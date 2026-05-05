@@ -35,12 +35,13 @@
   runtime coverage from final architecture cleanliness.  T6 now routes its
   value/index selection through
   `CodeGenBlackhole::TryEmitTypedComputeRegionKernel`, consuming typed
-  `reduce_tile` compute records, primary/ordinal output channels, and generic
-  segment bodies; output CBs are no longer recovered from `<buffer>_reduce_out`
-  name suffixes.  It is not a frontend `topk` op or selection plan, but it is
-  still a limited repeated-reduction backend source path and must be cleaned
-  up into generic typed compute-region/reduction lowering with explicit
-  compute-operand-to-CB links.
+  `reduce_tile` compute records, explicit compute-operand
+  `cb_requirement_indices`, and generic segment bodies; input/output CBs are
+  no longer recovered from requirement names, `<buffer>_reduce_out` suffixes,
+  output data format, or value/index channel names.  It is not a frontend
+  `topk` op or selection plan, but it is still a limited repeated-reduction
+  backend source path and must be cleaned up into generic typed
+  compute-region / reduction lowering.
 - IR-first audit `2026-05-05`: do not add workload-shaped schema such as
   topk/selection/index-table side channels.  Current T8 cleanup moved sparse
   indexed truth back to `SpatialPlan`: same-subject indexed reads keep
@@ -115,9 +116,9 @@ host pointer path is part of the contract.
 
 The architecture cleanup is still open: the active code path is a limited
 `TryEmitTypedComputeRegionKernel` source path keyed to typed repeated
-`reduce_tile` records and generated output-CB records.  That historical
-runtime bring-up artifact must move into a generic typed compute-region /
-reduction lowering before T6 is architecturally clean.
+`reduce_tile` records and explicit operand-to-CB requirement links.  That
+historical runtime bring-up artifact must move into a generic typed
+compute-region / reduction lowering before T6 is architecturally clean.
 
 Unsupported axis/layout/generalized value-index variants remain outside the
 admitted T6 subset and must fail closed through typed legality diagnostics.
@@ -607,6 +608,39 @@ Each checkpoint needs its own direct-runtime correctness proof:
   T6 fp32 single-work, T6 fp32 multi-work, and T6 bf16 values + int32 indices.
 - TT-Sim per-work direct-runtime selectors reported `2 passed`: segmented row
   copy start/count tables and T9 grouped GEMM bf16.
+
+2026-05-06 UTC T6 compute-operand CB-link cleanup checkpoint:
+
+- Audited the remaining T6 typed compute-region path after removing
+  `_reduce_out` name lookup.  The active residue was not another public
+  `topk` / selection schema, but codegen still recovered CBs by requirement
+  names and selected the paired output CBs by data-format channel.
+- Added explicit `TTComputeOperandBindingPlan.cb_requirement_indices` and
+  projected it through `TTProgram -> ExecutableSpec -> BlackholeModule`.
+  The field is generic compute-operand-to-CB evidence; it does not encode
+  topk, row rank, index table, page value, or value/index-local roles.
+- Final TTProgram transport attachment rewrites non-output compute operands to
+  the boundary exact-CB allocation requirement indices when an exact resident
+  value is present.  Operator-internal CBs remain represented by exact-CB
+  lifecycle/allocation records rather than being treated as operand-boundary
+  inputs.
+- Deleted the T6 codegen helpers that matched CBs by requirement name or output
+  data format: `find_cb_by_requirement_name`, `cb_has_exact_requirement_name`,
+  `find_unique_output_cb_by_channel`, and `candidate_is_ordinal`.
+- Added structural coverage proving T6 reduce operand bindings carry valid
+  CB requirement indices and that the primary reduce input resolves to the CB
+  the reader actually publishes.  This guards the cb18-vs-cb21 hang where
+  compute waited on an internal `reduce_src` CB while the reader published the
+  boundary input CB.
+- `cmake --build build -j32` passed.
+- Focused structural selectors reported `5 passed`: T6 operand-CB link,
+  T6 contract projection, T6 no named protocol surface, standalone reduce
+  writer consumption, and GEMM typed operand bindings.
+- TT-Sim T6 direct-runtime selectors reported `3 passed`: fp32 single-work,
+  fp32 multi-work, and bf16 values with exact int32 indices.
+- Flash source/spec selectors were rerun and still fail before this final
+  operand-CB attachment at the existing exact-CB `acc_o` materialization gate.
+  They are not counted as passing evidence for this checkpoint.
 
 2026-05-06 UTC tile-compute covering diagnostic terminology checkpoint:
 

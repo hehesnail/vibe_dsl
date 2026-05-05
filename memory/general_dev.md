@@ -2668,3 +2668,12 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   Validator tests for composite operation names should use a minimal leaf
   TTProgram fixture so they do not depend on unrelated flash exact-CB lowering
   boundaries before the validator is reached.
+- 2026-05-06 Blackhole compute-operand CB bindings:
+  Compute operand bindings should point at `TTCBPlan.requirement_indices`, not
+  at requirement names, output data formats, or generated CB-name suffixes.
+  For exact-CB values, the operand boundary is the allocated live value that a
+  reader or prior producer publishes; internal operator scratch such as
+  reduce-local staging remains owned by exact-CB lifecycle/allocation records.
+  If codegen needs a physical CB, resolve `cb_requirement_indices` through
+  `ExecutableSpec.cb_configs[*].requirement_indices -> cb_id` and fail closed
+  when the mapping is missing or ambiguous.

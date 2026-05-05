@@ -3111,6 +3111,36 @@
   - TT-Sim T6 direct runtime passed for bf16 values with int32 indices, fp32
     single-work, and fp32 multi-work.
 
+### T6 reduce compute waited on an internal CB instead of the reader-published boundary CB
+
+- **症状**:
+  - After adding explicit compute operand CB links, the T6 fp32 single-work
+    direct-runtime selector still hung after enqueue.
+  - Introspection showed the primary reduce input binding resolved to the
+    internal `logits_frag_reduce_src_0` requirement on physical CB 18, while
+    the BRISC reader published the boundary `logits_frag` requirement on
+    physical CB 21.
+- **根因**:
+  - The first implementation treated the row-reduction source staging CB as
+    the compute operand boundary.  That made compute wait on a CB that no
+    producer published.  The internal staging CB is real lifecycle state, but
+    it is not the operand edge between reader and compute.
+- **修法**:
+  - Carry generic `TTComputeOperandBindingPlan.cb_requirement_indices` through
+    TTProgram / ExecutableSpec / BlackholeModule.
+  - During final TTProgram transport attachment, replace exact-CB non-output
+    operand bindings with the allocated boundary exact-CB requirement indices
+    for the same logical value.  Leave internal CBs represented by exact-CB
+    lifecycle/allocation records.
+  - Make codegen resolve compute operand CBs only through those requirement
+    indices, not requirement names, output data formats, or generated suffixes.
+- **验证**:
+  - Structural T6 coverage asserts all reduce operand bindings carry valid
+    requirement indices and that the primary reduce input CB id is among the
+    reader-published CB ids.
+  - TT-Sim T6 direct runtime passed for fp32 single-work, fp32 multi-work, and
+    bf16 values with exact int32 indices after the fix.
+
 ## 3. 环境问题速查
 
 | 问题 | 解决 |

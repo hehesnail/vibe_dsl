@@ -621,6 +621,9 @@ def encode_tt_compute_op_plan(plan):
                 "tensor_dtype": str(binding.tensor_dtype),
                 "cb_dtype": str(binding.cb_dtype),
                 "transform_kind": str(binding.transform_kind),
+                "cb_requirement_indices": [
+                    int(index) for index in binding.cb_requirement_indices
+                ],
             }
             for binding in plan.operand_bindings
         ],
