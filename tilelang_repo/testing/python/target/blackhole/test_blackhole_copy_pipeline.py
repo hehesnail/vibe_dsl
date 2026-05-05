@@ -149,6 +149,11 @@ def test_blackhole_leaf_readers_do_not_keep_legacy_defaults_or_slot_fallbacks():
             "kValueGemmNumKTiles",
             "kValueGemmLogicalNTiles",
         ],
+        TRANSFORM_SRC_DIR / "lower_blackhole_transport.cc": [
+            'GetReadAccessorSlot("fused_dataflow"',
+            'GetWriteAccessorSlot("fused_dataflow"',
+            'RegisterAccessor("fused_dataflow"',
+        ],
         TEST_HELPER: [
             'item.get("compile_time_arg_offset", item.get("slot", 0))',
             '"value_kind": str(spec.value_kind)',

@@ -2608,3 +2608,12 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   markers, scanning neighboring builtins, or defaulting ambiguous statements.
   Unmarked retained compute-input pops should be wrapped as compute segment
   statements at the generation point, not inferred during leaf extraction.
+- 2026-05-06 Blackhole transport accessor segment ownership:
+  Transport lowering should register accessor records under the segment
+  selected by the ABI resolver, not by hardcoding `fused_dataflow` in each
+  emitter.  Keep segment selection separate from physical accessor direction:
+  a DRAM-to-DRAM transition sequence still allocates read-side accessor slots
+  as `DramToCB` and write-side slots as `CBToDram`, then attaches both records
+  to the resolved segment.  This prevents non-fused reader/writer kernels from
+  silently sharing slot 0 while keeping `fused_dataflow` as an ABI kind rather
+  than a transport-side schema branch.

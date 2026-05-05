@@ -184,6 +184,14 @@ Represent the remaining TT-specific physical realization:
 - compile-time/runtime ABI schema
 - launch and execution ordering
 
+Transport emitters do not own segment semantics.  They may ask the ABI /
+segment resolver which kernel segment a concrete read/write sequence belongs
+to, but they must not hard-code `fused_dataflow` as a recovery fallback when
+registering accessors.  A mixed DRAM-to-DRAM lowering still has distinct
+physical accessor directions: read-side slots are reader-style
+`DramToCB`, write-side slots are writer-style `CBToDram`; the selected segment
+only decides where those typed accessor records are attached.
+
 Per-work runtime ABI records must keep value ownership in the generic
 `TTPerWorkArgSpec` fields.  If a value is not one of the small set of generic
 work-coordinate or constant sources, it must be carried as

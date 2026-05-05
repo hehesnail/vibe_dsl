@@ -291,6 +291,31 @@ Each checkpoint needs its own direct-runtime correctness proof:
 - The worker semaphore producer/consumer direct-runtime selector reported
   `1 passed`, proving the explicit descriptor still drives TT-Sim execution.
 
+2026-05-06 UTC transport accessor segment resolver checkpoint:
+
+- `lower_blackhole_transport.cc` no longer registers accessors with hardcoded
+  `"fused_dataflow"` literals.  Transport emission resolves the segment via
+  `ResolveAccessorSegmentKind(...)`; the string remains an ABI/kernel kind,
+  not an emitter-owned schema branch.
+- The `DramToDram` transition path keeps segment selection separate from
+  accessor direction: the read accessor slot is allocated as `DramToCB`, and
+  the write accessor slot as `CBToDram`, so non-fused reader/writer segments
+  do not collapse to slot 0.
+- The public source guard now rejects direct
+  `GetReadAccessorSlot("fused_dataflow"`,
+  `GetWriteAccessorSlot("fused_dataflow"`, and
+  `RegisterAccessor("fused_dataflow"` snippets in
+  `lower_blackhole_transport.cc`.
+- `cmake --build tilelang_repo/build -j32` passed.
+- Focused selectors covering the source guard, compile-time ABI projection,
+  block-indexed and ragged per-work projection, explicit remote-core
+  projection, block-indexed runtime, ragged runtime, and page-indexed
+  accessor runtime reported `9 passed`.
+- Remaining same-family implementation risks are not public-schema fields but
+  still need cleanup: the pass-local bound/base/extent value routing state in
+  `PlanTTKernelABI`, and the dedicated row-rank value/index scan emitter for
+  T6 until generic typed reduce/scan lowering replaces it.
+
 2026-05-05 UTC IR-first per-work schema cleanup checkpoint:
 
 - Public per-work schema no longer exports `index_table`, `index_buffer`,
