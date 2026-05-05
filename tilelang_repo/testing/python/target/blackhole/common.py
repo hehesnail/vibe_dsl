@@ -495,6 +495,9 @@ def extract_tt_program_segments(func):
         )
         if per_work_arg_specs:
             payload["per_work_arg_specs"] = per_work_arg_specs
+        body = getattr(kernel, "body", None)
+        if body is not None and str(body):
+            payload["body"] = body
         abi_plan_index = int(kernel.abi_plan_index)
         if 0 <= abi_plan_index < len(abi_plans):
             abi = abi_plans[abi_plan_index]
@@ -679,10 +682,14 @@ def rebuild_tt_kernel(
     launch_spec=None,
     compute_config=None,
     per_work_arg_specs=None,
+    body=None,
 ):
     """Rebuild a TTKernel with optional field overrides."""
-    make_tt_kernel = tilelang.tvm.get_global_func("tl.TTKernel")
-    return make_tt_kernel(
+    resolved_body = getattr(kernel, "body", None) if body is None else body
+    make_tt_kernel = tilelang.tvm.get_global_func(
+        "tl.TTKernelWithBody" if resolved_body is not None and str(resolved_body) else "tl.TTKernel"
+    )
+    common_args = [
         str(kernel.name) if name is None else name,
         str(kernel.kind) if kind is None else kind,
         str(kernel.core_type) if core_type is None else core_type,
@@ -694,6 +701,11 @@ def rebuild_tt_kernel(
             if per_work_arg_specs is None
             else per_work_arg_specs
         ),
+    ]
+    if resolved_body is not None and str(resolved_body):
+        return make_tt_kernel(*common_args, resolved_body)
+    return make_tt_kernel(
+        *common_args,
     )
 
 

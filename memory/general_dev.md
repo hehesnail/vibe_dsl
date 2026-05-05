@@ -2580,3 +2580,12 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   ExecutableSpec.  Only values with that usage get checked against the target
   buffer materialization page count; row-bound `per_work_value` bindings stay
   ordinary `value_expr` values without usage.
+- 2026-05-06 Blackhole segment body ownership:
+  Segment membership is not a leaf-reader responsibility.  If source/codegen
+  needs per-segment TIR, project the selected body through the generic
+  `TTKernel` / executable segment record before stripping
+  `blackhole.segment_kind`.  Runtime/codegen may materialize a segment
+  `PrimFunc` from that body, but must not recover membership by reading final
+  markers, scanning neighboring builtins, or defaulting ambiguous statements.
+  Unmarked retained compute-input pops should be wrapped as compute segment
+  statements at the generation point, not inferred during leaf extraction.

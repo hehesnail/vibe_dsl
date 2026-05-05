@@ -993,6 +993,9 @@ inline Array<Any> EncodeSegmentPlan(const TTProgram &program) {
       segment.Set(::tvm::tl::blackhole_runtime_arg_schema::kPerWorkArgSpecs,
                   EncodePerWorkArgSpecs(kernel->per_work_arg_specs));
     }
+    if (kernel->body.defined()) {
+      segment.Set(tt_program_segment_key::kBody, kernel->body);
+    }
     Array<Any> compute_ops;
     for (const TTComputeOpPlan &plan : program->compute_op_plans) {
       if (plan->kernel_name == kernel->name) {

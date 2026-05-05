@@ -29,6 +29,7 @@
 #include "common/blackhole_tile_compute_legalizer.h"
 #include "common/blackhole_utils.h"
 
+#include <tvm/tir/analysis.h>
 #include <tvm/tir/op.h>
 #include <tvm/tir/stmt_functor.h>
 
@@ -910,6 +911,10 @@ static void BuildTTKernelAndABISeeds(const Array<Any> &segment_plan,
             ? Downcast<TTKernelComputeConfig>(
                   segment.Get("compute_config").value())
             : MakeEmptyComputeConfig();
+    Stmt body = segment.Get(tt_program_segment_key::kBody)
+                    ? Downcast<Stmt>(
+                          segment.Get(tt_program_segment_key::kBody).value())
+                    : Stmt();
     Array<TTPerWorkArgSpec> per_work_arg_specs =
         segment.Get(String(blackhole_runtime_arg_schema::kPerWorkArgSpecs))
             ? Downcast<Array<TTPerWorkArgSpec>>(
@@ -924,7 +929,7 @@ static void BuildTTKernelAndABISeeds(const Array<Any> &segment_plan,
                                   accessors, semaphore_bindings));
     kernels.push_back(TTKernel(kernel_name, kernel_kind, core_type, index,
                                launch_spec, compute_config,
-                               per_work_arg_specs));
+                               per_work_arg_specs, body));
     ++index;
   }
   *kernels_out = kernels;
@@ -958,6 +963,147 @@ static std::vector<std::string> CollectSegmentKindsFromBody(const Stmt &body) {
   SegmentKindCollector collector;
   collector(body);
   return collector.segment_kinds();
+}
+
+static bool IsNoOpStmt(const Stmt &stmt) {
+  if (!stmt.defined()) {
+    return true;
+  }
+  if (const auto *eval = stmt.as<tir::EvaluateNode>()) {
+    if (const auto *imm = eval->value.as<IntImmNode>()) {
+      return imm->value == 0;
+    }
+  }
+  return false;
+}
+
+class SegmentBodyFromMarkers final : public tir::StmtMutator {
+public:
+  explicit SegmentBodyFromMarkers(std::string requested_kind)
+      : requested_kind_(std::move(requested_kind)) {}
+
+  Stmt VisitStmt_(const tir::AttrStmtNode *op) final {
+    if (op->attr_key == "blackhole.segment_kind") {
+      const auto *kind = op->value.as<tir::StringImmNode>();
+      if (keep_all_ || (kind != nullptr && kind->value == requested_kind_)) {
+        const bool previous_keep_all = keep_all_;
+        keep_all_ = true;
+        Stmt body = this->VisitStmt(op->body);
+        keep_all_ = previous_keep_all;
+        return body;
+      }
+      return tir::Evaluate(IntImm(DataType::Int(32), 0));
+    }
+    Stmt body = this->VisitStmt(op->body);
+    if (IsNoOpStmt(body)) {
+      return tir::Evaluate(IntImm(DataType::Int(32), 0));
+    }
+    if (body.same_as(op->body)) {
+      return GetRef<Stmt>(op);
+    }
+    return tir::AttrStmt(op->node, op->attr_key, op->value, body);
+  }
+
+  Stmt VisitStmt_(const tir::SeqStmtNode *op) final {
+    ffi::Array<Stmt> seq;
+    seq.reserve(op->seq.size());
+    for (const Stmt &stmt : op->seq) {
+      Stmt rewritten = this->VisitStmt(stmt);
+      if (!IsNoOpStmt(rewritten)) {
+        seq.push_back(rewritten);
+      }
+    }
+    if (seq.empty()) {
+      return tir::Evaluate(IntImm(DataType::Int(32), 0));
+    }
+    if (seq.size() == 1) {
+      return seq[0];
+    }
+    return tir::SeqStmt(seq);
+  }
+
+  Stmt VisitStmt_(const tir::EvaluateNode *op) final {
+    if (keep_all_) {
+      return GetRef<Stmt>(op);
+    }
+    return tir::Evaluate(IntImm(DataType::Int(32), 0));
+  }
+
+  Stmt VisitStmt_(const tir::AllocateNode *op) final {
+    Stmt body = this->VisitStmt(op->body);
+    if (IsNoOpStmt(body)) {
+      return tir::Evaluate(IntImm(DataType::Int(32), 0));
+    }
+    if (!tir::UsesVar(body, [buffer_var = op->buffer_var.get()](const tir::VarNode *var) {
+          return var == buffer_var;
+        })) {
+      return body;
+    }
+    if (body.same_as(op->body)) {
+      return GetRef<Stmt>(op);
+    }
+    return tir::Allocate(op->buffer_var, op->dtype, op->extents,
+                         op->condition, body, op->annotations, op->span);
+  }
+
+  Stmt VisitStmt_(const tir::ForNode *op) final {
+    Stmt body = this->VisitStmt(op->body);
+    if (IsNoOpStmt(body)) {
+      return tir::Evaluate(IntImm(DataType::Int(32), 0));
+    }
+    if (body.same_as(op->body)) {
+      return GetRef<Stmt>(op);
+    }
+    return tir::For(op->loop_var, op->min, op->extent, op->kind, body,
+                    op->thread_binding, op->annotations, std::nullopt,
+                    op->span);
+  }
+
+  Stmt VisitStmt_(const tir::IfThenElseNode *op) final {
+    Stmt then_case = this->VisitStmt(op->then_case);
+    Stmt else_case =
+        op->else_case.defined() ? this->VisitStmt(op->else_case.value()) : Stmt();
+    const bool then_noop = IsNoOpStmt(then_case);
+    const bool else_noop = !else_case.defined() || IsNoOpStmt(else_case);
+    if (then_noop && else_noop) {
+      return tir::Evaluate(IntImm(DataType::Int(32), 0));
+    }
+    if (then_case.same_as(op->then_case) &&
+        ((!op->else_case.defined() && !else_case.defined()) ||
+         (op->else_case.defined() && else_case.same_as(op->else_case.value())))) {
+      return GetRef<Stmt>(op);
+    }
+    return tir::IfThenElse(op->condition, then_case, else_case, op->span);
+  }
+
+  Stmt VisitStmt_(const tir::LetStmtNode *op) final {
+    Stmt body = this->VisitStmt(op->body);
+    if (IsNoOpStmt(body)) {
+      return tir::Evaluate(IntImm(DataType::Int(32), 0));
+    }
+    if (body.same_as(op->body)) {
+      return GetRef<Stmt>(op);
+    }
+    return tir::LetStmt(op->var, op->value, body, op->span);
+  }
+
+private:
+  std::string requested_kind_;
+  bool keep_all_{false};
+};
+
+static std::unordered_map<std::string, Stmt>
+ExtractSegmentBodiesFromMarkers(const Stmt &body,
+                                const std::vector<std::string> &segment_kinds) {
+  std::unordered_map<std::string, Stmt> bodies;
+  for (const std::string &kind : segment_kinds) {
+    SegmentBodyFromMarkers extractor(kind);
+    Stmt segment_body = extractor(body);
+    ICHECK(!IsNoOpStmt(segment_body))
+        << "PlanTTKernelABI could not derive body for segment " << kind;
+    bodies.emplace(kind, segment_body);
+  }
+  return bodies;
 }
 
 static std::string CoreTypeForSegmentKind(const std::string &segment_kind) {
@@ -1003,6 +1149,8 @@ void PlanTTKernelABI::LoadSeededComputeOpPlans(const PrimFunc &func) {
 void PlanTTKernelABI::StoreSegmentPlan(PrimFunc &func) {
   const std::vector<std::string> segment_kinds =
       CollectSegmentKindsFromBody(func->body);
+  const std::unordered_map<std::string, Stmt> segment_bodies =
+      ExtractSegmentBodiesFromMarkers(func->body, segment_kinds);
   if (segment_kinds.empty() && !needs_copy_runtime_args_ &&
       !needs_bound_value_arg_ &&
       !needs_dynamic_value_arg_ &&
@@ -1063,6 +1211,10 @@ void PlanTTKernelABI::StoreSegmentPlan(PrimFunc &func) {
       kernel.Set("name", String(kind));
       kernel.Set("kind", String(kind));
       kernel.Set("core_type", String(CoreTypeForSegmentKind(kind)));
+      auto body_it = segment_bodies.find(kind);
+      ICHECK(body_it != segment_bodies.end())
+          << "PlanTTKernelABI requires a body for segment " << kind;
+      kernel.Set(tt_program_segment_key::kBody, body_it->second);
       if ((kind == "fused_dataflow" || kind == "reader" ||
            kind == "compute") &&
           (needs_bound_value_arg_ || needs_base_value_arg_ ||

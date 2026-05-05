@@ -2996,6 +2996,41 @@
   - `test_blackhole_t9_grouped_gemm_direct_runtime_bf16` passed under TT-Sim
     after the gate fix.
 
+### Leaf-time segment recovery duplicated or lost segment body statements
+
+- **症状**:
+  - `rt_mod_blackhole.cc` reconstructed per-segment bodies by reading
+    `blackhole.segment_kind` from final TIR and inferring ambiguous CB ops
+    from neighboring builtins.
+  - When segment body selection moved earlier, the first generic extractor
+    kept unmarked `Evaluate` leaves outside the requested marker, which copied
+    retained input `cb_pop_front` statements into reader / compute / writer
+    bodies.  After dropping unmarked leaves, compute then lacked the retained
+    input pops because their generation point had never marked them as
+    compute.
+- **根因**:
+  - Segment membership was split between pass-local markers, leaf-time
+    recovery, and unmarked CB side effects.  The leaf reader could silently
+    repair or corrupt ownership because the segment body was not explicit in
+    `TTProgram` / `ExecutableSpec`.
+- **修法**:
+  - Add a generic `TTKernel.body` field and project it into executable segment
+    records before stripping `blackhole.segment_kind`.
+  - Delete the leaf-time `SegmentBodyExtractor`, neighbor inference, and final
+    marker read from `rt_mod_blackhole.cc`.
+  - Make `SegmentBodyFromMarkers` drop unmarked executable leaves outside the
+    requested segment and wrap retained serial-loop input pops as compute
+    segment statements where they are produced.
+- **验证**:
+  - The new GEMM segment-body guard first failed because reader carried
+    `cb_pop_front(0/1, 4)`, then failed because compute lacked those pops,
+    and passed after both root fixes.
+  - `cmake --build build -j32` passed.
+  - Focused guard/projection/runtime-schema selectors reported `8 passed`.
+  - Baseline `test_blackhole_gemm_basic` timed out after `300s` in the
+    current TT-Sim run, so direct GEMM correctness was not used as completion
+    evidence for this checkpoint.
+
 ## 3. 环境问题速查
 
 | 问题 | 解决 |

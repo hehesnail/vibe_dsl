@@ -2234,7 +2234,7 @@ Stmt PlanTTKernelABI::BuildSerialLoopRetainedInputPops(
                                      {IntImm(DataType::Int(32), requirement_index),
                                       IntImm(DataType::Int(32), pages)}));
   }
-  return SeqStmt::Flatten(pops);
+  return MaybeWrapComputeSegment(SeqStmt::Flatten(pops));
 }
 
 void PlanTTKernelABI::RecordSerialLoopTerminalTransportPublication(const Stmt& stmt) {

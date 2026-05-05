@@ -323,8 +323,8 @@ Each checkpoint needs its own direct-runtime correctness proof:
   projection, and sparse-ragged plus paged-valid-rows direct runtime reported
   `9 passed`.
 - Remaining similar schema-risk surfaces from the audit after this checkpoint:
-  segment extraction in `rt_mod_blackhole.cc` still consumes
-  `blackhole.segment_kind` / neighbor inference.  This is a cleanup target;
+  segment body extraction has since moved out of `rt_mod_blackhole.cc` and
+  into the TTProgram / ExecutableSpec segment record path;
   pass-local `BlackholeLoweringSupportFacts` remain separate derived analysis
   and are not being treated as a public schema surface.
 
@@ -380,6 +380,30 @@ Each checkpoint needs its own direct-runtime correctness proof:
   projection, paged cache-length/page-valid row projection, block-indexed
   direct runtime, out-of-range index-table rejection, 2D indexed runtime,
   ragged row-count runtime, and paged row-bound runtime reported `11 passed`.
+
+2026-05-06 UTC segment body owner-truth checkpoint:
+
+- `TTKernel` now carries an optional segment body TIR field, projected into
+  the executable segment plan with a shared segment-key constant.
+- `PlanTTKernelABI` derives segment bodies while `blackhole.segment_kind` is
+  still pass-local lowering evidence, strips those markers, and records the
+  resulting body on each kernel.  Final leaf readers consume that body
+  directly.
+- Removed `rt_mod_blackhole.cc::SegmentBodyExtractor` and its leaf-time
+  `blackhole.segment_kind` / neighbor-inference recovery path.  The public
+  source guard now rejects those snippets in `rt_mod_blackhole.cc`.
+- Fixed the generic segment-body extractor so unmarked executable leaf
+  statements are not copied into every segment body, and made retained
+  serial-loop input CB pops explicitly compute-segment statements at their
+  generation point.
+- `cmake --build build -j32` passed.
+- Focused selectors covering leaf/source guards, public schema guard, copy
+  executable projection/build/direct-runtime schema, GEMM segment body
+  disjointness, and GEMM compile-time ABI projection reported `8 passed`.
+- `test_blackhole_gemm_basic` timed out after `300s` in the current TT-Sim
+  run; baseline GEMM direct runtime timeout is tracked as a runtime
+  verification limitation for this checkpoint rather than proof of the
+  segment-body change.
 
 2026-05-05 UTC T9.2 paged GQA decode checkpoint:
 

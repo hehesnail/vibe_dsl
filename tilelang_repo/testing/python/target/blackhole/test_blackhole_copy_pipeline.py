@@ -184,6 +184,9 @@ def test_blackhole_leaf_readers_do_not_keep_legacy_defaults_or_slot_fallbacks():
             'register_buffer(buffer_name, "page_indexed", "dram")',
             '"value_expr_buffer_load"',
             "SpecHasRuntimeArgKind",
+            '"blackhole.segment_kind"',
+            "InferNeighborSegmentKind",
+            "InferAmbiguousSegmentKind",
         ],
         TARGET_SRC_DIR / "blackhole_module.cc": [
             "IsTileStartRuntimeArgKind",
@@ -390,6 +393,7 @@ def _rebuild_tt_program_with_segment_plan(tt_program, segment_plan):
                 per_work_arg_specs=tt_per_work_arg_specs_to_list(
                     segment.get("per_work_arg_specs", kernel.per_work_arg_specs)
                 ),
+                body=segment.get("body", kernel.body),
             )
         )
 

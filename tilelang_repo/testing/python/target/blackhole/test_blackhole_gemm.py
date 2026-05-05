@@ -818,6 +818,27 @@ def test_blackhole_gemm_segment_plan_is_not_backed_by_segment_markers():
         "compute",
         "writer",
     ]
+    segment_bodies = {
+        str(segment["kind"]): segment["body"].script()
+        for segment in segment_plan
+    }
+    assert "tl.blackhole.read_tile_to_cb" in segment_bodies["reader"]
+    assert "tl.blackhole.matmul_tiles" not in segment_bodies["reader"]
+    assert "tl.blackhole.write_tile_from_cb" not in segment_bodies["reader"]
+    assert "tl.blackhole.cb_pop_front(0, 4)" not in segment_bodies["reader"]
+    assert "tl.blackhole.cb_pop_front(1, 4)" not in segment_bodies["reader"]
+
+    assert "tl.blackhole.matmul_tiles" in segment_bodies["compute"]
+    assert "tl.blackhole.cb_pop_front(0, 4)" in segment_bodies["compute"]
+    assert "tl.blackhole.cb_pop_front(1, 4)" in segment_bodies["compute"]
+    assert "tl.blackhole.read_tile_to_cb" not in segment_bodies["compute"]
+    assert "tl.blackhole.write_tile_from_cb" not in segment_bodies["compute"]
+
+    assert "tl.blackhole.write_tile_from_cb" in segment_bodies["writer"]
+    assert "tl.blackhole.read_tile_to_cb" not in segment_bodies["writer"]
+    assert "tl.blackhole.matmul_tiles" not in segment_bodies["writer"]
+    assert "tl.blackhole.cb_pop_front(0, 4)" not in segment_bodies["writer"]
+    assert "tl.blackhole.cb_pop_front(1, 4)" not in segment_bodies["writer"]
 
 
 def test_blackhole_typed_compute_schema_is_materialized():

@@ -75,6 +75,7 @@ It must not become a planner payload.
 Required:
 
 - segment identity and kind
+- segment body TIR already selected by `TTProgram` / executable projection
 - core type
 - launch/core plan
 - compile-time arg specs
@@ -86,6 +87,12 @@ Required:
 
 Leaf readers must require these fields.
 Missing maps or arrays are errors, not empty defaults.
+
+Segment body ownership is part of the kernel record.  Final leaf readers may
+materialize a segment `PrimFunc` from that explicit body, but they must not
+read `blackhole.segment_kind`, scan neighboring builtins, or infer segment
+membership from the final function body.  The marker is allowed only as
+pass-local lowering mechanics before projection.
 
 Per-work arg specs have one owner for nontrivial dynamic values:
 `value_source=value_expr` plus the serialized TIR expression.  Leaf readers

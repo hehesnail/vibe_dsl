@@ -877,13 +877,15 @@ void TTKernelNode::RegisterReflection() {
       .def_ro("abi_plan_index", &TTKernelNode::abi_plan_index)
       .def_ro("launch_spec", &TTKernelNode::launch_spec)
       .def_ro("compute_config", &TTKernelNode::compute_config)
-      .def_ro("per_work_arg_specs", &TTKernelNode::per_work_arg_specs);
+      .def_ro("per_work_arg_specs", &TTKernelNode::per_work_arg_specs)
+      .def_ro("body", &TTKernelNode::body);
 }
 
 TTKernel::TTKernel(ffi::String name, ffi::String kind, ffi::String core_type,
                    int64_t abi_plan_index, TTKernelLaunchSpec launch_spec,
                    TTKernelComputeConfig compute_config,
-                   ffi::Array<TTPerWorkArgSpec> per_work_arg_specs) {
+                   ffi::Array<TTPerWorkArgSpec> per_work_arg_specs,
+                   tir::Stmt body) {
   auto n = ffi::make_object<TTKernelNode>();
   n->name = std::move(name);
   n->kind = std::move(kind);
@@ -892,6 +894,7 @@ TTKernel::TTKernel(ffi::String name, ffi::String kind, ffi::String core_type,
   n->launch_spec = std::move(launch_spec);
   n->compute_config = std::move(compute_config);
   n->per_work_arg_specs = std::move(per_work_arg_specs);
+  n->body = std::move(body);
   data_ = std::move(n);
 }
 
@@ -2083,6 +2086,17 @@ TVM_FFI_STATIC_INIT_BLOCK() {
                         abi_plan_index, std::move(launch_spec),
                         std::move(compute_config),
                         std::move(per_work_arg_specs));
+      });
+  refl::GlobalDef().def(
+      "tl.TTKernelWithBody",
+      [](ffi::String name, ffi::String kind, ffi::String core_type,
+         int64_t abi_plan_index, TTKernelLaunchSpec launch_spec,
+         TTKernelComputeConfig compute_config,
+         ffi::Array<TTPerWorkArgSpec> per_work_arg_specs, tir::Stmt body) {
+        return TTKernel(std::move(name), std::move(kind), std::move(core_type),
+                        abi_plan_index, std::move(launch_spec),
+                        std::move(compute_config),
+                        std::move(per_work_arg_specs), std::move(body));
       });
   refl::GlobalDef().def(
       "tl.TTCoreGroup",

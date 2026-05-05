@@ -7,11 +7,16 @@
 #define TVM_TL_TRANSFORM_COMMON_TT_TARGET_PROGRAM_H_
 
 #include <tvm/ffi/reflection/registry.h>
+#include <tvm/tir/stmt.h>
 
 #include "companion_base.h"
 
 namespace tvm {
 namespace tl {
+
+namespace tt_program_segment_key {
+constexpr const char* kBody = "body";
+}  // namespace tt_program_segment_key
 
 class TTMeshPlanNode : public Object {
 public:
@@ -660,6 +665,7 @@ public:
   TTKernelLaunchSpec launch_spec;
   TTKernelComputeConfig compute_config;
   ffi::Array<TTPerWorkArgSpec> per_work_arg_specs;
+  tir::Stmt body;
 
   static void RegisterReflection();
   TVM_FFI_DECLARE_OBJECT_INFO_FINAL("tl.TTKernel", TTKernelNode, Object);
@@ -670,7 +676,8 @@ public:
   TVM_DLL TTKernel(ffi::String name, ffi::String kind, ffi::String core_type,
                    int64_t abi_plan_index, TTKernelLaunchSpec launch_spec,
                    TTKernelComputeConfig compute_config,
-                   ffi::Array<TTPerWorkArgSpec> per_work_arg_specs);
+                   ffi::Array<TTPerWorkArgSpec> per_work_arg_specs,
+                   tir::Stmt body = tir::Stmt());
   TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(TTKernel, ObjectRef, TTKernelNode);
 };
 
