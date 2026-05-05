@@ -222,11 +222,14 @@ Each checkpoint needs its own direct-runtime correctness proof:
 - Focused structural/projection selector covering public schema guard,
   T9.1 grouped-GEMM binding projection, and flash executable-spec
   projection reported `4 passed`.
-- A fresh T9.1 grouped-GEMM direct-runtime selector is still blocked before
-  runtime value-expression evaluation by the existing admission error
-  `missing explicit buffer role schema`; this is a separate direct-runtime
-  buffer-identity gate, not a reason to reintroduce compute-shaped
-  `value_source` enums.
+- Follow-up fixed the direct-runtime buffer-role admission gate for
+  compute-context-only `value_expr`s: expressions such as `num_k_tiles` and
+  `logical_n_tiles` no longer have to reference a buffer to be valid, while
+  `BufferLoad`-using value expressions still contribute their referenced
+  formal input buffers.
+- Fresh TT-Sim selectors reported T9.1 grouped-GEMM projection/runtime and
+  baseline external-sharded GEMM direct runtime `3 passed`; the public schema
+  guard plus flash executable-spec projection reported `3 passed`.
 
 2026-05-05 UTC IR-first per-work schema cleanup checkpoint:
 

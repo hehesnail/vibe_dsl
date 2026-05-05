@@ -2531,3 +2531,7 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   evaluated from the logical work context and typed compute records.  Guard
   against `compute_op_reduction_extent`, `compute_op_output_x_extent`, and
   `logical_block_z_offset` returning as schema strings.
+  Direct-runtime buffer-role admission must treat `value_expr` `BufferLoad`s
+  as extra formal input-buffer evidence, but a `value_expr` that references
+  only work/compute context variables is neutral for buffer-role binding; do
+  not reject it as missing schema.

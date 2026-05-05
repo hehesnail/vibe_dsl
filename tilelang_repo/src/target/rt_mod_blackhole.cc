@@ -3291,10 +3291,6 @@ static void EnforceExplicitBufferRoleSchemaGate(ExecutableSpec* spec) {
       }
       const std::unordered_set<std::string> buffers =
           CollectValueExprBufferNames(arg.value_expr_json);
-      if (buffers.empty()) {
-        missing_buffer_name = true;
-        continue;
-      }
       bound_buffer_names.insert(buffers.begin(), buffers.end());
     }
   };

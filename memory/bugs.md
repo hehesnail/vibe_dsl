@@ -2971,7 +2971,7 @@
   - The focused T9.2 selector currently reproduces the PACR boundary after the
     IR-first per-work schema cleanup.
 
-### GEMM direct-runtime selectors can fail before value-expression execution on missing buffer roles
+### GEMM direct-runtime selectors failed before value-expression execution on missing buffer roles
 
 - **症状**:
   - A fresh run of
@@ -2979,19 +2979,22 @@
     execution with
     `missing explicit buffer role schema; direct runtime requires named input/output buffer bindings and must not recover output positionally`.
 - **根因**:
-  - The failure is an admission gate on explicit formal buffer identity, not a
-    per-work runtime-arg value-source issue.  It prevents using that selector
-    as proof that compute-derived `value_expr` runtime evaluation reached
-    TT-Sim.
+  - The explicit buffer-role gate treated every `value_expr` as if it had to
+    reference a `BufferLoad`.  After GEMM K-tile count, N-tile stride, and
+    logical-z K offset moved to generic `value_expr`, those pure
+    work/compute-context expressions had no referenced buffer and were
+    misclassified as missing buffer-role schema.
 - **修法**:
-  - Fix the direct-runtime buffer-role projection/admission chain so GEMM
-    direct-call selectors bind input/output buffers from explicit
-    `ExecutableSpec` records rather than positional recovery.  Do not work
-    around this by reintroducing compute-shaped `value_source` enums.
+  - Let `value_expr` `BufferLoad`s contribute explicit input-buffer evidence,
+    but treat `value_expr`s with no buffer loads as neutral for buffer-role
+    binding.  They still evaluate through the work/typed-compute context.
+    Do not work around this by reintroducing compute-shaped `value_source`
+    enums.
 - **验证**:
-  - Until that gate is fixed, use structural/projection tests plus source
-    audit for compute-shaped value-source cleanup, and report the direct
-    runtime selector as blocked instead of passing.
+  - `test_blackhole_t9_grouped_gemm_projects_segmented_a_bindings` asserts the
+    missing-buffer-role reason stays absent.
+  - `test_blackhole_t9_grouped_gemm_direct_runtime_bf16` passed under TT-Sim
+    after the gate fix.
 
 ## 3. 环境问题速查
 

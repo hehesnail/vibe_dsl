@@ -1862,6 +1862,11 @@ def test_blackhole_t9_grouped_gemm_projects_segmented_a_bindings():
         artifact = lower(kernel, target=target)
 
     executable_spec = _extract_blackhole_executable_spec(artifact)
+    reasons = [
+        str(reason)
+        for reason in executable_spec.get("direct_runtime_unsupported_reasons", [])
+    ]
+    assert not any("missing explicit buffer role schema" in reason for reason in reasons)
     reader = _require_blackhole_kernel(
         executable_spec["kernels"], kind="reader", core_type="brisc"
     )
