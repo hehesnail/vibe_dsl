@@ -36,9 +36,11 @@
   value/index selection through
   `CodeGenBlackhole::TryEmitTypedComputeRegionKernel`, consuming typed
   `reduce_tile` compute records, primary/ordinal output channels, and generic
-  segment bodies.  It is not a frontend `topk` op or selection plan, but it is
+  segment bodies; output CBs are no longer recovered from `<buffer>_reduce_out`
+  name suffixes.  It is not a frontend `topk` op or selection plan, but it is
   still a limited repeated-reduction backend source path and must be cleaned
-  up into generic typed compute-region/reduction lowering.
+  up into generic typed compute-region/reduction lowering with explicit
+  compute-operand-to-CB links.
 - IR-first audit `2026-05-05`: do not add workload-shaped schema such as
   topk/selection/index-table side channels.  Current T8 cleanup moved sparse
   indexed truth back to `SpatialPlan`: same-subject indexed reads keep
@@ -63,7 +65,8 @@
   `row_start`, `row_count`, `page_index`, or legacy `descriptor_kind`.
   Cross-stage records carry only `arg_kind`, `arg_identity`, `buffer`,
   `value_source`, optional `value_expr`, and optional `AccessRegion` evidence;
-  leaf readers interpret those generic values locally.
+  leaf readers interpret those generic values locally.  Runtime and lowering no
+  longer classify value-expr bindings by `per_work_value[_N]` arg-name prefixes.
 - Guarded T8 access evidence is `AccessRegion` owner truth: guarded regions
   carry concrete boolean `predicate_exprs`, and `ValidateSpatialPlan` rejects
   guarded regions without them.  This is a generic IR invariant, not a
@@ -572,6 +575,34 @@ Each checkpoint needs its own direct-runtime correctness proof:
 - TT-Sim direct-runtime selectors passed after the cleanup:
   T6 fp32 single-work `1 passed`; T6 fp32 multi-work `1 passed`; T6 bf16
   values + int32 indices `1 passed`.
+
+2026-05-06 UTC T6 output-CB name-protocol cleanup checkpoint:
+
+- Added `_reduce_out` to the T6 source guard after auditing the remaining
+  user-called-out side-channel family.  The guard now fails on output-CB suffix
+  matching in addition to topk/selection and value/index-local codegen names.
+- Removed the remaining `output_buffer + "_reduce_out"` lookup from
+  `CodeGenBlackhole::TryEmitTypedComputeRegionKernel`.  The limited path now
+  reads input CBs by exact typed requirement identity and selects paired output
+  CBs from executable `cb_configs` role/data-format channel properties, not
+  buffer-name suffixes.
+- Removed the remaining generic per-work value name-prefix classifiers:
+  lowering now treats any resolved active per-work binding as the semantic
+  source, and direct runtime range-shape validation counts `value_source =
+  value_expr` bindings instead of checking `per_work_value[_N]` arg kinds.
+- This closes the immediate name-protocol leak but not the final architecture
+  debt: the limited repeated-reduction source path should still be replaced by
+  generic typed compute-region / reduction lowering with explicit
+  compute-operand-to-CB links.
+- `cmake --build build -j32` passed.
+- Focused structural/projection selectors reported `6 passed`: T6 no named
+  protocol surface, per-work value-expr/source guard, public schema field guard,
+  explicit per-work binding guard, segmented-row value-expr projection, and T9
+  grouped-GEMM segmented-A projection.
+- TT-Sim direct-runtime selectors reported `3 passed`:
+  T6 fp32 single-work, T6 fp32 multi-work, and T6 bf16 values + int32 indices.
+- TT-Sim per-work direct-runtime selectors reported `2 passed`: segmented row
+  copy start/count tables and T9 grouped GEMM bf16.
 
 2026-05-05 UTC T9.2 paged GQA decode checkpoint:
 

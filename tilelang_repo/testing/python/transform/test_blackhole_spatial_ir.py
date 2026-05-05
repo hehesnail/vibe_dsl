@@ -1260,6 +1260,9 @@ def test_t8_per_work_runtime_values_use_generic_value_expr_not_case_schema():
         / "tilelang_repo/src/transform/common/blackhole_runtime_arg_schema.h"
     ).read_text()
     module_source = (REPO_ROOT / "tilelang_repo/src/target/blackhole_module.cc").read_text()
+    lowering_source = (
+        REPO_ROOT / "tilelang_repo/src/transform/lower_blackhole_ops.cc"
+    ).read_text()
 
     assert 'kValueExpr = "value_expr"' in schema_source
     descriptor_values = set(
@@ -1307,6 +1310,13 @@ def test_t8_per_work_runtime_values_use_generic_value_expr_not_case_schema():
     assert "EvaluateIndexTableElementIndex" not in module_source
     assert "index_table_shape" not in module_source
     assert "index_table_index_sources" not in module_source
+    assert "IsGenericPerWorkValueArgKind" not in module_source
+    assert "kPerWorkValueArgPrefix" not in module_source
+    assert "binding->arg_name == kBlackholePerWorkValueArgPrefix" not in lowering_source
+    assert (
+        "binding->arg_name.rfind(std::string(kBlackholePerWorkValueArgPrefix)"
+        not in lowering_source
+    )
 
 
 def test_t6_value_index_scan_codegen_has_no_topk_named_protocol_surface():
@@ -1323,6 +1333,7 @@ def test_t6_value_index_scan_codegen_has_no_topk_named_protocol_surface():
         "index_reduce",
         "value_cb",
         "index_cb",
+        "_reduce_out",
         "row-rank",
         "__tl_rank_",
         "kRankExtent",

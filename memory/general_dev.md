@@ -2646,3 +2646,17 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   guard that rejects both the old entry name and the old local roles.  This is
   still only a cleanup step until generic typed compute-region / reduction
   lowering owns the behavior.
+- 2026-05-06 Blackhole output-CB identity:
+  Do not recover a writer/compute output CB by appending source-generation
+  suffixes such as `_reduce_out` to an output buffer name.  That couples
+  pre-allocation naming mechanics to executable source.  Codegen should consume
+  executable `cb_configs` metadata and typed channel properties; the final form
+  should make compute operand bindings point at CB requirements explicitly so
+  source generation never has to rediscover the edge from strings.
+- 2026-05-06 Blackhole per-work value classification:
+  Once a `tl.blackhole.runtime_arg_u32(...)` expression has been resolved to an
+  active `TTPerWorkArgSpec` / `IndexedPerWorkRuntimeArg`, do not re-check
+  whether the string name starts with `per_work_value`.  The resolved binding
+  and `value_source` are the typed truth.  Runtime-side queries for dynamic
+  range/value-expr behavior should count `value_source=value_expr` records with
+  non-empty serialized expressions, not `arg_kind` prefixes.

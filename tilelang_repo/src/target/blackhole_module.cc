@@ -1557,12 +1557,6 @@ static const BufferMaterializationSpec* FindBufferMaterializationSpec(
     const ExecutableSpec& spec,
     const std::string& buffer_name);
 
-static bool IsGenericPerWorkValueArgKind(const std::string& arg_kind) {
-  const std::string prefix =
-      tl::blackhole_runtime_arg_schema::kPerWorkValueArgPrefix;
-  return arg_kind == prefix || arg_kind.rfind(prefix + "_", 0) == 0;
-}
-
 static bool HasSubTilePageIndexedMaterialization(const ExecutableSpec& spec,
                                                  const std::string& buffer) {
   const BufferMaterializationSpec* materialization =
@@ -1583,7 +1577,6 @@ static int CountGenericValueExprPerWorkBindingsForBuffer(
       spec.per_work_arg_specs.begin(), spec.per_work_arg_specs.end(),
       [&](const PerWorkArgSpec& arg_spec) {
         return arg_spec.buffer == buffer &&
-               IsGenericPerWorkValueArgKind(arg_spec.arg_kind) &&
                arg_spec.value_source ==
                    tl::blackhole_runtime_arg_schema::kValueSourceValueExpr &&
                !arg_spec.value_expr_json.empty();

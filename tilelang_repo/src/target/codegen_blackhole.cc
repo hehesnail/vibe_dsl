@@ -1139,32 +1139,67 @@ bool CodeGenBlackhole::TryEmitTypedComputeRegionKernel(const tvm::tir::PrimFunc&
     int page_size = 0;
     std::string data_format;
   };
-  auto find_cb = [&](const std::string& name, const std::string& role,
-                     bool prefix) -> CBInfo {
+  auto read_cb_info = [&](const ffi::Map<ffi::String, ffi::Any>& cb) -> CBInfo {
     CBInfo result;
+    result.id = static_cast<int>(MapGetInt(cb, "cb_id", -1));
+    result.num_pages = static_cast<int>(MapGetInt(cb, "num_pages", 0));
+    result.page_size = static_cast<int>(MapGetInt(cb, "page_size", 0));
+    result.data_format = MapGetString(cb, "data_format");
+    return result;
+  };
+  auto cb_has_exact_requirement_name = [&](const ffi::Map<ffi::String, ffi::Any>& cb,
+                                           const std::string& requirement_name) -> bool {
+    if (MapGetString(cb, "name") == requirement_name) {
+      return true;
+    }
+    if (auto names = cb.Get("requirement_names")) {
+      for (const ffi::Any& name_any : Downcast<ffi::Array<ffi::Any>>(names.value())) {
+        if (static_cast<std::string>(Downcast<ffi::String>(name_any)) == requirement_name) {
+          return true;
+        }
+      }
+    }
+    return false;
+  };
+  auto find_cb_by_requirement_name = [&](const std::string& requirement_name,
+                                         const std::string& role) -> CBInfo {
     for (const ffi::Any& cb_any : GetCBConfigsForCodegen(f)) {
       auto cb = cb_any.as<ffi::Map<ffi::String, ffi::Any>>().value_or(
           ffi::Map<ffi::String, ffi::Any>());
       if (cb.empty() || MapGetString(cb, "role") != role) {
         continue;
       }
-      const std::string cb_name = MapGetString(cb, "name");
-      const bool matched = prefix ? cb_name.rfind(name, 0) == 0 : cb_name == name;
-      if (!matched) {
+      if (!cb_has_exact_requirement_name(cb, requirement_name)) {
         continue;
       }
-      result.id = static_cast<int>(MapGetInt(cb, "cb_id", -1));
-      result.num_pages = static_cast<int>(MapGetInt(cb, "num_pages", 0));
-      result.page_size = static_cast<int>(MapGetInt(cb, "page_size", 0));
-      result.data_format = MapGetString(cb, "data_format");
-      return result;
+      return read_cb_info(cb);
     }
-    return result;
+    return CBInfo();
+  };
+  auto find_unique_output_cb_by_channel = [&](bool ordinal_channel) -> CBInfo {
+    CBInfo result;
+    int matches = 0;
+    for (const ffi::Any& cb_any : GetCBConfigsForCodegen(f)) {
+      auto cb = cb_any.as<ffi::Map<ffi::String, ffi::Any>>().value_or(
+          ffi::Map<ffi::String, ffi::Any>());
+      if (cb.empty() || MapGetString(cb, "role") != "output") {
+        continue;
+      }
+      CBInfo candidate = read_cb_info(cb);
+      const bool candidate_is_ordinal = candidate.data_format == "Int32";
+      if (candidate_is_ordinal != ordinal_channel) {
+        continue;
+      }
+      result = candidate;
+      ++matches;
+    }
+    return matches == 1 ? result : CBInfo();
   };
 
-  const CBInfo input_cb = find_cb(primary_record->input_buffer, "intermediate", false);
-  const CBInfo primary_out_cb = find_cb(primary_record->output_buffer + "_reduce_out", "output", true);
-  const CBInfo ordinal_out_cb = find_cb(ordinal_record->output_buffer + "_reduce_out", "output", true);
+  const CBInfo input_cb =
+      find_cb_by_requirement_name(primary_record->input_buffer, "intermediate");
+  const CBInfo primary_out_cb = find_unique_output_cb_by_channel(false);
+  const CBInfo ordinal_out_cb = find_unique_output_cb_by_channel(true);
   if (input_cb.id < 0 || primary_out_cb.id < 0 || ordinal_out_cb.id < 0 ||
       input_cb.num_pages <= 0 || primary_out_cb.num_pages <= 0 || ordinal_out_cb.num_pages <= 0) {
     return false;

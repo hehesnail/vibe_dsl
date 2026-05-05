@@ -2851,11 +2851,7 @@ bool PlanTTKernelABI::IsPerWorkValueRuntimeArgExpr(const PrimExpr& expr) const {
   if (!binding.has_value()) {
     return false;
   }
-  if (binding->arg_name.empty()) {
-    return true;
-  }
-  return binding->arg_name == kBlackholePerWorkValueArgPrefix ||
-         binding->arg_name.rfind(std::string(kBlackholePerWorkValueArgPrefix) + "_", 0) == 0;
+  return true;
 }
 
 bool PlanTTKernelABI::ExprUsesPerWorkRuntimeArg(

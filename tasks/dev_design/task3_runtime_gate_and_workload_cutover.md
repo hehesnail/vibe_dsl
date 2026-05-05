@@ -100,7 +100,10 @@ Per-work arg specs have one owner for nontrivial dynamic values:
 may evaluate that expression against the logical work context, typed compute
 records, and any explicitly referenced input buffers, but they must not add
 workload-shaped `value_source` enums such as compute extent, row/page, table,
-or selection-specific sources.
+or selection-specific sources.  They also must not classify a binding by
+runtime-arg name prefixes such as `per_work_value[_N]`; once a runtime-arg
+expression resolves to a per-work spec, `value_source`, `value_expr`, and
+`AccessRegion` evidence are the protocol.
 
 Remote synchronization endpoints have the same rule.  A pair of
 `logical_core_noc_x/y` runtime args may bind the ABI values consumed by a
