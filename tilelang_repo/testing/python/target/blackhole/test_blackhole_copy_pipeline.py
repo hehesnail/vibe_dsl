@@ -183,6 +183,7 @@ def test_blackhole_leaf_readers_do_not_keep_legacy_defaults_or_slot_fallbacks():
         REPO_ROOT / "src" / "target" / "rt_mod_blackhole.cc": [
             'register_buffer(buffer_name, "page_indexed", "dram")',
             '"value_expr_buffer_load"',
+            "SpecHasRuntimeArgKind",
         ],
     }
 

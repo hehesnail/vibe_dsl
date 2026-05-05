@@ -323,11 +323,10 @@ Each checkpoint needs its own direct-runtime correctness proof:
   projection, and sparse-ragged plus paged-valid-rows direct runtime reported
   `9 passed`.
 - Remaining similar schema-risk surfaces from the audit after this checkpoint:
-  direct-runtime exact-CB gates still query
-  `SpecHasRuntimeArgKind("num_k_tiles")`, direct runtime still classifies
-  tile-start bounds through `IsTileStartRuntimeArgKind`, and segment
-  extraction in `rt_mod_blackhole.cc` still consumes
-  `blackhole.segment_kind` / neighbor inference.  These are cleanup targets;
+  direct runtime still classifies tile-start bounds through
+  `IsTileStartRuntimeArgKind`, and segment extraction in
+  `rt_mod_blackhole.cc` still consumes `blackhole.segment_kind` / neighbor
+  inference.  These are cleanup targets;
   pass-local `BlackholeLoweringSupportFacts` remain separate derived analysis
   and are not being treated as a public schema surface.
 
@@ -348,6 +347,23 @@ Each checkpoint needs its own direct-runtime correctness proof:
 - Focused TT-Sim selectors reported the source guard `1 passed` and the
   logical-z/K-sharded plus grouped-GEMM coverage `3 passed`, including the
   manycore K-sharded bf16 partial-sum runtime path.
+
+2026-05-06 UTC exact-CB typed gate checkpoint:
+
+- Removed the `rt_mod_blackhole.cc` `SpecHasRuntimeArgKind` helper and the
+  exact-CB admission checks that used `num_k_tiles` runtime-arg presence as a
+  proxy for GEMM/workload structure.
+- Exact-CB multi-page and multi-block gates now consume existing typed
+  `KernelComputeOpSpec` records and require an enabled GEMM compute op before
+  applying the GEMM-specific runtime boundary.
+- The public source guard now rejects `SpecHasRuntimeArgKind` in
+  `rt_mod_blackhole.cc`, and the flash metadata test accepts explicit
+  `logical_block_yx_linear` per-work binding sources instead of requiring a
+  stale `work_linear_id` projection.
+- `cmake --build build -j32` passed.
+- Focused TT-Sim selectors covering the source guard, exact-CB flash
+  executable metadata gate, multi-work flash per-work metadata, and seq64
+  multi-block runtime admission reported `9 passed`.
 
 2026-05-05 UTC T9.2 paged GQA decode checkpoint:
 

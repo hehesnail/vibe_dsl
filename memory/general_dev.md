@@ -2564,3 +2564,11 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   `BindThreadIndex` consume that explicit binding.  `work_linear_id` remains
   an acceptable generic fallback only when that exact binding is present; do
   not reintroduce a `runtime_arg_vars_by_kind_` side map in codegen.
+- 2026-05-06 Blackhole exact-CB gate evidence:
+  Runtime admission gates must not query runtime-arg kind names such as
+  `num_k_tiles` to infer workload structure.  When an exact-CB boundary is
+  GEMM-specific, consume the typed `KernelComputeOpSpec` records already
+  projected into `ExecutableSpec` and gate on an enabled GEMM compute op.  Keep
+  per-work source tests aligned with explicit logical sources such as
+  `logical_block_yx_linear`; requiring a stale `work_linear_id` projection is
+  another form of semantic recovery by ABI shape.

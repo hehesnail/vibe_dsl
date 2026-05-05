@@ -1104,10 +1104,15 @@ def test_blackhole_flash_attention_multi_work_item_metadata_exposes_explicit_per
         for spec in reader_specs
         if str(spec["arg_kind"]) in {"a_tile_start_id", "b_tile_start_id"}
     }
-    assert reader_start_sources & {"logical_block_y", "work_linear_id"}
+    assert reader_start_sources & {
+        "logical_block_y",
+        "logical_block_yx_linear",
+        "work_linear_id",
+    }
     assert any(
         str(spec["arg_kind"]) in {"a_tile_start_id", "b_tile_start_id", "output_tile_start_id"}
-        and str(spec["value_source"]) == "work_linear_id"
+        and str(spec["value_source"])
+        in {"logical_block_y", "logical_block_yx_linear", "work_linear_id"}
         for spec in reader_specs + writer_specs
     )
 

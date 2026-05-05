@@ -3144,15 +3144,12 @@ static void EnforceTypedDstCbAccumulationGate(ExecutableSpec* spec) {
   }
 }
 
-static bool SpecHasRuntimeArgKind(const ExecutableSpec& spec, std::string_view kind) {
-  if (KernelArgsContainKind(spec.runtime_args, kind) ||
-      KernelArgsContainKind(spec.common_runtime_args, kind)) {
-    return true;
-  }
+static bool SpecHasEnabledGemmComputeOp(const ExecutableSpec& spec) {
   for (const auto& kernel : spec.kernels) {
-    if (KernelArgsContainKind(kernel.runtime_args, kind) ||
-        KernelArgsContainKind(kernel.common_runtime_args, kind)) {
-      return true;
+    for (const auto& compute_op : kernel.compute_ops) {
+      if (compute_op.enabled && compute_op.kind == "gemm") {
+        return true;
+      }
     }
   }
   return false;
@@ -3182,7 +3179,7 @@ static void EnforceExactLiveFormMultiPageRepublishGate(ExecutableSpec* spec) {
   if (!SpecHasThreadDistributedCastRepublishPlan(*spec)) {
     return;
   }
-  if (!SpecHasRuntimeArgKind(*spec, "num_k_tiles")) {
+  if (!SpecHasEnabledGemmComputeOp(*spec)) {
     return;
   }
   for (const CBConfig& cb : spec->cb_configs) {
@@ -3203,7 +3200,7 @@ static void EnforceExactLiveFormMultiPageRepublishGate(ExecutableSpec* spec) {
 static void EnforceMultiBlockExactCBRepublishGate(ExecutableSpec* spec) {
   ICHECK(spec != nullptr);
   if (!SpecHasThreadDistributedCastRepublishPlan(*spec) ||
-      !SpecHasRuntimeArgKind(*spec, "num_k_tiles")) {
+      !SpecHasEnabledGemmComputeOp(*spec)) {
     return;
   }
   for (const CBConfig& cb : spec->cb_configs) {
