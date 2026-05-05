@@ -316,6 +316,33 @@ Each checkpoint needs its own direct-runtime correctness proof:
   `PlanTTKernelABI`, and the dedicated row-rank value/index scan emitter for
   T6 until generic typed reduce/scan lowering replaces it.
 
+2026-05-06 UTC generic per-work binding analysis checkpoint:
+
+- `PlanTTKernelABI` no longer carries the pass-local
+  `needs_*_value_arg_`, `*_table_buffer_name_`,
+  `*_shared_buffer_names_`, `bound_value_runtime_arg_*`, or
+  `runtime_arg_tile_start_scale_*` state used to classify ragged / segmented /
+  paged value bindings.
+- The lowering pass now resolves active per-work bindings from the current TIR
+  expression (`tl.blackhole.runtime_arg_u32(...)` or the active `Let` var)
+  back to the generic `IndexedPerWorkRuntimeArg` record.  Transport decisions
+  such as guarded page copies and base+extent materialization are derived from
+  whether the current index/predicate expressions use generic per-work values,
+  not from workload-shaped side flags.
+- Tile-origin normalization is keyed by the generic
+  `value_usage=buffer_tile_origin` record instead of separate runtime-arg
+  name / var scale maps.
+- The public source guard now rejects the removed bound/base/dynamic member
+  names in `lower_blackhole_ops.h`, `lower_blackhole_ops.cc`,
+  `lower_blackhole_transport.cc`, and `lower_blackhole_abi.cc`.
+- `cmake --build tilelang_repo/build -j32` passed.
+- Focused selectors covering the source guard; block-indexed, 2D indexed,
+  sparse-ragged, ragged-row, two-segment, and paged-valid-row projection; and
+  the matching TT-Sim direct-runtime cases reported `15 passed`.
+- Remaining same-family implementation risk after this checkpoint is the T6
+  dedicated row-rank value/index scan emitter until generic typed reduce/scan
+  lowering replaces it.
+
 2026-05-05 UTC IR-first per-work schema cleanup checkpoint:
 
 - Public per-work schema no longer exports `index_table`, `index_buffer`,

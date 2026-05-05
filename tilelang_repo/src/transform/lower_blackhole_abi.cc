@@ -1212,10 +1212,6 @@ void PlanTTKernelABI::StoreSegmentPlan(PrimFunc &func) {
   const std::unordered_map<std::string, Stmt> segment_bodies =
       ExtractSegmentBodiesFromMarkers(func->body, segment_kinds);
   if (segment_kinds.empty() && !needs_copy_runtime_args_ &&
-      !needs_bound_value_arg_ &&
-      !needs_dynamic_value_arg_ &&
-      !needs_base_value_arg_ &&
-      !needs_extent_value_for_base_arg_ &&
       indexed_per_work_runtime_args_.empty() &&
       !requires_compute_segment_) {
     segment_plan_ = Array<Any>();
@@ -1258,9 +1254,7 @@ void PlanTTKernelABI::StoreSegmentPlan(PrimFunc &func) {
     kernel.Set("name", String("main"));
     kernel.Set("kind", String("fused_dataflow"));
     kernel.Set("core_type", String("brisc"));
-    if (needs_bound_value_arg_ || needs_dynamic_value_arg_ ||
-        needs_base_value_arg_ || needs_extent_value_for_base_arg_ ||
-        !indexed_per_work_runtime_args_.empty()) {
+    if (!indexed_per_work_runtime_args_.empty()) {
       Array<Any> runtime_args;
       append_indexed_per_work_runtime_args(&runtime_args, "fused_dataflow",
                                            func->body);
@@ -1277,9 +1271,7 @@ void PlanTTKernelABI::StoreSegmentPlan(PrimFunc &func) {
       ICHECK(body_it != segment_bodies.end())
           << "PlanTTKernelABI requires a body for segment " << kind;
       kernel.Set(tt_program_segment_key::kBody, body_it->second);
-      if (needs_bound_value_arg_ || needs_base_value_arg_ ||
-          needs_dynamic_value_arg_ || needs_extent_value_for_base_arg_ ||
-          !indexed_per_work_runtime_args_.empty()) {
+      if (!indexed_per_work_runtime_args_.empty()) {
         Array<Any> runtime_args;
         const bool appended_indexed =
             append_indexed_per_work_runtime_args(&runtime_args, kind,

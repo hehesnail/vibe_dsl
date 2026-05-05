@@ -2617,3 +2617,12 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   to the resolved segment.  This prevents non-fused reader/writer kernels from
   silently sharing slot 0 while keeping `fused_dataflow` as an ABI kind rather
   than a transport-side schema branch.
+- 2026-05-06 Blackhole generic per-work binding analysis:
+  Do not maintain pass-local `needs_*_value_arg_`, table-buffer-name, or
+  shared-buffer-name state to classify ragged / segmented / paged per-work
+  values.  During lowering, an active `Let` var can be mapped to the
+  `IndexedPerWorkRuntimeArg` being emitted, and later decisions should inspect
+  the current TIR index/predicate expressions through that binding.  Transport
+  guarded-copy behavior is then a property of generic per-work data appearing
+  in the expression, while tile-origin scale normalization follows
+  `value_usage=buffer_tile_origin`.

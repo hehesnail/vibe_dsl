@@ -1571,9 +1571,9 @@ PrimFunc PlanTTKernelABI::SelectComputeBuiltins(const PrimFunc& func) {
   block_index_vars_.clear();
   block_index_var_names_.clear();
   block_index_source_by_var_.clear();
-  bound_value_runtime_arg_vars_.clear();
-  bound_value_runtime_arg_names_.clear();
   indexed_per_work_runtime_args_.clear();
+  active_per_work_runtime_arg_bindings_.clear();
+  guarded_per_work_value_buffer_identities_.clear();
   cb_consumed_compute_input_pages_by_buffer_identity_.clear();
   cb_consumed_compute_input_use_count_by_buffer_identity_.clear();
   buffer_flow_facts_.clear();
@@ -1847,10 +1847,6 @@ PrimFunc PlanTTKernelABI::Transform(const PrimFunc& func) {
   next_requirement_index_ = 0;
   saw_copy_op_ = false;
   needs_copy_runtime_args_ = false;
-  needs_bound_value_arg_ = false;
-  needs_dynamic_value_arg_ = false;
-  needs_base_value_arg_ = false;
-  needs_extent_value_for_base_arg_ = false;
   requires_compute_segment_ = false;
   logical_grid_x_ = 1;
   logical_grid_z_ = 1;
@@ -1860,19 +1856,9 @@ PrimFunc PlanTTKernelABI::Transform(const PrimFunc& func) {
   copy_output_buffer_name_.clear();
   copy_input_buffer_names_.clear();
   copy_output_buffer_names_.clear();
-  bound_value_table_buffer_name_.clear();
-  bound_value_subject_buffer_name_.clear();
-  dynamic_value_source_.clear();
-  bound_value_shared_buffer_names_.clear();
-  base_value_table_buffer_name_.clear();
-  extent_value_for_base_table_buffer_name_.clear();
-  base_value_subject_buffer_name_.clear();
-  base_value_shared_buffer_names_.clear();
-  runtime_arg_tile_start_scale_by_name_.clear();
-  runtime_arg_tile_start_scale_by_var_.clear();
-  bound_value_runtime_arg_vars_.clear();
-  bound_value_runtime_arg_names_.clear();
   indexed_per_work_runtime_args_.clear();
+  active_per_work_runtime_arg_bindings_.clear();
+  guarded_per_work_value_buffer_identities_.clear();
   host_buffer_by_compute_operand_buffer_.clear();
   direct_copy_source_by_buffer_identity_.clear();
   buffer_by_identity_.clear();
@@ -2816,23 +2802,88 @@ bool HasResidualScalarLoadBroadcast(const Stmt& body) {
 
 }  // namespace
 
-bool PlanTTKernelABI::IsBoundValueRuntimeArgExpr(const PrimExpr& expr) const {
+const PlanTTKernelABI::IndexedPerWorkRuntimeArg*
+PlanTTKernelABI::FindIndexedPerWorkRuntimeArgByName(
+    const std::string& arg_name) const {
+  for (const IndexedPerWorkRuntimeArg& arg : indexed_per_work_runtime_args_) {
+    if (arg.arg_name == arg_name) {
+      return &arg;
+    }
+  }
+  return nullptr;
+}
+
+std::optional<PlanTTKernelABI::ActivePerWorkRuntimeArgBinding>
+PlanTTKernelABI::ResolvePerWorkRuntimeArgBinding(const PrimExpr& expr) const {
   const PrimExpr stripped = StripValueCasts(expr);
   if (const auto* var = stripped.as<VarNode>()) {
-    return bound_value_runtime_arg_vars_.count(var) != 0U;
+    auto it = active_per_work_runtime_arg_bindings_.find(var);
+    if (it != active_per_work_runtime_arg_bindings_.end()) {
+      return it->second;
+    }
+    return std::nullopt;
   }
   const auto* call = stripped.as<CallNode>();
   if (!IsBlackholeBuiltinCall(call, blackhole_runtime_arg_u32(),
                               "tl.blackhole.runtime_arg_u32") ||
       call->args.empty()) {
-    return false;
+    return std::nullopt;
   }
   const auto* arg_name = call->args[0].as<StringImmNode>();
   if (arg_name == nullptr) {
+    return std::nullopt;
+  }
+  const IndexedPerWorkRuntimeArg* arg =
+      FindIndexedPerWorkRuntimeArgByName(arg_name->value);
+  if (arg == nullptr) {
+    return std::nullopt;
+  }
+  ActivePerWorkRuntimeArgBinding binding;
+  binding.arg_name = arg->arg_name;
+  binding.value_source = arg->value_source;
+  binding.value_usage = arg->value_usage;
+  return binding;
+}
+
+bool PlanTTKernelABI::IsPerWorkValueRuntimeArgExpr(const PrimExpr& expr) const {
+  std::optional<ActivePerWorkRuntimeArgBinding> binding =
+      ResolvePerWorkRuntimeArgBinding(expr);
+  if (!binding.has_value()) {
     return false;
   }
-  const std::string name = arg_name->value;
-  return bound_value_runtime_arg_names_.count(name) != 0U;
+  if (binding->arg_name.empty()) {
+    return true;
+  }
+  return binding->arg_name == kBlackholePerWorkValueArgPrefix ||
+         binding->arg_name.rfind(std::string(kBlackholePerWorkValueArgPrefix) + "_", 0) == 0;
+}
+
+bool PlanTTKernelABI::ExprUsesPerWorkRuntimeArg(
+    const PrimExpr& expr, const std::string& value_usage) const {
+  if (!expr.defined()) {
+    return false;
+  }
+  bool found = false;
+  tir::PostOrderVisit(expr, [&](const ObjectRef& node) {
+    if (found) {
+      return;
+    }
+    PrimExpr current;
+    if (const auto* var = node.as<VarNode>()) {
+      current = GetRef<PrimExpr>(var);
+    } else if (const auto* call = node.as<CallNode>()) {
+      current = GetRef<PrimExpr>(call);
+    } else {
+      return;
+    }
+    std::optional<ActivePerWorkRuntimeArgBinding> binding =
+        ResolvePerWorkRuntimeArgBinding(current);
+    if (!binding.has_value()) {
+      return;
+    }
+    found = value_usage.empty() || binding->value_usage == value_usage;
+  });
+  return found;
 }
 
 bool PlanTTKernelABI::IsGuardMaskSelfUpdateStore(
@@ -2847,11 +2898,11 @@ bool PlanTTKernelABI::IsGuardMaskSelfUpdateStore(
       return;
     }
     if (const auto* var = node.as<VarNode>()) {
-      has_bound_value_arg = IsBoundValueRuntimeArgExpr(GetRef<PrimExpr>(var));
+      has_bound_value_arg = IsPerWorkValueRuntimeArgExpr(GetRef<PrimExpr>(var));
       return;
     }
     if (const auto* call = node.as<CallNode>()) {
-      has_bound_value_arg = IsBoundValueRuntimeArgExpr(GetRef<PrimExpr>(call));
+      has_bound_value_arg = IsPerWorkValueRuntimeArgExpr(GetRef<PrimExpr>(call));
     }
   });
   return has_bound_value_arg;
@@ -2873,12 +2924,12 @@ bool PlanTTKernelABI::MatchGuardMaskSelfUpdateStore(
   PrimExpr position;
   PrimExpr bound_value;
   if (const auto* lt = condition.as<LTNode>()) {
-    if (IsBoundValueRuntimeArgExpr(lt->b)) {
+    if (IsPerWorkValueRuntimeArgExpr(lt->b)) {
       position = lt->a;
       bound_value = StripValueCasts(lt->b);
     }
   } else if (const auto* gt = condition.as<GTNode>()) {
-    if (IsBoundValueRuntimeArgExpr(gt->a)) {
+    if (IsPerWorkValueRuntimeArgExpr(gt->a)) {
       position = gt->b;
       bound_value = StripValueCasts(gt->a);
     }
@@ -3608,13 +3659,41 @@ Stmt PlanTTKernelABI::VisitStmt_(const LetStmtNode* op) {
   };
 
   const auto* table_load = op->value.as<BufferLoadNode>();
+  auto visit_with_active_per_work_binding =
+      [&](const std::string& arg_name) -> Stmt {
+    PrimExpr per_work_value =
+        Call(op->var.dtype(), blackhole_runtime_arg_u32(), {StringImm(arg_name)});
+    Stmt rewritten = LetStmt(op->var, per_work_value, op->body, op->span);
+    std::optional<ActivePerWorkRuntimeArgBinding> previous_binding;
+    auto previous_it = active_per_work_runtime_arg_bindings_.find(op->var.get());
+    if (previous_it != active_per_work_runtime_arg_bindings_.end()) {
+      previous_binding = previous_it->second;
+    }
+    if (const IndexedPerWorkRuntimeArg* indexed_arg =
+            FindIndexedPerWorkRuntimeArgByName(arg_name)) {
+      active_per_work_runtime_arg_bindings_[op->var.get()] =
+          ActivePerWorkRuntimeArgBinding{
+              indexed_arg->arg_name, indexed_arg->value_source,
+              indexed_arg->value_usage};
+    }
+    Stmt lowered = StmtExprMutator::VisitStmt_(rewritten.as<LetStmtNode>());
+    if (previous_binding.has_value()) {
+      active_per_work_runtime_arg_bindings_[op->var.get()] =
+          previous_binding.value();
+    } else {
+      active_per_work_runtime_arg_bindings_.erase(op->var.get());
+    }
+    return lowered;
+  };
   if (select_compute_builtins_only_ && table_load != nullptr &&
       table_load->buffer->dtype.is_int() && table_load->buffer->dtype.bits() == 32 &&
       GetStorageScope(table_load->buffer) == "global" &&
       body_uses_let_var_for_guarded_copy_predicate(op->body)) {
-    bound_value_runtime_arg_vars_.insert(op->var.get());
+    active_per_work_runtime_arg_bindings_[op->var.get()] =
+        ActivePerWorkRuntimeArgBinding{
+            "", blackhole_runtime_arg_schema::kValueSourceValueExpr, ""};
     Stmt lowered = StmtExprMutator::VisitStmt_(op);
-    bound_value_runtime_arg_vars_.erase(op->var.get());
+    active_per_work_runtime_arg_bindings_.erase(op->var.get());
     return lowered;
   }
   if (!select_compute_builtins_only_ && table_load != nullptr &&
@@ -3623,13 +3702,10 @@ Stmt PlanTTKernelABI::VisitStmt_(const LetStmtNode* op) {
       body_uses_let_var_for_copy_index(op->body)) {
     const std::optional<int64_t> coefficient =
         copy_source_row_index_var_coefficient(op->body);
-    const std::string table_buffer = BufferIdentityName(table_load->buffer);
     const BufferLoadNode* subject_load = find_copy_load_using_let_var(op->body);
     ICHECK(subject_load != nullptr)
         << "Blackhole table-backed copy index requires a subject buffer load";
     const std::string subject_buffer = BufferIdentityName(subject_load->buffer);
-    ICHECK(!table_buffer.empty())
-        << "Blackhole table-backed copy index requires named table buffer";
     ICHECK(!subject_buffer.empty())
         << "Blackhole table-backed copy index requires named subject buffer";
     const ffi::Array<PrimExpr> subject_index_exprs =
@@ -3640,13 +3716,6 @@ Stmt PlanTTKernelABI::VisitStmt_(const LetStmtNode* op) {
     int64_t tile_start_scale = 1;
     PrimExpr runtime_value_expr = op->value;
     if (coefficient.has_value() && coefficient.value() == 1) {
-      if (!base_value_table_buffer_name_.empty()) {
-        ICHECK_EQ(base_value_table_buffer_name_, table_buffer)
-        << "Blackhole base-value per-work binding admits one table buffer "
-        << "per fused dataflow kernel";
-      }
-      base_value_table_buffer_name_ = table_buffer;
-      needs_base_value_arg_ = true;
       arg_name = GetOrCreateIndexedPerWorkRuntimeArg(
           kBlackholePerWorkValueArgPrefix,
           subject_buffer, subject_index_exprs,
@@ -3670,10 +3739,6 @@ Stmt PlanTTKernelABI::VisitStmt_(const LetStmtNode* op) {
           blackhole_runtime_arg_schema::kValueSourceValueExpr,
           runtime_value_expr, false,
           blackhole_runtime_arg_schema::kValueUsageBufferTileOrigin);
-      runtime_arg_tile_start_scale_by_name_[arg_name] =
-          coefficient.value() / kBlackholeTileRows;
-      runtime_arg_tile_start_scale_by_var_[op->var.get()] =
-          coefficient.value() / kBlackholeTileRows;
     }
     if (arg_name != "a_tile_start_id") {
       for (const SubjectAccessCandidate& alias_access : subject_accesses) {
@@ -3687,71 +3752,34 @@ Stmt PlanTTKernelABI::VisitStmt_(const LetStmtNode* op) {
             runtime_value_expr);
       }
     }
-    PrimExpr per_work_table_value =
-        Call(op->var.dtype(), blackhole_runtime_arg_u32(), {StringImm(arg_name)});
-    Stmt rewritten = LetStmt(op->var, per_work_table_value, op->body, op->span);
-    return StmtExprMutator::VisitStmt_(rewritten.as<LetStmtNode>());
+    return visit_with_active_per_work_binding(arg_name);
   }
   if (!select_compute_builtins_only_ && table_load != nullptr &&
       table_load->buffer->dtype.is_int() && table_load->buffer->dtype.bits() == 32 &&
       GetStorageScope(table_load->buffer) == "global" &&
       body_uses_let_var_for_guarded_copy_predicate(op->body)) {
-    const std::string table_buffer = BufferIdentityName(table_load->buffer);
     const BufferLoadNode* subject_load = find_copy_load_using_let_var(op->body);
     ICHECK(subject_load != nullptr)
-        << "Blackhole bound-value per-work binding requires a subject buffer load";
+        << "Blackhole guarded per-work binding requires a subject buffer load";
     const std::string subject_buffer = BufferIdentityName(subject_load->buffer);
-    ICHECK(!table_buffer.empty())
-        << "Blackhole bound-value per-work binding requires named table buffer";
     ICHECK(!subject_buffer.empty())
-        << "Blackhole bound-value per-work binding requires named subject buffer";
+        << "Blackhole guarded per-work binding requires named subject buffer";
     const ffi::Array<PrimExpr> subject_index_exprs =
         substitute_let_var_in_indices(subject_load->indices);
     const std::vector<SubjectAccessCandidate> subject_accesses =
         collect_copy_load_subject_accesses_using_let_var(op->body);
-    if (needs_base_value_arg_) {
-      if (!extent_value_for_base_table_buffer_name_.empty()) {
-        ICHECK_EQ(extent_value_for_base_table_buffer_name_, table_buffer)
-            << "Blackhole base/extent per-work bindings admit one extent "
-            << "table buffer per fused dataflow kernel";
+    bool copy_index_already_uses_per_work = false;
+    for (const PrimExpr& index : subject_load->indices) {
+      if (ExprUsesPerWorkRuntimeArg(index)) {
+        copy_index_already_uses_per_work = true;
+        break;
       }
-      extent_value_for_base_table_buffer_name_ = table_buffer;
-      needs_extent_value_for_base_arg_ = true;
-      const std::string arg_name = GetOrCreateIndexedPerWorkRuntimeArg(
-          kBlackholePerWorkValueArgPrefix,
-          subject_buffer, subject_index_exprs,
-          blackhole_runtime_arg_schema::kValueSourceValueExpr,
-          op->value, false);
-      for (const SubjectAccessCandidate& alias_access : subject_accesses) {
-        if (alias_access.buffer == subject_buffer &&
-            same_index_exprs(alias_access.index_exprs, subject_index_exprs)) {
-          continue;
-        }
-        RecordIndexedPerWorkRuntimeArgSubjectAlias(
-            arg_name, alias_access.buffer, alias_access.index_exprs,
-            blackhole_runtime_arg_schema::kValueSourceValueExpr,
-            op->value);
-      }
-      PrimExpr per_work_extent_value_for_base =
-          Call(op->var.dtype(), blackhole_runtime_arg_u32(),
-               {StringImm(arg_name)});
-      Stmt rewritten =
-          LetStmt(op->var, per_work_extent_value_for_base, op->body, op->span);
-      bound_value_runtime_arg_names_.insert(arg_name);
-      return StmtExprMutator::VisitStmt_(rewritten.as<LetStmtNode>());
     }
-    if (!bound_value_table_buffer_name_.empty()) {
-      ICHECK_EQ(bound_value_table_buffer_name_, table_buffer)
-          << "Blackhole bound-value per-work binding admits one table buffer "
-          << "per fused dataflow kernel";
-    }
-    bound_value_table_buffer_name_ = table_buffer;
-    needs_bound_value_arg_ = true;
     const std::string arg_name = GetOrCreateIndexedPerWorkRuntimeArg(
         kBlackholePerWorkValueArgPrefix,
         subject_buffer, subject_index_exprs,
         blackhole_runtime_arg_schema::kValueSourceValueExpr,
-        op->value, true);
+        op->value, !copy_index_already_uses_per_work);
     for (const SubjectAccessCandidate& alias_access : subject_accesses) {
       if (alias_access.buffer == subject_buffer &&
           same_index_exprs(alias_access.index_exprs, subject_index_exprs)) {
@@ -3762,16 +3790,7 @@ Stmt PlanTTKernelABI::VisitStmt_(const LetStmtNode* op) {
           blackhole_runtime_arg_schema::kValueSourceValueExpr,
           op->value);
     }
-    PrimExpr per_work_bound_value =
-        Call(op->var.dtype(), blackhole_runtime_arg_u32(),
-             {StringImm(arg_name)});
-    Stmt rewritten = LetStmt(op->var, per_work_bound_value, op->body, op->span);
-    bound_value_runtime_arg_vars_.insert(op->var.get());
-    bound_value_runtime_arg_names_.insert(arg_name);
-    Stmt lowered = StmtExprMutator::VisitStmt_(rewritten.as<LetStmtNode>());
-    bound_value_runtime_arg_vars_.erase(op->var.get());
-    bound_value_runtime_arg_names_.erase(arg_name);
-    return lowered;
+    return visit_with_active_per_work_binding(arg_name);
   }
 
   return StmtExprMutator::VisitStmt_(op);
@@ -4893,8 +4912,8 @@ Stmt PlanTTKernelABI::VisitStmt_(const ForNode* op) {
         }
       }
       const bool has_guarded_transport =
-          needs_bound_value_arg_ || needs_base_value_arg_ ||
-          needs_extent_value_for_base_arg_;
+          (dram_to_cb != nullptr && CopyStoreUsesPerWorkRuntimeArg(dram_to_cb->store)) ||
+          (cb_to_dram != nullptr && CopyStoreUsesPerWorkRuntimeArg(cb_to_dram->store));
       if (dram_to_cb && cb_to_dram && !has_guarded_transport) {
         saw_copy_op_ = true;
         std::vector<Var> loop_vars_to_zero = dram_to_cb->loop_vars;

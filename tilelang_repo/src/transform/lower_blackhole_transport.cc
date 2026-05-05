@@ -780,6 +780,28 @@ std::optional<PrimExpr> MakeRaggedRowPredicateForPage(
   return std::nullopt;
 }
 
+bool PlanTTKernelABI::CopyStoreUsesPerWorkRuntimeArg(
+    const BufferStoreNode* store) const {
+  if (store == nullptr) {
+    return false;
+  }
+  const auto* load = GetCopyLoad(store);
+  auto indices_use_runtime_arg = [&](const Array<PrimExpr>& indices) {
+    for (const PrimExpr& index : indices) {
+      if (ExprUsesPerWorkRuntimeArg(index)) {
+        return true;
+      }
+    }
+    return false;
+  };
+  if (indices_use_runtime_arg(store->indices) ||
+      (load != nullptr && indices_use_runtime_arg(load->indices))) {
+    return true;
+  }
+  std::optional<PrimExpr> predicate = GetGuardedCopyPredicate(store);
+  return predicate.has_value() && ExprUsesPerWorkRuntimeArg(predicate.value());
+}
+
 void CollectConjuncts(const PrimExpr& expr, std::vector<PrimExpr>* conjuncts) {
   if (!expr.defined()) {
     return;
@@ -790,43 +812,6 @@ void CollectConjuncts(const PrimExpr& expr, std::vector<PrimExpr>* conjuncts) {
     return;
   }
   conjuncts->push_back(expr);
-}
-
-std::optional<std::string> RuntimeArgU32Name(const PrimExpr& expr) {
-  const PrimExpr stripped = StripCasts(expr);
-  const auto* call = stripped.as<tir::CallNode>();
-  if (call == nullptr || !call->op.same_as(blackhole_runtime_arg_u32()) ||
-      call->args.size() != 1U) {
-    return std::nullopt;
-  }
-  const auto* name = call->args[0].as<tir::StringImmNode>();
-  if (name == nullptr) {
-    return std::nullopt;
-  }
-  return name->value;
-}
-
-std::optional<std::pair<std::string, int64_t>> RuntimeArgTimesInt(
-    const PrimExpr& expr) {
-  const PrimExpr stripped = StripCasts(expr);
-  if (std::optional<std::string> arg_name = RuntimeArgU32Name(stripped)) {
-    return std::make_pair(arg_name.value(), 1);
-  }
-  const auto* mul = stripped.as<tir::MulNode>();
-  if (mul == nullptr) {
-    return std::nullopt;
-  }
-  if (std::optional<std::string> arg_name = RuntimeArgU32Name(mul->a)) {
-    if (const auto* factor = StripCasts(mul->b).as<tir::IntImmNode>()) {
-      return std::make_pair(arg_name.value(), factor->value);
-    }
-  }
-  if (std::optional<std::string> arg_name = RuntimeArgU32Name(mul->b)) {
-    if (const auto* factor = StripCasts(mul->a).as<tir::IntImmNode>()) {
-      return std::make_pair(arg_name.value(), factor->value);
-    }
-  }
-  return std::nullopt;
 }
 
 bool PlanTTKernelABI::IsCopyOperation(const BufferStoreNode* op) const {
@@ -1137,51 +1122,39 @@ PrimExpr PlanTTKernelABI::InferCopyTileIndex(const BufferStoreNode* op,
 }
 
 PrimExpr PlanTTKernelABI::NormalizeRuntimeTileStartScale(const PrimExpr& expr) const {
-  auto normalize_var_scale = [&](const PrimExpr& current) -> std::optional<PrimExpr> {
+  auto is_tile_origin_binding = [&](const PrimExpr& current) {
+    std::optional<ActivePerWorkRuntimeArgBinding> binding =
+        ResolvePerWorkRuntimeArgBinding(current);
+    return binding.has_value() &&
+           binding->value_usage ==
+               blackhole_runtime_arg_schema::kValueUsageBufferTileOrigin;
+  };
+  auto normalize_arg_scale = [&](const PrimExpr& current) -> std::optional<PrimExpr> {
     const PrimExpr stripped = StripCasts(current);
-    if (const auto* var = stripped.as<tir::VarNode>()) {
-      auto scale_it = runtime_arg_tile_start_scale_by_var_.find(var);
-      if (scale_it != runtime_arg_tile_start_scale_by_var_.end() &&
-          scale_it->second == 1) {
-        return GetRef<Var>(var);
-      }
-      return std::nullopt;
+    if (is_tile_origin_binding(stripped)) {
+      return stripped;
     }
     const auto* mul = stripped.as<tir::MulNode>();
     if (mul == nullptr) {
       return std::nullopt;
     }
-    auto match_scaled_var = [&](const PrimExpr& maybe_var,
+    auto match_scaled_arg = [&](const PrimExpr& maybe_arg,
                                 const PrimExpr& maybe_factor) -> std::optional<PrimExpr> {
-      const auto* var = StripCasts(maybe_var).as<tir::VarNode>();
       const auto* factor = StripCasts(maybe_factor).as<tir::IntImmNode>();
-      if (var == nullptr || factor == nullptr) {
+      if (factor == nullptr || factor->value <= 0 ||
+          !is_tile_origin_binding(maybe_arg)) {
         return std::nullopt;
       }
-      auto scale_it = runtime_arg_tile_start_scale_by_var_.find(var);
-      if (scale_it != runtime_arg_tile_start_scale_by_var_.end() &&
-          scale_it->second == factor->value && factor->value > 0) {
-        return GetRef<Var>(var);
-      }
-      return std::nullopt;
+      return StripCasts(maybe_arg);
     };
     if (std::optional<PrimExpr> normalized =
-            match_scaled_var(mul->a, mul->b)) {
+            match_scaled_arg(mul->a, mul->b)) {
       return normalized;
     }
-    return match_scaled_var(mul->b, mul->a);
+    return match_scaled_arg(mul->b, mul->a);
   };
-  if (std::optional<PrimExpr> normalized = normalize_var_scale(expr)) {
+  if (std::optional<PrimExpr> normalized = normalize_arg_scale(expr)) {
     return normalized.value();
-  }
-  if (std::optional<std::pair<std::string, int64_t>> scaled =
-          RuntimeArgTimesInt(expr)) {
-    auto scale_it = runtime_arg_tile_start_scale_by_name_.find(scaled->first);
-    if (scale_it != runtime_arg_tile_start_scale_by_name_.end() &&
-        scale_it->second == scaled->second && scaled->second > 0) {
-      return Call(DataType::UInt(32), blackhole_runtime_arg_u32(),
-                  {StringImm(scaled->first)});
-    }
   }
   return expr;
 }
@@ -1925,19 +1898,6 @@ Stmt PlanTTKernelABI::GenerateStagedCopyLoopSequence(
     }
     return page_index;
   };
-  auto make_base_value_page_index = [&](int page_row) -> PrimExpr {
-    PrimExpr base_value = base_page_index;
-    if (page_row != 0) {
-      base_value = analyzer.Simplify(base_value + IntImm32(page_row));
-    }
-    return base_value;
-  };
-  const bool has_base_and_extent_values =
-      !base_value_table_buffer_name_.empty() &&
-      !extent_value_for_base_table_buffer_name_.empty();
-  const bool has_bound_value =
-      !bound_value_table_buffer_name_.empty();
-
   if (IsDramToDeviceCopyDirection(direction)) {
     const bool materialize_to_local = direction == CopyDirection::kDramToLocal;
     const Buffer cb_producer_buffer =
@@ -1959,6 +1919,24 @@ Stmt PlanTTKernelABI::GenerateStagedCopyLoopSequence(
     const int accessor_slot =
         GetReadAccessorSlot(segment_kind, load->buffer, direction);
     const std::optional<PrimExpr> guard_predicate = GetGuardedCopyPredicate(op);
+    const bool base_index_uses_per_work =
+        ExprUsesPerWorkRuntimeArg(base_tile_index) ||
+        ExprUsesPerWorkRuntimeArg(base_page_index);
+    const bool guard_uses_per_work =
+        guard_predicate.has_value() &&
+        ExprUsesPerWorkRuntimeArg(guard_predicate.value());
+    const bool has_base_and_extent_values =
+        base_index_uses_per_work && guard_uses_per_work;
+    const bool has_bound_value =
+        !base_index_uses_per_work && guard_uses_per_work;
+    auto record_guarded_per_work_buffers = [&]() {
+      guarded_per_work_value_buffer_identities_.insert(
+          BufferIdentityName(cb_producer_buffer));
+      if (!SameBufferIdentity(cb_producer_buffer, op->buffer)) {
+        guarded_per_work_value_buffer_identities_.insert(
+            BufferIdentityName(op->buffer));
+      }
+    };
     auto make_guard_predicate_for_page =
         [&](const PrimExpr& predicate, const PrimExpr& row_expr,
             const PrimExpr& page_row) -> std::optional<PrimExpr> {
@@ -2089,11 +2067,6 @@ Stmt PlanTTKernelABI::GenerateStagedCopyLoopSequence(
                 rewrite_for_candidate(lt->b, local_row_expr, page_row);
             if (!lhs.unsupported && !rhs.unsupported &&
                 (lhs.used_local_row || rhs.used_local_row)) {
-              if (lhs.used_dynamic_value || rhs.used_dynamic_value) {
-                needs_dynamic_value_arg_ = true;
-                dynamic_value_source_ =
-                    blackhole_runtime_arg_schema::kValueSourceLogicalBlockY;
-              }
               return analyzer.Simplify(lhs.expr < rhs.expr);
             }
           } else if (const auto* le = conjunct.as<tir::LENode>()) {
@@ -2103,11 +2076,6 @@ Stmt PlanTTKernelABI::GenerateStagedCopyLoopSequence(
                 rewrite_for_candidate(le->b, local_row_expr, page_row);
             if (!lhs.unsupported && !rhs.unsupported &&
                 (lhs.used_local_row || rhs.used_local_row)) {
-              if (lhs.used_dynamic_value || rhs.used_dynamic_value) {
-                needs_dynamic_value_arg_ = true;
-                dynamic_value_source_ =
-                    blackhole_runtime_arg_schema::kValueSourceLogicalBlockY;
-              }
               return analyzer.Simplify(lhs.expr <= rhs.expr);
             }
           }
@@ -2150,14 +2118,7 @@ Stmt PlanTTKernelABI::GenerateStagedCopyLoopSequence(
       scratch_req.data_format = DataTypeToDataFormatForBlackhole(shared_buffer->dtype);
       cb_requirements_.push_back(scratch_req);
       SetRequirementPageLayout(cb_id, geometry.tile_bytes, total_subtiles);
-      const std::string source_buffer_name = BufferIdentityName(load->buffer);
-      const std::string cb_producer_name = BufferIdentityName(cb_producer_buffer);
-      const std::string op_buffer_name = BufferIdentityName(op->buffer);
-      base_value_subject_buffer_name_ = source_buffer_name;
-      base_value_shared_buffer_names_.insert(cb_producer_name);
-      if (!SameBufferIdentity(cb_producer_buffer, op->buffer)) {
-        base_value_shared_buffer_names_.insert(op_buffer_name);
-      }
+      record_guarded_per_work_buffers();
       stmts.push_back(MakeBlackholeCall(
           blackhole_cb_reserve_back(),
           {IntImm32(cb_id), IntImm32(total_subtiles)}));
@@ -2237,22 +2198,7 @@ Stmt PlanTTKernelABI::GenerateStagedCopyLoopSequence(
         !geometry.use_page_transport && geometry.shared_cols == kBlackholeTileCols &&
         geometry.global_cols == geometry.shared_cols) {
       SetRequirementPageLayout(cb_id, geometry.page_bytes, static_cast<int>(geometry.shared_rows));
-      const std::string source_buffer_name = BufferIdentityName(load->buffer);
-      const std::string cb_producer_name = BufferIdentityName(cb_producer_buffer);
-      const std::string op_buffer_name = BufferIdentityName(op->buffer);
-      if (has_base_and_extent_values) {
-        base_value_subject_buffer_name_ = source_buffer_name;
-        base_value_shared_buffer_names_.insert(cb_producer_name);
-        if (!SameBufferIdentity(cb_producer_buffer, op->buffer)) {
-          base_value_shared_buffer_names_.insert(op_buffer_name);
-        }
-      } else {
-        bound_value_subject_buffer_name_ = source_buffer_name;
-        bound_value_shared_buffer_names_.insert(cb_producer_name);
-        if (!SameBufferIdentity(cb_producer_buffer, op->buffer)) {
-          bound_value_shared_buffer_names_.insert(op_buffer_name);
-        }
-      }
+      record_guarded_per_work_buffers();
       Var page_row_var("__tl_page_row", DataType::Int(32));
       PrimExpr page_row = page_row_var;
       const std::optional<PrimExpr> maybe_guard_predicate =
@@ -2399,10 +2345,7 @@ Stmt PlanTTKernelABI::GenerateStagedCopyLoopSequence(
     const int accessor_slot = GetWriteAccessorSlot(segment_kind, op->buffer, direction);
     const std::string live_input_name = BufferIdentityName(load->buffer);
     const bool shared_buffer_has_guarded_value =
-        (has_bound_value &&
-         bound_value_shared_buffer_names_.count(live_input_name) != 0U) ||
-        (has_base_and_extent_values &&
-         base_value_shared_buffer_names_.count(live_input_name) != 0U);
+        guarded_per_work_value_buffer_identities_.count(live_input_name) != 0U;
     if (shared_buffer_has_guarded_value &&
         !geometry.use_page_transport && geometry.shared_cols == kBlackholeTileCols &&
         geometry.global_cols == geometry.shared_cols) {

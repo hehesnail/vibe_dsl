@@ -320,6 +320,12 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
     bool include_in_compute_segment = false;
   };
 
+  struct ActivePerWorkRuntimeArgBinding {
+    std::string arg_name;
+    std::string value_source;
+    std::string value_usage;
+  };
+
   /*! \brief Get CB configuration from function attributes */
   CBConfig GetCBConfig() const;
 
@@ -769,7 +775,12 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   bool MatchExplicitTileReduce(const tvm::tir::CallNode* op, RowReductionMatch* match) const;
   tvm::tir::Buffer ResolveRowReductionLiveFormDestination(
       const tvm::tir::Buffer& reduce_dst, int64_t reduce_dst_elements) const;
-  bool IsBoundValueRuntimeArgExpr(const tvm::PrimExpr& expr) const;
+  std::optional<ActivePerWorkRuntimeArgBinding>
+  ResolvePerWorkRuntimeArgBinding(const tvm::PrimExpr& expr) const;
+  bool IsPerWorkValueRuntimeArgExpr(const tvm::PrimExpr& expr) const;
+  bool ExprUsesPerWorkRuntimeArg(const tvm::PrimExpr& expr,
+                                 const std::string& value_usage = "") const;
+  bool CopyStoreUsesPerWorkRuntimeArg(const tvm::tir::BufferStoreNode* store) const;
   bool IsGuardMaskSelfUpdateStore(const tvm::tir::BufferStoreNode* store) const;
   bool MatchGuardMaskSelfUpdateStore(
       const tvm::tir::BufferStoreNode* store,
@@ -943,6 +954,8 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
       const ffi::Array<PrimExpr>& subject_index_exprs,
       const std::string& value_source,
       const PrimExpr& value_expr);
+  const IndexedPerWorkRuntimeArg* FindIndexedPerWorkRuntimeArgByName(
+      const std::string& arg_name) const;
   tvm::PrimExpr NormalizePerWorkValueExpr(const tvm::PrimExpr& expr) const;
   tvm::PrimExpr NormalizeRuntimeTileStartScale(const tvm::PrimExpr& expr) const;
 
@@ -967,10 +980,6 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   std::vector<CBRequirement> cb_requirements_;
   bool saw_copy_op_ = false;
   bool needs_copy_runtime_args_ = false;
-  bool needs_bound_value_arg_ = false;
-  bool needs_dynamic_value_arg_ = false;
-  bool needs_base_value_arg_ = false;
-  bool needs_extent_value_for_base_arg_ = false;
   bool requires_compute_segment_ = false;
   bool select_compute_builtins_only_ = false;
   int64_t logical_grid_x_ = 1;
@@ -981,18 +990,9 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   std::string copy_output_buffer_name_;
   std::vector<std::string> copy_input_buffer_names_;
   std::vector<std::string> copy_output_buffer_names_;
-  std::string bound_value_table_buffer_name_;
-  std::string bound_value_subject_buffer_name_;
-  std::string dynamic_value_source_;
-  std::unordered_set<std::string> bound_value_shared_buffer_names_;
-  std::string base_value_table_buffer_name_;
-  std::string extent_value_for_base_table_buffer_name_;
-  std::string base_value_subject_buffer_name_;
-  std::unordered_set<std::string> base_value_shared_buffer_names_;
-  std::unordered_map<std::string, int64_t> runtime_arg_tile_start_scale_by_name_;
-  std::unordered_map<const tvm::tir::VarNode*, int64_t> runtime_arg_tile_start_scale_by_var_;
-  std::unordered_set<const tvm::tir::VarNode*> bound_value_runtime_arg_vars_;
-  std::unordered_set<std::string> bound_value_runtime_arg_names_;
+  std::unordered_map<const tvm::tir::VarNode*, ActivePerWorkRuntimeArgBinding>
+      active_per_work_runtime_arg_bindings_;
+  std::unordered_set<std::string> guarded_per_work_value_buffer_identities_;
   std::vector<IndexedPerWorkRuntimeArg> indexed_per_work_runtime_args_;
   std::unordered_map<std::string, std::string> host_buffer_by_compute_operand_buffer_;
   std::unordered_map<std::string, std::string> direct_copy_source_by_buffer_identity_;

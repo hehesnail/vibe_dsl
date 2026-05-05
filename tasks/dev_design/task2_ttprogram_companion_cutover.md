@@ -199,6 +199,15 @@ work-coordinate or constant sources, it must be carried as
 values such as GEMM K-tile count, N-tile stride, or logical-z K offset are
 not new `value_source` enum variants.
 
+Lowering-time mechanics may keep an active binding stack for the `Let` vars
+currently being rewritten, but it must resolve back to the generic
+`TTPerWorkArgSpec` / `IndexedPerWorkRuntimeArg` records.  It must not grow
+parallel state named after ragged, segmented, paged, bound, base, or table
+roles.  If transport needs to know whether an index or predicate is driven by
+per-work data, it must inspect the current TIR expression and the associated
+generic value record; tile-origin scale normalization is owned by
+`value_usage=buffer_tile_origin`, not by runtime-arg name maps.
+
 ## Validation Contract
 
 `ValidateTTProgram`
