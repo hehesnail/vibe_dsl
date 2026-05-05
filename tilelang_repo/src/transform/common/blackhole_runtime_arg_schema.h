@@ -51,12 +51,6 @@ inline constexpr const char* kValueSourceLogicalBlockXYLinear =
     "logical_block_xy_linear";
 inline constexpr const char* kValueSourceLogicalBlockYXLinear =
     "logical_block_yx_linear";
-inline constexpr const char* kValueSourceLogicalBlockZOffset =
-    "logical_block_z_offset";
-inline constexpr const char* kValueSourceComputeReductionExtent =
-    "compute_op_reduction_extent";
-inline constexpr const char* kValueSourceComputeOutputXExtent =
-    "compute_op_output_x_extent";
 inline constexpr const char* kValueSourceValueExpr = "value_expr";
 inline constexpr const char* kValueSourceConstant = "constant";
 

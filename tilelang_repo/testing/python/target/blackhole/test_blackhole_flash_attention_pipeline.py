@@ -1264,10 +1264,10 @@ def test_flash_attention_executable_spec_drops_contract_family_and_reports_typed
         (str(spec["arg_kind"]), str(spec["value_source"]))
         for spec in writer_kernel["per_work_arg_specs"]
     }
-    assert ("a_tile_start_id", "logical_block_y") in reader_per_work
-    assert ("b_tile_start_id", "logical_block_x") in reader_per_work
-    assert ("a_tile_num_tiles", "compute_op_reduction_extent") in reader_per_work
-    assert ("output_tile_start_id", "work_linear_id") in writer_per_work
+    assert ("a_tile_start_id", "logical_block_yx_linear") in reader_per_work
+    assert ("b_tile_start_id", "logical_block_yx_linear") in reader_per_work
+    assert ("a_tile_num_tiles", "value_expr") in reader_per_work
+    assert ("output_tile_start_id", "logical_block_yx_linear") in writer_per_work
 
 
 def test_flash_attention_executable_spec_drops_contract_family():

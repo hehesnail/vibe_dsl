@@ -212,6 +212,9 @@ def test_blackhole_public_schema_files_do_not_define_case_shaped_workload_fields
         "page_index",
         "per_work_row",
         "per_work_page",
+        "compute_op_reduction_extent",
+        "compute_op_output_x_extent",
+        "logical_block_z_offset",
     ]
     public_schema_files = [
         REPO_ROOT / "src" / "transform" / "common" / "blackhole_runtime_arg_schema.h",

@@ -48,6 +48,11 @@
   `index_buffer`, `index_value_scale`, `index_table_shape`,
   `index_table_index_sources`, and `value_source=index_table` are not public
   TTProgram / ExecutableSpec / runtime schema.
+- Per-work runtime values that depend on typed compute/work context, such as
+  GEMM K-tile count, N-tile stride, or logical-z K offset, also use
+  `value_source=value_expr`.  Public schema must not grow
+  `compute_op_reduction_extent`, `compute_op_output_x_extent`, or
+  `logical_block_z_offset` value-source enums.
 - Public per-work schema no longer carries binding-kind subroles such as
   `row_start`, `row_count`, `page_index`, or legacy `descriptor_kind`.
   Cross-stage records carry only `arg_kind`, `arg_identity`, `buffer`,
@@ -201,6 +206,27 @@ Each checkpoint needs its own direct-runtime correctness proof:
   `M=320`, `N=352`, `K>=512`, `logical_grid=11x10x2` or larger.
 
 ## Recent Verification
+
+2026-05-05 UTC compute-shaped per-work value-source cleanup checkpoint:
+
+- Removed public `TTPerWorkArgSpec.value_source` enums for
+  `compute_op_reduction_extent`, `compute_op_output_x_extent`, and
+  `logical_block_z_offset`.  GEMM tile-count/stride/K-start bindings now use
+  ordinary `value_source=value_expr` records whose expressions are evaluated
+  under the direct-runtime work/typed-compute context.
+- Public-schema guard now rejects these compute-shaped value-source strings
+  alongside the earlier index-table, row/page, and selection/topk fields.
+- Source audit found no remaining hits for the removed compute-shaped
+  value-source constants or strings under `tilelang_repo/src`.
+- `cmake --build build -j32` passed.
+- Focused structural/projection selector covering public schema guard,
+  T9.1 grouped-GEMM binding projection, and flash executable-spec
+  projection reported `4 passed`.
+- A fresh T9.1 grouped-GEMM direct-runtime selector is still blocked before
+  runtime value-expression evaluation by the existing admission error
+  `missing explicit buffer role schema`; this is a separate direct-runtime
+  buffer-identity gate, not a reason to reintroduce compute-shaped
+  `value_source` enums.
 
 2026-05-05 UTC IR-first per-work schema cleanup checkpoint:
 

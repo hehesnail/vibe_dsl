@@ -2523,3 +2523,11 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   `AccessRegion.index_exprs` / `predicate_exprs`.  If a per-work runtime arg
   must be admitted to a compute segment, carry that as pass-local control
   state; do not infer it from a runtime-arg name prefix.
+- 2026-05-05 Blackhole compute-derived per-work values:
+  Do not add a new public `value_source` enum every time a per-work runtime
+  arg needs a compute/workload quantity.  GEMM-derived counts and strides
+  such as K-tile count, N-tile stride, and logical-z K offset should use the
+  existing generic `value_source=value_expr` path, with the expression
+  evaluated from the logical work context and typed compute records.  Guard
+  against `compute_op_reduction_extent`, `compute_op_output_x_extent`, and
+  `logical_block_z_offset` returning as schema strings.

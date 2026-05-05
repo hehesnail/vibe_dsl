@@ -3632,6 +3632,20 @@ static int64_t EvaluateDirectRuntimeVar(
       name == tl::blackhole_runtime_arg_schema::kValueSourceLogicalBlockZ) {
     return context.bz;
   }
+  if (name == "work_linear_id" ||
+      name == tl::blackhole_runtime_arg_schema::kValueSourceWorkLinearId) {
+    return context.work_linear_id;
+  }
+  if (name == "num_k_tiles") {
+    ICHECK(context.has_gemm_compute_op)
+        << "Blackhole direct runtime value_expr var num_k_tiles requires GEMM compute_op";
+    return context.num_k_tiles;
+  }
+  if (name == "logical_n_tiles") {
+    ICHECK(context.has_gemm_compute_op)
+        << "Blackhole direct runtime value_expr var logical_n_tiles requires GEMM compute_op";
+    return context.logical_n_tiles;
+  }
   LOG(FATAL) << "Unsupported Blackhole direct runtime value_expr var " << name;
   return 0;
 }
@@ -3855,25 +3869,6 @@ static uint32_t EvaluatePerWorkArgSpec(const PerWorkArgSpec& spec,
   }
   if (spec.value_source == tl::blackhole_runtime_arg_schema::kValueSourceLogicalBlockYXLinear) {
     return context.bx * context.logical_grid_y + context.by;
-  }
-  if (spec.value_source ==
-      tl::blackhole_runtime_arg_schema::kValueSourceLogicalBlockZOffset) {
-    ICHECK(context.has_gemm_compute_op)
-        << "Blackhole direct runtime per_work_arg_spec requires GEMM compute_op for "
-        << spec.arg_identity;
-    return context.bz * context.num_k_tiles;
-  }
-  if (spec.value_source == tl::blackhole_runtime_arg_schema::kValueSourceComputeReductionExtent) {
-    ICHECK(context.has_gemm_compute_op)
-        << "Blackhole direct runtime per_work_arg_spec requires GEMM compute_op for "
-        << spec.arg_identity;
-    return context.num_k_tiles;
-  }
-  if (spec.value_source == tl::blackhole_runtime_arg_schema::kValueSourceComputeOutputXExtent) {
-    ICHECK(context.has_gemm_compute_op)
-        << "Blackhole direct runtime per_work_arg_spec requires GEMM compute_op for "
-        << spec.arg_identity;
-    return context.logical_n_tiles;
   }
   if (spec.value_source == tl::blackhole_runtime_arg_schema::kValueSourceConstant) {
     return spec.constant_value;

@@ -683,6 +683,32 @@ static TTPerWorkArgSpec MakePerWorkArgSpec(const std::string &arg_kind,
                           std::move(value_expr));
 }
 
+static PrimExpr WorkContextVar(const char* name) {
+  return tir::Var(name, DataType::Int(32));
+}
+
+static PrimExpr NumKTilesExpr() {
+  return WorkContextVar("num_k_tiles");
+}
+
+static PrimExpr LogicalNTilesExpr() {
+  return WorkContextVar("logical_n_tiles");
+}
+
+static PrimExpr LogicalBlockZOffsetExpr() {
+  return WorkContextVar("bz") * NumKTilesExpr();
+}
+
+static TTPerWorkArgSpec MakeValueExprPerWorkArgSpec(
+    const std::string &arg_kind,
+    const std::string &arg_identity,
+    const std::string &buffer,
+    PrimExpr value_expr) {
+  return MakePerWorkArgSpec(
+      arg_kind, arg_identity, blackhole_runtime_arg_schema::kValueSourceValueExpr,
+      buffer, 0, "", -1, std::move(value_expr));
+}
+
 static TTKernelLaunchSpec MakeLaunchSpec(const std::string &core_type,
                                          const std::string &processor,
                                          const std::string &noc) {
@@ -1433,13 +1459,16 @@ void PlanTTKernelABI::StoreAccessorDescriptors(PrimFunc &func) {
             a_tile_buffer, 0));
       }
       if (runtime_args_contain_kind("a_tile_num_tiles")) {
-        upsert_spec(MakePerWorkArgSpec(
-            "a_tile_num_tiles",
-            runtime_arg_identity_for_kind("a_tile_num_tiles"),
-            has_gemm_reader_contract
-                ? blackhole_runtime_arg_schema::kValueSourceComputeReductionExtent
-                : blackhole_runtime_arg_schema::kValueSourceConstant,
-            a_tile_buffer, has_gemm_reader_contract ? 0 : 1));
+        upsert_spec(has_gemm_reader_contract
+                        ? MakeValueExprPerWorkArgSpec(
+                              "a_tile_num_tiles",
+                              runtime_arg_identity_for_kind("a_tile_num_tiles"),
+                              a_tile_buffer, NumKTilesExpr())
+                        : MakePerWorkArgSpec(
+                              "a_tile_num_tiles",
+                              runtime_arg_identity_for_kind("a_tile_num_tiles"),
+                              blackhole_runtime_arg_schema::kValueSourceConstant,
+                              a_tile_buffer, 1));
       }
       if (runtime_args_contain_kind("a_tile_stride")) {
         upsert_spec(MakePerWorkArgSpec(
@@ -1458,39 +1487,54 @@ void PlanTTKernelABI::StoreAccessorDescriptors(PrimFunc &func) {
             b_tile_buffer, 0));
       }
       if (runtime_args_contain_kind("b_tile_num_tiles")) {
-        upsert_spec(MakePerWorkArgSpec(
-            "b_tile_num_tiles",
-            runtime_arg_identity_for_kind("b_tile_num_tiles"),
-            has_gemm_reader_contract
-                ? blackhole_runtime_arg_schema::kValueSourceComputeReductionExtent
-                : blackhole_runtime_arg_schema::kValueSourceConstant,
-            b_tile_buffer, has_gemm_reader_contract ? 0 : 1));
+        upsert_spec(has_gemm_reader_contract
+                        ? MakeValueExprPerWorkArgSpec(
+                              "b_tile_num_tiles",
+                              runtime_arg_identity_for_kind("b_tile_num_tiles"),
+                              b_tile_buffer, NumKTilesExpr())
+                        : MakePerWorkArgSpec(
+                              "b_tile_num_tiles",
+                              runtime_arg_identity_for_kind("b_tile_num_tiles"),
+                              blackhole_runtime_arg_schema::kValueSourceConstant,
+                              b_tile_buffer, 1));
       }
       if (runtime_args_contain_kind("b_tile_stride")) {
-        upsert_spec(MakePerWorkArgSpec(
-            "b_tile_stride", runtime_arg_identity_for_kind("b_tile_stride"),
-            has_gemm_reader_contract
-                ? blackhole_runtime_arg_schema::kValueSourceComputeOutputXExtent
-                : blackhole_runtime_arg_schema::kValueSourceConstant,
-            b_tile_buffer, has_gemm_reader_contract ? 0 : 1));
+        upsert_spec(has_gemm_reader_contract
+                        ? MakeValueExprPerWorkArgSpec(
+                              "b_tile_stride",
+                              runtime_arg_identity_for_kind("b_tile_stride"),
+                              b_tile_buffer, LogicalNTilesExpr())
+                        : MakePerWorkArgSpec(
+                              "b_tile_stride",
+                              runtime_arg_identity_for_kind("b_tile_stride"),
+                              blackhole_runtime_arg_schema::kValueSourceConstant,
+                              b_tile_buffer, 1));
       }
     }
     if (kind == "reader" || kind == "compute") {
       if (runtime_args_contain_kind("k_tile_start_id")) {
-        upsert_spec(MakePerWorkArgSpec(
-            "k_tile_start_id", runtime_arg_identity_for_kind("k_tile_start_id"),
-            logical_grid_z_ > 1
-                ? blackhole_runtime_arg_schema::kValueSourceLogicalBlockZOffset
-                : blackhole_runtime_arg_schema::kValueSourceConstant,
-            "", 0));
+        upsert_spec(logical_grid_z_ > 1
+                        ? MakeValueExprPerWorkArgSpec(
+                              "k_tile_start_id",
+                              runtime_arg_identity_for_kind("k_tile_start_id"),
+                              "", LogicalBlockZOffsetExpr())
+                        : MakePerWorkArgSpec(
+                              "k_tile_start_id",
+                              runtime_arg_identity_for_kind("k_tile_start_id"),
+                              blackhole_runtime_arg_schema::kValueSourceConstant,
+                              "", 0));
       }
       if (runtime_args_contain_kind("num_k_tiles")) {
-        upsert_spec(MakePerWorkArgSpec(
-            "num_k_tiles", runtime_arg_identity_for_kind("num_k_tiles"),
-            !gemm_a_buffer_name_.empty()
-                ? blackhole_runtime_arg_schema::kValueSourceComputeReductionExtent
-                : blackhole_runtime_arg_schema::kValueSourceConstant,
-            "", !gemm_a_buffer_name_.empty() ? 0 : 1));
+        upsert_spec(!gemm_a_buffer_name_.empty()
+                        ? MakeValueExprPerWorkArgSpec(
+                              "num_k_tiles",
+                              runtime_arg_identity_for_kind("num_k_tiles"),
+                              "", NumKTilesExpr())
+                        : MakePerWorkArgSpec(
+                              "num_k_tiles",
+                              runtime_arg_identity_for_kind("num_k_tiles"),
+                              blackhole_runtime_arg_schema::kValueSourceConstant,
+                              "", 1));
       }
     }
     if (kind == "writer") {

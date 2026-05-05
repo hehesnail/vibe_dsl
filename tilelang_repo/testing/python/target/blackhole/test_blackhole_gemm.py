@@ -1905,7 +1905,8 @@ def test_blackhole_t9_grouped_gemm_projects_segmented_a_bindings():
     ]
     assert len(a_tile_count_specs) == 1
     assert str(a_tile_count_specs[0]["buffer"]) == "A"
-    assert str(a_tile_count_specs[0]["value_source"]) == "compute_op_reduction_extent"
+    assert str(a_tile_count_specs[0]["value_source"]) == "value_expr"
+    assert "num_k_tiles" in str(a_tile_count_specs[0]["value_expr"])
 
 
 def test_blackhole_t5_external_sharded_l1_gemm_direct_runtime_bf16():

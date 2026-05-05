@@ -2971,6 +2971,28 @@
   - The focused T9.2 selector currently reproduces the PACR boundary after the
     IR-first per-work schema cleanup.
 
+### GEMM direct-runtime selectors can fail before value-expression execution on missing buffer roles
+
+- **症状**:
+  - A fresh run of
+    `test_blackhole_t9_grouped_gemm_direct_runtime_bf16` failed before device
+    execution with
+    `missing explicit buffer role schema; direct runtime requires named input/output buffer bindings and must not recover output positionally`.
+- **根因**:
+  - The failure is an admission gate on explicit formal buffer identity, not a
+    per-work runtime-arg value-source issue.  It prevents using that selector
+    as proof that compute-derived `value_expr` runtime evaluation reached
+    TT-Sim.
+- **修法**:
+  - Fix the direct-runtime buffer-role projection/admission chain so GEMM
+    direct-call selectors bind input/output buffers from explicit
+    `ExecutableSpec` records rather than positional recovery.  Do not work
+    around this by reintroducing compute-shaped `value_source` enums.
+- **验证**:
+  - Until that gate is fixed, use structural/projection tests plus source
+    audit for compute-shaped value-source cleanup, and report the direct
+    runtime selector as blocked instead of passing.
+
 ## 3. 环境问题速查
 
 | 问题 | 解决 |

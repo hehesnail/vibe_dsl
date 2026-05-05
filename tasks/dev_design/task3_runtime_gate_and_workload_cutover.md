@@ -87,6 +87,13 @@ Required:
 Leaf readers must require these fields.
 Missing maps or arrays are errors, not empty defaults.
 
+Per-work arg specs have one owner for nontrivial dynamic values:
+`value_source=value_expr` plus the serialized TIR expression.  Leaf readers
+may evaluate that expression against the logical work context, typed compute
+records, and any explicitly referenced input buffers, but they must not add
+workload-shaped `value_source` enums such as compute extent, row/page, table,
+or selection-specific sources.
+
 ### Buffer Identity
 
 Formal buffer identity must be explicit and exact.

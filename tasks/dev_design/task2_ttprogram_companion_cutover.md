@@ -184,6 +184,13 @@ Represent the remaining TT-specific physical realization:
 - compile-time/runtime ABI schema
 - launch and execution ordering
 
+Per-work runtime ABI records must keep value ownership in the generic
+`TTPerWorkArgSpec` fields.  If a value is not one of the small set of generic
+work-coordinate or constant sources, it must be carried as
+`value_source=value_expr` plus a serialized TIR expression.  Compute-derived
+values such as GEMM K-tile count, N-tile stride, or logical-z K offset are
+not new `value_source` enum variants.
+
 ## Validation Contract
 
 `ValidateTTProgram`
