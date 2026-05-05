@@ -159,6 +159,7 @@ struct KernelArgSpec {
   uint32_t core_x = 0;
   uint32_t core_y = 0;
   bool has_core_coord = false;
+  bool requires_per_work_descriptor = false;
 
   void Save(dmlc::JSONWriter* writer) const {
     writer->BeginObject();
@@ -169,6 +170,9 @@ struct KernelArgSpec {
       writer->WriteObjectKeyValue("buffer", buffer);
     }
     writer->WriteObjectKeyValue("identity", identity);
+    if (requires_per_work_descriptor) {
+      writer->WriteObjectKeyValue("requires_per_work_descriptor", true);
+    }
     if (has_core_coord) {
       writer->WriteObjectKeyValue("core_x", static_cast<int64_t>(core_x));
       writer->WriteObjectKeyValue("core_y", static_cast<int64_t>(core_y));
@@ -243,6 +247,7 @@ struct PerWorkArgSpec {
   std::string buffer;
   std::string descriptor_kind;
   std::string value_source;
+  std::string value_expr_json;
   uint32_t constant_value = 0;
   std::string access_region;
   int64_t access_region_index = -1;
@@ -270,6 +275,10 @@ struct PerWorkArgSpec {
     if (!value_source.empty()) {
       writer->WriteObjectKeyValue(
           tl::blackhole_runtime_arg_schema::kValueSource, value_source);
+    }
+    if (!value_expr_json.empty()) {
+      writer->WriteObjectKeyValue(
+          tl::blackhole_runtime_arg_schema::kValueExpr, value_expr_json);
     }
     if (value_source == tl::blackhole_runtime_arg_schema::kValueSourceConstant) {
       writer->WriteObjectKeyValue(

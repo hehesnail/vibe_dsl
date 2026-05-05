@@ -1236,6 +1236,7 @@ def test_blackhole_block_indexed_copy_per_work_spec_uses_index_table_descriptor(
 
     a_tile_start = descriptors[("A", "tile_start")]
     assert str(a_tile_start["value_source"]) == "index_table"
+    assert str(a_tile_start["value_expr"])
     assert str(a_tile_start["index_buffer"]) == "BlockIndices"
     assert int(a_tile_start["index_value_scale"]) == 1
     assert str(a_tile_start["access_region"])
@@ -1314,7 +1315,12 @@ def test_blackhole_block_indexed_2tile_copy_scales_index_table_descriptor():
     source = str(kernel_spec["source_code"])
     assert "a_tile_start_id = get_arg_val<uint32_t>" in source
     assert "BlockIndices" not in source
-    assert "a_tile_start_id + 1" in source
+    compact_source = source.replace(" ", "")
+    assert "a_tile_start_id*2" not in compact_source
+    assert (
+        "static_cast<int32_t>(a_tile_start_id)+1" in compact_source
+        or "a_tile_start_id+1" in compact_source
+    )
 
     descriptors = {
         (str(spec.get("buffer", "")), str(spec["descriptor_kind"])): spec
@@ -1376,6 +1382,10 @@ def test_blackhole_sparse_2tile_copy_uses_two_index_table_tile_start_descriptors
     ]
     assert int(first["index_value_scale"]) == 1
     assert int(second["index_value_scale"]) == 1
+    assert str(first["access_region"])
+    assert str(second["access_region"])
+    assert str(first["access_region"]) != str(second["access_region"])
+    assert int(first["access_region_index"]) != int(second["access_region_index"])
 
 
 def test_blackhole_sparse_2tile_ragged_copy_uses_per_entry_valid_rows():
@@ -1450,6 +1460,18 @@ def test_blackhole_sparse_3tile_ragged_copy_scales_per_entry_descriptors():
         assert f"{identity} = get_arg_val<uint32_t>" in source
     assert "BlockIndices" not in source
     assert "ValidRows" not in source
+    runtime_args_by_identity = {
+        str(arg["identity"]): arg for arg in kernel_spec["runtime_args"]
+    }
+    for identity in [
+        "a_tile_start_id",
+        "a_tile_start_id_1",
+        "a_tile_start_id_2",
+        "a_valid_rows",
+        "a_valid_rows_1",
+        "a_valid_rows_2",
+    ]:
+        assert bool(runtime_args_by_identity[identity]["requires_per_work_descriptor"])
 
     by_identity = {
         str(spec["arg_identity"]): spec
@@ -1475,6 +1497,43 @@ def test_blackhole_sparse_3tile_ragged_copy_scales_per_entry_descriptors():
         ]
 
 
+def test_blackhole_per_work_runtime_arg_requirement_is_explicit_not_kind_suffix():
+    target = Target("blackhole")
+    with target:
+        artifact = lower(
+            block_indexed_sparse_2tile_ragged_staged_copy_kernel(
+                grid_x=3,
+                source_tiles=6,
+            ),
+            target=target,
+        )
+
+    def segment_mutator(segment_plan):
+        mutated_segments = []
+        for segment in segment_plan:
+            mutated = dict(segment)
+            runtime_args = []
+            for arg in segment.get("runtime_args", []):
+                mutated_arg = dict(arg)
+                if str(mutated_arg.get("identity", "")) == "a_valid_rows_1":
+                    mutated_arg["kind"] = "generic_per_work_u32"
+                    mutated_arg["requires_per_work_descriptor"] = True
+                runtime_args.append(mutated_arg)
+            mutated["runtime_args"] = runtime_args
+            mutated["per_work_arg_specs"] = [
+                dict(spec)
+                for spec in segment.get("per_work_arg_specs", [])
+                if str(spec.get("arg_identity", "")) != "a_valid_rows_1"
+            ]
+            mutated_segments.append(mutated)
+        return mutated_segments
+
+    with pytest.raises(Exception, match="explicit per-work|per_work.*descriptor"):
+        _rebuild_codegen_module_with_body_and_segment_plan(
+            artifact, segment_mutator=segment_mutator
+        )
+
+
 def test_blackhole_ragged_row_copy_uses_valid_rows_index_table_descriptor():
     target = Target("blackhole")
     with target:
@@ -1491,7 +1550,7 @@ def test_blackhole_ragged_row_copy_uses_valid_rows_index_table_descriptor():
     assert "a_valid_rows = get_arg_val<uint32_t>" in source
     assert "RowCounts" not in source
     assert "dst_words[i] = 0u" in source
-    assert "if (17 < a_valid_rows)" in source
+    assert "__tl_page_row < static_cast<int32_t>(a_valid_rows)" in source
     assert "noc_async_read(" in source
     assert "noc_async_write(" in source
 

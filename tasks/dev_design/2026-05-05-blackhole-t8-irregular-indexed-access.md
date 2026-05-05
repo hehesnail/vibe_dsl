@@ -98,6 +98,8 @@ Required fields for indexed/guarded regions:
 - `lower_bounds`, `extents`, and `strides`: conservative region extent;
 - `coverage_kind`: `full`, `slice`, `row_slice`, or `grouped_slice`;
 - `predicate_kind`: `unconditional`, `guarded`, or `unknown`.
+- `predicate_exprs`: the concrete boolean TIR predicate expressions guarding
+  the region when `predicate_kind=guarded`.
 
 `AccessRegion` must not be just a dump.  It must be validated and consumed by
 TT planning for the admitted subset.
@@ -212,38 +214,44 @@ Indexed block traversal:
   to form a memory address;
 - source/runtime must consume the projected table descriptor.
 
-The admitted first table-indexed form is a per-work tile descriptor whose
-tile start is read from a one-dimensional `int32` index table at
-`work_linear_id`.  The table buffer and value scale are part of
-`TTPerWorkArgSpec`; source code consumes the normal tile-start runtime arg and
-direct runtime evaluates that arg from the projected table descriptor.  The
-device source must not emit a raw `BufferLoad` from the index table to recover
-the tile id.
+The admitted first table-indexed form is a per-work tile descriptor derived
+from ordinary TIR indexed access.  The owner truth is the `AccessRegion`
+`index_exprs` plus the typed per-work binding back to that region; source code
+consumes the normal tile-start runtime arg and must not emit a raw `BufferLoad`
+from the index table to recover the tile id.  Existing `index_table_*`
+projection fields in `TTPerWorkArgSpec` / direct runtime are implementation
+residue, not a schema family to extend.
 
 The next indexed-block slice broadens that same descriptor to table address
 expressions that are not equivalent to `work_linear_id`.  When the TIR address
 uses a table load such as `BlockIndices[bx, by]`, `TTPerWorkArgSpec` must carry
-the index table shape and the logical launch-axis source used for each table
-dimension.  Direct runtime evaluates the table offset from those typed fields
-and the current work context.  It may keep `work_linear_id` as a compatibility
-fallback only when the descriptor has no table-address fields; a descriptor
-that contains `index_table_shape` / `index_table_index_sources` must not
-reinterpret the table by flattened launch order.
+the generic TIR `value_expr` for the runtime arg value.  Direct runtime
+evaluates that expression under the current work context; it must not keep a
+`work_linear_id` compatibility fallback or use `index_table_shape` /
+`index_table_index_sources` as a second evaluator.
 
 Sparse traversal can require more than one table-derived tile start inside the
-same logical work item.  The durable representation is still
-`TTPerWorkArgSpec`: each independent TIR table load that drives a distinct
-source tile start gets its own runtime arg identity, e.g.
-`a_tile_start_id`, `a_tile_start_id_1`, with its own table addressing fields.
-Constant table dimensions are represented as descriptor literals such as
-`constant:0` / `constant:1`, not recovered from source text or buffer names.
-Source code consumes only those runtime args; direct runtime evaluates each
-one from the projected descriptor and current work context.
+same logical work item.  `SpatialPlan` must preserve each structurally
+distinct same-subject access as its own `AccessRegion`; `TTPerWorkArgSpec`
+then references the region selected by structural `index_exprs` matching.
+Current direct runtime evaluates the serialized `value_expr`; legacy table
+projection fields are not durable semantic owners and must not be broadened
+into per-case schema.
+
+The schema boundary is intentionally narrow: do not add
+`index_table_*` variants, `topk` fields, selection plans, or workload-shaped
+records to patch a single admitted example.  If downstream execution needs a
+fact that survives across stages, the fact must be represented either as
+generic `AccessRegion` evidence (`index_exprs`, `predicate_exprs`, loop vars)
+or as a generic lowered `ExecutableSpec` evaluator/input record derived from
+that evidence.  Current `index_table_shape` /
+`index_table_index_sources` fields are runtime projection residue and a
+deletion target, not a family to extend.
 
 The same rule applies to table-derived ragged bounds.  If one work item has
 multiple independent guarded sparse reads, each bound table load gets its own
 `valid_rows` runtime arg identity, e.g. `a_valid_rows` /
-`a_valid_rows_1`, with table shape and index sources on the corresponding
+`a_valid_rows_1`, with a distinct `value_expr` on the corresponding
 `TTPerWorkArgSpec`.  A later row-page reader may use those args to decide
 per-row zero-fill, but it must not collapse distinct guarded reads back into
 one shared `a_valid_rows` value.
@@ -264,6 +272,8 @@ Structure:
   tiles, and `guarded` predicate kind when a TIR predicate protects access.
 - validator negative tests reject indexed regions whose `index_exprs` do not
   match rank or whose coverage/predicate fields are inconsistent.
+- validator negative tests reject `predicate_kind=guarded` regions that lack
+  `predicate_exprs`, and reject predicate expressions outside guarded regions.
 
 Source/spec:
 
@@ -314,10 +324,13 @@ Implemented:
 - `BuildSpatialPlan` substitutes active `LetStmt` bindings when recording
   `AccessRegion.index_exprs`, so the A read evidence contains the actual
   table-derived index expression rather than an unbound temporary.
-- `TTPerWorkArgSpec` now admits `value_source=index_table` with
-  `index_buffer` and `index_value_scale` fields.  Projection, executable
-  serialization, segment metadata, Python helpers, and direct runtime consume
-  those typed fields.
+- `TTPerWorkArgSpec` carries a generic TIR `value_expr` for the runtime value
+  that a per-work descriptor must pass to source.  This is not an
+  index-table-specific schema: the expression can contain the original
+  `BufferLoad`, arithmetic, and launch-axis variables.  Legacy
+  `value_source=index_table`, `index_buffer`, `index_value_scale`,
+  `index_table_shape`, and `index_table_index_sources` remain cleanup debt and
+  diagnostic/projection residue; they are not the value evaluator owner.
 - Guarded `tir.if_then_else(load, zero)` copies are recognized as predicated
   copies for the admitted source rewrite.  Source consumes
   `runtime_arg_u32("a_tile_start_id")`; it must not emit a raw
@@ -333,10 +346,11 @@ Implemented:
   `index_table_shape=[grid_x, grid_y]` and
   `index_table_index_sources=[logical_block_x, logical_block_y]`, both derived
   from the TIR table load indices and launch-axis tags.
-- Direct runtime computes the table element offset from those descriptor
-  fields and the current logical work context.  The old `work_linear_id`
-  flattening behavior remains only as a compatibility fallback for descriptors
-  that do not carry table-address fields.
+- Direct runtime evaluates the descriptor's generic `value_expr` under the
+  current logical work context, including integer `BufferLoad` reads from the
+  materialized host-side table data.  It does not compute the runtime value
+  from `index_table_shape` / `index_table_index_sources`, and there is no
+  `work_linear_id` compatibility fallback for missing value evidence.
 - The two-dimensional case is covered by direct-runtime correctness and by a
   serialized-module round trip, so `BlackholeModule` save/load preserves the
   table addressing contract.
@@ -349,12 +363,11 @@ Implemented:
 - A minimal sparse two-entry indexed traversal is admitted for one work item
   reading two independently indexed source tiles.  `BlockIndices[bx, 0]` and
   `BlockIndices[bx, 1]` lower to separate A tile-start runtime args
-  `a_tile_start_id` and `a_tile_start_id_1`; each descriptor carries
-  `index_table_shape=[grid_x, 2]` and its own
-  `index_table_index_sources`, using `constant:0` / `constant:1` for the
-  literal table dimension.  Source consumes the two projected runtime args and
-  emits no raw index-table read; direct runtime evaluates each arg from the
-  descriptor.
+  `a_tile_start_id` and `a_tile_start_id_1`.  `SpatialPlan` now preserves the
+  two A read regions separately and descriptor binding selects the matching
+  region by structural `index_exprs`, so the second entry cannot silently bind
+  to the first A read region.  Source consumes the two projected runtime args
+  and emits no raw index-table read.
 - The sparse two-entry surface also admits independent per-entry row bounds.
   `ValidRows[bx, 0]` and `ValidRows[bx, 1]` lower to A `valid_rows`
   descriptors with identities `a_valid_rows` and `a_valid_rows_1`, carrying
@@ -366,6 +379,24 @@ Implemented:
   `ValidRows[bx, 0/1/2]`, with `constant:0/1/2` descriptor sources and
   per-entry runtime arg identities.  This remains the same
   `TTPerWorkArgSpec` contract, not a sparse-specific operator.
+- Guarded `AccessRegion` now carries the actual TIR predicate expressions.
+  For the admitted ragged row-bound shape, the A read region records
+  `T.shift_right(tx, 2) < RowCounts[bx]`.  `ValidateSpatialPlan` rejects a
+  guarded region without predicate expressions, so later TT planning cannot
+  recover the row-bound predicate from runtime arg names or descriptor kinds.
+- The old buffer-wide `index_buffer -> table addressing` side cache in
+  TT lowering has been deleted.  Table addressing must be present on the
+  concrete per-work descriptor produced from the TIR load / matching
+  `AccessRegion`; a later ABI step can no longer fill missing table shape or
+  index-source fields by looking up only the index-buffer name.
+- Direct runtime no longer falls back to `work_linear_id` for table-backed
+  descriptors with missing value evidence.  `value_source=index_table` now
+  requires a generic `value_expr` owner, and executable extraction still
+  requires explicit table shape plus one index source per dimension while
+  those legacy fields remain projected.  The old ABI synthesis branches that
+  rebuilt `valid_rows` / `segment_row_start` / `segment_row_count`
+  descriptors from only an index-buffer name were removed; missing descriptor
+  evidence must fail closed instead.
 
 2026-05-05 ragged row-bound slice status:
 

@@ -26,6 +26,7 @@
 #include <tvm/ffi/reflection/registry.h>
 #include <tvm/ffi/extra/module.h>
 #include <tvm/ir/transform.h>
+#include <tvm/node/serialization.h>
 #include <tvm/target/codegen.h>
 #include <tvm/tir/analysis.h>
 #include <tvm/tir/builtin.h>
@@ -731,6 +732,10 @@ static std::vector<KernelArgSpec> ExtractRuntimeArgsFromArray(const ffi::Array<f
     if (auto v = arg_info.Get("identity")) {
       arg.identity = Downcast<String>(v.value());
     }
+    if (auto v = arg_info.Get(
+            ::tvm::tl::blackhole_runtime_arg_schema::kRequiresPerWorkDescriptor)) {
+      arg.requires_per_work_descriptor = Downcast<Bool>(v.value());
+    }
     if (auto v = arg_info.Get("core_x")) {
       arg.core_x = static_cast<uint32_t>(Downcast<Integer>(v.value()).IntValue());
       arg.has_core_coord = true;
@@ -943,6 +948,14 @@ static std::vector<PerWorkArgSpec> ExtractPerWorkArgSpecsFromArray(
     if (auto v = spec_info.Get(::tvm::tl::blackhole_runtime_arg_schema::kValueSource)) {
       spec.value_source = Downcast<String>(v.value());
     }
+    if (auto v = spec_info.Get(::tvm::tl::blackhole_runtime_arg_schema::kValueExpr)) {
+      auto value_expr_json = v.value().as<String>();
+      if (value_expr_json.has_value()) {
+        spec.value_expr_json = static_cast<std::string>(value_expr_json.value());
+      } else {
+        spec.value_expr_json = tvm::SaveJSON(Downcast<PrimExpr>(v.value()));
+      }
+    }
     if (auto v = spec_info.Get(::tvm::tl::blackhole_runtime_arg_schema::kConstantValue)) {
       spec.constant_value = static_cast<uint32_t>(Downcast<Integer>(v.value()).IntValue());
     }
@@ -981,21 +994,25 @@ static std::vector<PerWorkArgSpec> ExtractPerWorkArgSpecsFromArray(
       ICHECK(!spec.index_buffer.empty())
           << "Blackhole index_table per-work descriptor for "
           << spec.arg_identity << " requires index_buffer";
+      ICHECK(!spec.value_expr_json.empty())
+          << "Blackhole index_table per-work descriptor for "
+          << spec.arg_identity
+          << " requires explicit per-work descriptor value_expr owner truth";
       ICHECK_GT(spec.index_value_scale, 0)
           << "Blackhole index_table per-work descriptor for "
           << spec.arg_identity << " requires positive index_value_scale";
-      if (!spec.index_table_shape.empty() ||
-          !spec.index_table_index_sources.empty()) {
-        ICHECK_EQ(spec.index_table_shape.size(),
-                  spec.index_table_index_sources.size())
+      ICHECK(!spec.index_table_shape.empty())
+          << "Blackhole index_table per-work descriptor for "
+          << spec.arg_identity << " requires explicit table shape";
+      ICHECK_EQ(spec.index_table_shape.size(),
+                spec.index_table_index_sources.size())
+          << "Blackhole index_table per-work descriptor for "
+          << spec.arg_identity
+          << " requires one table index source per shape dimension";
+      for (int64_t extent : spec.index_table_shape) {
+        ICHECK_GT(extent, 0)
             << "Blackhole index_table per-work descriptor for "
-            << spec.arg_identity
-            << " requires one table index source per shape dimension";
-        for (int64_t extent : spec.index_table_shape) {
-          ICHECK_GT(extent, 0)
-              << "Blackhole index_table per-work descriptor for "
-              << spec.arg_identity << " requires positive table shape";
-        }
+            << spec.arg_identity << " requires positive table shape";
       }
     }
     per_work_arg_specs.push_back(std::move(spec));
@@ -1031,6 +1048,21 @@ static std::vector<PerWorkArgSpec> AggregateSegmentPerWorkArgSpecs(
     const ffi::Array<ffi::Any>& segment_plan) {
   std::vector<PerWorkArgSpec> aggregated;
   std::unordered_set<std::string> seen;
+  auto dedupe_key_for_spec = [](const PerWorkArgSpec& spec) {
+    std::ostringstream os;
+    os << spec.arg_identity << "|" << spec.descriptor_kind << "|"
+       << spec.buffer << "|" << spec.value_source << "|"
+       << spec.value_expr_json << "|"
+       << spec.index_buffer << "|" << spec.index_value_scale << "|"
+       << spec.access_region;
+    for (int64_t extent : spec.index_table_shape) {
+      os << "|shape:" << extent;
+    }
+    for (const std::string& source : spec.index_table_index_sources) {
+      os << "|source:" << source;
+    }
+    return os.str();
+  };
   for (const auto& item : segment_plan) {
     auto segment = RequireMap(item, "Blackhole executable segment_plan item");
     auto specs_it = segment.Get(::tvm::tl::blackhole_runtime_arg_schema::kPerWorkArgSpecs);
@@ -1040,7 +1072,7 @@ static std::vector<PerWorkArgSpec> AggregateSegmentPerWorkArgSpecs(
     std::vector<PerWorkArgSpec> segment_specs =
         ExtractPerWorkArgSpecsFromArray(Downcast<ffi::Array<ffi::Any>>(specs_it.value()));
     for (const auto& spec : segment_specs) {
-      const std::string dedupe_key = spec.arg_identity;
+      const std::string dedupe_key = dedupe_key_for_spec(spec);
       if (dedupe_key.empty() || seen.count(dedupe_key)) {
         continue;
       }
@@ -2507,6 +2539,10 @@ static ffi::Array<ffi::Any> EncodeRuntimeArgs(const std::vector<KernelArgSpec>& 
     arg_info.Set("kind", ffi::String(arg.kind));
     arg_info.Set("dtype", ffi::String(arg.dtype));
     arg_info.Set("identity", ffi::String(arg.identity));
+    if (arg.requires_per_work_descriptor) {
+      arg_info.Set(::tvm::tl::blackhole_runtime_arg_schema::kRequiresPerWorkDescriptor,
+                   Bool(true));
+    }
     if (!arg.buffer.empty()) {
       arg_info.Set("buffer", ffi::String(arg.buffer));
     }
@@ -2624,6 +2660,10 @@ static ffi::Array<ffi::Any> EncodePerWorkArgSpecs(
     if (!spec.value_source.empty()) {
       spec_info.Set(::tvm::tl::blackhole_runtime_arg_schema::kValueSource,
                     ffi::String(spec.value_source));
+    }
+    if (!spec.value_expr_json.empty()) {
+      spec_info.Set(::tvm::tl::blackhole_runtime_arg_schema::kValueExpr,
+                    ffi::String(spec.value_expr_json));
     }
     if (spec.value_source ==
         ::tvm::tl::blackhole_runtime_arg_schema::kValueSourceConstant) {
@@ -2755,41 +2795,25 @@ static bool PerWorkArgSpecsContainArgIdentity(const std::vector<PerWorkArgSpec>&
   });
 }
 
-static bool RuntimeArgKindRequiresExplicitPerWorkBinding(std::string_view kind) {
-  auto is_a_tile_start_kind = [](std::string_view candidate) {
-    return candidate == "a_tile_start_id" ||
-           candidate.rfind("a_tile_start_id_", 0) == 0 ||
-           candidate == "indexed_tile_start_id" ||
-           candidate.rfind("indexed_tile_start_id_", 0) == 0;
-  };
-  auto is_a_valid_rows_kind = [](std::string_view candidate) {
-    return candidate == "a_valid_rows" ||
-           candidate.rfind("a_valid_rows_", 0) == 0;
-  };
-  auto is_segment_row_kind = [](std::string_view candidate) {
-    return candidate == "a_segment_row_start" ||
-           candidate.rfind("a_segment_row_start_", 0) == 0 ||
-           candidate == "a_segment_row_count" ||
-           candidate.rfind("a_segment_row_count_", 0) == 0;
-  };
-  return is_a_tile_start_kind(kind) || kind == "a_tile_num_tiles" ||
-         kind == "a_tile_stride" || kind == "b_tile_start_id" ||
-         kind == "b_tile_num_tiles" || kind == "b_tile_stride" ||
-         kind == "output_tile_start_id" || kind == "output_tile_num_tiles" ||
-         kind == "output_tile_stride" || kind == "k_tile_start_id" ||
-         kind == "num_k_tiles" || is_a_valid_rows_kind(kind) ||
-         kind == "a_ragged_page_index" ||
-         is_segment_row_kind(kind);
-}
-
 static void ValidateKernelExplicitPerWorkBindingSchema(const CorePlan& core_plan,
                                                        const KernelSpec& kernel,
                                                        const std::string& func_name) {
+  std::unordered_set<std::string> per_work_identities;
+  for (const PerWorkArgSpec& spec : kernel.per_work_arg_specs) {
+    per_work_identities.insert(spec.arg_identity);
+  }
   if (GetTotalLogicalWorkItems(core_plan) <= 1) {
     return;
   }
   for (const auto& arg : kernel.runtime_args) {
-    if (!RuntimeArgKindRequiresExplicitPerWorkBinding(arg.kind)) {
+    if (per_work_identities.count(arg.identity) != 0U) {
+      ICHECK(arg.requires_per_work_descriptor)
+          << "Blackhole build requires runtime arg '" << arg.name
+          << "' identity '" << arg.identity
+          << "' to declare requires_per_work_descriptor when a per-work "
+          << "descriptor binds that identity";
+    }
+    if (!arg.requires_per_work_descriptor) {
       continue;
     }
     ICHECK(!arg.identity.empty())
@@ -3117,7 +3141,7 @@ static void EnforceExplicitPerWorkAccessDescriptorGate(
         }
 
         for (const auto& arg : runtime_args) {
-          if (RuntimeArgKindRequiresExplicitPerWorkBinding(arg.kind)) {
+          if (arg.requires_per_work_descriptor) {
             if (arg.identity.empty() ||
                 !PerWorkArgSpecsContainArgIdentity(per_work_arg_specs, arg.identity)) {
               return true;

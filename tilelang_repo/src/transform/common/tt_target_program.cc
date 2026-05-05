@@ -825,6 +825,7 @@ void TTPerWorkArgSpecNode::RegisterReflection() {
       .def_ro("buffer", &TTPerWorkArgSpecNode::buffer)
       .def_ro("descriptor_kind", &TTPerWorkArgSpecNode::descriptor_kind)
       .def_ro("value_source", &TTPerWorkArgSpecNode::value_source)
+      .def_ro("value_expr", &TTPerWorkArgSpecNode::value_expr)
       .def_ro("constant_value", &TTPerWorkArgSpecNode::constant_value)
       .def_ro("access_region", &TTPerWorkArgSpecNode::access_region)
       .def_ro("access_region_index",
@@ -885,13 +886,15 @@ TTPerWorkArgSpec::TTPerWorkArgSpec(
     int64_t constant_value, ffi::String access_region,
     int64_t access_region_index, ffi::String index_buffer,
     int64_t index_value_scale, ffi::Array<Integer> index_table_shape,
-    ffi::Array<ffi::String> index_table_index_sources) {
+    ffi::Array<ffi::String> index_table_index_sources,
+    PrimExpr value_expr) {
   auto n = ffi::make_object<TTPerWorkArgSpecNode>();
   n->arg_kind = std::move(arg_kind);
   n->arg_identity = std::move(arg_identity);
   n->buffer = std::move(buffer);
   n->descriptor_kind = std::move(descriptor_kind);
   n->value_source = std::move(value_source);
+  n->value_expr = std::move(value_expr);
   n->constant_value = constant_value;
   n->access_region = std::move(access_region);
   n->access_region_index = access_region_index;
@@ -1447,13 +1450,16 @@ void TTRuntimeArgSpecNode::RegisterReflection() {
       .def_ro("buffer", &TTRuntimeArgSpecNode::buffer)
       .def_ro("identity", &TTRuntimeArgSpecNode::identity)
       .def_ro("core_x", &TTRuntimeArgSpecNode::core_x)
-      .def_ro("core_y", &TTRuntimeArgSpecNode::core_y);
+      .def_ro("core_y", &TTRuntimeArgSpecNode::core_y)
+      .def_ro("requires_per_work_descriptor",
+              &TTRuntimeArgSpecNode::requires_per_work_descriptor);
 }
 
 TTRuntimeArgSpec::TTRuntimeArgSpec(ffi::String name, ffi::String kind,
                                    ffi::String dtype, ffi::String buffer,
                                    ffi::String identity, int64_t core_x,
-                                   int64_t core_y) {
+                                   int64_t core_y,
+                                   bool requires_per_work_descriptor) {
   auto n = ffi::make_object<TTRuntimeArgSpecNode>();
   n->name = std::move(name);
   n->kind = std::move(kind);
@@ -1462,6 +1468,7 @@ TTRuntimeArgSpec::TTRuntimeArgSpec(ffi::String name, ffi::String kind,
   n->identity = std::move(identity);
   n->core_x = core_x;
   n->core_y = core_y;
+  n->requires_per_work_descriptor = requires_per_work_descriptor;
   data_ = std::move(n);
 }
 
@@ -2308,10 +2315,11 @@ TVM_FFI_STATIC_INIT_BLOCK() {
       "tl.TTRuntimeArgSpec",
       [](ffi::String name, ffi::String kind, ffi::String dtype,
          ffi::String buffer, ffi::String identity, int64_t core_x,
-         int64_t core_y) {
+         int64_t core_y, bool requires_per_work_descriptor) {
         return TTRuntimeArgSpec(std::move(name), std::move(kind),
                                 std::move(dtype), std::move(buffer),
-                                std::move(identity), core_x, core_y);
+                                std::move(identity), core_x, core_y,
+                                requires_per_work_descriptor);
       });
   refl::GlobalDef().def(
       "tl.TTCompileTimeArgSpec",

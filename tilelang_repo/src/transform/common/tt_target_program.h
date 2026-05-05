@@ -620,6 +620,7 @@ public:
   ffi::String buffer;
   ffi::String descriptor_kind;
   ffi::String value_source;
+  PrimExpr value_expr;
   int64_t constant_value = 0;
   ffi::String access_region;
   int64_t access_region_index = -1;
@@ -658,7 +659,8 @@ public:
                            ffi::String index_buffer,
                            int64_t index_value_scale,
                            ffi::Array<Integer> index_table_shape,
-                           ffi::Array<ffi::String> index_table_index_sources);
+                           ffi::Array<ffi::String> index_table_index_sources,
+                           PrimExpr value_expr = PrimExpr());
   TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(TTPerWorkArgSpec, ObjectRef,
                                              TTPerWorkArgSpecNode);
 };
@@ -1119,6 +1121,7 @@ public:
   ffi::String identity;
   int64_t core_x = -1;
   int64_t core_y = -1;
+  bool requires_per_work_descriptor = false;
 
   static void RegisterReflection();
   TVM_FFI_DECLARE_OBJECT_INFO_FINAL("tl.TTRuntimeArgSpec", TTRuntimeArgSpecNode,
@@ -1130,7 +1133,8 @@ public:
   TVM_DLL TTRuntimeArgSpec(ffi::String name, ffi::String kind,
                            ffi::String dtype, ffi::String buffer,
                            ffi::String identity, int64_t core_x,
-                           int64_t core_y);
+                           int64_t core_y,
+                           bool requires_per_work_descriptor = false);
   TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(TTRuntimeArgSpec, ObjectRef,
                                              TTRuntimeArgSpecNode);
 };

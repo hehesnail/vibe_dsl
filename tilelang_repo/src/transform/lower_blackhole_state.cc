@@ -30,6 +30,7 @@
 
 #include <tvm/tir/op.h>
 #include <tvm/tir/stmt_functor.h>
+#include <tvm/node/structural_equal.h>
 
 #include <algorithm>
 #include <optional>
@@ -152,6 +153,20 @@ std::pair<std::string, int64_t> DeriveIndexTableDescriptor(
     return {"", 1};
   }
   return {evidence.buffer, evidence.coefficient / kBlackholeTileRows};
+}
+
+bool SamePrimExprArray(const ffi::Array<PrimExpr>& lhs,
+                       const ffi::Array<PrimExpr>& rhs) {
+  if (lhs.size() != rhs.size()) {
+    return false;
+  }
+  StructuralEqual equal;
+  for (size_t i = 0; i < lhs.size(); ++i) {
+    if (!equal(lhs[i], rhs[i])) {
+      return false;
+    }
+  }
+  return true;
 }
 
 PrimExpr IntImm32(int value) {
@@ -329,7 +344,7 @@ void PlanTTKernelABI::LoadSpatialLiveValueBoundaries(const SpatialPlan& plan) {
 
 void PlanTTKernelABI::LoadSpatialAccessRegions(const SpatialPlan& plan) {
   spatial_access_regions_.clear();
-  spatial_access_region_position_by_subject_access_.clear();
+  spatial_access_region_positions_by_subject_access_.clear();
   for (int64_t i = 0; i < static_cast<int64_t>(plan->access_regions.size()); ++i) {
     const AccessRegion& region = plan->access_regions[i];
     const std::string subject = static_cast<std::string>(region->subject);
@@ -338,16 +353,13 @@ void PlanTTKernelABI::LoadSpatialAccessRegions(const SpatialPlan& plan) {
       continue;
     }
     const std::string key = subject + "|" + access_kind;
-    if (spatial_access_region_position_by_subject_access_.count(key)) {
-      continue;
-    }
     const auto [index_buffer, index_value_scale] =
         DeriveIndexTableDescriptor(region);
-    spatial_access_region_position_by_subject_access_[key] =
-        spatial_access_regions_.size();
+    spatial_access_region_positions_by_subject_access_[key].push_back(
+        spatial_access_regions_.size());
     spatial_access_regions_.push_back(SpatialAccessRegionRef{
         static_cast<std::string>(region->name), i, subject, access_kind,
-        index_buffer, index_value_scale});
+        region->index_exprs, index_buffer, index_value_scale});
   }
 }
 
@@ -356,12 +368,37 @@ PlanTTKernelABI::FindSpatialAccessRegionRef(
     const std::string& subject,
     const std::string& access_kind) const {
   const std::string key = subject + "|" + access_kind;
-  auto it = spatial_access_region_position_by_subject_access_.find(key);
-  if (it == spatial_access_region_position_by_subject_access_.end()) {
+  auto it = spatial_access_region_positions_by_subject_access_.find(key);
+  if (it == spatial_access_region_positions_by_subject_access_.end() ||
+      it->second.empty()) {
     return nullptr;
   }
-  ICHECK_LT(it->second, spatial_access_regions_.size());
-  return &spatial_access_regions_[it->second];
+  ICHECK_LT(it->second.front(), spatial_access_regions_.size());
+  return &spatial_access_regions_[it->second.front()];
+}
+
+const PlanTTKernelABI::SpatialAccessRegionRef*
+PlanTTKernelABI::FindSpatialAccessRegionRef(
+    const std::string& subject,
+    const std::string& access_kind,
+    const ffi::Array<PrimExpr>& index_exprs) const {
+  const std::string key = subject + "|" + access_kind;
+  auto it = spatial_access_region_positions_by_subject_access_.find(key);
+  if (it == spatial_access_region_positions_by_subject_access_.end() ||
+      it->second.empty()) {
+    return nullptr;
+  }
+  if (!index_exprs.empty()) {
+    for (size_t position : it->second) {
+      ICHECK_LT(position, spatial_access_regions_.size());
+      const SpatialAccessRegionRef& region = spatial_access_regions_[position];
+      if (SamePrimExprArray(region.index_exprs, index_exprs)) {
+        return &region;
+      }
+    }
+  }
+  ICHECK_LT(it->second.front(), spatial_access_regions_.size());
+  return &spatial_access_regions_[it->second.front()];
 }
 
 std::optional<PlanTTKernelABI::SpatialLiveValueRef>
@@ -1803,6 +1840,80 @@ bool PlanTTKernelABI::FutureWritePrecedesFutureComputeConsume(
       continue;
     }
     if (compute_consumes_buffer(stmt)) {
+      return false;
+    }
+    if (writes_buffer(stmt)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool PlanTTKernelABI::FutureWritePrecedesFutureTransportConsume(
+    const Buffer& buffer, int current_order_index) const {
+  if (current_order_index < 0) {
+    return false;
+  }
+  const std::vector<std::string> identity_list = CollectBufferFlowIdentities(buffer);
+  if (identity_list.empty() || execution_ordered_stmts_.empty()) {
+    return false;
+  }
+  const std::unordered_set<std::string> identities(identity_list.begin(), identity_list.end());
+  auto writes_buffer = [&](const Stmt& stmt) {
+    bool writes = false;
+    tir::PostOrderVisit(stmt, [&](const ObjectRef& node) {
+      if (writes) {
+        return;
+      }
+      if (const auto* store = node.as<BufferStoreNode>()) {
+        writes = identities.count(BufferIdentityName(store->buffer)) != 0U;
+        return;
+      }
+      const auto* call = node.as<CallNode>();
+      if (!call || !call->op->IsInstance<OpNode>()) {
+        return;
+      }
+      TileOperator tile_op = ParseOperator(GetRef<Call>(call));
+      if (!tile_op.defined()) {
+        return;
+      }
+      for (const DataflowAccessInfo& access : tile_op->GetDataflowAccessInfo()) {
+        if (access.kind == DataflowAccessKind::kComputeProduce &&
+            identities.count(BufferIdentityName(access.buffer)) != 0U) {
+          writes = true;
+          return;
+        }
+      }
+    });
+    return writes;
+  };
+  auto transport_consumes_buffer = [&](const Stmt& stmt) {
+    bool consumes = false;
+    tir::PostOrderVisit(stmt, [&](const ObjectRef& node) {
+      if (consumes) {
+        return;
+      }
+      const auto* store = node.as<BufferStoreNode>();
+      if (!IsCopyOperation(store)) {
+        return;
+      }
+      const auto* load = store->value.as<BufferLoadNode>();
+      if (load != nullptr && identities.count(BufferIdentityName(load->buffer)) != 0U &&
+          IsUnsupportedResidualLocalScope(load->buffer)) {
+        consumes = true;
+      }
+    });
+    return consumes;
+  };
+
+  for (const Stmt& stmt : execution_ordered_stmts_) {
+    auto order_it = stmt_order_index_by_node_.find(stmt.get());
+    const int order_index =
+        order_it != stmt_order_index_by_node_.end() ? order_it->second : -1;
+    if (order_index <= current_order_index) {
+      continue;
+    }
+    if (transport_consumes_buffer(stmt)) {
       return false;
     }
     if (writes_buffer(stmt)) {

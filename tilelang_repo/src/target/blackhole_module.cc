@@ -11,7 +11,9 @@
 #include <dmlc/memory_io.h>
 #include <tvm/ffi/function.h>
 #include <tvm/ffi/reflection/registry.h>
+#include <tvm/node/serialization.h>
 #include <tvm/runtime/data_type.h>
+#include <tvm/tir/expr.h>
 
 #include <algorithm>
 #include <atomic>
@@ -62,7 +64,7 @@ static std::string EncodeExecutableSpecMetadata(const ExecutableSpec& spec) {
 }
 
 static constexpr const char* kBlackholeModuleSerializationMagic =
-    "tilelang.blackhole.module.v1";
+    "tilelang.blackhole.module.v3";
 
 static uint64_t ReadUInt64(dmlc::Stream* stream, const char* field) {
   uint64_t value = 0;
@@ -356,6 +358,7 @@ static void WriteKernelArgSpec(dmlc::Stream* stream, const KernelArgSpec& spec) 
   WriteUInt32(stream, spec.core_x);
   WriteUInt32(stream, spec.core_y);
   WriteBool(stream, spec.has_core_coord);
+  WriteBool(stream, spec.requires_per_work_descriptor);
 }
 
 static KernelArgSpec ReadKernelArgSpec(dmlc::Stream* stream) {
@@ -368,6 +371,8 @@ static KernelArgSpec ReadKernelArgSpec(dmlc::Stream* stream) {
   spec.core_x = ReadUInt32(stream, "kernel_arg.core_x");
   spec.core_y = ReadUInt32(stream, "kernel_arg.core_y");
   spec.has_core_coord = ReadBool(stream, "kernel_arg.has_core_coord");
+  spec.requires_per_work_descriptor =
+      ReadBool(stream, "kernel_arg.requires_per_work_descriptor");
   return spec;
 }
 
@@ -414,6 +419,7 @@ static void WritePerWorkArgSpec(dmlc::Stream* stream, const PerWorkArgSpec& spec
   WriteString(stream, spec.buffer);
   WriteString(stream, spec.descriptor_kind);
   WriteString(stream, spec.value_source);
+  WriteString(stream, spec.value_expr_json);
   WriteUInt32(stream, spec.constant_value);
   WriteString(stream, spec.access_region);
   WriteInt64(stream, spec.access_region_index);
@@ -430,6 +436,7 @@ static PerWorkArgSpec ReadPerWorkArgSpec(dmlc::Stream* stream) {
   spec.buffer = ReadString(stream, "per_work_arg.buffer");
   spec.descriptor_kind = ReadString(stream, "per_work_arg.descriptor_kind");
   spec.value_source = ReadString(stream, "per_work_arg.value_source");
+  spec.value_expr_json = ReadString(stream, "per_work_arg.value_expr");
   spec.constant_value = ReadUInt32(stream, "per_work_arg.constant_value");
   spec.access_region = ReadString(stream, "per_work_arg.access_region");
   spec.access_region_index = ReadInt64(stream, "per_work_arg.access_region_index");
@@ -1625,7 +1632,7 @@ static void ValidateGemmInputShape(const ExecutableSpec& spec,
       const uint32_t expected_cols = gemm.transpose_B ? gemm.K * logical_grid_z
                                                       : gemm.N;
       ICHECK(cols == expected_cols && rows >= expected_rows)
-          << "Unexpected paged B tensor shape for GEMM direct path: got ("
+          << "Unexpected index-table-backed B tensor shape for GEMM direct path: got ("
           << rows << ", " << cols << "), expected at least " << expected_rows
           << " rows and " << expected_cols << " cols for transpose_B="
           << gemm.transpose_B;
@@ -3567,94 +3574,253 @@ static DirectRuntimeWorkContext BuildDirectRuntimeWorkContext(const KernelSpec& 
   return context;
 }
 
-static const PerWorkArgSpec* FindPerWorkArgSpec(const std::vector<PerWorkArgSpec>& per_work_arg_specs,
-                                                const KernelArgSpec& arg_spec) {
+static std::vector<const PerWorkArgSpec*> FindPerWorkArgSpecs(
+    const std::vector<PerWorkArgSpec>& per_work_arg_specs,
+    const KernelArgSpec& arg_spec) {
   ICHECK(!arg_spec.identity.empty())
       << "Blackhole direct runtime per-work binding requires runtime arg identity for "
       << arg_spec.name << " kind=" << arg_spec.kind;
-  auto it = std::find_if(per_work_arg_specs.begin(), per_work_arg_specs.end(),
-                         [&](const PerWorkArgSpec& spec) {
-                           return spec.arg_identity == arg_spec.identity;
-                         });
-  return it == per_work_arg_specs.end() ? nullptr : &(*it);
+  std::vector<const PerWorkArgSpec*> matches;
+  for (const PerWorkArgSpec& spec : per_work_arg_specs) {
+    if (spec.arg_identity == arg_spec.identity) {
+      matches.push_back(&spec);
+    }
+  }
+  return matches;
 }
 
-static uint32_t EvaluateIndexTableSource(const std::string& source,
-                                         const DirectRuntimeWorkContext& context) {
-  constexpr const char* kConstantPrefix = "constant:";
-  if (source.rfind(kConstantPrefix, 0) == 0) {
-    const std::string literal = source.substr(std::strlen(kConstantPrefix));
-    ICHECK(!literal.empty())
-        << "Blackhole direct runtime index_table constant source requires a value";
-    uint64_t value = 0;
-    for (char ch : literal) {
-      ICHECK(std::isdigit(static_cast<unsigned char>(ch)))
-          << "Blackhole direct runtime index_table constant source must be unsigned: "
-          << source;
-      value = value * 10 + static_cast<uint64_t>(ch - '0');
-      ICHECK_LE(value, static_cast<uint64_t>(std::numeric_limits<uint32_t>::max()))
-          << "Blackhole direct runtime index_table constant source overflow: "
-          << source;
-    }
-    return static_cast<uint32_t>(value);
+static int64_t EvaluateDirectRuntimeValueExpr(
+    const PrimExpr& expr,
+    const DirectRuntimeWorkContext& context,
+    const std::unordered_map<std::string, RuntimeBufferBinding>& buffer_bindings);
+
+static int64_t CheckedFloorDiv(int64_t lhs, int64_t rhs,
+                               const char* diagnostic_context) {
+  ICHECK_NE(rhs, 0) << "Blackhole direct runtime value_expr division by zero in "
+                    << diagnostic_context;
+  int64_t quotient = lhs / rhs;
+  const int64_t remainder = lhs % rhs;
+  if (remainder != 0 && ((remainder > 0) != (rhs > 0))) {
+    --quotient;
   }
-  if (source == tl::blackhole_runtime_arg_schema::kValueSourceWorkLinearId) {
-    return context.work_linear_id;
-  }
-  if (source == tl::blackhole_runtime_arg_schema::kValueSourceLogicalBlockX) {
+  return quotient;
+}
+
+static int64_t EvaluateDirectRuntimeVar(
+    const tir::VarNode* var,
+    const DirectRuntimeWorkContext& context) {
+  const std::string name = static_cast<std::string>(var->name_hint);
+  if (name == "bx" ||
+      name == tl::blackhole_runtime_arg_schema::kValueSourceLogicalBlockX) {
     return context.bx;
   }
-  if (source == tl::blackhole_runtime_arg_schema::kValueSourceLogicalBlockY) {
+  if (name == "by" ||
+      name == tl::blackhole_runtime_arg_schema::kValueSourceLogicalBlockY) {
     return context.by;
   }
-  if (source == tl::blackhole_runtime_arg_schema::kValueSourceLogicalBlockZ) {
+  if (name == "bz" ||
+      name == tl::blackhole_runtime_arg_schema::kValueSourceLogicalBlockZ) {
     return context.bz;
   }
-  if (source == tl::blackhole_runtime_arg_schema::kValueSourceLogicalBlockXYLinear) {
-    return context.by * context.logical_grid_x + context.bx;
-  }
-  if (source == tl::blackhole_runtime_arg_schema::kValueSourceLogicalBlockYXLinear) {
-    return context.bx * context.logical_grid_y + context.by;
-  }
-  LOG(FATAL) << "Unsupported Blackhole index_table index source " << source;
+  LOG(FATAL) << "Unsupported Blackhole direct runtime value_expr var " << name;
   return 0;
 }
 
-static size_t EvaluateIndexTableElementIndex(const PerWorkArgSpec& spec,
-                                             const DirectRuntimeWorkContext& context) {
-  if (spec.index_table_shape.empty() && spec.index_table_index_sources.empty()) {
-    return static_cast<size_t>(context.work_linear_id);
-  }
-  ICHECK_EQ(spec.index_table_shape.size(), spec.index_table_index_sources.size())
-      << "Blackhole direct runtime index_table per_work_arg_spec for "
-      << spec.arg_identity
-      << " requires one index source per table shape dimension";
+static int64_t EvaluateDirectRuntimeBufferLoad(
+    const tir::BufferLoadNode* load,
+    const DirectRuntimeWorkContext& context,
+    const std::unordered_map<std::string, RuntimeBufferBinding>& buffer_bindings) {
+  const std::string buffer_name = static_cast<std::string>(load->buffer->name);
+  ICHECK(!buffer_name.empty())
+      << "Blackhole direct runtime value_expr BufferLoad requires a named buffer";
+  auto table_it = buffer_bindings.find(buffer_name);
+  ICHECK(table_it != buffer_bindings.end())
+      << "Blackhole direct runtime value_expr references missing buffer "
+      << buffer_name;
+  ICHECK(!load->predicate.defined())
+      << "Blackhole direct runtime value_expr BufferLoad does not admit predicates";
+  ICHECK_EQ(load->indices.size(), load->buffer->shape.size())
+      << "Blackhole direct runtime value_expr BufferLoad for " << buffer_name
+      << " requires one index per buffer shape dimension";
+
   uint64_t linear_index = 0;
-  for (size_t i = 0; i < spec.index_table_shape.size(); ++i) {
-    const int64_t extent = spec.index_table_shape[i];
-    ICHECK_GT(extent, 0)
-        << "Blackhole direct runtime index_table per_work_arg_spec for "
-        << spec.arg_identity << " requires positive table shape";
-    const uint32_t coord =
-        EvaluateIndexTableSource(spec.index_table_index_sources[i], context);
-    ICHECK_LT(static_cast<uint64_t>(coord), static_cast<uint64_t>(extent))
-        << "Blackhole direct runtime index_table per_work_arg_spec out of bounds for "
-        << spec.arg_identity << ": source="
-        << spec.index_table_index_sources[i] << ", coord=" << coord
-        << ", extent=" << extent << ", index_buffer=" << spec.index_buffer;
-    linear_index =
-        linear_index * static_cast<uint64_t>(extent) + static_cast<uint64_t>(coord);
+  for (size_t i = 0; i < load->indices.size(); ++i) {
+    const auto* extent_imm = load->buffer->shape[i].as<tir::IntImmNode>();
+    ICHECK(extent_imm != nullptr)
+        << "Blackhole direct runtime value_expr BufferLoad for " << buffer_name
+        << " requires static integer shape extents";
+    ICHECK_GT(extent_imm->value, 0)
+        << "Blackhole direct runtime value_expr BufferLoad for " << buffer_name
+        << " requires positive shape extents";
+    const int64_t coord =
+        EvaluateDirectRuntimeValueExpr(load->indices[i], context, buffer_bindings);
+    ICHECK_GE(coord, 0)
+        << "Blackhole direct runtime value_expr BufferLoad for " << buffer_name
+        << " requires non-negative coordinates";
+    ICHECK_LT(static_cast<uint64_t>(coord), static_cast<uint64_t>(extent_imm->value))
+        << "Blackhole direct runtime value_expr BufferLoad out of bounds for "
+        << buffer_name << ": coord=" << coord << ", extent=" << extent_imm->value;
+    linear_index = linear_index * static_cast<uint64_t>(extent_imm->value) +
+                   static_cast<uint64_t>(coord);
     ICHECK_LE(linear_index, static_cast<uint64_t>(std::numeric_limits<size_t>::max()))
-        << "Blackhole direct runtime index_table per_work_arg_spec linear index overflow for "
-        << spec.arg_identity;
+        << "Blackhole direct runtime value_expr BufferLoad linear index overflow for "
+        << buffer_name;
   }
-  return static_cast<size_t>(linear_index);
+
+  const DataType dtype = load->buffer->dtype;
+  ICHECK_EQ(dtype.lanes(), 1)
+      << "Blackhole direct runtime value_expr BufferLoad for " << buffer_name
+      << " requires scalar-lane integer dtype";
+  ICHECK(dtype.is_int() || dtype.is_uint())
+      << "Blackhole direct runtime value_expr BufferLoad for " << buffer_name
+      << " requires integer dtype";
+  const uint32_t bits = dtype.bits();
+  ICHECK(bits == 8U || bits == 16U || bits == 32U || bits == 64U)
+      << "Blackhole direct runtime value_expr BufferLoad for " << buffer_name
+      << " supports 8/16/32/64-bit integer dtype";
+  const uint64_t byte_offset =
+      linear_index * static_cast<uint64_t>(bits / 8U);
+  const RuntimeBufferBinding& binding = table_it->second;
+  ICHECK_LE(byte_offset + static_cast<uint64_t>(bits / 8U),
+            static_cast<uint64_t>(binding.host_data.size()))
+      << "Blackhole direct runtime value_expr BufferLoad out of host-data bounds for "
+      << buffer_name << ": linear_index=" << linear_index;
+
+  const uint8_t* data = binding.host_data.data() + byte_offset;
+  if (dtype.is_uint()) {
+    uint64_t value = 0;
+    std::memcpy(&value, data, bits / 8U);
+    ICHECK_LE(value, static_cast<uint64_t>(std::numeric_limits<int64_t>::max()))
+        << "Blackhole direct runtime value_expr unsigned BufferLoad overflow for "
+        << buffer_name;
+    return static_cast<int64_t>(value);
+  }
+  if (bits == 8U) {
+    int8_t value = 0;
+    std::memcpy(&value, data, sizeof(value));
+    return value;
+  }
+  if (bits == 16U) {
+    int16_t value = 0;
+    std::memcpy(&value, data, sizeof(value));
+    return value;
+  }
+  if (bits == 32U) {
+    int32_t value = 0;
+    std::memcpy(&value, data, sizeof(value));
+    return value;
+  }
+  int64_t value = 0;
+  std::memcpy(&value, data, sizeof(value));
+  return value;
+}
+
+static int64_t EvaluateDirectRuntimeValueExpr(
+    const PrimExpr& expr,
+    const DirectRuntimeWorkContext& context,
+    const std::unordered_map<std::string, RuntimeBufferBinding>& buffer_bindings) {
+  if (const auto* imm = expr.as<tir::IntImmNode>()) {
+    return imm->value;
+  }
+  if (const auto* var = expr.as<tir::VarNode>()) {
+    return EvaluateDirectRuntimeVar(var, context);
+  }
+  if (const auto* cast = expr.as<tir::CastNode>()) {
+    return EvaluateDirectRuntimeValueExpr(cast->value, context, buffer_bindings);
+  }
+  if (const auto* add = expr.as<tir::AddNode>()) {
+    return EvaluateDirectRuntimeValueExpr(add->a, context, buffer_bindings) +
+           EvaluateDirectRuntimeValueExpr(add->b, context, buffer_bindings);
+  }
+  if (const auto* sub = expr.as<tir::SubNode>()) {
+    return EvaluateDirectRuntimeValueExpr(sub->a, context, buffer_bindings) -
+           EvaluateDirectRuntimeValueExpr(sub->b, context, buffer_bindings);
+  }
+  if (const auto* mul = expr.as<tir::MulNode>()) {
+    return EvaluateDirectRuntimeValueExpr(mul->a, context, buffer_bindings) *
+           EvaluateDirectRuntimeValueExpr(mul->b, context, buffer_bindings);
+  }
+  if (const auto* div = expr.as<tir::DivNode>()) {
+    const int64_t rhs =
+        EvaluateDirectRuntimeValueExpr(div->b, context, buffer_bindings);
+    ICHECK_NE(rhs, 0)
+        << "Blackhole direct runtime value_expr division by zero";
+    return EvaluateDirectRuntimeValueExpr(div->a, context, buffer_bindings) / rhs;
+  }
+  if (const auto* mod = expr.as<tir::ModNode>()) {
+    const int64_t rhs =
+        EvaluateDirectRuntimeValueExpr(mod->b, context, buffer_bindings);
+    ICHECK_NE(rhs, 0)
+        << "Blackhole direct runtime value_expr modulo by zero";
+    return EvaluateDirectRuntimeValueExpr(mod->a, context, buffer_bindings) % rhs;
+  }
+  if (const auto* floordiv = expr.as<tir::FloorDivNode>()) {
+    return CheckedFloorDiv(
+        EvaluateDirectRuntimeValueExpr(floordiv->a, context, buffer_bindings),
+        EvaluateDirectRuntimeValueExpr(floordiv->b, context, buffer_bindings),
+        "FloorDiv");
+  }
+  if (const auto* floormod = expr.as<tir::FloorModNode>()) {
+    const int64_t lhs =
+        EvaluateDirectRuntimeValueExpr(floormod->a, context, buffer_bindings);
+    const int64_t rhs =
+        EvaluateDirectRuntimeValueExpr(floormod->b, context, buffer_bindings);
+    return lhs - CheckedFloorDiv(lhs, rhs, "FloorMod") * rhs;
+  }
+  if (const auto* load = expr.as<tir::BufferLoadNode>()) {
+    return EvaluateDirectRuntimeBufferLoad(load, context, buffer_bindings);
+  }
+  LOG(FATAL) << "Unsupported Blackhole direct runtime value_expr node "
+             << expr->GetTypeKey();
+  return 0;
+}
+
+static uint32_t EvaluatePerWorkValueExpr(
+    const PerWorkArgSpec& spec,
+    const DirectRuntimeWorkContext& context,
+    const std::unordered_map<std::string, RuntimeBufferBinding>& buffer_bindings) {
+  ICHECK(!spec.value_expr_json.empty())
+      << "Blackhole direct runtime per_work_arg_spec for "
+      << spec.arg_identity << " requires value_expr";
+  const PrimExpr expr = Downcast<PrimExpr>(tvm::LoadJSON(spec.value_expr_json));
+  const int64_t value = EvaluateDirectRuntimeValueExpr(expr, context, buffer_bindings);
+  ICHECK_GE(value, 0)
+      << "Blackhole direct runtime value_expr for " << spec.arg_identity
+      << " produced a negative runtime argument";
+  ICHECK_LE(static_cast<uint64_t>(value),
+            static_cast<uint64_t>(std::numeric_limits<uint32_t>::max()))
+      << "Blackhole direct runtime value_expr for " << spec.arg_identity
+      << " overflowed uint32";
+  const uint32_t u32_value = static_cast<uint32_t>(value);
+  if (spec.descriptor_kind ==
+          tl::blackhole_runtime_arg_schema::kDescriptorTileStart &&
+      !spec.buffer.empty()) {
+    auto target_it = buffer_bindings.find(spec.buffer);
+    ICHECK(target_it != buffer_bindings.end())
+        << "Blackhole direct runtime value_expr tile_start references missing "
+        << "target buffer " << spec.buffer << " for " << spec.arg_identity;
+    const RuntimeBufferBinding& target = target_it->second;
+    ICHECK_GT(target.transport_page_size_bytes, 0U)
+        << "Blackhole direct runtime value_expr tile_start requires transport page size "
+        << "for target buffer " << spec.buffer;
+    const uint64_t max_pages =
+        static_cast<uint64_t>(target.size_bytes) /
+        static_cast<uint64_t>(target.transport_page_size_bytes);
+    ICHECK_LT(static_cast<uint64_t>(u32_value), max_pages)
+        << "Blackhole direct runtime value_expr tile_start out of bounds for "
+        << spec.arg_identity << ": tile_start=" << u32_value
+        << ", target_buffer=" << spec.buffer << ", max_pages=" << max_pages;
+  }
+  return u32_value;
 }
 
 static uint32_t EvaluatePerWorkArgSpec(const PerWorkArgSpec& spec,
                                        const DirectRuntimeWorkContext& context,
                                        const std::unordered_map<std::string, RuntimeBufferBinding>&
                                            buffer_bindings) {
+  if (!spec.value_expr_json.empty()) {
+    return EvaluatePerWorkValueExpr(spec, context, buffer_bindings);
+  }
   if (spec.value_source == tl::blackhole_runtime_arg_schema::kValueSourceWorkLinearId) {
     return context.work_linear_id;
   }
@@ -3696,50 +3862,10 @@ static uint32_t EvaluatePerWorkArgSpec(const PerWorkArgSpec& spec,
     return spec.constant_value;
   }
   if (spec.value_source == tl::blackhole_runtime_arg_schema::kValueSourceIndexTable) {
-    ICHECK(!spec.index_buffer.empty())
-        << "Blackhole direct runtime index_table per_work_arg_spec requires index_buffer for "
-        << spec.arg_identity;
-    auto table_it = buffer_bindings.find(spec.index_buffer);
-    ICHECK(table_it != buffer_bindings.end())
-        << "Blackhole direct runtime index_table per_work_arg_spec references missing buffer "
-        << spec.index_buffer;
-    const RuntimeBufferBinding& table = table_it->second;
-    const size_t table_index = EvaluateIndexTableElementIndex(spec, context);
-    const size_t byte_offset = table_index * sizeof(int32_t);
-    ICHECK_LE(byte_offset + sizeof(int32_t), table.host_data.size())
-        << "Blackhole direct runtime index_table per_work_arg_spec out of bounds for "
-        << spec.arg_identity << ": table_index=" << table_index
-        << ", index_buffer=" << spec.index_buffer;
-    int32_t table_value = 0;
-    std::memcpy(&table_value, table.host_data.data() + byte_offset, sizeof(int32_t));
-    ICHECK_GE(table_value, 0)
-        << "Blackhole direct runtime index_table per_work_arg_spec requires non-negative "
-        << "table value for " << spec.arg_identity;
-    const uint64_t scaled =
-        static_cast<uint64_t>(table_value) * static_cast<uint64_t>(spec.index_value_scale);
-    ICHECK_LE(scaled, std::numeric_limits<uint32_t>::max())
-        << "Blackhole direct runtime index_table per_work_arg_spec overflow for "
-        << spec.arg_identity;
-    if (spec.descriptor_kind ==
-            tl::blackhole_runtime_arg_schema::kDescriptorTileStart &&
-        !spec.buffer.empty()) {
-      auto target_it = buffer_bindings.find(spec.buffer);
-      ICHECK(target_it != buffer_bindings.end())
-          << "Blackhole direct runtime index_table per_work_arg_spec references missing "
-          << "target buffer " << spec.buffer << " for " << spec.arg_identity;
-      const RuntimeBufferBinding& target = target_it->second;
-      ICHECK_GT(target.transport_page_size_bytes, 0U)
-          << "Blackhole direct runtime index_table tile_start requires transport page size "
-          << "for target buffer " << spec.buffer;
-      const uint64_t max_pages =
-          static_cast<uint64_t>(target.size_bytes) /
-          static_cast<uint64_t>(target.transport_page_size_bytes);
-      ICHECK_LT(scaled, max_pages)
-          << "Blackhole direct runtime index_table tile_start out of bounds for "
-          << spec.arg_identity << ": tile_start=" << scaled
-          << ", target_buffer=" << spec.buffer << ", max_pages=" << max_pages;
-    }
-    return static_cast<uint32_t>(scaled);
+    LOG(FATAL) << "Blackhole direct runtime index_table per_work_arg_spec for "
+               << spec.arg_identity
+               << " requires value_expr; table shape/source metadata is not a "
+               << "runtime value evaluator";
   }
   LOG(FATAL) << "Unsupported Blackhole per_work_arg_spec value_source " << spec.value_source
              << " for arg " << spec.arg_identity;
@@ -3761,8 +3887,21 @@ static bool TryAppendPerWorkRuntimeArg(const KernelSpec& kernel,
     args->push_back(context.work_linear_id);
     return true;
   }
-  if (const PerWorkArgSpec* spec = FindPerWorkArgSpec(per_work_arg_specs, arg_spec)) {
-    args->push_back(EvaluatePerWorkArgSpec(*spec, context, buffer_bindings));
+  std::vector<const PerWorkArgSpec*> specs =
+      FindPerWorkArgSpecs(per_work_arg_specs, arg_spec);
+  if (!specs.empty()) {
+    const uint32_t value =
+        EvaluatePerWorkArgSpec(*specs.front(), context, buffer_bindings);
+    for (size_t i = 1; i < specs.size(); ++i) {
+      const uint32_t companion_value =
+          EvaluatePerWorkArgSpec(*specs[i], context, buffer_bindings);
+      ICHECK_EQ(companion_value, value)
+          << "Blackhole direct runtime companion per-work descriptors for "
+          << arg_spec.identity << " disagree: first=" << value
+          << ", companion=" << companion_value
+          << ", companion_buffer=" << specs[i]->buffer;
+    }
+    args->push_back(value);
     return true;
   }
   if (arg_spec.kind == "scalar_u32") {
@@ -4523,14 +4662,17 @@ void BlackholeWrappedFunc::operator()(ffi::PackedArgs args, ffi::Any* rv,
     ICHECK(!per_work_arg.index_buffer.empty())
         << "Blackhole direct runtime index_table per-work binding requires index_buffer for "
         << per_work_arg.arg_identity;
-    if (!per_work_arg.index_table_shape.empty() ||
-        !per_work_arg.index_table_index_sources.empty()) {
-      ICHECK_EQ(per_work_arg.index_table_shape.size(),
-                per_work_arg.index_table_index_sources.size())
-          << "Blackhole direct runtime index_table per-work binding requires one "
-          << "index source per table shape dimension for "
-          << per_work_arg.arg_identity;
-    }
+    ICHECK(!per_work_arg.value_expr_json.empty())
+        << "Blackhole direct runtime index_table per-work binding requires "
+        << "generic value_expr for " << per_work_arg.arg_identity;
+    ICHECK(!per_work_arg.index_table_shape.empty())
+        << "Blackhole direct runtime index_table per-work binding requires explicit "
+        << "table shape for " << per_work_arg.arg_identity;
+    ICHECK_EQ(per_work_arg.index_table_shape.size(),
+              per_work_arg.index_table_index_sources.size())
+        << "Blackhole direct runtime index_table per-work binding requires one "
+        << "index source per table shape dimension for "
+        << per_work_arg.arg_identity;
     auto [it, inserted] =
         buffer_is_output_by_name.emplace(per_work_arg.index_buffer, false);
     ICHECK(inserted || !it->second)

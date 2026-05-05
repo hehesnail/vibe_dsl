@@ -33,6 +33,7 @@
 #include <tvm/tir/stmt_functor.h>
 
 #include <algorithm>
+#include <optional>
 #include <sstream>
 #include <unordered_set>
 #include <vector>
@@ -57,6 +58,13 @@ namespace {
 
 constexpr int kBlackholeTileRows = 32;
 constexpr int kBlackholeTileCols = 32;
+
+bool IsBroadcastColsTileComputeOperation(const std::string& operation_name) {
+  const std::optional<BlackholeTileComputeOperation> operation =
+      ParseBlackholeTileComputeOperation(operation_name);
+  return operation == BlackholeTileComputeOperation::kMulTilesBcastCols ||
+         operation == BlackholeTileComputeOperation::kAddTilesBcastCols;
+}
 
 static std::string DataTypeToDataFormatForBlackhole(DataType dtype) {
   if (dtype.is_bfloat16())
@@ -285,7 +293,9 @@ static int FindRuntimeArgIndex(const Array<Any> &runtime_args,
 static Map<String, Any> MakeRuntimeArg(const std::string &name,
                                        const std::string &kind,
                                        const std::string &dtype,
-                                       const std::string &buffer_name = "") {
+                                       const std::string &buffer_name = "",
+                                       bool requires_per_work_descriptor =
+                                           false) {
   Map<String, Any> arg;
   arg.Set("name", String(name));
   arg.Set("kind", String(kind));
@@ -295,6 +305,19 @@ static Map<String, Any> MakeRuntimeArg(const std::string &name,
   }
   arg.Set("identity",
           String(MakeBlackholeRuntimeArgIdentity(kind, name, buffer_name)));
+  if (requires_per_work_descriptor) {
+    arg.Set(blackhole_runtime_arg_schema::kRequiresPerWorkDescriptor,
+            Bool(true));
+  }
+  return arg;
+}
+
+static Map<String, Any> MarkRuntimeArgRequiresPerWorkDescriptor(
+    const Any &item) {
+  Map<String, Any> arg = item.as<Map<String, Any>>().value_or(Map<String, Any>());
+  ICHECK(!arg.empty())
+      << "Blackhole runtime arg schema marker requires a map item";
+  arg.Set(blackhole_runtime_arg_schema::kRequiresPerWorkDescriptor, Bool(true));
   return arg;
 }
 
@@ -359,15 +382,22 @@ EnsureSegmentBufferRuntimeArgs(const std::string &segment_kind,
     auto push_existing_or_synthesized = [&](const std::string &kind,
                                             const std::string &name,
                                             const std::string &buffer_name =
-                                                "") {
+                                                "",
+                                            bool requires_per_work_descriptor =
+                                                false) {
       const int existing_index =
           FindRuntimeArgIndex(existing_runtime_args, kind, buffer_name);
       if (existing_index >= 0) {
-        runtime_args.push_back(existing_runtime_args[existing_index]);
+        runtime_args.push_back(
+            requires_per_work_descriptor
+                ? MarkRuntimeArgRequiresPerWorkDescriptor(
+                      existing_runtime_args[existing_index])
+                : existing_runtime_args[existing_index]);
         consumed[existing_index] = true;
         return;
       }
-      runtime_args.push_back(MakeRuntimeArg(name, kind, "uint32", buffer_name));
+      runtime_args.push_back(MakeRuntimeArg(name, kind, "uint32", buffer_name,
+                                            requires_per_work_descriptor));
     };
 
     for (const std::string &buffer_name : resolved_input_buffer_names) {
@@ -384,16 +414,20 @@ EnsureSegmentBufferRuntimeArgs(const std::string &segment_kind,
     const bool input_addressed_by_row_segment =
         FindRuntimeArgIndex(existing_runtime_args, "a_segment_row_start") >= 0;
     if (!resolved_input_buffer_names.empty() && !input_addressed_by_row_segment) {
-      push_existing_or_synthesized("a_tile_start_id", "a_tile_start_id");
-      push_existing_or_synthesized("a_tile_num_tiles", "a_tile_num_tiles");
-      push_existing_or_synthesized("a_tile_stride", "a_tile_stride");
+      push_existing_or_synthesized("a_tile_start_id", "a_tile_start_id", "",
+                                   true);
+      push_existing_or_synthesized("a_tile_num_tiles", "a_tile_num_tiles", "",
+                                   true);
+      push_existing_or_synthesized("a_tile_stride", "a_tile_stride", "",
+                                   true);
     }
     if (!resolved_output_buffer_names.empty()) {
       push_existing_or_synthesized("output_tile_start_id",
-                                   "output_tile_start_id");
+                                   "output_tile_start_id", "", true);
       push_existing_or_synthesized("output_tile_num_tiles",
-                                   "output_tile_num_tiles");
-      push_existing_or_synthesized("output_tile_stride", "output_tile_stride");
+                                   "output_tile_num_tiles", "", true);
+      push_existing_or_synthesized("output_tile_stride", "output_tile_stride",
+                                   "", true);
     }
     for (int i = 0, n = static_cast<int>(existing_runtime_args.size()); i < n;
          ++i) {
@@ -475,11 +509,21 @@ EnsureSegmentBufferRuntimeArgs(const std::string &segment_kind,
   auto append_runtime_arg_if_missing = [&](const std::string &name,
                                            const std::string &kind,
                                            const std::string &buffer_name =
-                                               "") {
-    if (FindRuntimeArgIndex(runtime_args, kind, buffer_name) >= 0) {
+                                               "",
+                                           bool requires_per_work_descriptor =
+                                               false) {
+    const int existing_index = FindRuntimeArgIndex(runtime_args, kind,
+                                                  buffer_name);
+    if (existing_index >= 0) {
+      if (requires_per_work_descriptor) {
+        runtime_args.Set(existing_index,
+                         MarkRuntimeArgRequiresPerWorkDescriptor(
+                             runtime_args[existing_index]));
+      }
       return;
     }
-    runtime_args.push_back(MakeRuntimeArg(name, kind, "uint32", buffer_name));
+    runtime_args.push_back(MakeRuntimeArg(name, kind, "uint32", buffer_name,
+                                          requires_per_work_descriptor));
   };
   if (is_reader) {
     std::vector<std::string> input_buffers;
@@ -501,22 +545,23 @@ EnsureSegmentBufferRuntimeArgs(const std::string &segment_kind,
     }
     if (!input_buffers.empty()) {
       append_runtime_arg_if_missing("a_tile_start_id", "a_tile_start_id",
-                                    input_buffers[0]);
+                                    input_buffers[0], true);
       append_runtime_arg_if_missing("a_tile_num_tiles", "a_tile_num_tiles",
-                                    input_buffers[0]);
+                                    input_buffers[0], true);
       append_runtime_arg_if_missing("a_tile_stride", "a_tile_stride",
-                                    input_buffers[0]);
+                                    input_buffers[0], true);
     }
     if (input_buffers.size() > 1) {
       append_runtime_arg_if_missing("b_tile_start_id", "b_tile_start_id",
-                                    input_buffers[1]);
+                                    input_buffers[1], true);
       append_runtime_arg_if_missing("b_tile_num_tiles", "b_tile_num_tiles",
-                                    input_buffers[1]);
+                                    input_buffers[1], true);
       append_runtime_arg_if_missing("b_tile_stride", "b_tile_stride",
-                                    input_buffers[1]);
+                                    input_buffers[1], true);
     }
-    append_runtime_arg_if_missing("k_tile_start_id", "k_tile_start_id");
-    append_runtime_arg_if_missing("num_k_tiles", "num_k_tiles");
+    append_runtime_arg_if_missing("k_tile_start_id", "k_tile_start_id", "",
+                                  true);
+    append_runtime_arg_if_missing("num_k_tiles", "num_k_tiles", "", true);
   } else if (is_writer) {
     std::string resolved_output_buffer_name =
         !output_buffer_name.empty() ? output_buffer_name : "";
@@ -541,12 +586,12 @@ EnsureSegmentBufferRuntimeArgs(const std::string &segment_kind,
     }
     append_runtime_arg_if_missing("output_tile_start_id",
                                   "output_tile_start_id",
-                                  resolved_output_buffer_name);
+                                  resolved_output_buffer_name, true);
     append_runtime_arg_if_missing("output_tile_num_tiles",
                                   "output_tile_num_tiles",
-                                  resolved_output_buffer_name);
+                                  resolved_output_buffer_name, true);
     append_runtime_arg_if_missing("output_tile_stride", "output_tile_stride",
-                                  resolved_output_buffer_name);
+                                  resolved_output_buffer_name, true);
   }
   for (const auto &item : other_args) {
     runtime_args.push_back(item);
@@ -630,7 +675,8 @@ static TTPerWorkArgSpec MakePerWorkArgSpec(const std::string &arg_kind,
                                            const std::vector<int64_t>
                                                &index_table_shape = {},
                                            const std::vector<std::string>
-                                               &index_table_index_sources = {}) {
+                                               &index_table_index_sources = {},
+                                           PrimExpr value_expr = PrimExpr()) {
   Array<Integer> shape;
   for (int64_t extent : index_table_shape) {
     shape.push_back(Integer(extent));
@@ -645,7 +691,7 @@ static TTPerWorkArgSpec MakePerWorkArgSpec(const std::string &arg_kind,
                           static_cast<int64_t>(constant_value),
                           String(access_region), access_region_index,
                           String(index_buffer), index_value_scale,
-                          shape, sources);
+                          shape, sources, std::move(value_expr));
 }
 
 static TTKernelLaunchSpec MakeLaunchSpec(const std::string &core_type,
@@ -705,7 +751,9 @@ static TTRuntimeArgSpec DecodeRuntimeArgSpec(const Any &item) {
       GetMapString(arg, "name"), GetMapString(arg, "kind"),
       GetMapString(arg, "dtype"), GetMapString(arg, "buffer"),
       GetMapString(arg, "identity"), GetMapInteger(arg, "core_x", -1),
-      GetMapInteger(arg, "core_y", -1));
+      GetMapInteger(arg, "core_y", -1),
+      GetMapBool(
+          arg, blackhole_runtime_arg_schema::kRequiresPerWorkDescriptor));
 }
 
 static Array<TTRuntimeArgSpec>
@@ -906,7 +954,7 @@ void PlanTTKernelABI::LoadSeededComputeOpPlans(const PrimFunc &func) {
     tt_compute_op_plans_.push_back(plan);
     const std::string operation_name = plan->operation_name;
     const bool is_broadcast_cols_op =
-        operation_name.find("_bcast_cols") != std::string::npos;
+        IsBroadcastColsTileComputeOperation(operation_name);
     for (const TTComputeOperandBindingPlan &binding : plan->operand_bindings) {
       const std::string role = binding->role;
       const std::string buffer = binding->buffer;
@@ -952,26 +1000,31 @@ void PlanTTKernelABI::StoreSegmentPlan(PrimFunc &func) {
     if (needs_ragged_row_bound_arg_ &&
         !has_indexed_per_work_runtime_arg("a_valid_rows")) {
       runtime_args->push_back(
-          MakeRuntimeArg("a_valid_rows", "a_valid_rows", "uint32"));
+          MakeRuntimeArg("a_valid_rows", "a_valid_rows", "uint32", "",
+                         true));
     }
     if (needs_ragged_page_index_arg_) {
       runtime_args->push_back(MakeRuntimeArg(
-          "a_ragged_page_index", "a_ragged_page_index", "uint32"));
+          "a_ragged_page_index", "a_ragged_page_index", "uint32", "",
+          true));
     }
     if (needs_segment_row_start_arg_ &&
         !has_indexed_per_work_runtime_arg("a_segment_row_start")) {
       runtime_args->push_back(MakeRuntimeArg(
-          "a_segment_row_start", "a_segment_row_start", "uint32"));
+          "a_segment_row_start", "a_segment_row_start", "uint32", "",
+          true));
     }
     if (needs_segment_row_count_arg_ &&
         !has_indexed_per_work_runtime_arg("a_segment_row_count")) {
       runtime_args->push_back(MakeRuntimeArg(
-          "a_segment_row_count", "a_segment_row_count", "uint32"));
+          "a_segment_row_count", "a_segment_row_count", "uint32", "",
+          true));
     }
   };
   auto append_indexed_per_work_runtime_args =
       [&](Array<Any>* runtime_args, const std::string& kernel_kind) {
     bool appended = false;
+    std::unordered_set<std::string> appended_arg_names;
     for (const IndexedPerWorkRuntimeArg &arg :
          indexed_per_work_runtime_args_) {
       if (kernel_kind == "compute" &&
@@ -979,8 +1032,11 @@ void PlanTTKernelABI::StoreSegmentPlan(PrimFunc &func) {
               blackhole_runtime_arg_schema::kDescriptorValidRows) {
         continue;
       }
+      if (!appended_arg_names.insert(arg.arg_name).second) {
+        continue;
+      }
       runtime_args->push_back(
-          MakeRuntimeArg(arg.arg_name, arg.arg_name, "uint32"));
+          MakeRuntimeArg(arg.arg_name, arg.arg_name, "uint32", "", true));
       appended = true;
     }
     return appended;
@@ -1313,19 +1369,13 @@ void PlanTTKernelABI::StoreAccessorDescriptors(PrimFunc &func) {
           index_value_scale = region->index_value_scale;
         }
       }
-      auto addressing_it = index_table_addressing_by_buffer_.find(index_buffer);
-      if (index_table_shape.empty() &&
-          addressing_it != index_table_addressing_by_buffer_.end()) {
-        index_table_shape = addressing_it->second.shape;
-        index_table_index_sources = addressing_it->second.index_sources;
-      }
       return MakePerWorkArgSpec(
           static_cast<std::string>(spec->arg_kind),
           static_cast<std::string>(spec->arg_identity),
           static_cast<std::string>(spec->descriptor_kind), value_source, buffer,
           static_cast<uint32_t>(spec->constant_value), region->name,
           region->index, index_buffer, index_value_scale,
-          index_table_shape, index_table_index_sources);
+          index_table_shape, index_table_index_sources, spec->value_expr);
     };
     auto upsert_spec = [&](const TTPerWorkArgSpec &raw_spec) {
       const TTPerWorkArgSpec spec = attach_access_region_evidence(raw_spec);
@@ -1335,7 +1385,11 @@ void PlanTTKernelABI::StoreAccessorDescriptors(PrimFunc &func) {
         const TTPerWorkArgSpec &existing = per_work_arg_specs[i];
         const std::string existing_arg_identity =
             static_cast<std::string>(existing->arg_identity);
-        if (existing_arg_identity == arg_identity) {
+        if (existing_arg_identity == arg_identity &&
+            static_cast<std::string>(existing->descriptor_kind) ==
+                static_cast<std::string>(spec->descriptor_kind) &&
+            static_cast<std::string>(existing->buffer) ==
+                static_cast<std::string>(spec->buffer)) {
           per_work_arg_specs.Set(i, spec);
           return;
         }
@@ -1377,13 +1431,23 @@ void PlanTTKernelABI::StoreAccessorDescriptors(PrimFunc &func) {
             !segment_row_subject_buffer_name_.empty()) {
           arg_buffer = segment_row_subject_buffer_name_;
         }
+        std::string access_region;
+        int64_t access_region_index = -1;
+        const SpatialAccessRegionRef* region =
+            FindSpatialAccessRegionRef(arg_buffer, "read",
+                                       arg.subject_index_exprs);
+        if (region != nullptr) {
+          access_region = region->name;
+          access_region_index = region->index;
+        }
         upsert_spec(MakePerWorkArgSpec(
             arg.arg_name, runtime_arg_identity_for_kind(arg.arg_name.c_str()),
             arg.descriptor_kind,
             blackhole_runtime_arg_schema::kValueSourceIndexTable,
-            arg_buffer, 0, "", -1, arg.index_buffer,
+            arg_buffer, 0, access_region, access_region_index,
+            arg.index_buffer,
             arg.index_value_scale, arg.addressing.shape,
-            arg.addressing.index_sources));
+            arg.addressing.index_sources, arg.value_expr));
       }
       if (runtime_args_contain_kind("a_tile_num_tiles")) {
         upsert_spec(MakePerWorkArgSpec(
@@ -1400,20 +1464,6 @@ void PlanTTKernelABI::StoreAccessorDescriptors(PrimFunc &func) {
             blackhole_runtime_arg_schema::kValueSourceConstant,
             copy_input_buffer_name, 1));
       }
-      if (runtime_args_contain_kind("a_valid_rows") &&
-          !indexed_runtime_arg_named("a_valid_rows") &&
-          !ragged_row_bound_index_buffer_name_.empty()) {
-        const std::string bound_subject =
-            !ragged_row_bound_subject_buffer_name_.empty()
-                ? ragged_row_bound_subject_buffer_name_
-                : copy_input_buffer_name;
-        upsert_spec(MakePerWorkArgSpec(
-            "a_valid_rows", runtime_arg_identity_for_kind("a_valid_rows"),
-            blackhole_runtime_arg_schema::kDescriptorValidRows,
-            blackhole_runtime_arg_schema::kValueSourceIndexTable,
-            bound_subject, 0, "", -1,
-            ragged_row_bound_index_buffer_name_, 1));
-      }
       if (runtime_args_contain_kind("a_ragged_page_index")) {
         const std::string bound_subject =
             !ragged_row_bound_subject_buffer_name_.empty()
@@ -1429,38 +1479,6 @@ void PlanTTKernelABI::StoreAccessorDescriptors(PrimFunc &func) {
             blackhole_runtime_arg_schema::kDescriptorRaggedPageIndex,
             value_source,
             bound_subject));
-      }
-      if (runtime_args_contain_kind("a_segment_row_start") &&
-          !segment_row_start_index_buffer_name_.empty()) {
-        const std::string segment_subject =
-            !segment_row_subject_buffer_name_.empty()
-                ? segment_row_subject_buffer_name_
-                : ((kind == "reader" && !gemm_a_buffer_name_.empty())
-                       ? gemm_a_buffer_name_
-                       : copy_input_buffer_name);
-        upsert_spec(MakePerWorkArgSpec(
-            "a_segment_row_start",
-            runtime_arg_identity_for_kind("a_segment_row_start"),
-            blackhole_runtime_arg_schema::kDescriptorSegmentRowStart,
-            blackhole_runtime_arg_schema::kValueSourceIndexTable,
-            segment_subject, 0, "", -1,
-            segment_row_start_index_buffer_name_, 1));
-      }
-      if (runtime_args_contain_kind("a_segment_row_count") &&
-          !segment_row_count_index_buffer_name_.empty()) {
-        const std::string segment_subject =
-            !segment_row_subject_buffer_name_.empty()
-                ? segment_row_subject_buffer_name_
-                : ((kind == "reader" && !gemm_a_buffer_name_.empty())
-                       ? gemm_a_buffer_name_
-                       : copy_input_buffer_name);
-        upsert_spec(MakePerWorkArgSpec(
-            "a_segment_row_count",
-            runtime_arg_identity_for_kind("a_segment_row_count"),
-            blackhole_runtime_arg_schema::kDescriptorSegmentRowCount,
-            blackhole_runtime_arg_schema::kValueSourceIndexTable,
-            segment_subject, 0, "", -1,
-            segment_row_count_index_buffer_name_, 1));
       }
       if (runtime_args_contain_kind("output_tile_start_id")) {
         upsert_spec(MakePerWorkArgSpec(

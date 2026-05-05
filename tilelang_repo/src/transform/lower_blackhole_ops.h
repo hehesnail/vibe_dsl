@@ -304,6 +304,7 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
     int64_t index = -1;
     std::string subject;
     std::string access_kind;
+    ffi::Array<PrimExpr> index_exprs;
     std::string index_buffer;
     int64_t index_value_scale = 1;
   };
@@ -317,9 +318,11 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
     std::string arg_name;
     std::string descriptor_kind;
     std::string subject_buffer;
+    ffi::Array<PrimExpr> subject_index_exprs;
     std::string index_buffer;
     int64_t index_value_scale = 1;
     IndexTableAddressing addressing;
+    PrimExpr value_expr;
   };
 
   /*! \brief Get CB configuration from function attributes */
@@ -412,6 +415,10 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   const SpatialAccessRegionRef* FindSpatialAccessRegionRef(
       const std::string& subject,
       const std::string& access_kind) const;
+  const SpatialAccessRegionRef* FindSpatialAccessRegionRef(
+      const std::string& subject,
+      const std::string& access_kind,
+      const ffi::Array<PrimExpr>& index_exprs) const;
 
   /*! \brief Return the SpatialPlan materialization boundary for a boundary index. */
   const SpatialMaterializationBoundaryRef* FindSpatialMaterializationBoundaryRef(
@@ -696,6 +703,10 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   tvm::tir::Stmt ReleaseExactInputAfterUse(
       const ExactTiledCBValue& value,
       int current_order_index);
+  tvm::tir::Stmt ReleaseExactInputAfterUse(
+      const ExactTiledCBValue& value,
+      int current_order_index,
+      ExactCBReleasePolicy release_policy);
   ExactTiledCBValue CreateExactInputCBValue(const tvm::tir::Buffer& src,
                                             const std::string& suffix);
   ExactTiledCBValue CreateRowReductionInputCBValue(const tvm::tir::Buffer& src);
@@ -838,6 +849,8 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
                                  int current_order_index) const;
   bool FutureWritePrecedesFutureComputeConsume(const tvm::tir::Buffer& buffer,
                                                int current_order_index) const;
+  bool FutureWritePrecedesFutureTransportConsume(const tvm::tir::Buffer& buffer,
+                                                 int current_order_index) const;
   int ResolveCurrentBufferTransferOrder(const tvm::tir::Buffer& src,
                                         const tvm::tir::Buffer& dst,
                                         int lower_bound_order_index) const;
@@ -921,17 +934,26 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   void RecordExactComputeOpPlan(const std::string& kind,
                                 const std::string& operation_name,
                                 const std::vector<ComputeOperandPlanSeed>& operands);
-  void RecordIndexTableAddressing(const std::string& index_buffer,
-                                  const tvm::tir::BufferLoadNode* table_load);
   std::optional<IndexTableAddressing> ExtractIndexTableAddressing(
       const tvm::tir::BufferLoadNode* table_load) const;
   std::string GetOrCreateIndexedPerWorkRuntimeArg(
       const std::string& arg_prefix,
       const std::string& descriptor_kind,
       const std::string& subject_buffer,
+      const ffi::Array<PrimExpr>& subject_index_exprs,
       const std::string& index_buffer,
       const IndexTableAddressing& addressing,
-      int64_t index_value_scale);
+      int64_t index_value_scale,
+      const PrimExpr& value_expr);
+  void RecordIndexedPerWorkRuntimeArgSubjectAlias(
+      const std::string& arg_name,
+      const std::string& descriptor_kind,
+      const std::string& subject_buffer,
+      const ffi::Array<PrimExpr>& subject_index_exprs,
+      const std::string& index_buffer,
+      const IndexTableAddressing& addressing,
+      int64_t index_value_scale,
+      const PrimExpr& value_expr);
   tvm::PrimExpr NormalizeRuntimeTileStartScale(const tvm::PrimExpr& expr) const;
 
   // StmtExprMutator overrides
@@ -1043,7 +1065,6 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   std::unordered_set<const tvm::tir::VarNode*> block_index_vars_;
   std::unordered_set<std::string> block_index_var_names_;
   std::unordered_map<const tvm::tir::VarNode*, std::string> block_index_source_by_var_;
-  std::unordered_map<std::string, IndexTableAddressing> index_table_addressing_by_buffer_;
   std::vector<AccessorDescriptor> accessor_descriptors_;
   std::string current_segment_kind_;
   std::unordered_map<std::string, int> read_accessor_slots_;
@@ -1073,7 +1094,8 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   std::unordered_map<int64_t, size_t> spatial_materialization_boundary_position_by_index_;
   std::unordered_map<std::string, SpatialLiveValueRef> spatial_live_value_by_subject_;
   std::vector<SpatialAccessRegionRef> spatial_access_regions_;
-  std::unordered_map<std::string, size_t> spatial_access_region_position_by_subject_access_;
+  std::unordered_map<std::string, std::vector<size_t>>
+      spatial_access_region_positions_by_subject_access_;
   std::unordered_map<std::string, std::string> spatial_lifetime_kind_by_subject_;
   std::unordered_map<std::string, tvm::PrimExpr> last_fragment_fill_value_by_buffer_identity_;
   std::unordered_map<const tvm::tir::VarNode*, tvm::PrimExpr> last_fragment_fill_value_by_data_;

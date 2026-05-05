@@ -191,16 +191,17 @@
   truth or fallback behavior.
 - Table-backed per-work descriptors need to carry the table address expression,
   not just the table buffer.  `BlockIndices[bx]` can accidentally work by
-  reading at `work_linear_id`, but `BlockIndices[bx, by]` requires typed
-  `index_table_shape` plus launch-axis `index_table_index_sources` so
-  direct runtime and serialization consume the same TIR-derived addressing
-  contract.
+  reading at `work_linear_id`, but `BlockIndices[bx, by]` requires the
+  original TIR value expression to survive as descriptor owner truth.  Current
+  `index_table_shape` / `index_table_index_sources` metadata is projection
+  residue and diagnostics; direct runtime should consume serialized
+  `value_expr`.
 - Multiple table-backed per-work values in one work item are not one logical
   runtime arg.  Allocate one runtime arg identity per independent TIR table
-  load that drives a descriptor such as `tile_start` or `valid_rows`, and put
-  the table shape/index sources on each `TTPerWorkArgSpec`; literal table
-  dimensions belong in descriptor sources such as `constant:0`, not in
-  source/runtime name recovery.
+  load that drives a descriptor such as `tile_start` or `valid_rows`, and keep
+  the corresponding `value_expr` on each `TTPerWorkArgSpec`; literal table
+  dimensions must remain inside the TIR expression / descriptor evidence, not
+  in source/runtime name recovery.
 - Do not treat `_1` suffix support as proof of a generic sparse protocol.
   Cover at least a third independent table-derived entry when claiming that
   per-work descriptor allocation scales beyond a pair of operands.
@@ -2392,14 +2393,41 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   prevents metadata-only requirements such as `acc_s` / `acc_o` from sharing a
   physical CB write pointer after allocator reuse.
 - 2026-05-05 T8 table-indexed per-work descriptors:
-  A table-derived tile start should be represented as a typed
-  `TTPerWorkArgSpec` with `value_source=index_table`, `index_buffer`, and
-  `index_value_scale`, linked back to the SpatialPlan `AccessRegion`.
-  Source should consume the ordinary tile-start runtime arg
+  A table-derived tile start must be owned by ordinary TIR-derived
+  `AccessRegion.index_exprs` plus a typed per-work binding back to that
+  region.  Source should consume the ordinary tile-start runtime arg
   (`runtime_arg_u32("a_tile_start_id")`) and must not read the index table
-  directly.  Direct runtime should materialize the table as a normal named
-  input buffer, evaluate the per-work arg from host-side table data, and check
-  the result against the target buffer's typed page count.
+  directly.  Existing `TTPerWorkArgSpec` `value_source=index_table` /
+  `index_buffer` / `index_value_scale` fields are runtime projection residue,
+  not a schema family to extend; new work should prefer generic
+  `AccessRegion` / `ExecutableSpec` evaluation.
+- 2026-05-05 T8 no buffer-wide index-table addressing cache:
+  Do not keep a pass-local `index_buffer -> addressing` map as a fallback for
+  missing per-work descriptor evidence.  It lets a later ABI step recover
+  table coordinates from the buffer name and can bind the wrong expression
+  when one table has multiple columns/constants.  Addressing evidence must be
+  attached to the concrete per-work arg derived from the matching TIR table
+  load / `AccessRegion`.
+- 2026-05-05 T8 no work-linear fallback for index-table descriptors:
+  `value_source=index_table` descriptors must carry explicit table shape and
+  one index source per table dimension.  Falling back to `work_linear_id` when
+  those fields are absent silently reintroduces launch-order semantics outside
+  IR.  Likewise, ABI lowering must not synthesize `valid_rows` or segment
+  row descriptors from only an index-buffer name; the concrete per-work arg
+  derived from the TIR table load owns that evidence.
+- 2026-05-05 T8 same-subject indexed access regions:
+  Do not collapse multiple reads of the same buffer/access kind into one
+  `AccessRegion`.  Sparse forms such as `BlockIndices[bx,0]` and
+  `BlockIndices[bx,1]` must produce distinct regions and descriptor binding
+  must select by structural `index_exprs` equality after substituting active
+  Let-bound table loads.  A subject/access first-match silently reuses the
+  wrong indexed access.
+- 2026-05-05 T8 guarded AccessRegion predicates:
+  `predicate_kind=guarded` is not enough owner truth.  Carry the concrete
+  boolean TIR predicates in generic `AccessRegion.predicate_exprs` and make
+  `ValidateSpatialPlan` reject guarded regions without them.  Do not create
+  `valid_rows`-, segmented-, paged-, or topk-shaped schema fields to recover
+  predicate meaning downstream.
 - 2026-05-05 T8 scaled indexed-block descriptors:
   If a table value is a block id and the TIR row expression scales it by a
   whole number of 32-row tiles, keep the scale on the typed descriptor
@@ -2469,3 +2497,11 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   loaded from the executable function independently of runtime-arg binding.
   Compute segments can legally have no runtime args and still need CB metadata
   for typed operations such as `untilize_cb_front_tile_fragment`.
+- 2026-05-05 T8 per-work runtime value ownership:
+  If a per-work descriptor value comes from a TIR expression, carry that
+  expression as generic `value_expr` through `TTPerWorkArgSpec`,
+  `ExecutableSpec`, runtime-module extraction, and module serialization.
+  Direct runtime should evaluate the TIR expression under the logical work
+  context.  Do not add workload-shaped schema such as selection/topk fields,
+  and do not treat `index_table_shape` / `index_table_index_sources` as a
+  second runtime value evaluator.

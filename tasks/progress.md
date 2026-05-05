@@ -20,10 +20,10 @@
 | T3 Tensor/value sharding and explicit reshard | Complete | `T.MemoryConfig`, placement intents, tensor memory-config plans, op sharding contracts, placement resolution, and first `interleaved_to_sharded` staged-copy conversion are typed and projected. |
 | T4 External accessor / runtime ABI | Complete | External interleaved, 64B page-indexed DRAM, and static sharded-L1 accessors are executable records consumed by source/runtime; unsupported dynamic/common-runtime forms reject from typed records. |
 | T5 Sharded GEMM / layout variants | Complete | First static external sharded-L1 GEMM layouts pass direct runtime, including single-core, 2x2 multi-core, 110-core many-core all-bf16, and first K-dimension partial-sum correctness path. |
-| T6 `topk` | Complete | Existing-TIR row-wise value/index selection runs through direct runtime for fp32 and bf16 values with exact `int32` indices, without a frontend topk op or selection plan. |
+| T6 `topk` | Runtime complete / cleanup required | Existing-TIR row-wise value/index selection runs through direct runtime for fp32 and bf16 values with exact `int32` indices, without a frontend topk op or selection plan. Architecture audit found the current backend still uses a dedicated value/index selection emitter; it is not a final generic compute-region lowering. |
 | T7 Exact-CB / materialization primitives | Complete | Exact-CB materialization is admitted through typed live-form/materialization/consumer-binding records, including GEMM post-merge `pack_tile`, source-live `cb_republish`, and seq64 bf16 flash-attn exact-CB partial-combine direct runtime correctness. |
 | T7.5 Exact-CB liveness / allocation cutover | Complete | Covered exact-CB resident tiles use typed TTProgram/ExecutableSpec lifecycle, allocation, and release records; old loop-carried owner maps, materialization-pop fallback, and full-tile/slice ambiguity are fail-closed or deleted from the active path. |
-| T8 Irregular work domains / indexed access | Implementation | Grid-indexed, one-dimensional and launch-axis two-dimensional table-indexed tile descriptors, scaled contiguous indexed-block copies, sparse multi-entry indexed traversal with per-entry ragged bounds, predicate-derived ragged row/page bounds, copy-shaped paged `cache_seqlens`, per-page valid-row tables, single/multiple non-uniform segmented row ranges, and the T9.1 segmented A grouped-GEMM feed carry TIR-derived evidence through TT per-work descriptors and direct runtime; broader irregular forms remain open. |
+| T8 Irregular work domains / indexed access | Implementation / cleanup required | Grid-indexed, table-indexed, sparse, ragged, paged, segmented, and T9.1 segmented-A grouped GEMM surfaces execute through direct runtime. Current cleanup is IR-first: indexed/ragged truth must be owned by `AccessRegion` / typed per-work bindings; legacy `index_table_*` runtime projection fields are residue and must not be expanded. |
 | T9 Workload first paths | Implementation | T9.1 pre-grouped MoE/routed grouped GEMM and T9.2 paged GQA decode are admitted through ordinary TIR-derived indexed/ragged descriptors, typed materialization/lifecycle records, and bf16 direct-runtime correctness; T9.3-T9.6 remain queued. |
 | T10 Distributed production variants | Queued | Mesh, CCL, NoC/multicast/global scheduling, distributed workload correctness, and production partial-K reduction protocol. |
 
@@ -31,6 +31,34 @@
 
 - Runtime/codegen must consume `ExecutableSpec` leaf records; no source-name,
   argument-position, accessor-string, or runtime observation recovery.
+- Architecture audit `2026-05-05`: completed-task status must distinguish
+  runtime coverage from final architecture cleanliness.  T6 still has a
+  dedicated `CodeGenBlackhole::TryEmitValueIndexSelectionKernel` path for
+  value/index row selection.  It is not a frontend `topk` op or selection plan,
+  but it is still a case-shaped backend emitter and must be cleaned up into a
+  generic typed compute-region/reduction lowering before it can be treated as a
+  clean terminal pattern.
+- IR-first audit `2026-05-05`: do not add workload-shaped schema such as
+  topk/selection/index-table side channels.  Current T8 cleanup moved the
+  immediate sparse-indexed bug back to `SpatialPlan`: same-subject indexed
+  reads now keep distinct `AccessRegion.index_exprs`, and per-work descriptor
+  binding selects the matching region by structural IR expression, not by
+  subject/name first-match.  Per-work runtime values now carry a generic TIR
+  `value_expr`; the existing `index_table_*` runtime projection fields remain
+  cleanup debt and diagnostic residue, not a pattern to extend.
+- Guarded T8 access evidence is now `AccessRegion` owner truth:
+  guarded regions carry concrete boolean `predicate_exprs`, and
+  `ValidateSpatialPlan` rejects guarded regions without them.  This is a
+  generic IR invariant, not a `valid_rows` / segmented / paged schema branch.
+- The old TT lowering buffer-wide index-table addressing side cache was
+  removed; table addressing now has to live on the concrete per-work
+  descriptor derived from the matching TIR access / `AccessRegion`.
+- Direct runtime no longer uses `work_linear_id` or
+  `index_table_shape/index_table_index_sources` as the evaluator for
+  table-backed per-work values.  `value_source=index_table` requires generic
+  `value_expr` owner truth plus the still-projected table shape/source
+  metadata, and old ABI branches that rebuilt `valid_rows` / segment
+  descriptors from only the index-buffer name were removed.
 - `T.Kernel` describes logical work items.  Tensor sharding comes from
   explicit placement intent and resolved memory-config plans.
 - T5 K-sharded GEMM currently proves correctness with blocking logical-z waves
@@ -49,13 +77,13 @@
   physical CB choice and release events; old source-emitter map/fallback
   lifecycle routes are not compatibility paths.
 
-## Completed Task: T6 `topk`
+## Runtime-Complete Task: T6 `topk`
 
 T6 admits standalone value/index selection as a real Blackhole direct-runtime
 path.  Task design:
 `tasks/dev_design/2026-05-03-blackhole-t6-topk.md`.
 
-T6 completed the admitted existing-TIR row-wise subset:
+T6 completed runtime coverage for the admitted existing-TIR row-wise subset:
 
 - the frontend shape remains ordinary Tile TIR: `T.copy`, `T.fill`,
   `T.reduce_max`, `T.if_then_else`, local value/index buffers, and explicit
@@ -69,6 +97,14 @@ T6 completed the admitted existing-TIR row-wise subset:
 - no `T.topk`, `tl.blackhole.topk`, `TTSelectionPlan`, `selection_plans`,
   external runner, source-name recovery, or raw compute-side host pointer path
   was introduced.
+
+The architecture cleanup is still open: the active code path is a dedicated
+`TryEmitValueIndexSelectionKernel` emitter keyed to value/index row selection
+records and generated output-CB naming.  That is acceptable as the historical
+runtime bring-up artifact, but it is not the desired final lowering shape.  The
+next cleanup must move this into a generic typed compute-region / reduction
+lowering or remove it when the normal compute path can represent the same
+semantics.
 
 Unsupported axis/layout/generalized value-index variants remain outside the
 admitted T6 subset and must fail closed through the existing typed legality
@@ -190,6 +226,42 @@ Each checkpoint needs its own direct-runtime correctness proof:
   `M=320`, `N=352`, `K>=512`, `logical_grid=11x10x2` or larger.
 
 ## Recent Verification
+
+2026-05-05 UTC T8 IR-first cleanup checkpoint:
+
+- `cmake --build build -j32` passed.
+- `AccessRegion` preserves distinct same-subject indexed reads by structural
+  `index_exprs`; sparse two-entry descriptor binding now points each runtime
+  arg at the matching region rather than the first A read.
+- Guarded `AccessRegion` records concrete TIR predicate expressions.  The
+  ragged row-bound case preserves
+  `T.shift_right(tx, 2) < RowCounts[bx]`, and the validator rejects guarded
+  regions with empty `predicate_exprs`.
+- Focused SpatialPlan selector reported `7 passed, 109 deselected`.
+- Focused T8 copy-pipeline selector covering per-work, sparse, ragged,
+  paged, and segmented cases reported `14 passed, 66 deselected`.
+- The buffer-wide `index_buffer -> addressing` fallback was deleted and
+  guarded by a source-level regression test.  Focused 1D/2D/scaled/sparse
+  descriptor tests reported `4 passed`; the broader T8 selector above stayed
+  green.
+- The direct-runtime `work_linear_id` fallback for table-backed per-work
+  descriptors was deleted.  A new source-level regression test guards that
+  path, and the T8 selector covering per-work, sparse, ragged, paged, and
+  segmented cases reported `14 passed, 68 deselected` after the deletion.
+- Per-work index-table values now carry a generic serialized TIR `value_expr`
+  through `TTPerWorkArgSpec`, `ExecutableSpec`, `rt_mod_blackhole`, and
+  `BlackholeModule` serialization.  Direct runtime evaluates that expression
+  instead of using table-shape/source metadata as a second value evaluator.
+- A source-level architecture regression guards that `blackhole_runtime_arg_schema`
+  does not grow topk/selection/index-table-constant fields and that direct
+  runtime has no `EvaluateIndexTable*` value evaluator.
+- Focused transform selector covering access regions, predicates, per-work
+  descriptors, value-expression architecture, and serialization reported
+  `11 passed, 108 deselected`.
+- TT-Sim direct-runtime selector covering block-indexed, 2D indexed, scaled,
+  sparse, sparse-ragged, serialized indexed, ragged row, segmented row,
+  two-range segmented row, paged cache-len, and paged valid-row copies
+  reported `10 passed, 37 deselected`.
 
 2026-05-05 UTC T9.2 paged GQA decode checkpoint:
 

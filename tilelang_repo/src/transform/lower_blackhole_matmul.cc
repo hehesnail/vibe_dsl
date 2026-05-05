@@ -353,9 +353,7 @@ void PlanTTKernelABI::ExtractGemmInfo(const CallNode* op) {
       << "Blackhole GEMM currently requires matching A/B tensor dtypes";
   const int ab_tile_bytes = kBlackholeTileRows * kBlackholeTileCols * gemm_a_dtype_.bytes();
   const int c_tile_bytes = kBlackholeTileRows * kBlackholeTileCols * gemm_c_dtype_.bytes();
-  const DataType gemm_c_cb_dtype =
-      BufferUsesTiledCBLiveForm(c_region->buffer) ? ExactTiledCBStorageDType(gemm_c_dtype_)
-                                                  : gemm_c_dtype_;
+  const DataType gemm_c_cb_dtype = gemm_c_dtype_;
   const int c_cb_tile_bytes =
       kBlackholeTileRows * kBlackholeTileCols * gemm_c_cb_dtype.bytes();
   const int num_m_tiles = CeilDivToInt(gemm_m_, kBlackholeTileRows);
@@ -553,10 +551,13 @@ Stmt PlanTTKernelABI::LowerMatmulCallWithFlowAnalysis(
     if (!gemm_clear_accum_ && !needs_accumulator_merge) {
       gemm_clear_accum_ = !has_live_accumulator;
     }
-    publish_out = future_uses.has_compute_consume || future_uses.has_transport_consume ||
+    const bool future_write_before_transport_consume =
+        FutureWritePrecedesFutureTransportConsume(out_buffer, current_order_index);
+    publish_transport_out =
+        future_uses.has_transport_consume && !future_write_before_transport_consume;
+    publish_out = future_uses.has_compute_consume || publish_transport_out ||
                   future_exact_live_form_compute_consume || planned_output_cb_compute_consume ||
                   planned_output_tile_compute_consume;
-    publish_transport_out = future_uses.has_transport_consume;
     preserve_out_local_state = future_uses.has_compute_consume || future_uses.has_reference ||
                                future_exact_live_form_compute_consume ||
                                planned_output_cb_compute_consume ||
@@ -1457,7 +1458,7 @@ Stmt PlanTTKernelABI::GenerateAccumulatingMatmulSequence(const CallNode* op,
                            GetStorageScope(gemm_c_buffer_));
       live_form_req_index = AllocateRequirementIndex(live_form_buffer, CBType::kIntermediate);
     }
-    const DataType live_form_storage_dtype = ExactTiledCBStorageDType(gemm_c_dtype_);
+    const DataType live_form_storage_dtype = gemm_c_dtype_;
     const int live_form_tile_bytes =
         kBlackholeTileRows * kBlackholeTileCols * live_form_storage_dtype.bytes();
     SetRequirementPageLayout(live_form_req_index, live_form_tile_bytes, num_c_tiles);
@@ -1519,19 +1520,32 @@ Stmt PlanTTKernelABI::GenerateAccumulatingMatmulSequence(const CallNode* op,
       << "Blackhole clear_accum=false lowering requires num_elements to fit in int32 for "
       << gemm_c_buffer_name_;
   std::vector<Stmt> stmts;
-  stmts.push_back(
-      GenerateMatmulSequenceForOutputRequirement(scratch_req_index, retain_in0, retain_in1,
-                                                 /*reserve_out=*/true, /*publish_out=*/true,
-                                                 reacquire_in0, reacquire_in1));
-  stmts.push_back(GenerateMergeFragmentTilesSequence(
-      gemm_c_buffer_, scratch_req_index, scratch_buffer, reload_req_index, reload_buffer,
-      live_form_req_index, live_form_buffer, IntImm32(static_cast<int>(num_elements)),
-      num_c_tiles, materialize_live_form_to_local_state,
-      (publish_transport_out && !reuse_loop_carried_live_form_cb) ? gemm_c_req_index_ : -1,
-      materialized_cast_req_index,
-      merge_with_zero_reload, use_live_reload ? live_reload_value.cb_id : -1,
-      use_live_reload ? live_reload_value.buffer : Buffer(),
-      reload_from_loop_carried_local_state));
+  const bool direct_zero_preclear =
+      merge_with_zero_reload && materialized_cast_req_index < 0 &&
+      !materialize_live_form_to_local_state &&
+      !(publish_transport_out && live_form_req_index >= 0 &&
+        live_form_req_index != gemm_c_req_index_);
+  if (direct_zero_preclear) {
+    const int direct_out_req_index =
+        live_form_req_index >= 0 ? live_form_req_index : gemm_c_req_index_;
+    stmts.push_back(GenerateMatmulSequenceForOutputRequirement(
+        direct_out_req_index, retain_in0, retain_in1,
+        /*reserve_out=*/true, /*publish_out=*/true, reacquire_in0, reacquire_in1));
+  } else {
+    stmts.push_back(
+        GenerateMatmulSequenceForOutputRequirement(scratch_req_index, retain_in0, retain_in1,
+                                                   /*reserve_out=*/true, /*publish_out=*/true,
+                                                   reacquire_in0, reacquire_in1));
+    stmts.push_back(GenerateMergeFragmentTilesSequence(
+        gemm_c_buffer_, scratch_req_index, scratch_buffer, reload_req_index, reload_buffer,
+        live_form_req_index, live_form_buffer, IntImm32(static_cast<int>(num_elements)),
+        num_c_tiles, materialize_live_form_to_local_state,
+        (publish_transport_out && !reuse_loop_carried_live_form_cb) ? gemm_c_req_index_ : -1,
+        materialized_cast_req_index,
+        merge_with_zero_reload, use_live_reload ? live_reload_value.cb_id : -1,
+        use_live_reload ? live_reload_value.buffer : Buffer(),
+        reload_from_loop_carried_local_state));
+  }
   if (materialize_live_form_to_local_state && !use_tiled_cb_live_form) {
     ClearSelectedSourceLiveProducer(gemm_c_buffer_);
     ClearTiledCBLiveFormAliases(gemm_c_buffer_);

@@ -355,6 +355,22 @@ void ValidateAccessRegions(const SpatialPlan& plan) {
     ICHECK(IsOneOf(str(region->predicate_kind), {"unconditional", "guarded", "unknown"}))
         << "AccessRegion " << region->name << " predicate_kind has unsupported value "
         << region->predicate_kind;
+    if (str(region->predicate_kind) == "guarded") {
+      ICHECK(!region->predicate_exprs.empty())
+          << "AccessRegion " << region->name
+          << " guarded predicate_kind requires predicate_exprs";
+    } else {
+      ICHECK(region->predicate_exprs.empty())
+          << "AccessRegion " << region->name
+          << " predicate_exprs require guarded predicate_kind";
+    }
+    for (const PrimExpr& predicate : region->predicate_exprs) {
+      ICHECK(predicate.defined())
+          << "AccessRegion " << region->name << " predicate_exprs must be defined";
+      ICHECK(predicate.dtype().is_bool())
+          << "AccessRegion " << region->name
+          << " predicate_exprs must be boolean predicates";
+    }
     ValidateNoTTNoun(str(region->access_kind), "AccessRegion access_kind");
     ValidateNoTTNoun(str(region->value_kind), "AccessRegion value_kind");
     ValidateNoTTNoun(str(region->coverage_kind), "AccessRegion coverage_kind");

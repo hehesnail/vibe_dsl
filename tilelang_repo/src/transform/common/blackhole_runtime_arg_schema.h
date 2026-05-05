@@ -33,8 +33,11 @@ inline constexpr const char* kPerWorkArgSpecs = "per_work_arg_specs";
 inline constexpr const char* kArgKind = "arg_kind";
 inline constexpr const char* kArgIdentity = "arg_identity";
 inline constexpr const char* kBuffer = "buffer";
+inline constexpr const char* kRequiresPerWorkDescriptor =
+    "requires_per_work_descriptor";
 inline constexpr const char* kDescriptorKind = "descriptor_kind";
 inline constexpr const char* kValueSource = "value_source";
+inline constexpr const char* kValueExpr = "value_expr";
 inline constexpr const char* kConstantValue = "constant_value";
 inline constexpr const char* kAccessRegion = "access_region";
 inline constexpr const char* kAccessRegionIndex = "access_region_index";

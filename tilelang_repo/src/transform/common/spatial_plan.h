@@ -171,6 +171,7 @@ class AccessRegionNode : public Object {
   ffi::Array<PrimExpr> strides;
   ffi::String coverage_kind;
   ffi::String predicate_kind;
+  ffi::Array<PrimExpr> predicate_exprs;
   ffi::Array<TIRAnchor> anchors;
 
   static void RegisterReflection() {
@@ -190,6 +191,7 @@ class AccessRegionNode : public Object {
         .def_ro("strides", &AccessRegionNode::strides)
         .def_ro("coverage_kind", &AccessRegionNode::coverage_kind)
         .def_ro("predicate_kind", &AccessRegionNode::predicate_kind)
+        .def_ro("predicate_exprs", &AccessRegionNode::predicate_exprs)
         .def_ro("anchors", &AccessRegionNode::anchors);
   }
 
@@ -204,7 +206,7 @@ class AccessRegion : public ObjectRef {
                        ffi::Array<PrimExpr> index_exprs, ffi::Array<PrimExpr> lower_bounds,
                        ffi::Array<PrimExpr> extents, ffi::Array<PrimExpr> strides,
                        ffi::String coverage_kind, ffi::String predicate_kind,
-                       ffi::Array<TIRAnchor> anchors);
+                       ffi::Array<PrimExpr> predicate_exprs, ffi::Array<TIRAnchor> anchors);
   TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(AccessRegion, ObjectRef, AccessRegionNode);
 };
 

@@ -350,6 +350,8 @@ def tt_runtime_arg_specs_to_list(runtime_args):
             item["buffer"] = str(spec.buffer)
         if str(spec.identity):
             item["identity"] = str(spec.identity)
+        if bool(getattr(spec, "requires_per_work_descriptor", False)):
+            item["requires_per_work_descriptor"] = True
         if int(spec.core_x) >= 0:
             item["core_x"] = int(spec.core_x)
         if int(spec.core_y) >= 0:
@@ -449,6 +451,7 @@ def make_tt_runtime_arg_specs(runtime_args):
             str(item.get("identity", "")),
             int(item.get("core_x", -1)),
             int(item.get("core_y", -1)),
+            bool(item.get("requires_per_work_descriptor", False)),
         )
         for item in tt_runtime_arg_specs_to_list(runtime_args)
     ]

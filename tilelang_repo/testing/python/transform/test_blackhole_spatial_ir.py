@@ -28,10 +28,12 @@ if str(THIS_DIR) not in sys.path:
 import example_gqa_fwd_bshd as gqa_example
 import example_mha_fwd_bshd as mha_example
 from common import (
+    block_indexed_sparse_2tile_staged_copy_kernel,
     fragment_fill_cast_publish_kernel,
     gemm_kernel,
     grid_indexed_staged_copy_kernel,
     lower_blackhole_to_tt_target,
+    ragged_row_masked_staged_copy_kernel,
     staged_copy_kernel,
 )
 
@@ -386,6 +388,7 @@ def _rebuild_access_region(
     strides=None,
     coverage_kind=None,
     predicate_kind=None,
+    predicate_exprs=None,
     anchors=None,
 ):
     make_access_region = tvm.get_global_func("tl.AccessRegion")
@@ -404,6 +407,7 @@ def _rebuild_access_region(
         list(region.strides) if strides is None else strides,
         str(region.coverage_kind) if coverage_kind is None else coverage_kind,
         str(region.predicate_kind) if predicate_kind is None else predicate_kind,
+        list(region.predicate_exprs) if predicate_exprs is None else predicate_exprs,
         list(region.anchors) if anchors is None else anchors,
     )
 
@@ -1181,7 +1185,7 @@ def test_modern_cpp_audit_blackhole_serialization_contract_is_real():
 
     assert "opaque imported runtime modules" in header
     assert "kBinarySerializable | ffi::Module::kRunnable" in header
-    assert "tilelang.blackhole.module.v1" in source
+    assert "tilelang.blackhole.module.v3" in source
     assert "WriteExecutableSpecMap(stream, fmap_)" in source
     assert "ReadExecutableSpecMap(stream)" in source
     assert "ffi.Module.load_from_bytes.blackhole" in source
@@ -1221,6 +1225,48 @@ def test_blackhole_compute_op_planning_has_no_map_seed_contract_surface():
         REPO_ROOT / "tilelang_repo/src/transform/lower_blackhole_ops.cc",
     )
     assert hits == []
+
+
+def test_t8_index_table_addressing_has_no_buffer_wide_side_cache():
+    hits = _source_tree_rg(
+        r"index_table_addressing_by_buffer_|RecordIndexTableAddressing",
+        REPO_ROOT / "tilelang_repo/src/transform/lower_blackhole_ops.h",
+        REPO_ROOT / "tilelang_repo/src/transform/lower_blackhole_ops.cc",
+        REPO_ROOT / "tilelang_repo/src/transform/lower_blackhole_abi.cc",
+    )
+    assert hits == []
+
+
+def test_t8_index_table_descriptors_have_no_work_linear_id_fallback():
+    source = (REPO_ROOT / "tilelang_repo/src/target/blackhole_module.cc").read_text()
+
+    assert (
+        "if (spec.index_table_shape.empty() && spec.index_table_index_sources.empty())"
+        not in source
+    )
+    assert "return static_cast<size_t>(context.work_linear_id);" not in source
+
+
+def test_t8_per_work_runtime_values_use_generic_value_expr_not_case_schema():
+    schema_source = (
+        REPO_ROOT
+        / "tilelang_repo/src/transform/common/blackhole_runtime_arg_schema.h"
+    ).read_text()
+    module_source = (REPO_ROOT / "tilelang_repo/src/target/blackhole_module.cc").read_text()
+
+    assert 'kValueExpr = "value_expr"' in schema_source
+    for forbidden in [
+        "selection_plan",
+        "selection_plans",
+        "TTSelectionPlan",
+        "topk",
+        "index_table_index_constant_values",
+    ]:
+        assert forbidden not in schema_source
+
+    assert "EvaluateIndexTableSource" not in module_source
+    assert "EvaluateIndexTableElementIndex" not in module_source
+    assert "table shape/source metadata is not a" in module_source
 
 
 def test_exact_cb_release_source_does_not_keep_local_last_use_fallback():
@@ -2565,6 +2611,51 @@ def test_t8_spatial_plan_records_grid_indexed_access_exprs():
         assert "by" in expr_text
 
 
+def test_t8_spatial_plan_preserves_distinct_same_subject_indexed_access_regions():
+    mod = _prepare_blackhole_phase_b_module(
+        block_indexed_sparse_2tile_staged_copy_kernel(grid_x=3, source_tiles=6)
+    )
+    plan = mod["main"].attrs["tl.spatial_plan"]
+
+    a_read_regions = [
+        region
+        for region in plan.access_regions
+        if str(region.subject) == "A" and str(region.access_kind) == "read"
+    ]
+    first_index_exprs = {
+        str(region.index_exprs[0]) for region in a_read_regions if region.index_exprs
+    }
+
+    assert len(a_read_regions) >= 2
+    assert {
+        "BlockIndices[bx, 0] * 32 + T.shift_right(tx, 2)",
+        "BlockIndices[bx, 1] * 32 + T.shift_right(tx, 2)",
+    }.issubset(first_index_exprs)
+
+
+def test_t8_spatial_plan_preserves_guard_predicate_expressions():
+    mod = _prepare_blackhole_phase_b_module(
+        ragged_row_masked_staged_copy_kernel(grid_x=3)
+    )
+    plan = mod["main"].attrs["tl.spatial_plan"]
+
+    guarded_a_reads = [
+        region
+        for region in plan.access_regions
+        if str(region.subject) == "A"
+        and str(region.access_kind) == "read"
+        and str(region.predicate_kind) == "guarded"
+    ]
+    assert guarded_a_reads
+
+    predicate_exprs = {
+        str(expr)
+        for region in guarded_a_reads
+        for expr in region.predicate_exprs
+    }
+    assert "T.shift_right(tx, 2) < RowCounts[bx]" in predicate_exprs
+
+
 def test_task1_spatial_plan_exposes_logical_live_value_boundaries():
     mod = _prepare_blackhole_phase_b_module(staged_copy_kernel(tile_rows=1, tile_cols=1))
     plan = mod["main"].attrs["tl.spatial_plan"]
@@ -3770,6 +3861,34 @@ def test_t8_validate_spatial_plan_rejects_slice_region_without_index_exprs():
     broken = tvm.IRModule({"main": func}, global_infos=mod.global_infos)
 
     with pytest.raises(Exception, match="AccessRegion.*index_exprs"):
+        tilelang.transform.ValidateSpatialPlan()(broken)
+
+
+def test_t8_validate_spatial_plan_rejects_guarded_region_without_predicate_exprs():
+    mod = _prepare_blackhole_phase_b_module(
+        ragged_row_masked_staged_copy_kernel(grid_x=3)
+    )
+    main = mod["main"]
+    plan = main.attrs["tl.spatial_plan"]
+    region_index, region = next(
+        (index, item)
+        for index, item in enumerate(plan.access_regions)
+        if str(item.subject) == "A"
+        and str(item.access_kind) == "read"
+        and str(item.predicate_kind) == "guarded"
+    )
+    access_regions = list(plan.access_regions)
+    access_regions[region_index] = _rebuild_access_region(
+        region,
+        predicate_exprs=[],
+    )
+    invalid_plan = _rebuild_spatial_plan(plan, access_regions=access_regions)
+    func = main.with_attr("tl.spatial_plan", invalid_plan).without_attr(
+        "tl.spatial_plan_validated"
+    )
+    broken = tvm.IRModule({"main": func}, global_infos=mod.global_infos)
+
+    with pytest.raises(Exception, match="AccessRegion.*predicate_exprs"):
         tilelang.transform.ValidateSpatialPlan()(broken)
 
 

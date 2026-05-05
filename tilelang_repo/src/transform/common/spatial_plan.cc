@@ -112,7 +112,9 @@ AccessRegion::AccessRegion(ffi::String name, ffi::String subject, ffi::String un
                            ffi::Array<PrimExpr> index_exprs,
                            ffi::Array<PrimExpr> lower_bounds, ffi::Array<PrimExpr> extents,
                            ffi::Array<PrimExpr> strides, ffi::String coverage_kind,
-                           ffi::String predicate_kind, ffi::Array<TIRAnchor> anchors) {
+                           ffi::String predicate_kind,
+                           ffi::Array<PrimExpr> predicate_exprs,
+                           ffi::Array<TIRAnchor> anchors) {
   auto n = ffi::make_object<AccessRegionNode>();
   n->name = std::move(name);
   n->subject = std::move(subject);
@@ -128,6 +130,7 @@ AccessRegion::AccessRegion(ffi::String name, ffi::String subject, ffi::String un
   n->strides = std::move(strides);
   n->coverage_kind = std::move(coverage_kind);
   n->predicate_kind = std::move(predicate_kind);
+  n->predicate_exprs = std::move(predicate_exprs);
   n->anchors = std::move(anchors);
   data_ = std::move(n);
 }
@@ -393,13 +396,13 @@ TVM_FFI_STATIC_INIT_BLOCK() {
          ffi::Array<ffi::String> loop_vars, ffi::Array<PrimExpr> index_exprs,
          ffi::Array<PrimExpr> lower_bounds, ffi::Array<PrimExpr> extents,
          ffi::Array<PrimExpr> strides, ffi::String coverage_kind, ffi::String predicate_kind,
-         ffi::Array<TIRAnchor> anchors) {
+         ffi::Array<PrimExpr> predicate_exprs, ffi::Array<TIRAnchor> anchors) {
         return AccessRegion(std::move(name), std::move(subject), std::move(unit_name),
                             unit_index, std::move(access_kind), std::move(value_kind),
                             logical_rank, std::move(loop_vars), std::move(index_exprs),
                             std::move(lower_bounds), std::move(extents), std::move(strides),
                             std::move(coverage_kind), std::move(predicate_kind),
-                            std::move(anchors));
+                            std::move(predicate_exprs), std::move(anchors));
       });
   refl::GlobalDef().def(
       "tl.DataflowEdge",

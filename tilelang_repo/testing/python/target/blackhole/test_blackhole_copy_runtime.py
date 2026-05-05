@@ -769,7 +769,7 @@ def test_blackhole_module_direct_call_block_indexed_copy_rejects_out_of_range_in
     with target:
         artifact = lower(kernel, target=target)
 
-    with pytest.raises(Exception, match="index_table tile_start out of bounds"):
+    with pytest.raises(Exception, match="value_expr tile_start out of bounds"):
         artifact.codegen_mod["main"](a_torch, block_indices, b_output)
 
 

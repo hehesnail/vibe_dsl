@@ -53,23 +53,6 @@ bool IsBufferAddressRuntimeArgKind(const std::string& kind) {
          kind == "output_buffer_addr32" || kind == "output_buffer_addr";
 }
 
-bool IsATileStartRuntimeArgKind(const std::string& kind) {
-  return kind == "a_tile_start_id" || kind.rfind("a_tile_start_id_", 0) == 0 ||
-         kind == "indexed_tile_start_id" ||
-         kind.rfind("indexed_tile_start_id_", 0) == 0;
-}
-
-bool IsAValidRowsRuntimeArgKind(const std::string& kind) {
-  return kind == "a_valid_rows" || kind.rfind("a_valid_rows_", 0) == 0;
-}
-
-bool IsSegmentRowRuntimeArgKind(const std::string& kind) {
-  return kind == "a_segment_row_start" ||
-         kind.rfind("a_segment_row_start_", 0) == 0 ||
-         kind == "a_segment_row_count" ||
-         kind.rfind("a_segment_row_count_", 0) == 0;
-}
-
 std::string RequireStringImm(const tvm::PrimExpr& expr, const char* op_name,
                              const char* arg_name) {
   const auto* value = expr.as<tvm::tir::StringImmNode>();
@@ -1430,15 +1413,18 @@ void CodeGenBlackhole::EmitRuntimeArgLoads(const tvm::tir::PrimFunc &f) {
       if (auto v = arg.Get("identity")) {
         arg_identity = Downcast<tvm::ffi::String>(v.value());
       }
-      const bool requires_explicit_per_work_binding =
-          IsATileStartRuntimeArgKind(arg_kind) || arg_kind == "a_tile_num_tiles" ||
-          arg_kind == "a_tile_stride" || arg_kind == "b_tile_start_id" ||
-          arg_kind == "b_tile_num_tiles" || arg_kind == "b_tile_stride" ||
-          arg_kind == "output_tile_start_id" || arg_kind == "output_tile_num_tiles" ||
-          arg_kind == "output_tile_stride" || arg_kind == "k_tile_start_id" ||
-          arg_kind == "num_k_tiles" || IsAValidRowsRuntimeArgKind(arg_kind) ||
-          arg_kind == "a_ragged_page_index" ||
-          IsSegmentRowRuntimeArgKind(arg_kind);
+      bool requires_explicit_per_work_binding = false;
+      if (auto v = arg.Get(
+              ::tvm::tl::blackhole_runtime_arg_schema::kRequiresPerWorkDescriptor)) {
+        requires_explicit_per_work_binding = Downcast<tvm::Bool>(v.value());
+      }
+      if (per_work_arg_bindings_by_identity_.count(arg_identity) != 0U) {
+        ICHECK(requires_explicit_per_work_binding)
+            << "Blackhole codegen requires runtime arg '" << arg_kind
+            << "' identity '" << arg_identity
+            << "' to declare requires_per_work_descriptor when a per-work "
+            << "descriptor binds that identity";
+      }
       if (!requires_explicit_per_work_binding) {
         continue;
       }

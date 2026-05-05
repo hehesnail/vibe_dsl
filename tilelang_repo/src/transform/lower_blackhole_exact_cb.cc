@@ -956,17 +956,27 @@ void PlanTTKernelABI::MarkLoopCarriedExactCBStateCompleted(
 }
 
 Stmt PlanTTKernelABI::ReleaseExactInputAfterUse(
-    const ExactTiledCBValue& value, int current_order_index) {
+    const ExactTiledCBValue& value,
+    int current_order_index) {
+  return ReleaseExactInputAfterUse(
+      value, current_order_index,
+      value.borrowed_live ? ExactCBReleasePolicy::kBorrowedLastUse
+                          : ExactCBReleasePolicy::kAlways);
+}
+
+Stmt PlanTTKernelABI::ReleaseExactInputAfterUse(
+    const ExactTiledCBValue& value,
+    int current_order_index,
+    ExactCBReleasePolicy release_policy) {
   if (value.cb_id < 0 || value.num_tiles <= 0) {
     return Stmt();
   }
   ffi::Optional<TTExactCBReleaseEvent> release_event =
-      RecordExactCBUseAndReleaseEvent(
-          value, current_order_index,
-          value.borrowed_live ? ExactCBReleasePolicy::kBorrowedLastUse
-                              : ExactCBReleasePolicy::kAlways);
+      RecordExactCBUseAndReleaseEvent(value, current_order_index,
+                                      release_policy);
   if (!release_event) {
-    if (!value.borrowed_live) {
+    if (!value.borrowed_live ||
+        release_policy == ExactCBReleasePolicy::kAlways) {
       return MakeBlackholeCall(
           blackhole_cb_pop_front(), {IntImm32(value.cb_id), IntImm32(value.num_tiles)});
     }

@@ -2549,9 +2549,9 @@
   - Project `index_table_shape` and `index_table_index_sources` through
     `TTPerWorkArgSpec`, `ExecutableSpec`, runtime metadata, Python rebuild
     helpers, and `BlackholeModule` binary serialization.
-  - Direct runtime computes the table element offset from the projected fields
-    and only falls back to `work_linear_id` when no table-address fields are
-    present.
+  - 2026-05-05 update: this shape/source evaluator was later replaced by
+    generic serialized TIR `value_expr`; the fields remain projection residue
+    and diagnostics, with no `work_linear_id` fallback.
 - **验证**:
   - The non-symmetric `2x3` direct-runtime case passed through
     `BlackholeModule`.
@@ -2758,6 +2758,148 @@
   - Extended flash `seq_len=128,256,512` metadata/runtime selector reported
     `3 passed, 3 skipped`; the skips are the existing typed TT-Sim
     `tensix_execute_pacr: count=1` capability boundary.
+
+### Sparse indexed copy bound both tile-start descriptors to the first A read region
+
+- **症状**:
+  - The sparse two-entry indexed copy emitted two runtime args,
+    `a_tile_start_id` and `a_tile_start_id_1`, but both
+    `TTPerWorkArgSpec` records referenced the same SpatialPlan access region
+    `access_closure_0_read_A_0`.
+  - Runtime correctness could still pass because legacy `index_table_*`
+    projection fields evaluated different table columns, hiding the IR binding
+    bug.
+- **根因**:
+  - `BuildSpatialPlan` collapsed distinct same-subject read patterns into one
+    `AccessRegion`.
+  - The TT per-work binding lookup used `subject|access_kind` first-match, and
+    the pass-local subject indices were compared before substituting the
+    Let-bound table load back to the original TIR expression.
+- **修法**:
+  - Preserve distinct same-subject access patterns in `SpatialPlan` by
+    structural `index_exprs`.
+  - Store pass-local subject `index_exprs` on indexed per-work runtime args
+    only for matching, substitute active Let table loads, and select the
+    matching `AccessRegion` by structural equality.
+- **验证**:
+  - `test_t8_spatial_plan_preserves_distinct_same_subject_indexed_access_regions`
+    passed.
+  - `test_blackhole_sparse_2tile_copy_uses_two_index_table_tile_start_descriptors`
+    now asserts distinct access-region bindings and passed.
+  - T8 irregular aggregate selector reported `14 passed, 66 deselected`.
+
+### Guarded AccessRegion recorded only a kind, not the predicate expression
+
+- **症状**:
+  - Ragged and segmented copies could mark an `AccessRegion` as `guarded`
+    while the region itself did not preserve the boolean TIR predicate that
+    guarded the read.
+  - Downstream code could still pass by relying on per-work descriptor kind
+    such as `valid_rows`, which is exactly the schema-shaped semantic recovery
+    the IR-first design forbids.
+- **根因**:
+  - `BuildSpatialPlan` tracked only predicate depth, not predicate
+    expressions, so `predicate_kind=guarded` was a label without owner-truth
+    evidence.
+  - `ValidateSpatialPlan` did not reject guarded regions with empty predicate
+    evidence.
+- **修法**:
+  - `AccessRegion` now carries generic `predicate_exprs` for guarded regions.
+  - The access-pattern collector records predicates through statement
+    `IfThenElse`, expression `Select`, and `tir.if_then_else` calls while
+    preserving Let-substituted TIR expressions.
+  - `ValidateSpatialPlan` rejects guarded regions without boolean
+    `predicate_exprs` and rejects predicate expressions on non-guarded
+    regions.
+- **验证**:
+  - The positive SpatialPlan test checks that the ragged A read records
+    `T.shift_right(tx, 2) < RowCounts[bx]`.
+  - The negative validator test fails closed when that guarded region is
+    rebuilt with empty `predicate_exprs`.
+
+### Index table addressing had a buffer-wide fallback cache
+
+- **症状**:
+  - TT lowering kept a pass-local `index_buffer -> addressing` cache and ABI
+    lowering could fill missing descriptor table shape/source fields by
+    looking up only the index-buffer name.
+  - That fallback was redundant for current explicit per-work descriptors and
+    unsafe for sparse forms where one table is addressed through multiple
+    independent constants or launch-axis expressions.
+- **根因**:
+  - Early table-backed descriptors were brought up one buffer at a time, so
+    table addressing was cached by buffer identity before same-subject /
+    same-table multi-entry cases existed.
+- **修法**:
+  - Delete `index_table_addressing_by_buffer_` and
+    `RecordIndexTableAddressing`.
+  - Require table addressing to be carried by the concrete per-work descriptor
+    produced from the matching TIR table load / `AccessRegion`.
+  - Add a source-level regression test that rejects reintroducing the
+    buffer-wide side cache.
+- **验证**:
+  - The new no-side-cache regression test passed after deletion.
+  - Focused 1D/2D/scaled/sparse descriptor tests reported `4 passed`.
+  - The T8 copy-pipeline selector covering per-work, sparse, ragged, paged,
+    and segmented cases reported `14 passed, 66 deselected`.
+
+### Index-table descriptors without addressing fell back to work-linear order
+
+- **症状**:
+  - Direct runtime evaluated a table-backed per-work descriptor at
+    `work_linear_id` when `index_table_shape` and
+    `index_table_index_sources` were absent.
+  - After removing the buffer-wide addressing cache, the segmented row-start
+    path exposed another old ABI branch that synthesized
+    `a_segment_row_start` from only `segment_row_start_index_buffer_name_`,
+    overwriting the concrete descriptor that carried the table shape/source
+    evidence.
+- **根因**:
+  - Early one-dimensional table descriptors treated launch linearization as a
+    harmless default.  Once table loads can be `[bx, by]`, `[bx, k]`, or
+    constants, launch order is not semantic owner truth.
+- **修法**:
+  - `value_source=index_table` now requires explicit table shape and one
+    index source per dimension during executable extraction and direct-runtime
+    admission.
+  - Delete the `work_linear_id` fallback in direct runtime.
+  - Delete old ABI synthesis branches for `valid_rows`,
+    `segment_row_start`, and `segment_row_count` descriptors that only knew
+    the index-buffer name.
+- **验证**:
+  - A source-level regression test rejects the direct-runtime work-linear
+    fallback.
+  - The T8 selector covering per-work, sparse, ragged, paged, and segmented
+    cases reported `14 passed, 68 deselected` after deletion.
+
+### Index-table shape/source metadata started acting like a second value evaluator
+
+- **症状**:
+  - After moving table addressing onto per-work descriptors, direct runtime
+    still computed table-backed per-work values from
+    `index_table_shape/index_table_index_sources`.
+  - That made the legacy projection fields look like owner truth and invited
+    more case-shaped schema additions, even though the original TIR already
+    contains the exact value expression.
+- **根因**:
+  - The descriptor carried enough metadata for the first table cases, so the
+    runtime grew an index-table-specific evaluator instead of consuming a
+    generic expression lowered through the IR chain.
+- **修法**:
+  - Add generic `value_expr` to `TTPerWorkArgSpec` and project it through
+    `ExecutableSpec`, runtime extraction, `BlackholeModule` metadata, and
+    binary serialization.
+  - Direct runtime now evaluates the serialized TIR expression, including
+    integer `BufferLoad` from materialized host-side table data, and rejects
+    table-backed descriptors without `value_expr`.
+  - Delete the direct-runtime `EvaluateIndexTable*` value evaluator and guard
+    against new selection/topk/index-table-constant schema fields.
+- **验证**:
+  - The value-expression projection test passed.
+  - The transform architecture selector reported `11 passed, 108 deselected`.
+  - The TT-Sim direct-runtime selector covering indexed, ragged, segmented,
+    paged, sparse, and serialized indexed copies reported
+    `10 passed, 37 deselected`.
 
 ## 3. 环境问题速查
 

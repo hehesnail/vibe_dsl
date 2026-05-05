@@ -34,6 +34,7 @@
 #include <algorithm>
 #include <limits>
 #include <numeric>
+#include <optional>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -482,6 +483,13 @@ bool IsTileComputeDAGOutputRoleForLowering(const std::string& role) {
   return role == "output" || role == "c";
 }
 
+bool IsBroadcastColsTileComputeOperation(const std::string& operation_name) {
+  const std::optional<BlackholeTileComputeOperation> operation =
+      ParseBlackholeTileComputeOperation(operation_name);
+  return operation == BlackholeTileComputeOperation::kMulTilesBcastCols ||
+         operation == BlackholeTileComputeOperation::kAddTilesBcastCols;
+}
+
 }  // namespace
 
 void PlanTTKernelABI::LoadTileComputeDAGLoweringPlan(const PrimFunc& func) {
@@ -509,7 +517,7 @@ void PlanTTKernelABI::LoadTileComputeDAGLoweringPlan(const PrimFunc& func) {
         tile_compute_input_buffers_.insert(buffer_name);
         auto node_it = dag_op_name_by_node.find(edge.consumer_node);
         if (edge.value_role == "rhs" && node_it != dag_op_name_by_node.end() &&
-            node_it->second.find("_bcast_cols") != std::string::npos) {
+            IsBroadcastColsTileComputeOperation(node_it->second)) {
           broadcast_cols_rhs_buffers_.insert(buffer_name);
         }
       }
@@ -1297,11 +1305,15 @@ Stmt PlanTTKernelABI::GenerateRowBoundMaskApplySequence(
                        {IntImm32(lhs_in.cb_id), IntImm32(mask_in.cb_id),
                         lhs_tile, IntImm32(0), IntImm32(0)});
     });
-  if (Stmt release = ReleaseExactInputAfterUse(lhs_in, current_lowering_order_index_);
+  const int release_order_index = match.producer_order_index >= 0
+                                      ? match.producer_order_index
+                                      : current_lowering_order_index_;
+  if (Stmt release = ReleaseExactInputAfterUse(
+          lhs_in, release_order_index, ExactCBReleasePolicy::kAlways);
       release.defined()) {
     compute_stmts.push_back(release);
   }
-  if (Stmt release = ReleaseExactInputAfterUse(mask_in, current_lowering_order_index_);
+  if (Stmt release = ReleaseExactInputAfterUse(mask_in, release_order_index);
       release.defined()) {
     compute_stmts.push_back(release);
   }

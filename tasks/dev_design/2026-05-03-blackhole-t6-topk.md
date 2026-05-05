@@ -55,13 +55,21 @@ is part of the GEMM/softmax compute chain, and standalone bf16 row reduce is
 also admissible once the emitted scaler fill/pack sequence initializes
 PACK/UNPACK format state correctly.
 
-The T6 implementation admits the existing TIR value/index selection shape by
-recognizing the typed value reduce plus typed `int32` index reduce records and
-emitting one backend value/index scan over the reader-materialized input CB.
-That scan publishes the value and index output CB pages consumed by the normal
-writer path.  This replaces the unsupported standalone
+The current T6 implementation admits the existing TIR value/index selection
+shape by recognizing the typed value reduce plus typed `int32` index reduce
+records and emitting one backend value/index scan over the reader-materialized
+input CB.  That scan publishes the value and index output CB pages consumed by
+the normal writer path.  This replaces the unsupported standalone
 `Int32 reduce_tile<MAX, REDUCE_ROW>` execution shape without adding a frontend
 topk op, `TTSelectionPlan`, `selection_plans`, or a source-name side channel.
+
+Architecture audit `2026-05-05`: this is runtime-complete but not a clean final
+lowering pattern.  `CodeGenBlackhole::TryEmitValueIndexSelectionKernel` is still
+a dedicated backend emitter for a value/index row-selection shape, and it uses
+generated output-CB naming to bind the value/index result pages.  The desired
+cleanup is to express the same semantics through a generic typed compute-region
+/ reduction lowering, or to delete this path once the normal compute chain can
+represent and validate it without a case-shaped emitter.
 
 ## Contract
 

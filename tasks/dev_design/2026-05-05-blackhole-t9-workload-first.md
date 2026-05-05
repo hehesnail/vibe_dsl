@@ -168,10 +168,58 @@ The admitted implementation keeps the workload surface in that chain:
   binding, so compute segments with no runtime args can still render typed CB
   operations such as `untilize_cb_front_tile_fragment`.
 
+## T9.3 Paged MLA Decode
+
+The first T9.3 slice admits a paged MLA decode tile through ordinary TIR:
+
+- `PageTable[sequence, page]` selects both latent-KV and K-PE cache pages for
+  a statically known page step;
+- `CacheSeqLens[sequence]` guards rows inside each page;
+- score computation is the explicit sum of two leaf GEMM contributions:
+  `Q_nope @ KV_latent^T` and `Q_pe @ K_pe^T`;
+- value computation reuses the same latent KV page as V:
+  `softmax(scores) @ KV_latent`;
+- the online softmax and output update reuse the existing flash partial
+  combine sequence.
+
+The first admitted shape is intentionally narrow:
+
+- bf16 Q-nope, Q-PE, paged latent KV cache, paged K-PE cache, and output;
+- fp32 accumulators;
+- `batch=2`, `heads=4`, one KV head / shared latent cache;
+- `block_M=32`, `block_N=32`, `dv=32`, and `dpe=32`;
+- exactly two cache pages per sequence, with ragged lengths such as 45 and 64
+  tokens;
+- page ids are non-contiguous and table-driven;
+- both page steps are static TIR statements, not a frontend MLA or paged
+  decode op.
+
+The required evidence chain is:
+
+```text
+TIR PageTable / CacheSeqLens loads
+  -> per-page tile_start descriptors for latent-KV and K-PE reads
+  -> valid_rows descriptors for the guarded page copies
+  -> compute-compatible latent-KV and K-PE live forms
+  -> two explicit score GEMMs into acc_s
+  -> latent-KV retained until the value GEMM in the same page step
+  -> existing flash partial-combine compute/materialization path
+  -> paged MLA direct runtime correctness
+```
+
+The source may consume runtime args projected from these descriptors, but it
+must not emit raw `PageTable` or `CacheSeqLens` reads to recover page or
+ragged-bound semantics.  The retained latent-KV input lifetime is part of the
+typed CB lifecycle contract; it must not be repaired by source-name matching
+or by reloading the page through a separate workload path.
+
+If the additive score chain needs fusion or producer grouping, that grouping
+must be a generic typed compute-region / producer-chain lowering over explicit
+IR dependencies, lifecycle intervals, and compatible tile domains.  It must not
+be implemented as an adjacent-GEMM or MLA-specific source-shape matcher.
+
 ## Later T9 Checkpoints
 
-- T9.3 paged MLA decode: paged latent/KV access through admitted page-table
-  and ragged-bound records.
 - T9.4 sparse/ragged attention: indexed sparse-block traversal plus ragged
   valid lengths feeding attention compute.
 - T9.5 chunk recurrence/scan: multi-chunk loop-carried device state.
@@ -192,12 +240,17 @@ Structure/source:
 - source contains a real `matmul_tiles` compute path for the grouped GEMM;
 - the paged GQA executable contains table-backed K/V tile-start descriptors
   and valid-row descriptors for both static page steps;
+- the paged MLA executable contains table-backed latent-KV and K-PE
+  tile-start descriptors and valid-row descriptors for both static page
+  steps;
 - source contains no raw `PageTable` / `CacheSeqLens` loads and no workload
   decode registry;
 - source contains the existing flash partial-combine sequence rather than a
   separate paged-decode compute path;
-- no workload registry, grouped-GEMM frontend op, or paged-decode frontend op
-  is introduced.
+- source contains two explicit score GEMM contributions for MLA and keeps
+  latent-KV live until the value GEMM;
+- no workload registry, grouped-GEMM frontend op, paged-decode frontend op, or
+  MLA frontend op is introduced.
 
 Runtime:
 
@@ -208,6 +261,9 @@ Runtime:
 - paged GQA uses two static KV page steps, non-contiguous page ids, ragged
   sequence lengths, shared KV head semantics, and a host flash-attention
   reference;
+- paged MLA uses two static latent/K-PE page steps, non-contiguous page ids,
+  ragged sequence lengths, score accumulation from Q-nope and Q-PE, latent-KV
+  value reuse, and a host MLA reference;
 - page-indexed QK and AV micro-tests exercise both page 0 and page 1 so table
   constants and host materialization are covered independently from the full
   GQA tile.
@@ -220,4 +276,8 @@ Unsupported diagnostics:
 - if page-indexed K/V materialization, ragged row bounds, or exact-CB
   lifecycle cannot feed the existing flash path, the backend must reject with
   a typed admission reason rather than recovering from names, argument order,
-  or generated source text.
+  or generated source text;
+- if page-indexed latent-KV / K-PE materialization, retained latent-KV input
+  lifetime, or the additive score GEMM sequence cannot feed the existing flash
+  path, the backend must reject with a typed admission reason rather than
+  adding a workload-specific side path.
