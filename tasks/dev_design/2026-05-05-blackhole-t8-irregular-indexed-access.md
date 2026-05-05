@@ -241,6 +241,13 @@ multiple independent guarded sparse reads, each bound table load gets its own
 per-row zero-fill, but it must not collapse distinct guarded reads back into
 one shared `a_valid_rows` value.
 
+The next sparse slice broadens this from exactly two entries to more than two
+entries in the same logical work item.  The contract is not a special
+three-entry object: every independent `BlockIndices[bx, k]` and
+`ValidRows[bx, k]` TIR load must allocate or reuse the matching per-work arg
+identity solely from descriptor kind plus table-addressing evidence, with
+literal `k` represented as `constant:k`.
+
 ## Validation Plan
 
 Structure:
@@ -347,6 +354,11 @@ Implemented:
   the same table-addressing shape/source contract.  The row-page reader uses
   the matching runtime arg for each sparse tile and zero-fills invalid rows
   independently.
+- The sparse ragged surface is no longer proven only by exactly two entries:
+  a three-entry direct-runtime gate covers `BlockIndices[bx, 0/1/2]` and
+  `ValidRows[bx, 0/1/2]`, with `constant:0/1/2` descriptor sources and
+  per-entry runtime arg identities.  This remains the same
+  `TTPerWorkArgSpec` contract, not a sparse-specific operator.
 
 2026-05-05 ragged row-bound slice status:
 

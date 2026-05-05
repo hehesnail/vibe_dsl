@@ -201,6 +201,9 @@
   the table shape/index sources on each `TTPerWorkArgSpec`; literal table
   dimensions belong in descriptor sources such as `constant:0`, not in
   source/runtime name recovery.
+- Do not treat `_1` suffix support as proof of a generic sparse protocol.
+  Cover at least a third independent table-derived entry when claiming that
+  per-work descriptor allocation scales beyond a pair of operands.
 - Row-page transport descriptors carry row ids, not tile ids.  When a staged
   copy is lowered to 64-byte row pages, source page ids must come from the
   zeroed TIR row expression plus the local row.  Reusing a full-tile

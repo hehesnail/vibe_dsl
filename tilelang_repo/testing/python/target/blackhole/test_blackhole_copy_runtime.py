@@ -16,6 +16,7 @@ from .common import (
     block_indexed_2tile_staged_copy_kernel,
     block_indexed_2d_staged_copy_kernel,
     block_indexed_sparse_2tile_ragged_staged_copy_kernel,
+    block_indexed_sparse_3tile_ragged_staged_copy_kernel,
     block_indexed_sparse_2tile_staged_copy_kernel,
     block_indexed_staged_copy_kernel,
     extract_blackhole_cb_configs,
@@ -949,6 +950,60 @@ def test_blackhole_module_direct_call_sparse_2tile_ragged_copy_uses_per_entry_bo
         atol=1e-3,
         rtol=1e-3,
         failure_message="Sparse 2-tile ragged direct-call output mismatch",
+    )
+
+
+def test_blackhole_module_direct_call_sparse_3tile_ragged_copy_uses_per_entry_bounds():
+    can_run, msg = check_blackhole_direct_execution_requirements()
+    if not can_run:
+        pytest.skip(f"Blackhole requirements not met: {msg}")
+
+    grid_x, source_tiles = 3, 9
+    a_torch = _bf16_matrix(source_tiles * 32, 32)
+    block_indices = torch.tensor(
+        [
+            [7, 1, 5],
+            [2, 8, 0],
+            [6, 3, 4],
+        ],
+        dtype=torch.int32,
+    )
+    valid_rows = torch.tensor(
+        [
+            [17, 32, 0],
+            [1, 9, 24],
+            [31, 4, 16],
+        ],
+        dtype=torch.int32,
+    )
+    b_output = torch.full((grid_x * 3 * 32, 32), -29, dtype=torch.bfloat16)
+    b_ref = torch.zeros_like(b_output)
+    for bx in range(grid_x):
+        out_start = bx * 3 * 32
+        for local_tile in range(3):
+            tile = int(block_indices[bx, local_tile])
+            rows = int(valid_rows[bx, local_tile])
+            if rows > 0:
+                b_ref[
+                    out_start + local_tile * 32 : out_start + local_tile * 32 + rows,
+                    :,
+                ] = a_torch[tile * 32 : tile * 32 + rows, :]
+
+    target = Target("blackhole")
+    kernel = block_indexed_sparse_3tile_ragged_staged_copy_kernel(
+        grid_x=grid_x,
+        source_tiles=source_tiles,
+    )
+    with target:
+        artifact = lower(kernel, target=target)
+
+    artifact.codegen_mod["main"](a_torch, block_indices, valid_rows, b_output)
+    assert_tensors_close_or_dump(
+        b_output,
+        b_ref,
+        atol=1e-3,
+        rtol=1e-3,
+        failure_message="Sparse 3-tile ragged direct-call output mismatch",
     )
 
 

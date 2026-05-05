@@ -1446,6 +1446,64 @@ def block_indexed_sparse_2tile_ragged_staged_copy_kernel(
     )
 
 
+def block_indexed_sparse_3tile_ragged_staged_copy_kernel(
+    grid_x: int,
+    source_tiles: int,
+    tile_m: int = 32,
+    tile_n: int = 32,
+    dtype: str = "bfloat16",
+):
+    """Define a sparse three-tile copy with independent per-entry valid rows."""
+    source_m = source_tiles * tile_m
+    output_m = grid_x * 3 * tile_m
+
+    if dtype == "bfloat16":
+        @T.prim_func
+        def main(
+            A: T.Tensor((source_m, tile_n), "bfloat16"),
+            BlockIndices: T.Tensor((grid_x, 3), "int32"),
+            ValidRows: T.Tensor((grid_x, 3), "int32"),
+            B: T.Tensor((output_m, tile_n), "bfloat16"),
+        ):
+            with T.Kernel(grid_x, 1) as (bx, by):
+                A0_shared = T.alloc_shared((tile_m, tile_n), "bfloat16")
+                A1_shared = T.alloc_shared((tile_m, tile_n), "bfloat16")
+                A2_shared = T.alloc_shared((tile_m, tile_n), "bfloat16")
+                tile0 = BlockIndices[bx, 0]
+                tile1 = BlockIndices[bx, 1]
+                tile2 = BlockIndices[bx, 2]
+                valid0 = ValidRows[bx, 0]
+                valid1 = ValidRows[bx, 1]
+                valid2 = ValidRows[bx, 2]
+                for i, j in T.Parallel(tile_m, tile_n):
+                    A0_shared[i, j] = T.if_then_else(
+                        i < valid0,
+                        A[tile0 * tile_m + i, j],
+                        0,
+                    )
+                for i, j in T.Parallel(tile_m, tile_n):
+                    A1_shared[i, j] = T.if_then_else(
+                        i < valid1,
+                        A[tile1 * tile_m + i, j],
+                        0,
+                    )
+                for i, j in T.Parallel(tile_m, tile_n):
+                    A2_shared[i, j] = T.if_then_else(
+                        i < valid2,
+                        A[tile2 * tile_m + i, j],
+                        0,
+                    )
+                T.copy(A0_shared, B[bx * 3 * tile_m, 0])
+                T.copy(A1_shared, B[(bx * 3 + 1) * tile_m, 0])
+                T.copy(A2_shared, B[(bx * 3 + 2) * tile_m, 0])
+
+        return main
+
+    raise ValueError(
+        f"Unsupported block_indexed_sparse_3tile_ragged_staged_copy_kernel dtype: {dtype}"
+    )
+
+
 def ragged_row_masked_staged_copy_kernel(
     grid_x: int,
     tile_m: int = 32,
