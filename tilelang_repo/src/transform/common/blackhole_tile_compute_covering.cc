@@ -1,6 +1,6 @@
 /*!
  * \file blackhole_tile_compute_covering.cc
- * \brief Local Blackhole tile compute pattern covering selection.
+ * \brief Local Blackhole tile compute pattern covering.
  */
 
 #include "blackhole_tile_compute_covering.h"
@@ -50,7 +50,7 @@ BlackholeTileComputeCoveringDecision RejectCovering(const std::string& operation
                                                     const std::string& reason) {
   BlackholeTileComputeCoveringDecision decision;
   decision.selected = false;
-  decision.selection_kind = "reject";
+  decision.covering_kind = "reject";
   decision.operation_name = operation_name;
   decision.reject_reason = reason;
   return decision;
@@ -62,7 +62,7 @@ ffi::Map<ffi::String, ffi::Any> EncodeSelectedNodeDecision(
   ffi::Map<ffi::String, ffi::Any> encoded =
       EncodeBlackholeTileComputeCoveringDecision(decision);
   encoded.Set(ffi::String("node_id"), Integer(node.id));
-  encoded.Set(ffi::String("selection_order_index"), Integer(order_index));
+  encoded.Set(ffi::String("covering_order_index"), Integer(order_index));
   encoded.Set(ffi::String("node_side_effect_class"),
               ffi::String(node.side_effect_class));
   encoded.Set(ffi::String("dp_state_key"),
@@ -79,7 +79,7 @@ ffi::Map<ffi::String, ffi::Any> EncodeMaterializationDecision(
   encoded.Set(ffi::String("pattern_name"), ffi::String(decision.pattern_name));
   encoded.Set(ffi::String("policy"), ffi::String(decision.materialization_policy));
   encoded.Set(ffi::String("evidence"),
-              ffi::String("selected_pattern:" + decision.pattern_name +
+              ffi::String("covered_pattern:" + decision.pattern_name +
                           ";side_effect:" + node.side_effect_class));
   return encoded;
 }
@@ -158,7 +158,7 @@ BlackholeTileComputeCoveringDecision SelectBlackholeTileComputeCovering(
   }
   BlackholeTileComputeCoveringDecision decision;
   decision.selected = true;
-  decision.selection_kind = "selected_pattern";
+  decision.covering_kind = "leaf_pattern";
   decision.pattern_name = pattern->name;
   decision.operation_name = ToString(pattern->operation);
   decision.result_kind = ToString(pattern->result_kind);
@@ -174,7 +174,7 @@ ffi::Map<ffi::String, ffi::Any> EncodeBlackholeTileComputeCoveringDecision(
     const BlackholeTileComputeCoveringDecision& decision) {
   ffi::Map<ffi::String, ffi::Any> encoded;
   encoded.Set(ffi::String("selected"), Bool(decision.selected));
-  encoded.Set(ffi::String("selection_kind"), ffi::String(decision.selection_kind));
+  encoded.Set(ffi::String("covering_kind"), ffi::String(decision.covering_kind));
   encoded.Set(ffi::String("pattern_name"), ffi::String(decision.pattern_name));
   encoded.Set(ffi::String("operation_name"), ffi::String(decision.operation_name));
   encoded.Set(ffi::String("result_kind"), ffi::String(decision.result_kind));
@@ -194,7 +194,7 @@ ffi::Map<ffi::String, ffi::Any> EncodeBlackholeTileComputeCoveringDecision(
 ffi::Map<ffi::String, ffi::Any> SelectBlackholeTileComputeDAGCoveringDiagnostic(
     const tir::PrimFunc& func) {
   const BlackholeTileComputeDAG dag = BuildBlackholeTileComputeDAG(func);
-  ffi::Array<ffi::Map<ffi::String, ffi::Any>> selected_patterns;
+  ffi::Array<ffi::Map<ffi::String, ffi::Any>> covered_patterns;
   ffi::Array<ffi::Map<ffi::String, ffi::Any>> materialization_decisions;
   ffi::Array<ffi::String> unsupported_reasons;
   int64_t total_cost = 0;
@@ -212,7 +212,7 @@ ffi::Map<ffi::String, ffi::Any> SelectBlackholeTileComputeDAGCoveringDiagnostic(
       continue;
     }
     total_cost += decision.cost;
-    selected_patterns.push_back(
+    covered_patterns.push_back(
         EncodeSelectedNodeDecision(decision, node, static_cast<int64_t>(order_index)));
     if (decision.materialization_policy != "none") {
       materialization_decisions.push_back(
@@ -233,11 +233,11 @@ ffi::Map<ffi::String, ffi::Any> SelectBlackholeTileComputeDAGCoveringDiagnostic(
   }
 
   ffi::Map<ffi::String, ffi::Any> encoded;
-  encoded.Set(ffi::String("selection_kind"), ffi::String("local_dag_dp"));
-  encoded.Set(ffi::String("selection_status"),
-              ffi::String(selected ? "selected" : "rejected"));
-  encoded.Set(ffi::String("selection_order"), ffi::String("dependence_order"));
-  encoded.Set(ffi::String("selected_patterns"), selected_patterns);
+  encoded.Set(ffi::String("covering_kind"), ffi::String("local_dag"));
+  encoded.Set(ffi::String("covering_status"),
+              ffi::String(selected ? "covered" : "rejected"));
+  encoded.Set(ffi::String("covering_order"), ffi::String("dependence_order"));
+  encoded.Set(ffi::String("covered_patterns"), covered_patterns);
   encoded.Set(ffi::String("fanout_decisions"), fanout_decisions);
   encoded.Set(ffi::String("materialization_decisions"), materialization_decisions);
   encoded.Set(ffi::String("unsupported_reasons"), unsupported_reasons);

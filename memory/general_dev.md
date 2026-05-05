@@ -2660,3 +2660,11 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   and `value_source` are the typed truth.  Runtime-side queries for dynamic
   range/value-expr behavior should count `value_source=value_expr` records with
   non-empty serialized expressions, not `arg_kind` prefixes.
+- 2026-05-06 Tile-compute covering terminology:
+  Pass-local tile-compute covering diagnostics should say `covering_*` /
+  `covered_pattern` rather than `selection_*` / `selected_pattern`.  A covering
+  choice is a local leaf-pattern decision that feeds typed plans and resource
+  evidence; it is not a standalone selection semantic object or plan family.
+  Validator tests for composite operation names should use a minimal leaf
+  TTProgram fixture so they do not depend on unrelated flash exact-CB lowering
+  boundaries before the validator is reached.

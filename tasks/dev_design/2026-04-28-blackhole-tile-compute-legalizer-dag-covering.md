@@ -129,6 +129,12 @@ Allowed decisions:
 - choose share vs materialize for explicit leaf graph fanout
 - report resource-demand consequences
 
+Diagnostic maps for this pass-local machinery must use covering terminology,
+such as `covering_kind`, `covered_patterns`, and `covered_pattern:*`
+evidence.  They must not export `selection_*` or `selected_pattern:*` names,
+because those collide with the forbidden T6-style selection-plan vocabulary
+and make a pass-local covering choice look like a durable semantic object.
+
 Forbidden decisions:
 
 - split one source node into several semantic leaf ops

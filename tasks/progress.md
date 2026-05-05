@@ -84,6 +84,10 @@
   binding.  Runtime-arg dedup uses structural `value_expr` equality plus
   `AccessRegion.index_exprs`; compute-segment admission uses the pass-local
   `include_in_compute_segment` bit, not runtime-arg name matching.
+- Tile-compute pass-local diagnostics use covering vocabulary
+  (`covering_kind`, `covered_patterns`, `covered_pattern:*`) rather than
+  `selection_*` or `selected_pattern:*`; this remains a local covering
+  diagnostic, not a new semantic plan family.
 - `T.Kernel` describes logical work items.  Tensor sharding comes from
   explicit placement intent and resolved memory-config plans.
 - T5 K-sharded GEMM currently proves correctness with blocking logical-z waves
@@ -603,6 +607,22 @@ Each checkpoint needs its own direct-runtime correctness proof:
   T6 fp32 single-work, T6 fp32 multi-work, and T6 bf16 values + int32 indices.
 - TT-Sim per-work direct-runtime selectors reported `2 passed`: segmented row
   copy start/count tables and T9 grouped GEMM bf16.
+
+2026-05-06 UTC tile-compute covering diagnostic terminology checkpoint:
+
+- Removed `selection_kind`, `selection_status`, `selection_order`,
+  `selected_patterns`, `selected_pattern:*`, and `local_dag_dp` from
+  tile-compute covering diagnostic output and source evidence.  The FFI
+  diagnostics now expose `covering_kind`, `covering_status`, `covering_order`,
+  `covered_patterns`, and `covered_pattern:*`.
+- Renamed the pass-local C++ field from `selection_kind` to `covering_kind`.
+  This does not introduce a new IR layer; the durable outputs remain typed
+  `TTComputeOpPlan`, materialization/fanout demands, and validators.
+- Retargeted the composite-operation validator test to a small elementwise
+  leaf TTProgram so it validates the composite-op reject contract without
+  depending on flash exact-CB materialization lowering.
+- `cmake --build build -j32` passed.
+- Focused tile-compute structural selectors reported `12 passed`.
 
 2026-05-05 UTC T9.2 paged GQA decode checkpoint:
 

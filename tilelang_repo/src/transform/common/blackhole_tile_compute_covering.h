@@ -1,6 +1,6 @@
 /*!
  * \file blackhole_tile_compute_covering.h
- * \brief Local Blackhole tile compute pattern covering selection.
+ * \brief Local Blackhole tile compute pattern covering.
  */
 
 #ifndef TVM_TL_TRANSFORM_COMMON_BLACKHOLE_TILE_COMPUTE_COVERING_H_
@@ -21,7 +21,7 @@ namespace tl {
 
 struct BlackholeTileComputeCoveringDecision {
   bool selected{false};
-  std::string selection_kind;
+  std::string covering_kind;
   std::string pattern_name;
   std::string operation_name;
   std::string result_kind;

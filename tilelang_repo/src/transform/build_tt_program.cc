@@ -691,7 +691,7 @@ BuildTileComputeMaterializationDemands(const BlackholeTileComputeDAG &dag,
     demands.push_back(TTTileComputeMaterializationDemand(
         String(name), kernel_name, node.id, String(decision.operation_name),
         String(decision.pattern_name), String(decision.materialization_policy),
-        String("selected_pattern:" + decision.pattern_name +
+        String("covered_pattern:" + decision.pattern_name +
                ";side_effect:" + node.side_effect_class)));
   }
   return demands;

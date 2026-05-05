@@ -1502,19 +1502,7 @@ def test_tile_compute_read_only_dag_diagnostic_represents_flash_attention_leaf_o
 
 
 def test_tile_compute_covering_rejects_composite_operation_name_before_projection():
-    mod = _prepare_blackhole_tt_program_module(
-        mha_example.flashattn.jit_impl.get_tir(
-            1,
-            32,
-            128,
-            128,
-            False,
-            block_M=128,
-            block_N=128,
-            num_stages=1,
-            threads=128,
-        )
-    )
+    mod = _prepare_blackhole_tt_program_module(_elementwise_add_kernel())
     main = mod["main"]
     tt_program = main.attrs["tl.tt_program"]
     assert tt_program.compute_op_plans
@@ -1543,7 +1531,8 @@ def test_tile_compute_covering_selects_patterns_for_current_leaf_ops():
     for pattern in pattern_table:
         operation_name = str(pattern["operation_name"])
         decision = select_covering(operation_name)
-        assert str(decision["selection_kind"]) == "selected_pattern"
+        assert str(decision["covering_kind"]) == "leaf_pattern"
+        assert "selection_kind" not in decision
         assert str(decision["operation_name"]) == operation_name
         assert str(decision["result_kind"]) == str(pattern["result_kind"])
         assert str(decision["source_emitter"]) == str(pattern["source_emitter"])
@@ -1569,14 +1558,18 @@ def test_tile_compute_dag_covering_selects_patterns_in_dependence_order():
     )
 
     diagnostic = select_dag_covering(mod["main"])
-    selected_patterns = list(diagnostic["selected_patterns"])
-    selected_operations = {str(pattern["operation_name"]) for pattern in selected_patterns}
+    covered_patterns = list(diagnostic["covered_patterns"])
+    covered_operations = {str(pattern["operation_name"]) for pattern in covered_patterns}
 
-    assert str(diagnostic["selection_kind"]) == "local_dag_dp"
-    assert str(diagnostic["selection_status"]) == "selected"
-    assert str(diagnostic["selection_order"]) == "dependence_order"
-    assert selected_patterns
-    assert int(diagnostic["total_cost"]) >= len(selected_patterns)
+    assert str(diagnostic["covering_kind"]) == "local_dag"
+    assert str(diagnostic["covering_status"]) == "covered"
+    assert str(diagnostic["covering_order"]) == "dependence_order"
+    assert "selection_kind" not in diagnostic
+    assert "selection_status" not in diagnostic
+    assert "selection_order" not in diagnostic
+    assert "selected_patterns" not in diagnostic
+    assert covered_patterns
+    assert int(diagnostic["total_cost"]) >= len(covered_patterns)
     assert str(diagnostic["stale_fallback_policy"]) == "reject"
     assert {
         "fill_tile",
@@ -1587,12 +1580,12 @@ def test_tile_compute_dag_covering_selects_patterns_in_dependence_order():
         "exp2_tile",
         "typecast_tile",
         "matmul_tiles",
-    } <= selected_operations
-    assert all(int(pattern["node_id"]) >= 0 for pattern in selected_patterns)
-    assert all(str(pattern["pattern_name"]) for pattern in selected_patterns)
+    } <= covered_operations
+    assert all(int(pattern["node_id"]) >= 0 for pattern in covered_patterns)
+    assert all(str(pattern["pattern_name"]) for pattern in covered_patterns)
     assert all(
         str(pattern["selected_output"]) == "tt_compute_op_plan"
-        for pattern in selected_patterns
+        for pattern in covered_patterns
     )
 
 
@@ -1631,9 +1624,13 @@ def test_tile_compute_dag_covering_reports_fanout_materialization_policy():
         for decision in materialization_decisions
     )
     assert all(str(decision["evidence"]) for decision in fanout_decisions)
+    assert all(
+        "selected_pattern:" not in str(decision["evidence"])
+        for decision in materialization_decisions
+    )
 
 
-def test_tile_compute_production_path_uses_covering_selection():
+def test_tile_compute_production_path_uses_covering_dispatch():
     source_dispatch_hits = _source_tree_rg(
         r"SelectBlackholeTileComputeCovering|EmitCoveredBlackholeTileCompute",
         REPO_ROOT / "tilelang_repo/src/transform/lower_blackhole_tile_compute.cc",
@@ -1673,6 +1670,25 @@ def test_tile_compute_covering_header_does_not_expose_dag_covering_as_production
 
     assert "struct BlackholeTileComputeDAGCovering" not in covering_header
     assert "SelectBlackholeTileComputeDAGCovering(" not in covering_header
+    assert "selection_kind" not in covering_header
+
+
+def test_tile_compute_covering_diagnostics_use_covering_terms_not_selection_terms():
+    covering_source = (
+        REPO_ROOT
+        / "tilelang_repo/src/transform/common/blackhole_tile_compute_covering.cc"
+    ).read_text()
+
+    for forbidden in [
+        "selection_kind",
+        "selection_status",
+        "selection_order",
+        "selection_order_index",
+        "selected_patterns",
+        "selected_pattern:",
+        "local_dag_dp",
+    ]:
+        assert forbidden not in covering_source
 
 
 def test_tile_compute_explicit_source_path_uses_leaf_covering_without_dag_cache():
