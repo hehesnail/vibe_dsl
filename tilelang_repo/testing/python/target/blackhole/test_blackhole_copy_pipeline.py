@@ -145,6 +145,8 @@ def test_blackhole_leaf_readers_do_not_keep_legacy_defaults_or_slot_fallbacks():
         TARGET_SRC_DIR / "codegen_blackhole.cc": [
             "// DataMovement kernel API (default)",
             "kValueKind",
+            'runtime_arg_vars_by_kind_.find("k_tile_start_id")',
+            'runtime_arg_vars_by_kind_.find("num_k_tiles")',
         ],
         TARGET_SRC_DIR / "codegen_blackhole.h": [
             "std::string value_kind;",

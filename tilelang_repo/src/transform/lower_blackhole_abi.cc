@@ -312,6 +312,8 @@ static Map<String, Any> MakeRuntimeArg(const std::string &name,
   return arg;
 }
 
+static constexpr const char* kLogicalBlockZRuntimeArg = "logical_block_z";
+
 static Map<String, Any> MarkRuntimeArgRequiresPerWorkBinding(
     const Any &item) {
   Map<String, Any> arg = item.as<Map<String, Any>>().value_or(Map<String, Any>());
@@ -351,7 +353,8 @@ EnsureSegmentBufferRuntimeArgs(const std::string &segment_kind,
                                const std::string &input_buffer_name = "",
                                const std::string &output_buffer_name = "",
                                const std::vector<std::string> &input_buffer_names = {},
-                               const std::vector<std::string> &output_buffer_names = {}) {
+                               const std::vector<std::string> &output_buffer_names = {},
+                               int64_t logical_grid_z = 1) {
   Array<Any> existing_runtime_args =
       runtime_args_opt ? Downcast<Array<Any>>(runtime_args_opt.value())
                        : Array<Any>();
@@ -448,7 +451,14 @@ EnsureSegmentBufferRuntimeArgs(const std::string &segment_kind,
   const bool is_writer = segment_kind == "writer";
   const bool is_compute = segment_kind == "compute";
   if (is_compute) {
-    return existing_runtime_args;
+    Array<Any> runtime_args = existing_runtime_args;
+    if (logical_grid_z > 1 &&
+        FindRuntimeArgIndex(runtime_args, kLogicalBlockZRuntimeArg, "") < 0) {
+      runtime_args.push_back(MakeRuntimeArg(kLogicalBlockZRuntimeArg,
+                                            kLogicalBlockZRuntimeArg,
+                                            "uint32", "", true));
+    }
+    return runtime_args;
   }
   if (!is_reader && !is_writer) {
     return existing_runtime_args;
@@ -598,6 +608,10 @@ EnsureSegmentBufferRuntimeArgs(const std::string &segment_kind,
                                   resolved_output_buffer_name, true);
     append_runtime_arg_if_missing("output_tile_stride", "output_tile_stride",
                                   resolved_output_buffer_name, true);
+  }
+  if (logical_grid_z > 1) {
+    append_runtime_arg_if_missing(kLogicalBlockZRuntimeArg,
+                                  kLogicalBlockZRuntimeArg, "", true);
   }
   for (const auto &item : other_args) {
     runtime_args.push_back(item);
@@ -1364,6 +1378,13 @@ void PlanTTKernelABI::StoreAccessorDescriptors(PrimFunc &func) {
       per_work_arg_specs.push_back(spec);
     };
 
+    if (runtime_args_contain_kind(kLogicalBlockZRuntimeArg)) {
+      upsert_spec(MakePerWorkArgSpec(
+          kLogicalBlockZRuntimeArg,
+          runtime_arg_identity_for_kind(kLogicalBlockZRuntimeArg),
+          blackhole_runtime_arg_schema::kValueSourceLogicalBlockZ, ""));
+    }
+
     if (kind == "fused_dataflow") {
       if (runtime_args_contain_kind("a_tile_start_id")) {
         upsert_spec(MakePerWorkArgSpec(
@@ -1762,7 +1783,8 @@ void PlanTTKernelABI::StoreAccessorDescriptors(PrimFunc &func) {
           copy_output_buffer_.defined()
               ? BufferIdentityName(copy_output_buffer_)
               : copy_output_buffer_name_,
-          copy_input_buffer_names_, copy_output_buffer_names_);
+          copy_input_buffer_names_, copy_output_buffer_names_,
+          logical_grid_z_);
       Array<TTPerWorkArgSpec> per_work_arg_specs =
           make_segment_per_work_arg_specs(
               kind, runtime_args, accessors,

@@ -231,7 +231,6 @@ class CodeGenBlackhole : public CodeGenCHost {
   void PrintPackReconfigDataFormatForCB(int cb_id, std::ostream& os);
   void LoadCorePlan(const tvm::tir::PrimFunc &f);
   void LoadAccessorOffsets(const tvm::tir::PrimFunc& f);
-  std::string GetRuntimeArgVarByKind(const std::string &kind) const;
   std::string GetRuntimeArgVarForBuffer(const tvm::PrimExpr &buffer_expr,
                                         const char* preferred_kind = nullptr) const;
   int ResolveAccessorOffsetForBuffer(const tvm::PrimExpr& buffer_expr,
@@ -290,7 +289,6 @@ class CodeGenBlackhole : public CodeGenCHost {
   std::unordered_set<std::string> declared_cbs_;
   std::unordered_map<const tvm::tir::VarNode *, std::string> buffer_runtime_arg_map_;
   std::unordered_map<std::string, std::string> buffer_runtime_arg_map_by_name_;
-  std::unordered_map<std::string, std::string> runtime_arg_vars_by_kind_;
   std::unordered_map<std::string, std::string> runtime_arg_vars_by_identity_;
   std::unordered_map<std::string, std::string> runtime_arg_vars_by_name_;
   std::unordered_map<std::string, int> accessor_compile_time_offset_by_buffer_;

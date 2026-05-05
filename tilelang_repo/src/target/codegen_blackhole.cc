@@ -485,7 +485,6 @@ void CodeGenBlackhole::Init(bool output_ssa, bool emit_asserts,
   emit_debug_waypoints_ = std::getenv("TILELANG_BLACKHOLE_DEBUG_WAYPOINTS") != nullptr;
   buffer_runtime_arg_map_.clear();
   buffer_runtime_arg_map_by_name_.clear();
-  runtime_arg_vars_by_kind_.clear();
   runtime_arg_vars_by_identity_.clear();
   runtime_arg_vars_by_name_.clear();
   per_work_arg_bindings_by_identity_.clear();
@@ -1349,7 +1348,6 @@ void CodeGenBlackhole::LoadCBConfigMetadata(const tvm::tir::PrimFunc &f) {
 void CodeGenBlackhole::EmitRuntimeArgLoads(const tvm::tir::PrimFunc &f) {
   buffer_runtime_arg_map_.clear();
   buffer_runtime_arg_map_by_name_.clear();
-  runtime_arg_vars_by_kind_.clear();
   runtime_arg_vars_by_identity_.clear();
   runtime_arg_vars_by_name_.clear();
   per_work_arg_bindings_by_identity_.clear();
@@ -1532,9 +1530,6 @@ void CodeGenBlackhole::EmitRuntimeArgLoads(const tvm::tir::PrimFunc &f) {
 
     stream << "  uint32_t " << arg_name << " = get_arg_val<uint32_t>(" << arg_idx << ");\n";
     runtime_arg_vars_by_name_[arg_name] = arg_name;
-    if (!arg_kind.empty() && !runtime_arg_vars_by_kind_.count(arg_kind)) {
-      runtime_arg_vars_by_kind_[arg_kind] = arg_name;
-    }
     if (auto v = arg_info.Get("identity")) {
       const std::string arg_identity = Downcast<tvm::ffi::String>(v.value());
       if (!arg_identity.empty() && !runtime_arg_vars_by_identity_.count(arg_identity)) {
@@ -1576,12 +1571,6 @@ void CodeGenBlackhole::EmitRuntimeArgLoads(const tvm::tir::PrimFunc &f) {
   if (!cb_num_pages_by_id_.empty()) {
     stream << "\n";
   }
-}
-
-std::string CodeGenBlackhole::GetRuntimeArgVarByKind(const std::string &kind) const {
-  auto it = runtime_arg_vars_by_kind_.find(kind);
-  ICHECK(it != runtime_arg_vars_by_kind_.end()) << "Missing runtime arg binding for kind: " << kind;
-  return it->second;
 }
 
 std::string CodeGenBlackhole::GetRuntimeArgVarForBuffer(
@@ -2136,8 +2125,31 @@ void CodeGenBlackhole::BindThreadIndex(const tvm::tir::IterVar &iv) {
   };
   const auto explicit_block_x = resolve_explicit_axis(/*want_x=*/true);
   const auto explicit_block_y = resolve_explicit_axis(/*want_x=*/false);
+  auto resolve_explicit_z = [&]() -> std::optional<std::string> {
+    for (const auto& binding : per_work_arg_bindings_) {
+      auto arg_var = runtime_arg_for_binding(binding);
+      if (!arg_var.has_value()) {
+        continue;
+      }
+      if (binding.value_source ==
+          ::tvm::tl::blackhole_runtime_arg_schema::kValueSourceLogicalBlockZ) {
+        return arg_var;
+      }
+      if (binding.value_source ==
+          ::tvm::tl::blackhole_runtime_arg_schema::kValueSourceWorkLinearId) {
+        if (row_major_grid && logical_grid_z_ > 1) {
+          const int xy_work = std::max(1, logical_grid_x_ * logical_grid_y_);
+          return "(" + arg_var.value() + " / " + std::to_string(xy_work) + ")";
+        }
+        continue;
+      }
+    }
+    return std::nullopt;
+  };
+  const auto explicit_block_z = resolve_explicit_z();
   const bool has_explicit_work_binding =
-      explicit_block_x.has_value() || explicit_block_y.has_value();
+      explicit_block_x.has_value() || explicit_block_y.has_value() ||
+      explicit_block_z.has_value();
 
   // Map CUDA-style thread indices to Blackhole concepts
   // For staged single-core execution, block coordinates must come from the
@@ -2160,13 +2172,8 @@ void CodeGenBlackhole::BindThreadIndex(const tvm::tir::IterVar &iv) {
       var_idmap_[iv->var.get()] = "0 /* core_y */";
     }
   } else if (thread_tag == "blockIdx.z") {
-    auto k_start_it = runtime_arg_vars_by_kind_.find("k_tile_start_id");
-    auto k_count_it = runtime_arg_vars_by_kind_.find("num_k_tiles");
-    if (k_start_it != runtime_arg_vars_by_kind_.end() &&
-        k_count_it != runtime_arg_vars_by_kind_.end()) {
-      var_idmap_[iv->var.get()] =
-          "(" + k_count_it->second + " == 0 ? 0 : (" + k_start_it->second +
-          " / " + k_count_it->second + "))";
+    if (explicit_block_z.has_value()) {
+      var_idmap_[iv->var.get()] = explicit_block_z.value();
     } else if (logical_grid_z_ > 1) {
       std::optional<std::string> linear_work_arg;
       for (const auto& binding : per_work_arg_bindings_) {

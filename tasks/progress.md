@@ -6,7 +6,7 @@
 
 ## Status
 
-- Date: `2026-05-05`
+- Date: `2026-05-06`
 - Active task: `T9 Workload first paths`
 - Main chain:
   `Normalized Tile TIR -> SpatialPlan -> TTProgram -> ExecutableSpec`
@@ -322,15 +322,32 @@ Each checkpoint needs its own direct-runtime correctness proof:
   table value-expr projection, sparse/ragged/segmented/paged value-expr
   projection, and sparse-ragged plus paged-valid-rows direct runtime reported
   `9 passed`.
-- Remaining similar schema-risk surfaces from the audit: codegen still has
-  `runtime_arg_vars_by_kind_` recovery for `k_tile_start_id` /
-  `num_k_tiles`, direct-runtime exact-CB gates still query
+- Remaining similar schema-risk surfaces from the audit after this checkpoint:
+  direct-runtime exact-CB gates still query
   `SpecHasRuntimeArgKind("num_k_tiles")`, direct runtime still classifies
   tile-start bounds through `IsTileStartRuntimeArgKind`, and segment
   extraction in `rt_mod_blackhole.cc` still consumes
   `blackhole.segment_kind` / neighbor inference.  These are cleanup targets;
   pass-local `BlackholeLoweringSupportFacts` remain separate derived analysis
   and are not being treated as a public schema surface.
+
+2026-05-06 UTC codegen logical-z owner-truth checkpoint:
+
+- Removed the `CodeGenBlackhole` `runtime_arg_vars_by_kind_` map and the
+  unused `GetRuntimeArgVarByKind` helper.  Codegen no longer recovers
+  `blockIdx.z` by looking up `k_tile_start_id` and `num_k_tiles` runtime-arg
+  kinds and dividing them.
+- Segmented kernels with `logical_grid_z > 1` now carry an explicit generic
+  `logical_block_z` per-work runtime arg whose `TTPerWorkArgSpec` uses
+  `value_source=logical_block_z`.  `BindThreadIndex(blockIdx.z)` consumes that
+  explicit per-work binding, or falls back only to a generic
+  `work_linear_id` binding when present.
+- The public source guard now rejects the deleted `runtime_arg_vars_by_kind_`
+  k-tile lookup snippets in `codegen_blackhole.cc`.
+- `cmake --build build -j32` passed.
+- Focused TT-Sim selectors reported the source guard `1 passed` and the
+  logical-z/K-sharded plus grouped-GEMM coverage `3 passed`, including the
+  manycore K-sharded bf16 partial-sum runtime path.
 
 2026-05-05 UTC T9.2 paged GQA decode checkpoint:
 

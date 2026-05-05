@@ -2556,3 +2556,11 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   closed if a referenced value-expr buffer has no distribution plan.  Do not
   restore hardcoded fallbacks such as `value_expr_buffer_load` or
   `page_indexed/dram` in `rt_mod_blackhole.cc`.
+- 2026-05-06 Blackhole logical-z source binding:
+  Codegen must not reconstruct `blockIdx.z` from k-tile runtime-arg kinds such
+  as `k_tile_start_id / num_k_tiles`.  If device source still needs the
+  logical z coordinate, carry a generic per-work runtime arg with
+  `value_source=logical_block_z` through `TTPerWorkArgSpec` and make
+  `BindThreadIndex` consume that explicit binding.  `work_linear_id` remains
+  an acceptable generic fallback only when that exact binding is present; do
+  not reintroduce a `runtime_arg_vars_by_kind_` side map in codegen.
