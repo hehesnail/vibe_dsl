@@ -185,6 +185,9 @@ def test_blackhole_leaf_readers_do_not_keep_legacy_defaults_or_slot_fallbacks():
             '"value_expr_buffer_load"',
             "SpecHasRuntimeArgKind",
         ],
+        TARGET_SRC_DIR / "blackhole_module.cc": [
+            "IsTileStartRuntimeArgKind",
+        ],
     }
 
     offenders = []
@@ -1306,6 +1309,7 @@ def test_blackhole_block_indexed_copy_per_work_spec_uses_value_expr_binding():
 
     a_tile_start = bindings["a_tile_start_id"]
     _assert_value_expr_binding(a_tile_start, "BlockIndices")
+    assert str(a_tile_start["value_usage"]) == "buffer_tile_origin"
     assert str(a_tile_start["access_region"])
     assert int(a_tile_start["access_region_index"]) >= 0
     assert bindings["output_tile_start_id"]["value_source"] == "work_linear_id"
@@ -1709,9 +1713,11 @@ def test_blackhole_paged_cache_len_copy_uses_page_table_and_bound_bindings():
     bindings = _per_work_specs_by_identity(executable_spec, buffer="A")
     page_start = bindings["a_tile_start_id"]
     _assert_value_expr_binding(page_start, "PageTable")
+    assert str(page_start["value_usage"]) == "buffer_tile_origin"
 
     bound_value = bindings["per_work_value"]
     _assert_value_expr_binding(bound_value, "CacheSeqLens")
+    assert "value_usage" not in bound_value
 
     axis_value = bindings["per_work_value_1"]
     assert str(axis_value["value_source"]) == "logical_block_y"
@@ -1744,9 +1750,11 @@ def test_blackhole_paged_valid_rows_copy_uses_per_page_row_bounds():
 
     page_start = bindings["a_tile_start_id"]
     _assert_value_expr_binding(page_start, "PageTable")
+    assert str(page_start["value_usage"]) == "buffer_tile_origin"
 
     bound_value = bindings["per_work_value"]
     _assert_value_expr_binding(bound_value, "PageValidRows")
+    assert "value_usage" not in bound_value
 
 
 def test_blackhole_grid_indexed_copy_rejects_per_work_arg_kind_fallback_without_identity():

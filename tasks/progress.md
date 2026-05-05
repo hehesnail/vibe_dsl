@@ -323,10 +323,8 @@ Each checkpoint needs its own direct-runtime correctness proof:
   projection, and sparse-ragged plus paged-valid-rows direct runtime reported
   `9 passed`.
 - Remaining similar schema-risk surfaces from the audit after this checkpoint:
-  direct runtime still classifies tile-start bounds through
-  `IsTileStartRuntimeArgKind`, and segment extraction in
-  `rt_mod_blackhole.cc` still consumes `blackhole.segment_kind` / neighbor
-  inference.  These are cleanup targets;
+  segment extraction in `rt_mod_blackhole.cc` still consumes
+  `blackhole.segment_kind` / neighbor inference.  This is a cleanup target;
   pass-local `BlackholeLoweringSupportFacts` remain separate derived analysis
   and are not being treated as a public schema surface.
 
@@ -364,6 +362,24 @@ Each checkpoint needs its own direct-runtime correctness proof:
 - Focused TT-Sim selectors covering the source guard, exact-CB flash
   executable metadata gate, multi-work flash per-work metadata, and seq64
   multi-block runtime admission reported `9 passed`.
+
+2026-05-06 UTC per-work tile-origin usage checkpoint:
+
+- Removed `blackhole_module.cc::IsTileStartRuntimeArgKind`; direct runtime no
+  longer classifies tile-origin bounds by `a_tile_start_id` /
+  `b_tile_start_id` / `output_tile_start_id` string families.
+- `TTPerWorkArgSpec` / `ExecutableSpec` now carry generic
+  `value_usage=buffer_tile_origin` only for per-work values that are consumed
+  as the associated buffer's tile origin.  Row-bound values remain ordinary
+  `value_expr` bindings without `value_usage`.
+- Direct runtime validates only `buffer_tile_origin` values against the target
+  buffer materialization page count, preserving out-of-range table fail-closed
+  behavior without misclassifying ragged/paged row bounds.
+- `cmake --build build -j32` passed.
+- Focused TT-Sim selectors covering source/schema guards, block-indexed
+  projection, paged cache-length/page-valid row projection, block-indexed
+  direct runtime, out-of-range index-table rejection, 2D indexed runtime,
+  ragged row-count runtime, and paged row-bound runtime reported `11 passed`.
 
 2026-05-05 UTC T9.2 paged GQA decode checkpoint:
 

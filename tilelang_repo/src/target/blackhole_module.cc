@@ -421,6 +421,7 @@ static void WritePerWorkArgSpec(dmlc::Stream* stream, const PerWorkArgSpec& spec
   WriteString(stream, spec.value_source);
   WriteString(stream, spec.value_expr_json);
   WriteUInt32(stream, spec.constant_value);
+  WriteString(stream, spec.value_usage);
   WriteString(stream, spec.access_region);
   WriteInt64(stream, spec.access_region_index);
 }
@@ -433,6 +434,7 @@ static PerWorkArgSpec ReadPerWorkArgSpec(dmlc::Stream* stream) {
   spec.value_source = ReadString(stream, "per_work_arg.value_source");
   spec.value_expr_json = ReadString(stream, "per_work_arg.value_expr");
   spec.constant_value = ReadUInt32(stream, "per_work_arg.constant_value");
+  spec.value_usage = ReadString(stream, "per_work_arg.value_usage");
   spec.access_region = ReadString(stream, "per_work_arg.access_region");
   spec.access_region_index = ReadInt64(stream, "per_work_arg.access_region_index");
   return spec;
@@ -3799,15 +3801,6 @@ static int64_t EvaluateDirectRuntimeValueExpr(
   return 0;
 }
 
-static bool IsTileStartRuntimeArgKind(const std::string& arg_kind) {
-  return arg_kind == "a_tile_start_id" || arg_kind == "b_tile_start_id" ||
-         arg_kind == "output_tile_start_id" ||
-         arg_kind.rfind("indexed_tile_start_id", 0) == 0 ||
-         arg_kind.rfind("a_tile_start_id_", 0) == 0 ||
-         arg_kind.rfind("b_tile_start_id_", 0) == 0 ||
-         arg_kind.rfind("output_tile_start_id_", 0) == 0;
-}
-
 static uint32_t EvaluatePerWorkValueExpr(
     const PerWorkArgSpec& spec,
     const DirectRuntimeWorkContext& context,
@@ -3825,7 +3818,9 @@ static uint32_t EvaluatePerWorkValueExpr(
       << "Blackhole direct runtime value_expr for " << spec.arg_identity
       << " overflowed uint32";
   const uint32_t u32_value = static_cast<uint32_t>(value);
-  if (IsTileStartRuntimeArgKind(spec.arg_kind) && !spec.buffer.empty()) {
+  if (spec.value_usage ==
+          tl::blackhole_runtime_arg_schema::kValueUsageBufferTileOrigin &&
+      !spec.buffer.empty()) {
     auto target_it = buffer_bindings.find(spec.buffer);
     ICHECK(target_it != buffer_bindings.end())
         << "Blackhole direct runtime tile-start binding references missing "

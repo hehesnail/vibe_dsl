@@ -248,6 +248,7 @@ struct PerWorkArgSpec {
   std::string value_source;
   std::string value_expr_json;
   uint32_t constant_value = 0;
+  std::string value_usage;
   std::string access_region;
   int64_t access_region_index = -1;
 
@@ -275,6 +276,10 @@ struct PerWorkArgSpec {
       writer->WriteObjectKeyValue(
           tl::blackhole_runtime_arg_schema::kConstantValue,
           static_cast<int64_t>(constant_value));
+    }
+    if (!value_usage.empty()) {
+      writer->WriteObjectKeyValue(
+          tl::blackhole_runtime_arg_schema::kValueUsage, value_usage);
     }
     if (!access_region.empty()) {
       writer->WriteObjectKeyValue(

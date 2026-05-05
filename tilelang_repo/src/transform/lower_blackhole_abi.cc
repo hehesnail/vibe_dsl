@@ -689,12 +689,13 @@ static TTPerWorkArgSpec MakePerWorkArgSpec(const std::string &arg_kind,
                                            uint32_t constant_value = 0,
                                            const std::string &access_region = "",
                                            int64_t access_region_index = -1,
-                                           PrimExpr value_expr = PrimExpr()) {
+                                           PrimExpr value_expr = PrimExpr(),
+                                           const std::string &value_usage = "") {
   return TTPerWorkArgSpec(String(arg_kind), String(arg_identity),
                           String(buffer), String(value_source),
                           static_cast<int64_t>(constant_value),
                           String(access_region), access_region_index,
-                          std::move(value_expr));
+                          std::move(value_expr), String(value_usage));
 }
 
 static PrimExpr WorkContextVar(const char* name) {
@@ -1358,7 +1359,8 @@ void PlanTTKernelABI::StoreAccessorDescriptors(PrimFunc &func) {
               : static_cast<std::string>(spec->value_source),
           buffer,
           static_cast<uint32_t>(spec->constant_value), region->name,
-          region->index, spec->value_expr);
+          region->index, spec->value_expr,
+          static_cast<std::string>(spec->value_usage));
     };
     auto upsert_spec = [&](const TTPerWorkArgSpec &raw_spec) {
       const TTPerWorkArgSpec spec = attach_access_region_evidence(raw_spec);
@@ -1390,7 +1392,8 @@ void PlanTTKernelABI::StoreAccessorDescriptors(PrimFunc &func) {
         upsert_spec(MakePerWorkArgSpec(
             "a_tile_start_id", runtime_arg_identity_for_kind("a_tile_start_id"),
             blackhole_runtime_arg_schema::kValueSourceWorkLinearId,
-            copy_input_buffer_name));
+            copy_input_buffer_name, 0, "", -1, PrimExpr(),
+            blackhole_runtime_arg_schema::kValueUsageBufferTileOrigin));
       }
     }
     if (kind == "fused_dataflow" || kind == "reader" ||
@@ -1419,7 +1422,7 @@ void PlanTTKernelABI::StoreAccessorDescriptors(PrimFunc &func) {
             arg.arg_name, runtime_arg_identity_for_kind(arg.arg_name.c_str()),
             arg.value_source,
             arg_buffer, 0, access_region, access_region_index,
-            arg.value_expr));
+            arg.value_expr, arg.value_usage));
       }
       if (!reader_uses_gemm_tile_contract &&
           runtime_args_contain_kind("a_tile_num_tiles")) {
@@ -1441,7 +1444,8 @@ void PlanTTKernelABI::StoreAccessorDescriptors(PrimFunc &func) {
             "output_tile_start_id",
             runtime_arg_identity_for_kind("output_tile_start_id"),
             blackhole_runtime_arg_schema::kValueSourceWorkLinearId,
-            copy_output_buffer_name));
+            copy_output_buffer_name, 0, "", -1, PrimExpr(),
+            blackhole_runtime_arg_schema::kValueUsageBufferTileOrigin));
       }
       if (runtime_args_contain_kind("output_tile_num_tiles")) {
         upsert_spec(MakePerWorkArgSpec(
@@ -1477,7 +1481,8 @@ void PlanTTKernelABI::StoreAccessorDescriptors(PrimFunc &func) {
                 has_gemm_reader_contract
                     ? blackhole_runtime_arg_schema::kValueSourceLogicalBlockY
                     : blackhole_runtime_arg_schema::kValueSourceWorkLinearId),
-            a_tile_buffer, 0));
+            a_tile_buffer, 0, "", -1, PrimExpr(),
+            blackhole_runtime_arg_schema::kValueUsageBufferTileOrigin));
       }
       if (runtime_args_contain_kind("a_tile_num_tiles")) {
         upsert_spec(has_gemm_reader_contract
@@ -1505,7 +1510,8 @@ void PlanTTKernelABI::StoreAccessorDescriptors(PrimFunc &func) {
                 has_gemm_reader_contract
                     ? blackhole_runtime_arg_schema::kValueSourceLogicalBlockX
                     : blackhole_runtime_arg_schema::kValueSourceWorkLinearId),
-            b_tile_buffer, 0));
+            b_tile_buffer, 0, "", -1, PrimExpr(),
+            blackhole_runtime_arg_schema::kValueUsageBufferTileOrigin));
       }
       if (runtime_args_contain_kind("b_tile_num_tiles")) {
         upsert_spec(has_gemm_reader_contract
@@ -1572,7 +1578,8 @@ void PlanTTKernelABI::StoreAccessorDescriptors(PrimFunc &func) {
                 logical_grid_z_ > 1
                     ? blackhole_runtime_arg_schema::kValueSourceLogicalBlockXYLinear
                     : blackhole_runtime_arg_schema::kValueSourceWorkLinearId),
-            output_tile_buffer));
+            output_tile_buffer, 0, "", -1, PrimExpr(),
+            blackhole_runtime_arg_schema::kValueUsageBufferTileOrigin));
       }
       if (runtime_args_contain_kind("output_tile_num_tiles")) {
         upsert_spec(MakePerWorkArgSpec(

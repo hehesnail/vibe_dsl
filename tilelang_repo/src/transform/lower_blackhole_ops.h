@@ -316,6 +316,7 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
     ffi::Array<PrimExpr> subject_index_exprs;
     std::string value_source;
     PrimExpr value_expr;
+    std::string value_usage;
     bool include_in_compute_segment = false;
   };
 
@@ -934,7 +935,8 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
       const ffi::Array<PrimExpr>& subject_index_exprs,
       const std::string& value_source,
       const PrimExpr& value_expr,
-      bool include_in_compute_segment);
+      bool include_in_compute_segment,
+      const std::string& value_usage = "");
   void RecordIndexedPerWorkRuntimeArgSubjectAlias(
       const std::string& arg_name,
       const std::string& subject_buffer,

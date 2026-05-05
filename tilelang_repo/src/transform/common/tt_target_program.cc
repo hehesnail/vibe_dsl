@@ -826,6 +826,7 @@ void TTPerWorkArgSpecNode::RegisterReflection() {
       .def_ro("value_source", &TTPerWorkArgSpecNode::value_source)
       .def_ro("value_expr", &TTPerWorkArgSpecNode::value_expr)
       .def_ro("constant_value", &TTPerWorkArgSpecNode::constant_value)
+      .def_ro("value_usage", &TTPerWorkArgSpecNode::value_usage)
       .def_ro("access_region", &TTPerWorkArgSpecNode::access_region)
       .def_ro("access_region_index",
               &TTPerWorkArgSpecNode::access_region_index);
@@ -853,7 +854,7 @@ TTPerWorkArgSpec::TTPerWorkArgSpec(ffi::String arg_kind,
 TTPerWorkArgSpec::TTPerWorkArgSpec(
     ffi::String arg_kind, ffi::String arg_identity, ffi::String buffer,
     ffi::String value_source, int64_t constant_value, ffi::String access_region,
-    int64_t access_region_index, PrimExpr value_expr) {
+    int64_t access_region_index, PrimExpr value_expr, ffi::String value_usage) {
   auto n = ffi::make_object<TTPerWorkArgSpecNode>();
   n->arg_kind = std::move(arg_kind);
   n->arg_identity = std::move(arg_identity);
@@ -861,6 +862,7 @@ TTPerWorkArgSpec::TTPerWorkArgSpec(
   n->value_source = std::move(value_source);
   n->value_expr = std::move(value_expr);
   n->constant_value = constant_value;
+  n->value_usage = std::move(value_usage);
   n->access_region = std::move(access_region);
   n->access_region_index = access_region_index;
   data_ = std::move(n);
@@ -2055,6 +2057,21 @@ TVM_FFI_STATIC_INIT_BLOCK() {
                               constant_value,
                               std::move(access_region), access_region_index,
                               std::move(value_expr));
+                        });
+  refl::GlobalDef().def("tl.TTPerWorkArgSpecWithUsage",
+                        [](ffi::String arg_kind, ffi::String arg_identity,
+                           ffi::String buffer, ffi::String value_source,
+                           int64_t constant_value,
+                           ffi::String access_region,
+                           int64_t access_region_index,
+                           PrimExpr value_expr,
+                           ffi::String value_usage) {
+                          return TTPerWorkArgSpec(
+                              std::move(arg_kind), std::move(arg_identity),
+                              std::move(buffer), std::move(value_source),
+                              constant_value,
+                              std::move(access_region), access_region_index,
+                              std::move(value_expr), std::move(value_usage));
                         });
   refl::GlobalDef().def(
       "tl.TTKernel",

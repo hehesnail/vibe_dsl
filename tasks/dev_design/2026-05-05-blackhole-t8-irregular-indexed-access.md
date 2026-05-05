@@ -334,6 +334,12 @@ Implemented:
   `index_table_shape`, and `index_table_index_sources` projection surfaces
   have been deleted from TTProgram projection, ExecutableSpec metadata, and
   direct runtime metadata.
+- A per-work value that is consumed as the associated buffer's tile origin
+  carries the generic `value_usage=buffer_tile_origin` marker.  This marker is
+  not an index-table, row-bound, or page-workload schema; it tells runtime
+  which already-projected generic value needs validation against the target
+  buffer materialization page count.  Predicate / row-bound values such as
+  `per_work_value` do not carry this usage.
 - Guarded `tir.if_then_else(load, zero)` copies are recognized as predicated
   copies for the admitted source rewrite.  Source consumes
   `runtime_arg_u32("a_tile_start_id")`; it must not emit a raw
@@ -341,9 +347,11 @@ Implemented:
 - The index table is materialized as a page-indexed DRAM input buffer with
   4-byte pages so direct runtime can evaluate the per-work arg from host-side
   table data without positional argument recovery.
-- Direct runtime validates the computed tile start against the target buffer's
-  typed materialization page count.  Out-of-range table entries fail closed
-  instead of relying on the original TIR guard after source lowering.
+- Direct runtime validates only `value_usage=buffer_tile_origin` values against
+  the target buffer's typed materialization page count.  Out-of-range table
+  entries fail closed instead of relying on the original TIR guard after
+  source lowering, while row-bound `value_expr` bindings remain ordinary
+  guarded-copy values.
 - A two-dimensional `BlockIndices[bx, by]` staged copy is now admitted for the
   indexed-block traversal slice.  The A tile-start binding carries
   `value_source=value_expr`; the serialized TIR expression contains the

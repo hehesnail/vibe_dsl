@@ -3264,7 +3264,8 @@ std::string PlanTTKernelABI::GetOrCreateIndexedPerWorkRuntimeArg(
     const ffi::Array<PrimExpr>& subject_index_exprs,
     const std::string& value_source,
     const PrimExpr& value_expr,
-    bool include_in_compute_segment) {
+    bool include_in_compute_segment,
+    const std::string& value_usage) {
   ICHECK(!arg_prefix.empty())
       << "Blackhole indexed per-work runtime arg requires arg prefix";
   ICHECK(!subject_buffer.empty())
@@ -3307,6 +3308,9 @@ std::string PlanTTKernelABI::GetOrCreateIndexedPerWorkRuntimeArg(
         same_index_exprs(existing.subject_index_exprs, subject_index_exprs) &&
         existing.value_source == value_source &&
         same_value_expr(existing.value_expr, value_expr)) {
+      ICHECK(existing.value_usage == value_usage)
+          << "Blackhole indexed per-work runtime arg usage mismatch for "
+          << existing.arg_name;
       existing.include_in_compute_segment =
           existing.include_in_compute_segment || include_in_compute_segment;
       return existing.arg_name;
@@ -3320,6 +3324,7 @@ std::string PlanTTKernelABI::GetOrCreateIndexedPerWorkRuntimeArg(
   arg.subject_index_exprs = subject_index_exprs;
   arg.value_source = value_source;
   arg.value_expr = value_expr;
+  arg.value_usage = value_usage;
   arg.include_in_compute_segment = include_in_compute_segment;
   indexed_per_work_runtime_args_.push_back(std::move(arg));
   return indexed_per_work_runtime_args_.back().arg_name;
@@ -3365,6 +3370,7 @@ void PlanTTKernelABI::RecordIndexedPerWorkRuntimeArgSubjectAlias(
   };
   bool found_primary = false;
   bool include_in_compute_segment = false;
+  std::string primary_value_usage;
   for (const IndexedPerWorkRuntimeArg& existing :
        indexed_per_work_runtime_args_) {
     if (existing.arg_name != arg_name) {
@@ -3373,6 +3379,7 @@ void PlanTTKernelABI::RecordIndexedPerWorkRuntimeArgSubjectAlias(
     found_primary = true;
     include_in_compute_segment =
         include_in_compute_segment || existing.include_in_compute_segment;
+    primary_value_usage = existing.value_usage;
     ICHECK_EQ(existing.value_source, value_source)
         << "Blackhole indexed per-work runtime arg alias value_source mismatch for "
         << arg_name;
@@ -3393,6 +3400,7 @@ void PlanTTKernelABI::RecordIndexedPerWorkRuntimeArgSubjectAlias(
   arg.subject_index_exprs = subject_index_exprs;
   arg.value_source = value_source;
   arg.value_expr = value_expr;
+  arg.value_usage = primary_value_usage;
   arg.include_in_compute_segment = include_in_compute_segment;
   indexed_per_work_runtime_args_.push_back(std::move(arg));
 }
@@ -3658,7 +3666,8 @@ Stmt PlanTTKernelABI::VisitStmt_(const LetStmtNode* op) {
           tile_start_arg_prefix,
           subject_buffer, subject_index_exprs,
           blackhole_runtime_arg_schema::kValueSourceValueExpr,
-          runtime_value_expr, false);
+          runtime_value_expr, false,
+          blackhole_runtime_arg_schema::kValueUsageBufferTileOrigin);
       runtime_arg_tile_start_scale_by_name_[arg_name] =
           coefficient.value() / kBlackholeTileRows;
       runtime_arg_tile_start_scale_by_var_[op->var.get()] =

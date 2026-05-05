@@ -196,6 +196,8 @@ def tt_per_work_arg_specs_to_list(per_work_arg_specs):
             item["buffer"] = str(spec.buffer)
         if str(spec.value_source) == "constant":
             item["constant_value"] = int(spec.constant_value)
+        if getattr(spec, "value_usage", None) is not None and str(spec.value_usage):
+            item["value_usage"] = str(spec.value_usage)
         value_expr = getattr(spec, "value_expr", None)
         if value_expr is not None and str(value_expr):
             item["value_expr"] = value_expr

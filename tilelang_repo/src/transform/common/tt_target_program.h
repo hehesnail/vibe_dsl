@@ -621,6 +621,7 @@ public:
   ffi::String value_source;
   PrimExpr value_expr;
   int64_t constant_value = 0;
+  ffi::String value_usage;
   ffi::String access_region;
   int64_t access_region_index = -1;
 
@@ -644,7 +645,8 @@ public:
                            int64_t constant_value,
                            ffi::String access_region,
                            int64_t access_region_index,
-                           PrimExpr value_expr);
+                           PrimExpr value_expr,
+                           ffi::String value_usage = ffi::String());
   TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(TTPerWorkArgSpec, ObjectRef,
                                              TTPerWorkArgSpecNode);
 };

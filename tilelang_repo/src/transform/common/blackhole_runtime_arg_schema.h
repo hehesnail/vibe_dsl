@@ -38,6 +38,7 @@ inline constexpr const char* kRequiresPerWorkBinding =
 inline constexpr const char* kValueSource = "value_source";
 inline constexpr const char* kValueExpr = "value_expr";
 inline constexpr const char* kConstantValue = "constant_value";
+inline constexpr const char* kValueUsage = "value_usage";
 inline constexpr const char* kAccessRegion = "access_region";
 inline constexpr const char* kAccessRegionIndex = "access_region_index";
 
@@ -53,6 +54,9 @@ inline constexpr const char* kValueSourceLogicalBlockYXLinear =
     "logical_block_yx_linear";
 inline constexpr const char* kValueSourceValueExpr = "value_expr";
 inline constexpr const char* kValueSourceConstant = "constant";
+
+inline constexpr const char* kValueUsageBufferTileOrigin =
+    "buffer_tile_origin";
 
 }  // namespace blackhole_runtime_arg_schema
 }  // namespace tl

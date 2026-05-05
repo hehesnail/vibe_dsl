@@ -956,6 +956,9 @@ static std::vector<PerWorkArgSpec> ExtractPerWorkArgSpecsFromArray(
     if (auto v = spec_info.Get(::tvm::tl::blackhole_runtime_arg_schema::kConstantValue)) {
       spec.constant_value = static_cast<uint32_t>(Downcast<Integer>(v.value()).IntValue());
     }
+    if (auto v = spec_info.Get(::tvm::tl::blackhole_runtime_arg_schema::kValueUsage)) {
+      spec.value_usage = Downcast<String>(v.value());
+    }
     if (auto v = spec_info.Get(::tvm::tl::blackhole_runtime_arg_schema::kAccessRegion)) {
       spec.access_region = Downcast<String>(v.value());
     }
@@ -2615,6 +2618,10 @@ static ffi::Array<ffi::Any> EncodePerWorkArgSpecs(
       spec_info.Set(::tvm::tl::blackhole_runtime_arg_schema::kConstantValue,
                     Integer(static_cast<int>(spec.constant_value)));
     }
+    if (!spec.value_usage.empty()) {
+      spec_info.Set(::tvm::tl::blackhole_runtime_arg_schema::kValueUsage,
+                    ffi::String(spec.value_usage));
+    }
     if (!spec.access_region.empty()) {
       spec_info.Set(::tvm::tl::blackhole_runtime_arg_schema::kAccessRegion,
                     ffi::String(spec.access_region));
@@ -2716,6 +2723,15 @@ static void ValidateKernelExplicitPerWorkBindingSchema(const CorePlan& core_plan
   std::unordered_set<std::string> per_work_identities;
   for (const PerWorkArgSpec& spec : kernel.per_work_arg_specs) {
     per_work_identities.insert(spec.arg_identity);
+    if (!spec.value_usage.empty()) {
+      ICHECK_EQ(spec.value_usage,
+                tl::blackhole_runtime_arg_schema::kValueUsageBufferTileOrigin)
+          << "Blackhole per-work binding " << spec.arg_identity
+          << " has unsupported value_usage " << spec.value_usage;
+      ICHECK(!spec.buffer.empty())
+          << "Blackhole buffer_tile_origin per-work binding "
+          << spec.arg_identity << " requires a target buffer";
+    }
   }
   if (GetTotalLogicalWorkItems(core_plan) <= 1) {
     return;

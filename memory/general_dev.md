@@ -2572,3 +2572,11 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   per-work source tests aligned with explicit logical sources such as
   `logical_block_yx_linear`; requiring a stale `work_linear_id` projection is
   another form of semantic recovery by ABI shape.
+- 2026-05-06 Blackhole per-work tile-origin usage:
+  If direct runtime must validate a per-work value as an offset/origin into a
+  target buffer, do not infer that role from runtime-arg names such as
+  `a_tile_start_id` or `indexed_tile_start_id`.  Carry a generic
+  `TTPerWorkArgSpec.value_usage=buffer_tile_origin` through TTProgram and
+  ExecutableSpec.  Only values with that usage get checked against the target
+  buffer materialization page count; row-bound `per_work_value` bindings stay
+  ordinary `value_expr` values without usage.

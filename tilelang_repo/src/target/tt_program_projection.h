@@ -666,6 +666,10 @@ EncodePerWorkArgSpecs(const Array<TTPerWorkArgSpec> &per_work_arg_specs) {
       item.Set(::tvm::tl::blackhole_runtime_arg_schema::kConstantValue,
                Integer(spec->constant_value));
     }
+    if (!spec->value_usage.empty()) {
+      item.Set(::tvm::tl::blackhole_runtime_arg_schema::kValueUsage,
+               spec->value_usage);
+    }
     if (!spec->access_region.empty()) {
       item.Set(::tvm::tl::blackhole_runtime_arg_schema::kAccessRegion,
                spec->access_region);
