@@ -2708,6 +2708,57 @@
   - T8 indexed/ragged/segmented aggregate selectors including scaled-block and
     paged cases reported `16 passed`.
 
+### T9 paged GQA decode reused stale `acc_s` front pages across KV pages
+
+- **症状**:
+  - The two-page paged GQA decode compiled and launched but the full output
+    disagreed with the host flash-attention reference across batches and
+    heads.
+  - Generated source for `acc_s` pushed and waited on the first page, then
+    reserved/pushed the second page without popping the first front page; the
+    tail cleanup tried to `cb_pop_front(..., 2)`.
+- **根因**:
+  - Producer-side front-pop management only covered state-like CB
+    requirements.  Local stream intermediates such as `acc_s` can also be
+    produced, consumed, and then produced again on the same physical CB.
+  - The static pop planner counted total published pages instead of pages
+    actually visible on the local intermediate front, so adding the missing
+    pre-producer pop initially exposed a tail over-pop.
+- **修法**:
+  - Allow local intermediate stream requirements to auto-pop stale front pages
+    before a later producer reserve/push.
+  - Use event pages as the local-intermediate producer capacity and clamp
+    generated local-intermediate pops to currently available front pages.
+  - Keep this clamp scoped to locally produced intermediate CBs so reader-fed
+    input lifetime remains owned by the normal input release contract.
+- **验证**:
+  - Full T9.2 paged GQA bf16 direct runtime reported `1 passed`.
+  - The focused T9/T7 selector set covering page-table projection, QK/AV
+    page 0 and page 1, seq64 flash, exact-CB partial combine, and full T9.2
+    reported `9 passed`.
+
+### Larger flash shapes missed CB metadata in no-runtime-arg compute segments
+
+- **症状**:
+  - `seq_len=128/256/512` flash metadata/runtime coverage failed source
+    generation with `Missing CB data_format for cb_id=19` when rendering
+    `untilize_cb_front_tile_fragment`.
+  - The executable `cb_configs` did contain the physical CB entries, including
+    the reduce-output CB, so allocation/projection was not the failing layer.
+- **根因**:
+  - Codegen loaded CB config metadata as part of runtime-arg binding.
+    Compute segments with no runtime args skipped that path but still needed
+    CB metadata to render typed CB operations.
+- **修法**:
+  - Load CB config metadata from the `PrimFunc` independently of runtime-arg
+    binding before generic kernel body generation.
+  - Keep runtime-arg binding responsible only for argument values, not for the
+    existence of CB schema metadata.
+- **验证**:
+  - Extended flash `seq_len=128,256,512` metadata/runtime selector reported
+    `3 passed, 3 skipped`; the skips are the existing typed TT-Sim
+    `tensix_execute_pacr: count=1` capability boundary.
+
 ## 3. 环境问题速查
 
 | 问题 | 解决 |

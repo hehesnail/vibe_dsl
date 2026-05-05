@@ -105,10 +105,71 @@ The scratch CB / `copy_cb_page` step is a data-movement implementation detail
 needed to satisfy Blackhole NOC alignment while preserving the typed
 descriptor contract.  It is not a workload-level side channel.
 
+## T9.2 Paged GQA Decode
+
+The first T9.2 slice admits a paged GQA decode tile through ordinary TIR:
+
+- `PageTable[sequence, page]` selects the KV cache page for a statically
+  known page step;
+- `CacheSeqLens[sequence]` guards rows inside each page;
+- multiple query heads share one KV head, so the kernel is GQA even though
+  the admitted first shape uses one KV head;
+- the attention update is the existing flash-attention tile sequence with
+  `scores_max`, `scores_scale`, `logsum`, `acc_s_cast`, and `acc_o`
+  partial combine.
+
+The first admitted shape is intentionally narrow:
+
+- bf16 Q, paged K cache, paged V cache, and output;
+- fp32 accumulators;
+- `batch=2`, `heads=4`, `groups=4`, one KV head;
+- `block_M=32`, `block_N=32`, `dim=32`;
+- exactly two KV pages per sequence, with ragged lengths such as 45 and 64
+  tokens;
+- page ids are non-contiguous and table-driven;
+- the two page steps are static TIR statements, not a frontend decode op.
+
+The required evidence chain is:
+
+```text
+TIR PageTable / CacheSeqLens loads
+  -> per-page tile_start descriptors for K and V cache reads
+  -> valid_rows descriptors for the same guarded row copies
+  -> compute-compatible K/V live forms
+  -> existing flash partial-combine compute/materialization path
+  -> paged GQA direct runtime correctness
+```
+
+The source may consume runtime args projected from these descriptors, but it
+must not emit raw `PageTable` or `CacheSeqLens` reads to recover the page or
+ragged-bound semantics.  If the page-table/ragged evidence cannot feed the
+existing flash compute path, the backend must reject with a typed reason
+before source/runtime guessing.
+
+The admitted implementation keeps the workload surface in that chain:
+
+- K cache and V cache page selection are ordinary table-backed per-work
+  descriptors with `value_source=index_table`, table shape, and explicit
+  index sources.  Page 0 and page 1 are separate static TIR statements that
+  differ by descriptor constants, not by a frontend decode op.
+- `CacheSeqLens[sequence]` lowers to valid-row descriptors paired with the
+  page-local row predicate.  Source consumes the projected runtime args and
+  does not reload the page table or cache-length buffers.
+- Direct runtime materializes page-indexed K/V inputs from the executable
+  materialization records.  Complete tile pages use tiled host transfer;
+  row/stick-style page-indexed inputs remain raw row-major.  Indexed GEMM B
+  buffers that use explicit tile-start descriptors stay raw so the runtime
+  descriptor remains the owner of page selection.
+- The flash compute path reuses exact-CB partial combine.  Local intermediate
+  stream CBs pop a stale front page before a later producer republishes to
+  the same physical CB, and generated static pops are clamped to pages that
+  were actually visible on that local intermediate front.
+- Source codegen loads CB config metadata independently from runtime-arg
+  binding, so compute segments with no runtime args can still render typed CB
+  operations such as `untilize_cb_front_tile_fragment`.
+
 ## Later T9 Checkpoints
 
-- T9.2 paged GQA decode: page/block-table KV reads with ragged cache lengths
-  and admitted partial combine.
 - T9.3 paged MLA decode: paged latent/KV access through admitted page-table
   and ragged-bound records.
 - T9.4 sparse/ragged attention: indexed sparse-block traversal plus ragged
@@ -129,7 +190,14 @@ Structure/source:
   `GroupOffsets[g]` and `GroupSizes[g]`;
 - source contains no raw `GroupOffsets` / `GroupSizes` loads;
 - source contains a real `matmul_tiles` compute path for the grouped GEMM;
-- no workload registry or grouped-GEMM frontend op is introduced.
+- the paged GQA executable contains table-backed K/V tile-start descriptors
+  and valid-row descriptors for both static page steps;
+- source contains no raw `PageTable` / `CacheSeqLens` loads and no workload
+  decode registry;
+- source contains the existing flash partial-combine sequence rather than a
+  separate paged-decode compute path;
+- no workload registry, grouped-GEMM frontend op, or paged-decode frontend op
+  is introduced.
 
 Runtime:
 
@@ -137,9 +205,19 @@ Runtime:
 - group offsets and sizes are non-uniform, including at least one zero or
   partial group;
 - host reference computes each group independently with zero-padded rows.
+- paged GQA uses two static KV page steps, non-contiguous page ids, ragged
+  sequence lengths, shared KV head semantics, and a host flash-attention
+  reference;
+- page-indexed QK and AV micro-tests exercise both page 0 and page 1 so table
+  constants and host materialization are covered independently from the full
+  GQA tile.
 
 Unsupported diagnostics:
 
 - if row-page A materialization cannot feed GEMM as a compute-compatible live
   form, the backend must reject with a typed admission reason rather than
-  recovering from names or source text.
+  recovering from names or source text;
+- if page-indexed K/V materialization, ragged row bounds, or exact-CB
+  lifecycle cannot feed the existing flash path, the backend must reject with
+  a typed admission reason rather than recovering from names, argument order,
+  or generated source text.

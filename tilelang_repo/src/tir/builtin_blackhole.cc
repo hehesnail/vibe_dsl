@@ -53,6 +53,7 @@ TIR_DEFINE_BUILTIN(copy_cb_page)
 TIR_DEFINE_BUILTIN(write_tile_from_cb)
 TIR_DEFINE_BUILTIN(write_page_from_cb)
 TIR_DEFINE_BUILTIN(zero_cb_page)
+TIR_DEFINE_BUILTIN(row_bound_mask_to_cb)
 TIR_DEFINE_BUILTIN(get_semaphore)
 TIR_DEFINE_BUILTIN(runtime_arg_u32)
 TIR_DEFINE_BUILTIN(semaphore_wait)
@@ -226,6 +227,14 @@ TVM_REGISTER_OP("tl.blackhole.zero_cb_page")
     .add_argument("cb_id", "int", "Destination CB ID")
     .add_argument("page_bytes", "int", "Page size in bytes")
     .add_argument("cb_offset_bytes", "int", "Byte offset within the current CB page");
+
+TVM_REGISTER_OP("tl.blackhole.row_bound_mask_to_cb")
+    .set_num_inputs(4)
+    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque))
+    .add_argument("cb_id", "int", "Destination CB ID")
+    .add_argument("valid_rows", "int", "Valid sequence length")
+    .add_argument("page_base", "int", "First sequence position represented by this tile")
+    .add_argument("page_bytes", "int", "Destination CB page size in bytes");
 
 TVM_REGISTER_OP("tl.blackhole.get_semaphore")
     .set_num_inputs(1)

@@ -147,6 +147,7 @@ class CodeGenBlackhole : public CodeGenCHost {
   void PrintWriteTileFromCB(const tvm::tir::CallNode *op, std::ostream &os);
   void PrintWritePageFromCB(const tvm::tir::CallNode *op, std::ostream &os);
   void PrintZeroCBPage(const tvm::tir::CallNode *op, std::ostream &os);
+  void PrintRowBoundMaskToCB(const tvm::tir::CallNode *op, std::ostream &os);
   void PrintGetSemaphore(const tvm::tir::CallNode *op, std::ostream &os);
   void PrintRuntimeArgU32(const tvm::tir::CallNode *op, std::ostream &os);
   void PrintSemaphoreWait(const tvm::tir::CallNode *op, std::ostream &os);
@@ -226,6 +227,7 @@ class CodeGenBlackhole : public CodeGenCHost {
   void PrintNOCWait();
 
   void EmitRuntimeArgLoads(const tvm::tir::PrimFunc &f);
+  void LoadCBConfigMetadata(const tvm::tir::PrimFunc &f);
   void PrintPackReconfigDataFormatForCB(int cb_id, std::ostream& os);
   void LoadCorePlan(const tvm::tir::PrimFunc &f);
   void LoadAccessorOffsets(const tvm::tir::PrimFunc& f);

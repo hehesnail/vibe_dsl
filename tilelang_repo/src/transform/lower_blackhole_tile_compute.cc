@@ -84,6 +84,7 @@ using tir::builtin::blackhole_reduce_tile;
 using tir::builtin::blackhole_reduce_uninit;
 using tir::builtin::blackhole_sub_tiles;
 using tir::builtin::blackhole_sub_tiles_init;
+using tir::builtin::blackhole_row_bound_mask_to_cb;
 using tir::builtin::blackhole_tile_regs_acquire;
 using tir::builtin::blackhole_tile_regs_commit;
 using tir::builtin::blackhole_tile_regs_release;
@@ -1207,6 +1208,119 @@ Stmt PlanTTKernelABI::GenerateRowReductionSequence(const RowReductionMatch& matc
   return MaybeWrapComputeSegment(body);
 }
 
+Stmt PlanTTKernelABI::GenerateRowBoundMaskApplySequence(
+    const RowBoundMaskApplyMatch& match) {
+  ICHECK(match.dst.defined())
+      << "Blackhole row-bound mask apply requires a destination buffer";
+  const DataType storage_dtype = ExactTiledCBStorageDType(match.dst->dtype);
+  ICHECK(storage_dtype.is_bfloat16())
+      << "Blackhole row-bound mask apply currently admits bf16 exact-CB storage";
+  ICHECK(IsSingleFullTileLogicalMatrix(match.dst))
+      << "Blackhole row-bound mask apply requires one full logical tile";
+
+  ExactTiledCBValue lhs_in = CreateExactInputCBValue(match.dst, "row_bound_mask_lhs");
+  if (Stmt publish_lhs = PublishExactInputToTiledCB(match.dst, &lhs_in);
+      publish_lhs.defined()) {
+    ICHECK(false)
+        << "Blackhole row-bound mask apply requires an existing exact tiled-CB input; "
+        << "publishing through local fragments would reintroduce raw compute CB writes";
+  }
+  ExactTiledCBValue out;
+  if (!TryCreateLoopCarriedExactOutputStateCBValue(match.dst, &out)) {
+    out = CreateEmptyExactTiledCBValue(
+        match.dst, "row_bound_mask_out",
+        ExactOutputCBTypeForBuffer(match.dst, current_lowering_order_index_));
+  }
+
+  const std::string mask_name =
+      BufferIdentityName(match.dst) + "_row_bound_mask_" +
+      std::to_string(next_requirement_index_);
+  Buffer mask_buffer = tir::decl_buffer(
+      match.dst->shape, storage_dtype, mask_name, "blackhole.cb");
+  const int mask_cb_id = AllocateRequirementIndex(mask_buffer, CBType::kInput);
+  SetRequirementPageLayout(mask_cb_id,
+                           kBlackholeTileRows * kBlackholeTileCols *
+                               storage_dtype.bytes(),
+                           1);
+  auto& mask_req = cb_requirements_.at(mask_cb_id);
+  mask_req.data_format = DataTypeToDataFormat(storage_dtype);
+  mask_req.flow_class = CBFlowClass::kStream;
+  mask_req.publish_pages_per_event = std::max(mask_req.publish_pages_per_event, 1);
+  mask_req.consume_pages_per_event = std::max(mask_req.consume_pages_per_event, 1);
+
+  ExactTiledCBValue mask_in;
+  mask_in.buffer = mask_buffer;
+  mask_in.cb_id = mask_cb_id;
+  mask_in.num_tiles = 1;
+  mask_in.num_elements = kBlackholeTileRows * kBlackholeTileCols;
+  mask_in.row_width = kBlackholeTileCols;
+  mask_in.producer_live = true;
+  mask_in.borrowed_live = true;
+  mask_in.live_identity = BufferIdentityName(mask_buffer);
+
+  RecordExactComputeOpPlan("binary", "add_tiles",
+                           {{"lhs", match.dst, "identity"},
+                            {"rhs", mask_buffer, "identity"},
+                            {"output", match.dst, "identity"}});
+
+  const int mask_page_bytes =
+      kBlackholeTileRows * kBlackholeTileCols * storage_dtype.bytes();
+  std::vector<Stmt> reader_stmts;
+  reader_stmts.push_back(MakeBlackholeCall(
+      blackhole_cb_reserve_back(), {IntImm32(mask_cb_id), IntImm32(1)}));
+  reader_stmts.push_back(MakeBlackholeCall(
+      blackhole_row_bound_mask_to_cb(),
+      {IntImm32(mask_cb_id), match.valid_rows, IntImm32(match.page_base),
+       IntImm32(mask_page_bytes)}));
+  reader_stmts.push_back(MakeBlackholeCall(
+      blackhole_cb_push_back(), {IntImm32(mask_cb_id), IntImm32(1)}));
+  Stmt reader = AttrStmt(StringImm("blackhole.segment_kind"),
+                         "blackhole.segment_kind",
+                         StringImm("reader"),
+                         SeqStmt::Flatten(reader_stmts));
+
+  std::vector<Stmt> compute_stmts;
+  MarkExactCBValuesOverlap({lhs_in.cb_id, mask_in.cb_id, out.cb_id});
+  ExactTileComputeEmitter emit(&compute_stmts);
+  emit.BinaryOpInitCommon(lhs_in.cb_id, mask_in.cb_id, out.cb_id);
+  emit.Reserve(out.cb_id, out.num_tiles);
+  emit.Wait(lhs_in.cb_id, lhs_in.num_tiles);
+  emit.Wait(mask_in.cb_id, mask_in.num_tiles);
+  emit.ReconfigDataFormat(lhs_in.cb_id, mask_in.cb_id);
+  emit.Append(blackhole_add_tiles_init(),
+              {IntImm32(lhs_in.cb_id), IntImm32(mask_in.cb_id)});
+  emit.EmitPackedTileLoop(out.cb_id, out.num_tiles, "tile",
+                          [&](ExactTileComputeEmitter& tile_emit,
+                              const PrimExpr& tile) {
+      const PrimExpr lhs_tile = ExactCBReadTileIndex(lhs_in.num_tiles, tile);
+      tile_emit.Append(blackhole_add_tiles(),
+                       {IntImm32(lhs_in.cb_id), IntImm32(mask_in.cb_id),
+                        lhs_tile, IntImm32(0), IntImm32(0)});
+    });
+  if (Stmt release = ReleaseExactInputAfterUse(lhs_in, current_lowering_order_index_);
+      release.defined()) {
+    compute_stmts.push_back(release);
+  }
+  if (Stmt release = ReleaseExactInputAfterUse(mask_in, current_lowering_order_index_);
+      release.defined()) {
+    compute_stmts.push_back(release);
+  }
+  emit.Push(out.cb_id, out.num_tiles);
+
+  const int previous_order_index = current_lowering_order_index_;
+  if (match.producer_order_index >= 0) {
+    current_lowering_order_index_ = match.producer_order_index;
+  }
+  RecordExactOutputLiveForm(match.dst, out);
+  current_lowering_order_index_ = previous_order_index;
+
+  Stmt compute = SeqStmt::Flatten(compute_stmts);
+  compute = AttachExactOutputLiveFormMarker(match.dst, out, compute);
+  compute = MaybeWrapComputeSegment(compute);
+  std::vector<Stmt> combined{reader, compute};
+  return SeqStmt::Flatten(combined);
+}
+
 Stmt PlanTTKernelABI::GenerateFillTileSequence(const Buffer& dst, const PrimExpr& value,
                                                const PrimExpr& requested_num_elements) {
   const FutureBufferUses future_uses =
@@ -1240,7 +1354,7 @@ Stmt PlanTTKernelABI::GenerateFillTileSequence(const Buffer& dst, const PrimExpr
       FutureWritePrecedesFutureComputeConsume(dst, current_lowering_order_index_);
 
   ClearSelectedSourceLiveProducer(dst);
-  ClearTiledCBLiveFormAliases(dst);
+  OverwriteTiledCBLiveFormAliasesForWrite(dst);
   InvalidateLastFragmentFillValue(dst);
   if (!future_write_before_compute_consume) {
     for (const std::string& identity : CollectBufferFlowIdentities(dst)) {

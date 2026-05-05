@@ -242,6 +242,13 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
     bool accumulate_existing = false;
   };
 
+  struct RowBoundMaskApplyMatch {
+    tvm::tir::Buffer dst;
+    tvm::PrimExpr valid_rows;
+    int page_base = 0;
+    int producer_order_index = -1;
+  };
+
   struct FragmentCastMatch {
     tvm::tir::Buffer dst;
     tvm::tir::Buffer src;
@@ -309,6 +316,7 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   struct IndexedPerWorkRuntimeArg {
     std::string arg_name;
     std::string descriptor_kind;
+    std::string subject_buffer;
     std::string index_buffer;
     int64_t index_value_scale = 1;
     IndexTableAddressing addressing;
@@ -474,6 +482,10 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
 
   /*! \brief Whether an expression uses transport-local vars (thread or supplied loop vars). */
   bool ExprUsesTransportVar(const tvm::PrimExpr& expr,
+                            const std::vector<tvm::tir::Var>& loop_vars) const;
+
+  /*! \brief Whether an expression uses tile-local element coverage vars. */
+  bool ExprUsesTileLocalVar(const tvm::PrimExpr& expr,
                             const std::vector<tvm::tir::Var>& loop_vars) const;
 
   /*! \brief Pick the active thread var that indexes logical matrix rows, when unique. */
@@ -675,6 +687,10 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   int GetLoopCarriedExactCBId(const std::string& logical_value) const;
   tvm::tir::Buffer GetLoopCarriedExactCBBuffer(
       const std::string& logical_value) const;
+  void ForgetLoopCarriedExactCBStateIdentity(
+      const std::string& logical_value);
+  void ForgetLoopCarriedExactCBStateAliases(
+      const tvm::tir::Buffer& buffer);
   void MarkLoopCarriedExactCBStateCompleted(
       const std::string& logical_value);
   tvm::tir::Stmt ReleaseExactInputAfterUse(
@@ -747,6 +763,14 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   bool MatchExplicitTileReduce(const tvm::tir::CallNode* op, RowReductionMatch* match) const;
   tvm::tir::Buffer ResolveRowReductionLiveFormDestination(
       const tvm::tir::Buffer& reduce_dst, int64_t reduce_dst_elements) const;
+  bool IsValidRowsRuntimeArgExpr(const tvm::PrimExpr& expr) const;
+  bool IsRowBoundMaskSelfUpdateStore(const tvm::tir::BufferStoreNode* store) const;
+  bool MatchRowBoundMaskSelfUpdateStore(
+      const tvm::tir::BufferStoreNode* store,
+      const std::vector<tvm::tir::Var>& loop_vars_to_zero,
+      RowBoundMaskApplyMatch* match) const;
+  bool MatchRowBoundMaskSelfUpdateLoop(
+      const tvm::tir::ForNode* op, RowBoundMaskApplyMatch* match) const;
   bool MatchExplicitTileTypecast(const tvm::tir::CallNode* op,
                                  FragmentCastMatch* match) const;
   tvm::tir::Stmt LowerExplicitTileComputeCall(const tvm::tir::CallNode* op);
@@ -774,6 +798,7 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
       size_t index,
       const BlackholeTileComputeCoveringDecision& covering) const;
   tvm::tir::Stmt GenerateRowReductionSequence(const RowReductionMatch& match);
+  tvm::tir::Stmt GenerateRowBoundMaskApplySequence(const RowBoundMaskApplyMatch& match);
   tvm::tir::Stmt GenerateFillTileSequence(const tvm::tir::Buffer& dst,
                                           const tvm::PrimExpr& value,
                                           const tvm::PrimExpr& num_elements);
@@ -854,6 +879,7 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   void RecordTiledCBLiveFormAliases(const tvm::tir::Buffer& buffer, int cb_id);
   void ClearTiledCBLiveFormAliases(const tvm::tir::Buffer& buffer);
   void ClearTiledCBLiveFormIdentity(const std::string& identity);
+  void OverwriteTiledCBLiveFormAliasesForWrite(const tvm::tir::Buffer& buffer);
   void MarkLocalOnlyLiveFormAliases(const tvm::tir::Buffer& buffer);
   void InvalidateLastFragmentFillValue(const tvm::tir::Buffer& buffer);
   void InvalidateLastFragmentFillValueIdentity(const std::string& identity);
@@ -867,6 +893,24 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
                                       int consumed_pages) const;
   bool ShouldReacquireComputeInputBuffer(const tvm::tir::Buffer& buffer,
                                          int current_order_index) const;
+  bool ShouldRetainComputeInputBufferAcrossSerialLoop(
+      const tvm::tir::Buffer& buffer,
+      int consumed_pages) const;
+  bool HasRepeatingActiveSerialLoop() const;
+  tvm::PrimExpr BuildActiveSerialLoopFinalIterationPredicate() const;
+  bool ShouldDeferTerminalTransportPublicationAcrossSerialLoop(
+      const tvm::tir::Buffer& buffer,
+      int current_order_index) const;
+  int FindRequirementIndexForBuffer(const tvm::tir::Buffer& buffer) const;
+  void RecordSerialLoopRetainedComputeInputPop(const tvm::tir::Buffer& buffer,
+                                               int pages);
+  tvm::tir::Stmt BuildSerialLoopRetainedInputPops(
+      const std::map<int, int>& pop_pages_by_requirement_index) const;
+  void RecordSerialLoopTerminalTransportPublication(const tvm::tir::Stmt& stmt);
+  tvm::tir::Stmt BuildSerialLoopTerminalTransportPublications(
+      const std::vector<tvm::tir::Stmt>& publications) const;
+  tvm::tir::Stmt AppendSerialLoopLocalComputeOutputPops(
+      const tvm::tir::Stmt& body) const;
   bool ShouldPublishBufferResult(const tvm::tir::Buffer& buffer,
                                  int current_order_index) const;
   bool MatchDirectLocalToCBSliceLoop(const tvm::tir::ForNode* op, LocalToCBSliceMatch* match) const;
@@ -884,6 +928,7 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   std::string GetOrCreateIndexedPerWorkRuntimeArg(
       const std::string& arg_prefix,
       const std::string& descriptor_kind,
+      const std::string& subject_buffer,
       const std::string& index_buffer,
       const IndexTableAddressing& addressing,
       int64_t index_value_scale);
@@ -933,6 +978,7 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   std::unordered_set<std::string> segment_row_shared_buffer_names_;
   std::unordered_map<std::string, int64_t> runtime_arg_tile_start_scale_by_name_;
   std::unordered_map<const tvm::tir::VarNode*, int64_t> runtime_arg_tile_start_scale_by_var_;
+  std::unordered_set<const tvm::tir::VarNode*> valid_rows_runtime_arg_vars_;
   std::vector<IndexedPerWorkRuntimeArg> indexed_per_work_runtime_args_;
   std::unordered_map<std::string, std::string> host_buffer_by_compute_operand_buffer_;
   std::unordered_map<std::string, std::string> direct_copy_source_by_buffer_identity_;
@@ -992,6 +1038,8 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   std::unordered_map<const tvm::tir::VarNode*, int64_t> loop_var_static_extents_;
   std::vector<tvm::tir::Var> active_serial_loop_vars_;
   std::vector<std::pair<int, int>> active_serial_loop_order_ranges_;
+  std::vector<std::map<int, int>> serial_loop_retained_input_pop_pages_stack_;
+  std::vector<std::vector<tvm::tir::Stmt>> serial_loop_terminal_transport_publications_stack_;
   std::unordered_set<const tvm::tir::VarNode*> block_index_vars_;
   std::unordered_set<std::string> block_index_var_names_;
   std::unordered_map<const tvm::tir::VarNode*, std::string> block_index_source_by_var_;

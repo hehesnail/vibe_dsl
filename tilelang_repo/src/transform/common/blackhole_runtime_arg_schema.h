@@ -59,6 +59,8 @@ inline constexpr const char* kValueSourceLogicalBlockY = "logical_block_y";
 inline constexpr const char* kValueSourceLogicalBlockZ = "logical_block_z";
 inline constexpr const char* kValueSourceLogicalBlockXYLinear =
     "logical_block_xy_linear";
+inline constexpr const char* kValueSourceLogicalBlockYXLinear =
+    "logical_block_yx_linear";
 inline constexpr const char* kValueSourceLogicalBlockZKTileStart =
     "logical_block_z_k_tile_start";
 inline constexpr const char* kValueSourceComputeNumKTiles = "compute_op_num_k_tiles";

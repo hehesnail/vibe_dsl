@@ -160,6 +160,15 @@ TVM_DLL const Op& blackhole_write_page_from_cb();
  */
 TVM_DLL const Op& blackhole_zero_cb_page();
 
+/*!
+ * \brief Fill one reserved bf16 tiled CB page with a column row-bound mask.
+ * \param cb_id Destination circular buffer ID
+ * \param valid_rows Number of valid sequence positions before the current page base
+ * \param page_base First sequence position represented by this 32-column tile
+ * \param page_bytes Destination CB page size in bytes. The admitted first slice is bf16.
+ */
+TVM_DLL const Op& blackhole_row_bound_mask_to_cb();
+
 // TT-Metal Semaphore Operations
 
 /*!

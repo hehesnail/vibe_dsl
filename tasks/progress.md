@@ -24,7 +24,7 @@
 | T7 Exact-CB / materialization primitives | Complete | Exact-CB materialization is admitted through typed live-form/materialization/consumer-binding records, including GEMM post-merge `pack_tile`, source-live `cb_republish`, and seq64 bf16 flash-attn exact-CB partial-combine direct runtime correctness. |
 | T7.5 Exact-CB liveness / allocation cutover | Complete | Covered exact-CB resident tiles use typed TTProgram/ExecutableSpec lifecycle, allocation, and release records; old loop-carried owner maps, materialization-pop fallback, and full-tile/slice ambiguity are fail-closed or deleted from the active path. |
 | T8 Irregular work domains / indexed access | Implementation | Grid-indexed, one-dimensional and launch-axis two-dimensional table-indexed tile descriptors, scaled contiguous indexed-block copies, sparse multi-entry indexed traversal with per-entry ragged bounds, predicate-derived ragged row/page bounds, copy-shaped paged `cache_seqlens`, per-page valid-row tables, single/multiple non-uniform segmented row ranges, and the T9.1 segmented A grouped-GEMM feed carry TIR-derived evidence through TT per-work descriptors and direct runtime; broader irregular forms remain open. |
-| T9 Workload first paths | Implementation | T9.1 pre-grouped MoE/routed grouped GEMM is admitted through ordinary TIR-derived segment-row descriptors, scratch-CB tiled A materialization, and bf16 direct-runtime correctness; T9.2-T9.6 remain queued. |
+| T9 Workload first paths | Implementation | T9.1 pre-grouped MoE/routed grouped GEMM and T9.2 paged GQA decode are admitted through ordinary TIR-derived indexed/ragged descriptors, typed materialization/lifecycle records, and bf16 direct-runtime correctness; T9.3-T9.6 remain queued. |
 | T10 Distributed production variants | Queued | Mesh, CCL, NoC/multicast/global scheduling, distributed workload correctness, and production partial-K reduction protocol. |
 
 ## Active Boundary Notes
@@ -161,9 +161,6 @@ Every active implementation task uses this acceptance table.
 
 Each checkpoint needs its own direct-runtime correctness proof:
 
-- T9.2 paged GQA decode:
-  bf16 page/block-table KV reads with ragged `cache_seqlens`, more than one
-  page, and the admitted partial combine path.
 - T9.3 paged MLA decode:
   bf16 paged latent / KV access through the admitted page-table and ragged
   bound surface.
@@ -193,6 +190,37 @@ Each checkpoint needs its own direct-runtime correctness proof:
   `M=320`, `N=352`, `K>=512`, `logical_grid=11x10x2` or larger.
 
 ## Recent Verification
+
+2026-05-05 UTC T9.2 paged GQA decode checkpoint:
+
+- `cmake --build build -j32` passed.
+- The paged GQA frontend remains ordinary Tile TIR: `PageTable[sequence,page]`
+  drives K/V cache page selection, `CacheSeqLens[sequence]` drives guarded
+  page-local row validity, and the attention update reuses the existing flash
+  partial-combine sequence.  No frontend paged-decode op or workload registry
+  was added.
+- The executable carries table-backed K/V tile-start descriptors and
+  valid-row descriptors for both static page steps.  Page 1 QK/AV micro-tests
+  prove the constant page index is preserved in descriptor metadata rather
+  than recovered from source names.
+- Direct runtime materializes page-indexed K/V inputs from executable
+  materialization records.  Complete tile pages use tiled transfer; indexed B
+  inputs with explicit tile-start descriptors remain raw so page selection is
+  owned by the runtime descriptor.
+- Source contains no raw `PageTable` / `CacheSeqLens` loads.  Local
+  intermediate stream CB producers pop stale front pages before republish, and
+  static local-intermediate pops are clamped to available front pages, which
+  fixes the two-page `acc_s` reuse path.
+- Full T9.2 bf16 direct runtime compares a two-page, non-contiguous,
+  ragged-length, GQA decode tile against a host reference and reported
+  `1 passed`.
+- Focused T9/T7 runtime selector set covering page-table projection, QK/AV
+  page 0 and page 1 micro-tests, seq64 flash, exact-CB partial combine, and
+  full T9.2 paged GQA reported `9 passed`.
+- Larger flash shape coverage for `seq_len=128,256,512` reported
+  `3 passed, 3 skipped`; the skips are the existing typed TT-Sim
+  `tensix_execute_pacr: count=1` capability boundary, not an untyped backend
+  fallback.
 
 2026-05-05 UTC T9.1 pre-grouped GEMM checkpoint:
 

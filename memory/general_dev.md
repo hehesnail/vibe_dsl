@@ -2450,3 +2450,22 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   builtin and zero-fill invalid rows.  Direct runtime should keep the
   segmented A backing tensor raw row-major; only complete 32x32 tile pages use
   host nfaces tilization.
+- 2026-05-05 T9 page-indexed input materialization:
+  Direct runtime input transfer should consume executable
+  `BufferMaterializationSpec` records for any input binding, not only
+  copy-shaped tests.  Complete 32x32 tile pages can use host nfaces
+  tilization; sub-tile row/stick pages stay raw row-major.  Indexed GEMM-B
+  buffers with explicit tile-start descriptors should also remain raw so the
+  per-work descriptor is the owner of page selection.
+- 2026-05-05 local intermediate stream CB lifecycle:
+  A local stream intermediate that is produced, consumed, then produced again
+  on the same physical CB must pop the stale front page before the later
+  producer reserves/pushes.  Producer-side front-pop management is not only a
+  state-CB rule.  Static generated pops for locally produced intermediate CBs
+  should be clamped to pages actually visible on that local front; do not
+  clamp reader-fed input pops through this helper.
+- 2026-05-05 codegen CB metadata loading:
+  CB page size, page count, data format, and requirement-name metadata must be
+  loaded from the executable function independently of runtime-arg binding.
+  Compute segments can legally have no runtime args and still need CB metadata
+  for typed operations such as `untilize_cb_front_tile_fragment`.

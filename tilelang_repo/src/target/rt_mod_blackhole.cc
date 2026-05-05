@@ -2104,6 +2104,9 @@ class SegmentBodyExtractor final : public tir::StmtMutator {
     bool has_cb_push = false;
     bool has_cb_wait = false;
     bool has_cb_pop = false;
+    int cb_id = -1;
+    std::unordered_set<int> reader_anchor_cb_ids;
+    std::unordered_set<int> writer_anchor_cb_ids;
 
     bool HasSegmentAnchor() const {
       return has_reader_anchor || has_compute_anchor || has_writer_anchor;
@@ -2214,7 +2217,8 @@ class SegmentBodyExtractor final : public tir::StmtMutator {
     return op->op.same_as(tir::builtin::blackhole_read_tile_to_cb()) ||
            op->op.same_as(tir::builtin::blackhole_read_page_to_cb()) ||
            op->op.same_as(tir::builtin::blackhole_read_bcast_cols_to_cb()) ||
-           op->op.same_as(tir::builtin::blackhole_copy_cb_page());
+           op->op.same_as(tir::builtin::blackhole_copy_cb_page()) ||
+           op->op.same_as(tir::builtin::blackhole_row_bound_mask_to_cb());
   }
 
   static bool IsWriterAnchor(const tir::CallNode* op) {
@@ -2225,6 +2229,16 @@ class SegmentBodyExtractor final : public tir::StmtMutator {
   static bool IsBlackholeBuiltin(const tir::CallNode* op) {
     const auto* op_node = op->op.as<OpNode>();
     return op_node != nullptr && std::string(op_node->name).rfind("tl.blackhole.", 0) == 0;
+  }
+
+  static int GetIntImmArg(const tir::CallNode* op, size_t index) {
+    if (op == nullptr || index >= op->args.size()) {
+      return -1;
+    }
+    if (const auto* imm = op->args[index].as<IntImmNode>()) {
+      return static_cast<int>(imm->value);
+    }
+    return -1;
   }
 
   static bool IsComputeAnchor(const tir::CallNode* op) {
@@ -2251,7 +2265,31 @@ class SegmentBodyExtractor final : public tir::StmtMutator {
 
   static ChildSegmentInfo DetectChildSegmentInfo(const Stmt& stmt) {
     ChildSegmentInfo info;
+    auto mark_segment_kind = [&](const std::string& segment_kind) {
+      info.has_blackhole_builtin = true;
+      if (segment_kind == "reader") {
+        info.has_reader_anchor = true;
+      } else if (segment_kind == "compute") {
+        info.has_compute_anchor = true;
+      } else if (segment_kind == "writer") {
+        info.has_writer_anchor = true;
+      }
+    };
+    auto mark_explicit_segment = [&](const tir::AttrStmtNode* attr) {
+      if (attr == nullptr) {
+        return;
+      }
+      if (attr->attr_key == "blackhole.segment_kind") {
+        if (const auto* kind = attr->value.as<tir::StringImmNode>()) {
+          mark_segment_kind(kind->value);
+        }
+      }
+    };
+    mark_explicit_segment(stmt.as<tir::AttrStmtNode>());
     tir::PostOrderVisit(stmt, [&](const tvm::runtime::ObjectRef& node) {
+      if (const auto* attr = node.as<tir::AttrStmtNode>()) {
+        mark_explicit_segment(attr);
+      }
       const auto* op = node.as<tir::CallNode>();
       if (!op || !SegmentBodyExtractor::IsBlackholeBuiltin(op)) {
         return;
@@ -2259,19 +2297,45 @@ class SegmentBodyExtractor final : public tir::StmtMutator {
       info.has_blackhole_builtin = true;
       if (SegmentBodyExtractor::IsReaderAnchor(op)) {
         info.has_reader_anchor = true;
+        if (op->op.same_as(tir::builtin::blackhole_read_tile_to_cb()) ||
+            op->op.same_as(tir::builtin::blackhole_read_page_to_cb()) ||
+            op->op.same_as(tir::builtin::blackhole_read_bcast_cols_to_cb())) {
+          const int cb_id = GetIntImmArg(op, 2);
+          if (cb_id >= 0) {
+            info.reader_anchor_cb_ids.insert(cb_id);
+          }
+        } else if (op->op.same_as(tir::builtin::blackhole_copy_cb_page())) {
+          const int dst_cb_id = GetIntImmArg(op, 1);
+          if (dst_cb_id >= 0) {
+            info.reader_anchor_cb_ids.insert(dst_cb_id);
+          }
+        } else if (op->op.same_as(tir::builtin::blackhole_row_bound_mask_to_cb())) {
+          const int cb_id = GetIntImmArg(op, 0);
+          if (cb_id >= 0) {
+            info.reader_anchor_cb_ids.insert(cb_id);
+          }
+        }
       } else if (SegmentBodyExtractor::IsWriterAnchor(op)) {
         info.has_writer_anchor = true;
+        const int cb_id = GetIntImmArg(op, 0);
+        if (cb_id >= 0) {
+          info.writer_anchor_cb_ids.insert(cb_id);
+        }
       } else if (SegmentBodyExtractor::IsComputeAnchor(op)) {
         info.has_compute_anchor = true;
       }
       if (op->op.same_as(tir::builtin::blackhole_cb_reserve_back())) {
         info.has_cb_reserve = true;
+        info.cb_id = GetIntImmArg(op, 0);
       } else if (op->op.same_as(tir::builtin::blackhole_cb_push_back())) {
         info.has_cb_push = true;
+        info.cb_id = GetIntImmArg(op, 0);
       } else if (op->op.same_as(tir::builtin::blackhole_cb_wait_front())) {
         info.has_cb_wait = true;
+        info.cb_id = GetIntImmArg(op, 0);
       } else if (op->op.same_as(tir::builtin::blackhole_cb_pop_front())) {
         info.has_cb_pop = true;
+        info.cb_id = GetIntImmArg(op, 0);
       }
     });
     const int segment_kinds = static_cast<int>(info.has_reader_anchor) +
@@ -2289,10 +2353,27 @@ class SegmentBodyExtractor final : public tir::StmtMutator {
     return info;
   }
 
+  static bool CandidateAcceptsCB(const ChildSegmentInfo& current,
+                                 const ChildSegmentInfo& candidate) {
+    if (current.cb_id < 0) {
+      return true;
+    }
+    if (candidate.kind == DetectedKind::kReader &&
+        !candidate.reader_anchor_cb_ids.empty()) {
+      return candidate.reader_anchor_cb_ids.count(current.cb_id) != 0U;
+    }
+    if (candidate.kind == DetectedKind::kWriter &&
+        !candidate.writer_anchor_cb_ids.empty()) {
+      return candidate.writer_anchor_cb_ids.count(current.cb_id) != 0U;
+    }
+    return true;
+  }
+
   static DetectedKind InferNextSegmentKind(const std::vector<ChildSegmentInfo>& info,
-                                           size_t index) {
+                                           size_t index,
+                                           const ChildSegmentInfo& current) {
     for (size_t i = index + 1; i < info.size(); ++i) {
-      if (info[i].kind != DetectedKind::kNone) {
+      if (info[i].kind != DetectedKind::kNone && CandidateAcceptsCB(current, info[i])) {
         return info[i].kind;
       }
     }
@@ -2300,9 +2381,11 @@ class SegmentBodyExtractor final : public tir::StmtMutator {
   }
 
   static DetectedKind InferPreviousSegmentKind(const std::vector<ChildSegmentInfo>& info,
-                                               size_t index) {
+                                               size_t index,
+                                               const ChildSegmentInfo& current) {
     for (size_t i = index; i > 0; --i) {
-      if (info[i - 1].kind != DetectedKind::kNone) {
+      if (info[i - 1].kind != DetectedKind::kNone &&
+          CandidateAcceptsCB(current, info[i - 1])) {
         return info[i - 1].kind;
       }
     }
@@ -2313,13 +2396,13 @@ class SegmentBodyExtractor final : public tir::StmtMutator {
                                                 size_t index) {
     const ChildSegmentInfo& current = info[index];
     if (current.has_cb_reserve || current.has_cb_wait) {
-      DetectedKind next = InferNextSegmentKind(info, index);
+      DetectedKind next = InferNextSegmentKind(info, index, current);
       if (next != DetectedKind::kNone) {
         return next;
       }
     }
     if (current.has_cb_push || current.has_cb_pop) {
-      DetectedKind previous = InferPreviousSegmentKind(info, index);
+      DetectedKind previous = InferPreviousSegmentKind(info, index, current);
       if (previous != DetectedKind::kNone) {
         return previous;
       }
@@ -2329,11 +2412,12 @@ class SegmentBodyExtractor final : public tir::StmtMutator {
 
   static DetectedKind InferNeighborSegmentKind(const std::vector<ChildSegmentInfo>& info,
                                                size_t index) {
-    DetectedKind previous = InferPreviousSegmentKind(info, index);
+    const ChildSegmentInfo& current = info[index];
+    DetectedKind previous = InferPreviousSegmentKind(info, index, current);
     if (previous != DetectedKind::kNone) {
       return previous;
     }
-    DetectedKind next = InferNextSegmentKind(info, index);
+    DetectedKind next = InferNextSegmentKind(info, index, current);
     if (next != DetectedKind::kNone) {
       return next;
     }
@@ -2674,7 +2758,9 @@ static bool PerWorkArgSpecsContainArgIdentity(const std::vector<PerWorkArgSpec>&
 static bool RuntimeArgKindRequiresExplicitPerWorkBinding(std::string_view kind) {
   auto is_a_tile_start_kind = [](std::string_view candidate) {
     return candidate == "a_tile_start_id" ||
-           candidate.rfind("a_tile_start_id_", 0) == 0;
+           candidate.rfind("a_tile_start_id_", 0) == 0 ||
+           candidate == "indexed_tile_start_id" ||
+           candidate.rfind("indexed_tile_start_id_", 0) == 0;
   };
   auto is_a_valid_rows_kind = [](std::string_view candidate) {
     return candidate == "a_valid_rows" ||

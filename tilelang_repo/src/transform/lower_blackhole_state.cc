@@ -47,9 +47,11 @@ using tir::Buffer;
 using tir::Call;
 using tir::Evaluate;
 using tir::PrimFunc;
+using tir::SeqStmt;
 using tir::SeqStmtNode;
 using tir::Stmt;
 using tir::StringImm;
+using tir::Var;
 using tir::VarNode;
 using tir::builtin::blackhole_cb_pop_front;
 using tir::builtin::blackhole_cb_wait_front;
@@ -71,6 +73,13 @@ constexpr int kBlackholeTileCols = 32;
 
 Stmt MakeBlackholeCall(const Op& op, const std::vector<PrimExpr>& args) {
   return Evaluate(Call(DataType::Int(32), op, args));
+}
+
+bool IsBlackholeOpName(const tir::CallNode* op, const char* op_name) {
+  if (op == nullptr || !op->op->IsInstance<OpNode>()) {
+    return false;
+  }
+  return Downcast<Op>(op->op)->name == op_name;
 }
 
 struct IndexTableEvidence {
@@ -426,8 +435,29 @@ int64_t PlanTTKernelABI::EnsureExactCBVirtualValue(
   }
   const std::string key =
       logical_value + "|" + std::to_string(value.cb_id) + "|" + value.live_identity;
+  auto extend_interval_to_current_use = [&](int64_t virtual_index) {
+    if (current_order_index < 0) {
+      return;
+    }
+    const int64_t consumer_point = std::max<int64_t>(0, current_order_index);
+    for (size_t i = 0; i < tt_exact_cb_live_intervals_.size(); ++i) {
+      const TTExactCBLiveInterval& interval = tt_exact_cb_live_intervals_[i];
+      if (interval->virtual_value_index != virtual_index ||
+          interval->end_point >= consumer_point) {
+        continue;
+      }
+      tt_exact_cb_live_intervals_.Set(
+          i, TTExactCBLiveInterval(
+                 interval->name, interval->virtual_value,
+                 interval->virtual_value_index, interval->begin_point,
+                 consumer_point, interval->live_in, interval->live_out,
+                 interval->loop_carried, interval->interference_class));
+      return;
+    }
+  };
   auto cached = tt_exact_cb_virtual_index_by_key_.find(key);
   if (cached != tt_exact_cb_virtual_index_by_key_.end()) {
+    extend_interval_to_current_use(cached->second);
     return cached->second;
   }
   const int64_t live_form_index = EnsureExactCBLiveFormPlan(logical_value, value);
@@ -501,7 +531,7 @@ int64_t PlanTTKernelABI::EnsureExactCBAllocation(
 }
 
 Stmt PlanTTKernelABI::MaybeWrapComputeSegment(const Stmt& stmt) const {
-  if (!requires_compute_segment_ || !current_segment_kind_.empty()) {
+  if (current_segment_kind_ == "compute") {
     return stmt;
   }
   if (const auto* attr = stmt.as<tir::AttrStmtNode>()) {
@@ -1223,6 +1253,27 @@ void PlanTTKernelABI::ClearTiledCBLiveFormAliases(const Buffer& buffer) {
   }
 }
 
+void PlanTTKernelABI::OverwriteTiledCBLiveFormAliasesForWrite(const Buffer& buffer) {
+  if (!buffer.defined()) {
+    return;
+  }
+  const int order_index = current_lowering_order_index_;
+  for (const std::string& identity : CollectBufferFlowIdentities(buffer)) {
+    if (identity.empty()) {
+      continue;
+    }
+    buffer_live_form_cb_by_buffer_identity_.erase(identity);
+    exact_output_live_form_cb_by_buffer_identity_.erase(identity);
+    exact_output_live_form_value_by_buffer_identity_.erase(identity);
+    local_only_live_form_buffer_identities_.erase(identity);
+    if (order_index >= 0) {
+      buffer_live_form_order_by_buffer_identity_[identity] = order_index;
+      exact_output_live_form_order_by_buffer_identity_[identity] = order_index;
+      invalidated_live_form_order_by_buffer_identity_[identity] = order_index;
+    }
+  }
+}
+
 void PlanTTKernelABI::MarkLocalOnlyLiveFormAliases(const Buffer& buffer) {
   if (!buffer.defined()) {
     return;
@@ -1649,6 +1700,12 @@ std::vector<std::string> PlanTTKernelABI::CollectBufferFlowIdentities(
         add_identity(identity);
       }
     }
+    for (const auto& [identity, logical_candidate] : buffer_by_identity_) {
+      if (!identity.empty() && logical_candidate.defined() &&
+          SameBufferIdentity(logical_candidate, physical)) {
+        add_identity(identity);
+      }
+    }
   }
   return identities;
 }
@@ -2006,9 +2063,264 @@ bool PlanTTKernelABI::HasFutureExactLiveFormTileComputeConsume(
   return has_seeded_tile_compute_input && has_future_exact_live_form;
 }
 
+int PlanTTKernelABI::FindRequirementIndexForBuffer(const Buffer& buffer) const {
+  if (!buffer.defined()) {
+    return -1;
+  }
+  auto it = buffer_to_req_.find(buffer);
+  if (it != buffer_to_req_.end()) {
+    return it->second;
+  }
+  const std::string buffer_identity = BufferIdentityName(buffer);
+  if (!buffer_identity.empty()) {
+    auto by_identity = buffer_identity_to_req_index_.find(buffer_identity);
+    if (by_identity != buffer_identity_to_req_index_.end()) {
+      return by_identity->second;
+    }
+  }
+  auto by_data = buffer_data_to_req_index_.find(buffer->data.get());
+  if (by_data != buffer_data_to_req_index_.end()) {
+    return by_data->second;
+  }
+  return -1;
+}
+
+bool PlanTTKernelABI::ShouldRetainComputeInputBufferAcrossSerialLoop(
+    const Buffer& buffer, int consumed_pages) const {
+  if (!buffer.defined() || consumed_pages <= 0 || !HasRepeatingActiveSerialLoop()) {
+    return false;
+  }
+  const int requirement_index = FindRequirementIndexForBuffer(buffer);
+  if (requirement_index < 0 ||
+      requirement_index >= static_cast<int>(cb_requirements_.size())) {
+    return false;
+  }
+  const CBRequirement& req = cb_requirements_.at(requirement_index);
+  if (req.type != CBType::kInput || GetStorageScope(buffer) == "blackhole.acc") {
+    return false;
+  }
+  return true;
+}
+
+bool PlanTTKernelABI::HasRepeatingActiveSerialLoop() const {
+  if (active_serial_loop_vars_.empty()) {
+    return false;
+  }
+  for (const Var& loop_var : active_serial_loop_vars_) {
+    auto thread_extent_it = thread_index_var_static_extents_.find(loop_var.get());
+    if (thread_extent_it != thread_index_var_static_extents_.end()) {
+      if (thread_extent_it->second > 1) {
+        return true;
+      }
+      continue;
+    }
+    auto loop_extent_it = loop_var_static_extents_.find(loop_var.get());
+    if (loop_extent_it != loop_var_static_extents_.end()) {
+      if (loop_extent_it->second > 1) {
+        return true;
+      }
+      continue;
+    }
+    return true;
+  }
+  return false;
+}
+
+PrimExpr PlanTTKernelABI::BuildActiveSerialLoopFinalIterationPredicate() const {
+  PrimExpr condition;
+  for (const Var& loop_var : active_serial_loop_vars_) {
+    int64_t extent = -1;
+    auto thread_extent_it = thread_index_var_static_extents_.find(loop_var.get());
+    if (thread_extent_it != thread_index_var_static_extents_.end()) {
+      extent = thread_extent_it->second;
+    } else {
+      auto loop_extent_it = loop_var_static_extents_.find(loop_var.get());
+      if (loop_extent_it != loop_var_static_extents_.end()) {
+        extent = loop_extent_it->second;
+      }
+    }
+    if (extent <= 0) {
+      return PrimExpr();
+    }
+    PrimExpr is_final =
+        tir::EQ(loop_var, IntImm(loop_var.dtype(), static_cast<int64_t>(extent - 1)));
+    condition = condition.defined() ? (condition && is_final) : is_final;
+  }
+  return condition;
+}
+
+bool PlanTTKernelABI::ShouldDeferTerminalTransportPublicationAcrossSerialLoop(
+    const Buffer& buffer, int current_order_index) const {
+  if (!buffer.defined() || !HasRepeatingActiveSerialLoop() ||
+      serial_loop_terminal_transport_publications_stack_.empty()) {
+    return false;
+  }
+  if (!BuildActiveSerialLoopFinalIterationPredicate().defined()) {
+    return false;
+  }
+  const FutureBufferUses future_uses =
+      ClassifyFutureBufferUses(buffer, current_order_index);
+  if (future_uses.has_compute_consume) {
+    return false;
+  }
+  if (future_uses.has_transport_consume) {
+    return true;
+  }
+  const std::string scope = GetStorageScope(buffer);
+  return scope.rfind("shared", 0) == 0 || scope.rfind("blackhole.cb", 0) == 0;
+}
+
+void PlanTTKernelABI::RecordSerialLoopRetainedComputeInputPop(const Buffer& buffer,
+                                                              int pages) {
+  if (serial_loop_retained_input_pop_pages_stack_.empty() || pages <= 0 ||
+      !ShouldRetainComputeInputBufferAcrossSerialLoop(buffer, pages)) {
+    return;
+  }
+  const int requirement_index = FindRequirementIndexForBuffer(buffer);
+  ICHECK_GE(requirement_index, 0);
+  auto& pop_pages = serial_loop_retained_input_pop_pages_stack_.back()[requirement_index];
+  pop_pages = std::max(pop_pages, pages);
+}
+
+Stmt PlanTTKernelABI::BuildSerialLoopRetainedInputPops(
+    const std::map<int, int>& pop_pages_by_requirement_index) const {
+  if (pop_pages_by_requirement_index.empty()) {
+    return Stmt();
+  }
+  std::vector<Stmt> pops;
+  pops.reserve(pop_pages_by_requirement_index.size());
+  for (const auto& [requirement_index, pages] : pop_pages_by_requirement_index) {
+    ICHECK_GE(requirement_index, 0);
+    ICHECK_LT(requirement_index, static_cast<int>(cb_requirements_.size()));
+    ICHECK_GT(pages, 0);
+    pops.push_back(MakeBlackholeCall(blackhole_cb_pop_front(),
+                                     {IntImm(DataType::Int(32), requirement_index),
+                                      IntImm(DataType::Int(32), pages)}));
+  }
+  return SeqStmt::Flatten(pops);
+}
+
+void PlanTTKernelABI::RecordSerialLoopTerminalTransportPublication(const Stmt& stmt) {
+  if (!stmt.defined() || serial_loop_terminal_transport_publications_stack_.empty()) {
+    return;
+  }
+  serial_loop_terminal_transport_publications_stack_.back().push_back(stmt);
+}
+
+Stmt PlanTTKernelABI::BuildSerialLoopTerminalTransportPublications(
+    const std::vector<Stmt>& publications) const {
+  if (publications.empty()) {
+    return Stmt();
+  }
+  return SeqStmt::Flatten(publications);
+}
+
+Stmt PlanTTKernelABI::AppendSerialLoopLocalComputeOutputPops(
+    const Stmt& body) const {
+  if (!body.defined()) {
+    return body;
+  }
+  class Collector final : public tir::StmtExprVisitor {
+   public:
+    explicit Collector(const std::vector<CBRequirement>& requirements)
+        : requirements_(requirements),
+          pushed_pages_(requirements.size(), 0),
+          popped_pages_(requirements.size(), 0),
+          locally_available_pages_(requirements.size(), 0),
+          waits_after_local_publish_(requirements.size(), 0) {}
+
+    using tir::StmtExprVisitor::VisitExpr_;
+
+    void Collect(const Stmt& stmt) { VisitStmt(stmt); }
+
+    std::vector<int> Take() const {
+      std::vector<int> pop_pages(requirements_.size(), 0);
+      for (size_t i = 0; i < requirements_.size(); ++i) {
+        const CBRequirement& req = requirements_[i];
+        if (req.type == CBType::kInput || req.flow_class == CBFlowClass::kState) {
+          continue;
+        }
+        const int net_local_front = pushed_pages_[i] - popped_pages_[i];
+        if (net_local_front <= 0 || waits_after_local_publish_[i] <= 0) {
+          continue;
+        }
+        pop_pages[i] = net_local_front;
+      }
+      return pop_pages;
+    }
+
+    void VisitExpr_(const tir::CallNode* op) final {
+      const int cb_id = StaticCBId(op);
+      const int pages = StaticPages(op);
+      if (cb_id >= 0 && pages > 0) {
+        if (IsBlackholeOpName(op, "tl.blackhole.cb_push_back")) {
+          pushed_pages_[cb_id] += pages;
+          locally_available_pages_[cb_id] += pages;
+        } else if (IsBlackholeOpName(op, "tl.blackhole.cb_pop_front")) {
+          popped_pages_[cb_id] += pages;
+          locally_available_pages_[cb_id] =
+              std::max(0, locally_available_pages_[cb_id] - pages);
+        } else if (IsBlackholeOpName(op, "tl.blackhole.cb_wait_front") &&
+                   locally_available_pages_[cb_id] > 0) {
+          waits_after_local_publish_[cb_id] =
+              std::max(waits_after_local_publish_[cb_id], pages);
+        }
+      }
+      tir::StmtExprVisitor::VisitExpr_(op);
+    }
+
+   private:
+    int StaticCBId(const tir::CallNode* op) const {
+      if (op == nullptr || op->args.empty()) {
+        return -1;
+      }
+      const auto* cb_id = op->args[0].as<tir::IntImmNode>();
+      if (cb_id == nullptr || cb_id->value < 0 ||
+          cb_id->value >= static_cast<int64_t>(requirements_.size())) {
+        return -1;
+      }
+      return static_cast<int>(cb_id->value);
+    }
+
+    int StaticPages(const tir::CallNode* op) const {
+      if (op == nullptr || op->args.size() < 2U) {
+        return 0;
+      }
+      const auto* pages = op->args[1].as<tir::IntImmNode>();
+      return pages != nullptr ? static_cast<int>(pages->value) : 0;
+    }
+
+    const std::vector<CBRequirement>& requirements_;
+    std::vector<int> pushed_pages_;
+    std::vector<int> popped_pages_;
+    std::vector<int> locally_available_pages_;
+    std::vector<int> waits_after_local_publish_;
+  };
+
+  Collector collector(cb_requirements_);
+  collector.Collect(body);
+  const std::vector<int> pop_pages = collector.Take();
+  std::vector<Stmt> stmts;
+  stmts.push_back(body);
+  for (size_t i = 0; i < pop_pages.size(); ++i) {
+    if (pop_pages[i] > 0) {
+      stmts.push_back(MakeBlackholeCall(blackhole_cb_pop_front(),
+                                        {IntImm32(static_cast<int>(i)),
+                                         IntImm32(pop_pages[i])}));
+    }
+  }
+  if (stmts.size() == 1U) {
+    return body;
+  }
+  return SeqStmt::Flatten(stmts);
+}
+
 bool PlanTTKernelABI::ShouldRetainComputeInputBuffer(const Buffer& buffer,
                                                        int current_order_index,
                                                        int consumed_pages) const {
+  if (ShouldRetainComputeInputBufferAcrossSerialLoop(buffer, consumed_pages)) {
+    return true;
+  }
   if (FindBufferMaterializationFact(buffer) != nullptr) {
     return false;
   }

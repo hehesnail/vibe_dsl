@@ -1565,10 +1565,13 @@ PrimFunc PlanTTKernelABI::SelectComputeBuiltins(const PrimFunc& func) {
   loop_var_static_extents_.clear();
   active_serial_loop_vars_.clear();
   active_serial_loop_order_ranges_.clear();
+  serial_loop_retained_input_pop_pages_stack_.clear();
+  serial_loop_terminal_transport_publications_stack_.clear();
   block_index_vars_.clear();
   block_index_var_names_.clear();
   block_index_source_by_var_.clear();
   index_table_addressing_by_buffer_.clear();
+  valid_rows_runtime_arg_vars_.clear();
   indexed_per_work_runtime_args_.clear();
   cb_consumed_compute_input_pages_by_buffer_identity_.clear();
   cb_consumed_compute_input_use_count_by_buffer_identity_.clear();
@@ -1865,6 +1868,7 @@ PrimFunc PlanTTKernelABI::Transform(const PrimFunc& func) {
   segment_row_shared_buffer_names_.clear();
   runtime_arg_tile_start_scale_by_name_.clear();
   runtime_arg_tile_start_scale_by_var_.clear();
+  valid_rows_runtime_arg_vars_.clear();
   indexed_per_work_runtime_args_.clear();
   host_buffer_by_compute_operand_buffer_.clear();
   direct_copy_source_by_buffer_identity_.clear();
@@ -1880,6 +1884,8 @@ PrimFunc PlanTTKernelABI::Transform(const PrimFunc& func) {
   loop_var_static_extents_.clear();
   active_serial_loop_vars_.clear();
   active_serial_loop_order_ranges_.clear();
+  serial_loop_retained_input_pop_pages_stack_.clear();
+  serial_loop_terminal_transport_publications_stack_.clear();
   block_index_vars_.clear();
   block_index_var_names_.clear();
   block_index_source_by_var_.clear();
@@ -2559,6 +2565,110 @@ bool IsNegInfValue(const PrimExpr& expr) {
   return IsFloatImmValue(expr, -std::numeric_limits<double>::infinity());
 }
 
+PrimExpr StripValueCasts(PrimExpr expr) {
+  while (const auto* cast = expr.as<CastNode>()) {
+    expr = cast->value;
+  }
+  return expr;
+}
+
+bool ExtractIfThenElseParts(const PrimExpr& expr,
+                            PrimExpr* condition,
+                            PrimExpr* true_value,
+                            PrimExpr* false_value) {
+  if (const auto* select = expr.as<SelectNode>()) {
+    *condition = select->condition;
+    *true_value = select->true_value;
+    *false_value = select->false_value;
+    return true;
+  }
+  const auto* call = expr.as<CallNode>();
+  if (call == nullptr || !call->op->IsInstance<OpNode>() || call->args.size() != 3U) {
+    return false;
+  }
+  const Op op = Downcast<Op>(call->op);
+  if (op->name != "tir.if_then_else") {
+    return false;
+  }
+  *condition = call->args[0];
+  *true_value = call->args[1];
+  *false_value = call->args[2];
+  return true;
+}
+
+bool ExtractRowBoundSelfUpdateParts(const BufferStoreNode* store,
+                                    PrimExpr* condition) {
+  if (store == nullptr || !store->buffer.defined() ||
+      !IsUnsupportedResidualLocalScope(store->buffer)) {
+    return false;
+  }
+  PrimExpr true_value;
+  PrimExpr false_value;
+  if (!ExtractIfThenElseParts(store->value, condition, &true_value, &false_value)) {
+    return false;
+  }
+  if (!IsNegInfValue(false_value)) {
+    return false;
+  }
+  const PrimExpr retained = StripValueCasts(true_value);
+  const auto* retained_load = retained.as<BufferLoadNode>();
+  if (retained_load == nullptr ||
+      !SameBufferIdentity(retained_load->buffer, store->buffer)) {
+    return false;
+  }
+  return true;
+}
+
+std::optional<int64_t> TryEvalStaticInt(PrimExpr expr) {
+  auto floor_div_int = [](int64_t lhs, int64_t rhs) {
+    int64_t q = lhs / rhs;
+    int64_t r = lhs % rhs;
+    if (r != 0 && ((r > 0) != (rhs > 0))) {
+      --q;
+    }
+    return q;
+  };
+  expr = StripValueCasts(expr);
+  if (const auto* imm = expr.as<IntImmNode>()) {
+    return imm->value;
+  }
+  if (const auto* add = expr.as<AddNode>()) {
+    auto lhs = TryEvalStaticInt(add->a);
+    auto rhs = TryEvalStaticInt(add->b);
+    if (lhs && rhs) return lhs.value() + rhs.value();
+  } else if (const auto* sub = expr.as<SubNode>()) {
+    auto lhs = TryEvalStaticInt(sub->a);
+    auto rhs = TryEvalStaticInt(sub->b);
+    if (lhs && rhs) return lhs.value() - rhs.value();
+  } else if (const auto* mul = expr.as<MulNode>()) {
+    auto lhs = TryEvalStaticInt(mul->a);
+    auto rhs = TryEvalStaticInt(mul->b);
+    if (lhs && rhs) return lhs.value() * rhs.value();
+  } else if (const auto* floordiv = expr.as<FloorDivNode>()) {
+    auto lhs = TryEvalStaticInt(floordiv->a);
+    auto rhs = TryEvalStaticInt(floordiv->b);
+    if (lhs && rhs && rhs.value() != 0) {
+      return floor_div_int(lhs.value(), rhs.value());
+    }
+  } else if (const auto* floormod = expr.as<FloorModNode>()) {
+    auto lhs = TryEvalStaticInt(floormod->a);
+    auto rhs = TryEvalStaticInt(floormod->b);
+    if (lhs && rhs && rhs.value() != 0) {
+      return lhs.value() - floor_div_int(lhs.value(), rhs.value()) * rhs.value();
+    }
+  } else if (const auto* call = expr.as<CallNode>()) {
+    if (call->op->IsInstance<OpNode>() && call->args.size() == 2U) {
+      const Op op = Downcast<Op>(call->op);
+      auto lhs = TryEvalStaticInt(call->args[0]);
+      auto rhs = TryEvalStaticInt(call->args[1]);
+      if (lhs && rhs && op->name == "tir.bitwise_and") {
+        return lhs.value() & rhs.value();
+      }
+    }
+  }
+  return std::nullopt;
+}
+
 bool IsFragmentFillValue(const PrimExpr& expr) {
   return IsScalarLiteralValue(expr) || IsNegInfValue(expr) || IsZeroValue(expr);
 }
@@ -2702,6 +2812,181 @@ bool HasResidualScalarLoadBroadcast(const Stmt& body) {
 
 }  // namespace
 
+bool PlanTTKernelABI::IsValidRowsRuntimeArgExpr(const PrimExpr& expr) const {
+  const PrimExpr stripped = StripValueCasts(expr);
+  if (const auto* var = stripped.as<VarNode>()) {
+    return valid_rows_runtime_arg_vars_.count(var) != 0U;
+  }
+  const auto* call = stripped.as<CallNode>();
+  if (!IsBlackholeBuiltinCall(call, blackhole_runtime_arg_u32(),
+                              "tl.blackhole.runtime_arg_u32") ||
+      call->args.empty()) {
+    return false;
+  }
+  const auto* arg_name = call->args[0].as<StringImmNode>();
+  if (arg_name == nullptr) {
+    return false;
+  }
+  const std::string name = arg_name->value;
+  for (const IndexedPerWorkRuntimeArg& arg : indexed_per_work_runtime_args_) {
+    if (arg.arg_name == name &&
+        arg.descriptor_kind == blackhole_runtime_arg_schema::kDescriptorValidRows) {
+      return true;
+    }
+  }
+  return name == "a_valid_rows" || name.rfind("a_valid_rows_", 0) == 0;
+}
+
+bool PlanTTKernelABI::IsRowBoundMaskSelfUpdateStore(
+    const BufferStoreNode* store) const {
+  PrimExpr condition;
+  if (!ExtractRowBoundSelfUpdateParts(store, &condition)) {
+    return false;
+  }
+  bool has_valid_rows_arg = false;
+  tir::PostOrderVisit(condition, [&](const ObjectRef& node) {
+    if (has_valid_rows_arg) {
+      return;
+    }
+    if (const auto* var = node.as<VarNode>()) {
+      has_valid_rows_arg = IsValidRowsRuntimeArgExpr(GetRef<PrimExpr>(var));
+      return;
+    }
+    if (const auto* call = node.as<CallNode>()) {
+      has_valid_rows_arg = IsValidRowsRuntimeArgExpr(GetRef<PrimExpr>(call));
+    }
+  });
+  return has_valid_rows_arg;
+}
+
+bool PlanTTKernelABI::MatchRowBoundMaskSelfUpdateStore(
+    const BufferStoreNode* store,
+    const std::vector<Var>& loop_vars_to_zero,
+    RowBoundMaskApplyMatch* match) const {
+  if (match == nullptr || store == nullptr ||
+      !IsSingleFullTileLogicalMatrix(store->buffer)) {
+    return false;
+  }
+  PrimExpr condition;
+  if (!ExtractRowBoundSelfUpdateParts(store, &condition)) {
+    return false;
+  }
+
+  PrimExpr position;
+  PrimExpr valid_rows;
+  if (const auto* lt = condition.as<LTNode>()) {
+    if (IsValidRowsRuntimeArgExpr(lt->b)) {
+      position = lt->a;
+      valid_rows = StripValueCasts(lt->b);
+    }
+  } else if (const auto* gt = condition.as<GTNode>()) {
+    if (IsValidRowsRuntimeArgExpr(gt->a)) {
+      position = gt->b;
+      valid_rows = StripValueCasts(gt->a);
+    }
+  }
+  if (!position.defined() || !valid_rows.defined()) {
+    return false;
+  }
+
+  Analyzer analyzer;
+  PrimExpr base = analyzer.Simplify(ZeroThreadAndLoopVars(position, loop_vars_to_zero));
+  const std::optional<int64_t> base_value = TryEvalStaticInt(base);
+  if (!base_value || base_value.value() < 0 ||
+      base_value.value() % kBlackholeTileCols != 0) {
+    return false;
+  }
+  ExactTiledCBValue live_value;
+  if (!HasSelectedSourceLiveProducer(store->buffer) &&
+      !(TryCreateExactOutputLiveTiledCBValue(store->buffer, &live_value) ||
+        TryCreateLiveExactTiledCBValue(store->buffer, &live_value))) {
+    return false;
+  }
+
+  match->dst = store->buffer;
+  match->valid_rows = valid_rows;
+  match->page_base = static_cast<int>(base_value.value());
+  const auto order_it = stmt_order_index_by_node_.find(store);
+  match->producer_order_index =
+      order_it != stmt_order_index_by_node_.end()
+          ? order_it->second
+          : current_lowering_order_index_;
+  return true;
+}
+
+bool PlanTTKernelABI::MatchRowBoundMaskSelfUpdateLoop(
+    const ForNode* op, RowBoundMaskApplyMatch* match) const {
+  if (op == nullptr || match == nullptr) {
+    return false;
+  }
+  bool matched = false;
+  bool invalid = false;
+  RowBoundMaskApplyMatch candidate;
+  std::vector<Var> loop_vars = active_serial_loop_vars_;
+  auto visit = [&](const Stmt& stmt, auto&& visit_ref) -> void {
+    if (invalid || !stmt.defined()) {
+      return;
+    }
+    if (const auto* loop = stmt.as<ForNode>()) {
+      loop_vars.push_back(loop->loop_var);
+      visit_ref(loop->body, visit_ref);
+      loop_vars.pop_back();
+      return;
+    }
+    if (const auto* seq = stmt.as<SeqStmtNode>()) {
+      for (const Stmt& child : seq->seq) {
+        visit_ref(child, visit_ref);
+      }
+      return;
+    }
+    if (const auto* attr = stmt.as<AttrStmtNode>()) {
+      visit_ref(attr->body, visit_ref);
+      return;
+    }
+    if (const auto* let = stmt.as<LetStmtNode>()) {
+      visit_ref(let->body, visit_ref);
+      return;
+    }
+    if (const auto* decl = stmt.as<DeclBufferNode>()) {
+      visit_ref(decl->body, visit_ref);
+      return;
+    }
+    if (const auto* allocate = stmt.as<AllocateNode>()) {
+      visit_ref(allocate->body, visit_ref);
+      return;
+    }
+    if (const auto* store = stmt.as<BufferStoreNode>()) {
+      RowBoundMaskApplyMatch store_match;
+      if (!MatchRowBoundMaskSelfUpdateStore(store, loop_vars, &store_match)) {
+        invalid = true;
+        return;
+      }
+      if (matched) {
+        invalid = true;
+        return;
+      }
+      candidate = store_match;
+      matched = true;
+      return;
+    }
+    if (const auto* eval = stmt.as<EvaluateNode>()) {
+      if (IsNoOpStmt(GetRef<Stmt>(eval))) {
+        return;
+      }
+    }
+    invalid = true;
+  };
+
+  loop_vars.push_back(op->loop_var);
+  visit(op->body, visit);
+  loop_vars.pop_back();
+  if (!matched || invalid) {
+    return false;
+  }
+  *match = candidate;
+  return true;
+}
+
 // Parse a colon-separated string into fields
 Stmt PlanTTKernelABI::VisitStmt_(const AttrStmtNode* op) {
   if (op->attr_key == kBlackholeExactOutputLiveNumTilesAttr ||
@@ -2835,11 +3120,24 @@ Stmt PlanTTKernelABI::VisitStmt_(const AttrStmtNode* op) {
             blackhole_runtime_arg_schema::kValueSourceLogicalBlockZ;
       }
     }
-    if (!select_compute_builtins_only_ && zero_thread_var) {
+    if (zero_thread_var) {
       active_serial_loop_vars_.push_back(iv->var);
+      serial_loop_retained_input_pop_pages_stack_.push_back({});
+      serial_loop_terminal_transport_publications_stack_.push_back({});
     }
     Stmt body = VisitStmt(op->body);
-    if (!select_compute_builtins_only_ && zero_thread_var) {
+    Stmt retained_input_pops;
+    Stmt terminal_transport_publications;
+    if (zero_thread_var) {
+      body = AppendSerialLoopLocalComputeOutputPops(body);
+    }
+    if (zero_thread_var) {
+      retained_input_pops =
+          BuildSerialLoopRetainedInputPops(serial_loop_retained_input_pop_pages_stack_.back());
+      terminal_transport_publications = BuildSerialLoopTerminalTransportPublications(
+          serial_loop_terminal_transport_publications_stack_.back());
+      serial_loop_terminal_transport_publications_stack_.pop_back();
+      serial_loop_retained_input_pop_pages_stack_.pop_back();
       active_serial_loop_vars_.pop_back();
     }
     if (zero_thread_var) {
@@ -2850,10 +3148,20 @@ Stmt PlanTTKernelABI::VisitStmt_(const AttrStmtNode* op) {
       block_index_var_names_.erase(iv->var->name_hint);
       block_index_source_by_var_.erase(iv->var.get());
     }
-    if (body.same_as(op->body)) {
-      return GetRef<Stmt>(op);
+    Stmt lowered_loop =
+        body.same_as(op->body) ? GetRef<Stmt>(op)
+                               : AttrStmt(op->node, op->attr_key, op->value, body);
+    if (terminal_transport_publications.defined() || retained_input_pops.defined()) {
+      std::vector<Stmt> loop_suffix{lowered_loop};
+      if (terminal_transport_publications.defined()) {
+        loop_suffix.push_back(terminal_transport_publications);
+      }
+      if (retained_input_pops.defined()) {
+        loop_suffix.push_back(retained_input_pops);
+      }
+      return SeqStmt::Flatten(loop_suffix);
     }
-    return AttrStmt(op->node, op->attr_key, op->value, body);
+    return lowered_loop;
   }
   if (op->attr_key == "blackhole.segment_kind") {
     std::string previous_segment_kind = current_segment_kind_;
@@ -3031,6 +3339,7 @@ void PlanTTKernelABI::RecordIndexTableAddressing(
 std::string PlanTTKernelABI::GetOrCreateIndexedPerWorkRuntimeArg(
     const std::string& arg_prefix,
     const std::string& descriptor_kind,
+    const std::string& subject_buffer,
     const std::string& index_buffer,
     const IndexTableAddressing& addressing,
     int64_t index_value_scale) {
@@ -3038,6 +3347,8 @@ std::string PlanTTKernelABI::GetOrCreateIndexedPerWorkRuntimeArg(
       << "Blackhole indexed per-work runtime arg requires arg prefix";
   ICHECK(!descriptor_kind.empty())
       << "Blackhole indexed per-work runtime arg requires descriptor kind";
+  ICHECK(!subject_buffer.empty())
+      << "Blackhole indexed per-work runtime arg requires subject buffer";
   ICHECK(!index_buffer.empty())
       << "Blackhole indexed per-work runtime arg requires index table buffer";
   ICHECK_GT(index_value_scale, 0)
@@ -3050,6 +3361,7 @@ std::string PlanTTKernelABI::GetOrCreateIndexedPerWorkRuntimeArg(
       ++prefix_count;
     }
     if (existing.descriptor_kind == descriptor_kind &&
+        existing.subject_buffer == subject_buffer &&
         existing.index_buffer == index_buffer &&
         existing.index_value_scale == index_value_scale &&
         existing.addressing.shape == addressing.shape &&
@@ -3062,6 +3374,7 @@ std::string PlanTTKernelABI::GetOrCreateIndexedPerWorkRuntimeArg(
                      ? arg_prefix
                      : arg_prefix + "_" + std::to_string(prefix_count);
   arg.descriptor_kind = descriptor_kind;
+  arg.subject_buffer = subject_buffer;
   arg.index_buffer = index_buffer;
   arg.index_value_scale = index_value_scale;
   arg.addressing = addressing;
@@ -3170,8 +3483,43 @@ Stmt PlanTTKernelABI::VisitStmt_(const LetStmtNode* op) {
     });
     return found;
   };
+  auto find_copy_load_using_let_var = [&](const Stmt& body) -> const BufferLoadNode* {
+    const BufferLoadNode* found = nullptr;
+    tir::PostOrderVisit(body, [&](const ObjectRef& node) {
+      if (found != nullptr) {
+        return;
+      }
+      const auto* store = node.as<BufferStoreNode>();
+      if (store == nullptr) {
+        return;
+      }
+      const BufferLoadNode* load = GetCopyLoad(store);
+      if (load == nullptr) {
+        return;
+      }
+      for (const PrimExpr& index : load->indices) {
+        if (expr_uses_var(index, op->var.get())) {
+          found = load;
+          return;
+        }
+      }
+      if (expr_uses_var(store->value, op->var.get())) {
+        found = load;
+      }
+    });
+    return found;
+  };
 
   const auto* table_load = op->value.as<BufferLoadNode>();
+  if (select_compute_builtins_only_ && table_load != nullptr &&
+      table_load->buffer->dtype.is_int() && table_load->buffer->dtype.bits() == 32 &&
+      GetStorageScope(table_load->buffer) == "global" &&
+      body_uses_let_var_for_guarded_copy_predicate(op->body)) {
+    valid_rows_runtime_arg_vars_.insert(op->var.get());
+    Stmt lowered = StmtExprMutator::VisitStmt_(op);
+    valid_rows_runtime_arg_vars_.erase(op->var.get());
+    return lowered;
+  }
   if (!select_compute_builtins_only_ && table_load != nullptr &&
       table_load->buffer->dtype.is_int() && table_load->buffer->dtype.bits() == 32 &&
       GetStorageScope(table_load->buffer) == "global" &&
@@ -3179,8 +3527,14 @@ Stmt PlanTTKernelABI::VisitStmt_(const LetStmtNode* op) {
     const std::optional<int64_t> coefficient =
         copy_source_row_index_var_coefficient(op->body);
     const std::string index_buffer = BufferIdentityName(table_load->buffer);
+    const BufferLoadNode* subject_load = find_copy_load_using_let_var(op->body);
+    ICHECK(subject_load != nullptr)
+        << "Blackhole table-backed copy index requires a subject buffer load";
+    const std::string subject_buffer = BufferIdentityName(subject_load->buffer);
     ICHECK(!index_buffer.empty())
         << "Blackhole table-backed copy index requires named index-table buffer";
+    ICHECK(!subject_buffer.empty())
+        << "Blackhole table-backed copy index requires named subject buffer";
     RecordIndexTableAddressing(index_buffer, table_load);
     std::string arg_name = "a_tile_start_id";
     if (coefficient.has_value() && coefficient.value() == 1) {
@@ -3199,7 +3553,7 @@ Stmt PlanTTKernelABI::VisitStmt_(const LetStmtNode* op) {
       arg_name = GetOrCreateIndexedPerWorkRuntimeArg(
           "a_segment_row_start",
           blackhole_runtime_arg_schema::kDescriptorSegmentRowStart,
-          index_buffer, addressing.value(), 1);
+          subject_buffer, index_buffer, addressing.value(), 1);
     } else if (coefficient.has_value() &&
                coefficient.value() > 0 &&
                coefficient.value() % kBlackholeTileRows == 0) {
@@ -3208,10 +3562,13 @@ Stmt PlanTTKernelABI::VisitStmt_(const LetStmtNode* op) {
       ICHECK(addressing.has_value())
           << "Blackhole table-backed tile-start requires explicit index-table "
           << "addressing evidence";
+      const std::string tile_start_arg_prefix =
+          requires_compute_segment_ ? "indexed_tile_start_id"
+                                    : "a_tile_start_id";
       arg_name = GetOrCreateIndexedPerWorkRuntimeArg(
-          "a_tile_start_id",
+          tile_start_arg_prefix,
           blackhole_runtime_arg_schema::kDescriptorTileStart,
-          index_buffer, addressing.value(),
+          subject_buffer, index_buffer, addressing.value(),
           coefficient.value() / kBlackholeTileRows);
       runtime_arg_tile_start_scale_by_name_[arg_name] =
           coefficient.value() / kBlackholeTileRows;
@@ -3228,8 +3585,14 @@ Stmt PlanTTKernelABI::VisitStmt_(const LetStmtNode* op) {
       GetStorageScope(table_load->buffer) == "global" &&
       body_uses_let_var_for_guarded_copy_predicate(op->body)) {
     const std::string index_buffer = BufferIdentityName(table_load->buffer);
+    const BufferLoadNode* subject_load = find_copy_load_using_let_var(op->body);
+    ICHECK(subject_load != nullptr)
+        << "Blackhole ragged row bound requires a subject buffer load";
+    const std::string subject_buffer = BufferIdentityName(subject_load->buffer);
     ICHECK(!index_buffer.empty())
         << "Blackhole ragged row bound requires named index-table buffer";
+    ICHECK(!subject_buffer.empty())
+        << "Blackhole ragged row bound requires named subject buffer";
     RecordIndexTableAddressing(index_buffer, table_load);
     if (needs_segment_row_start_arg_) {
       if (!segment_row_count_index_buffer_name_.empty()) {
@@ -3247,7 +3610,7 @@ Stmt PlanTTKernelABI::VisitStmt_(const LetStmtNode* op) {
       const std::string arg_name = GetOrCreateIndexedPerWorkRuntimeArg(
           "a_segment_row_count",
           blackhole_runtime_arg_schema::kDescriptorSegmentRowCount,
-          index_buffer, addressing.value(), 1);
+          subject_buffer, index_buffer, addressing.value(), 1);
       PrimExpr per_work_segment_row_count =
           Call(op->var.dtype(), blackhole_runtime_arg_u32(),
                {StringImm(arg_name)});
@@ -3270,12 +3633,15 @@ Stmt PlanTTKernelABI::VisitStmt_(const LetStmtNode* op) {
     const std::string arg_name = GetOrCreateIndexedPerWorkRuntimeArg(
         "a_valid_rows",
         blackhole_runtime_arg_schema::kDescriptorValidRows,
-        index_buffer, addressing.value(), 1);
+        subject_buffer, index_buffer, addressing.value(), 1);
     PrimExpr per_work_valid_rows =
         Call(op->var.dtype(), blackhole_runtime_arg_u32(),
              {StringImm(arg_name)});
     Stmt rewritten = LetStmt(op->var, per_work_valid_rows, op->body, op->span);
-    return StmtExprMutator::VisitStmt_(rewritten.as<LetStmtNode>());
+    valid_rows_runtime_arg_vars_.insert(op->var.get());
+    Stmt lowered = StmtExprMutator::VisitStmt_(rewritten.as<LetStmtNode>());
+    valid_rows_runtime_arg_vars_.erase(op->var.get());
+    return lowered;
   }
 
   return StmtExprMutator::VisitStmt_(op);
@@ -3584,7 +3950,8 @@ Stmt PlanTTKernelABI::VisitStmt_(const SeqStmtNode* op) {
                (kind_imm->value == "max" && IsNegInfValue(fill_match.value)));
           if (identity_fill && SameBufferIdentity(fill_match.dst, reduce_dst)) {
             ClearSelectedSourceLiveProducer(fill_match.dst);
-            ClearTiledCBLiveFormAliases(fill_match.dst);
+            OverwriteTiledCBLiveFormAliasesForWrite(fill_match.dst);
+            ForgetLoopCarriedExactCBStateAliases(fill_match.dst);
             for (const std::string& identity : CollectBufferFlowIdentities(fill_match.dst)) {
               last_fragment_fill_value_by_buffer_identity_[identity] = fill_match.value;
             }
@@ -3631,7 +3998,8 @@ Stmt PlanTTKernelABI::VisitStmt_(const SeqStmtNode* op) {
       }
       if (fill_match.dst.defined()) {
         ClearSelectedSourceLiveProducer(fill_match.dst);
-        ClearTiledCBLiveFormAliases(fill_match.dst);
+        OverwriteTiledCBLiveFormAliasesForWrite(fill_match.dst);
+        ForgetLoopCarriedExactCBStateAliases(fill_match.dst);
         for (const std::string& identity : CollectBufferFlowIdentities(fill_match.dst)) {
           last_fragment_fill_value_by_buffer_identity_[identity] = fill_match.value;
         }
@@ -3648,7 +4016,8 @@ Stmt PlanTTKernelABI::VisitStmt_(const SeqStmtNode* op) {
     auto record_fragment_fill_fact = [&](const ExplicitFragmentFill& fill_match) {
       if (fill_match.dst.defined()) {
         ClearSelectedSourceLiveProducer(fill_match.dst);
-        ClearTiledCBLiveFormAliases(fill_match.dst);
+        OverwriteTiledCBLiveFormAliasesForWrite(fill_match.dst);
+        ForgetLoopCarriedExactCBStateAliases(fill_match.dst);
         for (const std::string& identity : CollectBufferFlowIdentities(fill_match.dst)) {
           last_fragment_fill_value_by_buffer_identity_[identity] = fill_match.value;
         }
@@ -4363,6 +4732,10 @@ Stmt PlanTTKernelABI::VisitStmt_(const ForNode* op) {
       RecordTiledCBLiveFormAliases(match.store->buffer, src_cb_id);
     }
   }
+  RowBoundMaskApplyMatch row_bound_mask_match;
+  if (MatchRowBoundMaskSelfUpdateLoop(op, &row_bound_mask_match)) {
+    return GenerateRowBoundMaskApplySequence(row_bound_mask_match);
+  }
   if (!select_compute_builtins_only_ && IsPureCopyLoopNest(op->body)) {
     std::vector<Var> loop_stack;
     std::vector<NestedCopyMatch> matches;
@@ -4481,9 +4854,9 @@ Stmt PlanTTKernelABI::VisitStmt_(const ForNode* op) {
       return GenerateLocalToCBSliceLoopSequence(op, local_to_cb_match);
     }
   }
-  if (!select_compute_builtins_only_) {
-    active_serial_loop_vars_.push_back(op->loop_var);
-  }
+  active_serial_loop_vars_.push_back(op->loop_var);
+  serial_loop_retained_input_pop_pages_stack_.push_back({});
+  serial_loop_terminal_transport_publications_stack_.push_back({});
   auto compute_loop_body_order_range = [&]() -> std::pair<int, int> {
     int min_order = std::numeric_limits<int>::max();
     int max_order = -1;
@@ -4504,8 +4877,72 @@ Stmt PlanTTKernelABI::VisitStmt_(const ForNode* op) {
   const std::unordered_set<std::string> loop_carried_identities =
       CollectLoopCarriedBufferIdentities(op->body);
   active_loop_carried_buffer_identity_stack_.push_back(loop_carried_identities);
+  auto collect_local_self_update_buffers = [&]() {
+    std::vector<Buffer> buffers;
+    std::unordered_set<std::string> seen;
+    auto value_reads_buffer = [&](const PrimExpr& value, const Buffer& buffer) {
+      bool reads = false;
+      tir::PostOrderVisit(value, [&](const ObjectRef& node) {
+        if (reads) {
+          return;
+        }
+        if (const auto* load = node.as<BufferLoadNode>()) {
+          if (SameBufferIdentity(load->buffer, buffer)) {
+            reads = true;
+          }
+        }
+      });
+      return reads;
+    };
+    tir::PostOrderVisit(op->body, [&](const ObjectRef& node) {
+      const auto* store = node.as<BufferStoreNode>();
+      if (store == nullptr || !store->buffer.defined() ||
+          !IsUnsupportedResidualLocalScope(store->buffer) ||
+          !value_reads_buffer(store->value, store->buffer)) {
+        return;
+      }
+      if (IsRowBoundMaskSelfUpdateStore(store)) {
+        return;
+      }
+      const std::string identity = BufferIdentityName(store->buffer);
+      if (!identity.empty() && !seen.insert(identity).second) {
+        return;
+      }
+      buffers.push_back(store->buffer);
+    });
+    return buffers;
+  };
+  std::vector<Stmt> local_self_update_materializations;
+  for (const Buffer& buffer : collect_local_self_update_buffers()) {
+    ExactTiledCBValue live_value;
+    const bool has_selected_source_live =
+        TryCreateSelectedSourceLiveExactTiledCBValue(buffer, &live_value);
+    if (!has_selected_source_live) {
+      if (IsActiveLoopCarriedBuffer(buffer)) {
+        continue;
+      }
+      if (!(TryCreateExactOutputLiveTiledCBValue(buffer, &live_value) ||
+            TryCreateLiveExactTiledCBValue(buffer, &live_value))) {
+        continue;
+      }
+    }
+    if (live_value.cb_id < 0) {
+      continue;
+    }
+    local_self_update_materializations.push_back(
+        MaterializeExactTiledCBToLocalBuffer(buffer, live_value, /*pop_front=*/false));
+    InvalidateLastFragmentFillValue(buffer);
+    ClearSelectedSourceLiveProducer(buffer);
+    OverwriteTiledCBLiveFormAliasesForWrite(buffer);
+    MarkLocalOnlyLiveFormAliases(buffer);
+  }
   Stmt loop_carried_init = InitializeLoopCarriedExactLiveForms(loop_carried_identities);
   Stmt lowered = StmtExprMutator::VisitStmt_(op);
+  if (!local_self_update_materializations.empty()) {
+    local_self_update_materializations.push_back(lowered);
+    lowered = SeqStmt::Flatten(local_self_update_materializations);
+  }
+  Stmt retained_input_pops;
   auto resolve_loop_carried_identity_buffer = [&](const std::string& identity) -> Buffer {
     Buffer state_buffer = GetLoopCarriedExactCBBuffer(identity);
     if (state_buffer.defined()) {
@@ -4576,12 +5013,26 @@ Stmt PlanTTKernelABI::VisitStmt_(const ForNode* op) {
   }
   active_loop_carried_buffer_identity_stack_.pop_back();
   active_serial_loop_order_ranges_.pop_back();
+  Stmt terminal_transport_publications = BuildSerialLoopTerminalTransportPublications(
+      serial_loop_terminal_transport_publications_stack_.back());
+  serial_loop_terminal_transport_publications_stack_.pop_back();
+  retained_input_pops =
+      BuildSerialLoopRetainedInputPops(serial_loop_retained_input_pop_pages_stack_.back());
+  serial_loop_retained_input_pop_pages_stack_.pop_back();
   for (const std::string& identity : loop_carried_identities) {
     InvalidateLastFragmentFillValueIdentity(identity);
     MarkLoopCarriedExactCBStateCompleted(identity);
   }
-  if (!select_compute_builtins_only_) {
-    active_serial_loop_vars_.pop_back();
+  active_serial_loop_vars_.pop_back();
+  if (terminal_transport_publications.defined() || retained_input_pops.defined()) {
+    std::vector<Stmt> loop_suffix{lowered};
+    if (terminal_transport_publications.defined()) {
+      loop_suffix.push_back(terminal_transport_publications);
+    }
+    if (retained_input_pops.defined()) {
+      loop_suffix.push_back(retained_input_pops);
+    }
+    lowered = SeqStmt::Flatten(loop_suffix);
   }
   if (loop_carried_init.defined()) {
     std::vector<Stmt> loop_with_init{loop_carried_init, lowered};
@@ -4663,6 +5114,8 @@ Stmt PlanTTKernelABI::VisitStmt_(const EvaluateNode* op) {
             auto physical_it = compute_physical_buffers_by_data_.find(data);
             if (physical_it != compute_physical_buffers_by_data_.end()) {
               ClearSelectedSourceLiveProducer(physical_it->second);
+              OverwriteTiledCBLiveFormAliasesForWrite(physical_it->second);
+              ForgetLoopCarriedExactCBStateAliases(physical_it->second);
               for (const std::string& identity :
                    CollectBufferFlowIdentities(physical_it->second)) {
                 last_fragment_fill_value_by_buffer_identity_[identity] = call->args[2];
@@ -4675,14 +5128,9 @@ Stmt PlanTTKernelABI::VisitStmt_(const EvaluateNode* op) {
       if (IsMatmulCall(call) && call->args.size() >= 3 && IsBufferLikeExpr(call->args[2])) {
         const Buffer out_buffer = NormalizeToBufferRegion(call->args[2])->buffer;
         InvalidateLastFragmentFillValue(out_buffer);
-        ClearTiledCBLiveFormAliases(out_buffer);
+        OverwriteTiledCBLiveFormAliasesForWrite(out_buffer);
         ClearSelectedSourceLiveProducer(out_buffer);
-        const auto* clear_accum = call->args.size() > 9 ? call->args[9].as<IntImmNode>() : nullptr;
-        const bool matmul_publishes_c_directly = clear_accum != nullptr && clear_accum->value != 0;
-        const bool selected_source_shape_is_stable =
-            matmul_publishes_c_directly || active_loop_carried_buffer_identity_stack_.empty();
-        if (IsSingleFullTileMatmulOutput(call) && selected_source_shape_is_stable &&
-            !IsActiveLoopCarriedBuffer(out_buffer)) {
+        if (IsSingleFullTileMatmulOutput(call)) {
           RecordSelectedSourceLiveProducer(out_buffer);
         }
       }
@@ -4712,6 +5160,9 @@ Stmt PlanTTKernelABI::VisitStmt_(const EvaluateNode* op) {
           last_fragment_fill_value_by_data_[data] = call->args[2];
           auto physical_it = compute_physical_buffers_by_data_.find(data);
           if (physical_it != compute_physical_buffers_by_data_.end()) {
+            ClearSelectedSourceLiveProducer(physical_it->second);
+            OverwriteTiledCBLiveFormAliasesForWrite(physical_it->second);
+            ForgetLoopCarriedExactCBStateAliases(physical_it->second);
             for (const std::string& identity :
                  CollectBufferFlowIdentities(physical_it->second)) {
               last_fragment_fill_value_by_buffer_identity_[identity] = call->args[2];

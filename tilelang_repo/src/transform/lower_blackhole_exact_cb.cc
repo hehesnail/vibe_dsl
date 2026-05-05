@@ -926,6 +926,24 @@ Buffer PlanTTKernelABI::GetLoopCarriedExactCBBuffer(
   return state == nullptr ? Buffer() : state->buffer;
 }
 
+void PlanTTKernelABI::ForgetLoopCarriedExactCBStateIdentity(
+    const std::string& logical_value) {
+  if (logical_value.empty()) {
+    return;
+  }
+  loop_carried_exact_cb_state_by_logical_value_.erase(logical_value);
+}
+
+void PlanTTKernelABI::ForgetLoopCarriedExactCBStateAliases(
+    const Buffer& buffer) {
+  if (!buffer.defined()) {
+    return;
+  }
+  for (const std::string& identity : CollectBufferFlowIdentities(buffer)) {
+    ForgetLoopCarriedExactCBStateIdentity(identity);
+  }
+}
+
 void PlanTTKernelABI::MarkLoopCarriedExactCBStateCompleted(
     const std::string& logical_value) {
   if (logical_value.empty()) {
@@ -972,16 +990,16 @@ PlanTTKernelABI::ExactTiledCBValue PlanTTKernelABI::CreateRowReductionInputCBVal
       IsActiveLoopCarriedBuffer(src) && !IsSingleFullTileLogicalMatrix(src);
   const bool prefer_completed_loop_carried_state =
       IsCompletedLoopCarriedBuffer(src) && IsSingleFullTileLogicalMatrix(src);
-  if (!force_local_loop_carried && prefer_completed_loop_carried_state &&
-      TryCreateLoopCarriedExactInputStateCBValue(src, &live_value)) {
-    return live_value;
-  }
-  if (!force_local_loop_carried &&
-      (TryCreateExactOutputLiveTiledCBValue(src, &live_value) ||
-       TryCreateLiveExactTiledCBValue(src, &live_value) ||
-       TryCreateLoopCarriedExactInputStateCBValue(src, &live_value) ||
-       TryCreateSelectedSourceLiveExactTiledCBValue(src, &live_value))) {
-    return live_value;
+  if (!force_local_loop_carried) {
+    if (TryCreateSelectedSourceLiveExactTiledCBValue(src, &live_value) ||
+        TryCreateExactOutputLiveTiledCBValue(src, &live_value) ||
+        (prefer_completed_loop_carried_state &&
+         TryCreateLoopCarriedExactInputStateCBValue(src, &live_value)) ||
+        TryCreateLiveExactTiledCBValue(src, &live_value) ||
+        (!prefer_completed_loop_carried_state &&
+         TryCreateLoopCarriedExactInputStateCBValue(src, &live_value))) {
+      return live_value;
+    }
   }
   return CreatePublishedExactTiledCBValue(src, "reduce_src");
 }
@@ -1013,17 +1031,17 @@ PlanTTKernelABI::ExactTiledCBValue PlanTTKernelABI::CreateExactInputCBValue(
                                       current_lowering_order_index_);
     }
   };
-  if (!force_local_loop_carried && prefer_completed_loop_carried_state &&
-      TryCreateLoopCarriedExactInputStateCBValue(src, &live_value)) {
-    return live_value;
-  }
-  if (!force_local_loop_carried &&
-      (TryCreateExactOutputLiveTiledCBValue(src, &live_value) ||
-       TryCreateLiveExactTiledCBValue(src, &live_value) ||
-       TryCreateLoopCarriedExactInputStateCBValue(src, &live_value) ||
-       TryCreateSelectedSourceLiveExactTiledCBValue(src, &live_value))) {
-    remember_loop_carried_state_cb();
-    return live_value;
+  if (!force_local_loop_carried) {
+    if (TryCreateSelectedSourceLiveExactTiledCBValue(src, &live_value) ||
+        TryCreateExactOutputLiveTiledCBValue(src, &live_value) ||
+        (prefer_completed_loop_carried_state &&
+         TryCreateLoopCarriedExactInputStateCBValue(src, &live_value)) ||
+        TryCreateLiveExactTiledCBValue(src, &live_value) ||
+        (!prefer_completed_loop_carried_state &&
+         TryCreateLoopCarriedExactInputStateCBValue(src, &live_value))) {
+      remember_loop_carried_state_cb();
+      return live_value;
+    }
   }
   return CreatePublishedExactTiledCBValue(src, suffix);
 }
@@ -1097,17 +1115,16 @@ Stmt PlanTTKernelABI::PublishExactInputToTiledCB(const Buffer& src,
   ExactTiledCBValue live_value;
   const bool prefer_completed_loop_carried_state =
       IsCompletedLoopCarriedBuffer(src) && IsSingleFullTileLogicalMatrix(src);
-  if (!force_local_loop_carried && prefer_completed_loop_carried_state &&
-      TryCreateLoopCarriedExactInputStateCBValue(src, &live_value)) {
-    *cb_value = live_value;
-    return Stmt();
-  }
-  if (!force_local_loop_carried &&
-      (TryCreateExactOutputLiveTiledCBValue(src, &live_value) ||
-       TryCreateLiveExactTiledCBValue(src, &live_value) ||
-       TryCreateLoopCarriedExactInputStateCBValue(src, &live_value))) {
-    *cb_value = live_value;
-    return Stmt();
+  if (!force_local_loop_carried) {
+    if (TryCreateExactOutputLiveTiledCBValue(src, &live_value) ||
+        (prefer_completed_loop_carried_state &&
+         TryCreateLoopCarriedExactInputStateCBValue(src, &live_value)) ||
+        TryCreateLiveExactTiledCBValue(src, &live_value) ||
+        (!prefer_completed_loop_carried_state &&
+         TryCreateLoopCarriedExactInputStateCBValue(src, &live_value))) {
+      *cb_value = live_value;
+      return Stmt();
+    }
   }
   PrimExpr fill_value;
   if (!force_local_loop_carried && TryGetLastFragmentFillValue(src, &fill_value)) {
@@ -1118,6 +1135,7 @@ Stmt PlanTTKernelABI::PublishExactInputToTiledCB(const Buffer& src,
 
 void PlanTTKernelABI::RecordExactOutputLiveForm(const Buffer& dst,
                                                 const ExactTiledCBValue& cb_value) {
+  ClearSelectedSourceLiveProducer(dst);
   RecordTiledCBLiveFormAliases(dst, cb_value.cb_id);
   if (cb_value.cb_id >= 0) {
     ICHECK_LT(cb_value.cb_id, static_cast<int>(cb_requirements_.size()));

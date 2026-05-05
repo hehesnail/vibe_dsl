@@ -521,24 +521,72 @@ Stmt PlanTTKernelABI::GenerateFragmentCastSequence(const FragmentCastMatch& matc
          TryCreateLiveExactTiledCBValue(match.src, &live_source)) &&
         live_source.num_tiles == num_pages;
     if (can_republish_from_live_cb && !pack_thread_direct_fill_value.defined()) {
+      auto make_source_wait = [&]() {
+        return MakeBlackholeCall(blackhole_cb_wait_front(),
+                                 {IntImm32(live_source.cb_id),
+                                  IntImm32(live_source.num_tiles)});
+      };
+      auto make_source_pop = [&]() {
+        return MakeBlackholeCall(blackhole_cb_pop_front(),
+                                 {IntImm32(live_source.cb_id),
+                                  IntImm32(live_source.num_tiles)});
+      };
+      auto append_copy_to_publish_cb = [&](std::vector<Stmt>* out) {
+        for (int tile = 0; tile < num_pages; ++tile) {
+          out->push_back(MakeBlackholeCall(blackhole_tile_regs_acquire(), {}));
+          out->push_back(MakeBlackholeCall(blackhole_copy_tile_to_dst_init_short(),
+                                           {IntImm32(live_source.cb_id)}));
+          out->push_back(MakeBlackholeCall(blackhole_copy_tile(),
+                                           {IntImm32(live_source.cb_id),
+                                            IntImm32(tile), IntImm32(0)}));
+          out->push_back(MakeBlackholeCall(blackhole_tile_regs_commit(), {}));
+          out->push_back(MakeBlackholeCall(blackhole_tile_regs_wait(), {}));
+          out->push_back(MakeBlackholeCall(blackhole_pack_reconfig_data_format(),
+                                           {IntImm32(cb_id)}));
+          out->push_back(MakeBlackholeCall(blackhole_pack_tile(),
+                                           {IntImm32(0), IntImm32(cb_id),
+                                            IntImm32(tile)}));
+          out->push_back(MakeBlackholeCall(blackhole_tile_regs_release(), {}));
+        }
+      };
+      const FutureBufferUses live_source_future_uses =
+          ClassifyFutureLiveCBReadsBeforeNextWrite(live_source.buffer,
+                                                   current_order_index);
+      if (ShouldDeferTerminalTransportPublicationAcrossSerialLoop(match.dst,
+                                                                  current_order_index) &&
+          !live_source_future_uses.has_compute_consume &&
+          !live_source_future_uses.has_transport_consume &&
+          !live_source_future_uses.has_reference) {
+        const PrimExpr final_iteration = BuildActiveSerialLoopFinalIterationPredicate();
+        ICHECK(final_iteration.defined())
+            << "Serial-loop terminal transport publication requires a final-lane predicate";
+        std::vector<Stmt> loop_stmts;
+        loop_stmts.push_back(make_source_wait());
+        loop_stmts.push_back(tir::IfThenElse(tir::Not(final_iteration), make_source_pop()));
+
+        std::vector<Stmt> publication;
+        publication.push_back(make_source_wait());
+        publication.push_back(MakeBlackholeCall(blackhole_cb_reserve_back(),
+                                                {IntImm32(cb_id),
+                                                 IntImm32(num_pages)}));
+        MarkExactCBValuesOverlap({live_source.cb_id, cb_id});
+        append_copy_to_publish_cb(&publication);
+        publication.push_back(make_source_pop());
+        publication.push_back(MakeBlackholeCall(tir::builtin::blackhole_cb_push_back(),
+                                                {IntImm32(cb_id),
+                                                 IntImm32(num_pages)}));
+        RecordSerialLoopTerminalTransportPublication(
+            MaybeWrapComputeSegment(SeqStmt::Flatten(publication)));
+        ClearTiledCBLiveFormAliases(live_source.buffer);
+        RecordTiledCBLiveFormAliases(match.dst, cb_id);
+        return MaybeWrapComputeSegment(SeqStmt::Flatten(loop_stmts));
+      }
       stmts.push_back(MakeBlackholeCall(blackhole_cb_wait_front(),
                                         {IntImm32(live_source.cb_id), IntImm32(live_source.num_tiles)}));
       stmts.push_back(MakeBlackholeCall(blackhole_cb_reserve_back(),
                                         {IntImm32(cb_id), IntImm32(num_pages)}));
       MarkExactCBValuesOverlap({live_source.cb_id, cb_id});
-      for (int tile = 0; tile < num_pages; ++tile) {
-        stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_acquire(), {}));
-        stmts.push_back(
-            MakeBlackholeCall(blackhole_copy_tile_to_dst_init_short(), {IntImm32(live_source.cb_id)}));
-        stmts.push_back(MakeBlackholeCall(blackhole_copy_tile(),
-                                          {IntImm32(live_source.cb_id), IntImm32(tile), IntImm32(0)}));
-        stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_commit(), {}));
-        stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_wait(), {}));
-        stmts.push_back(MakeBlackholeCall(blackhole_pack_reconfig_data_format(), {IntImm32(cb_id)}));
-        stmts.push_back(MakeBlackholeCall(blackhole_pack_tile(),
-                                          {IntImm32(0), IntImm32(cb_id), IntImm32(tile)}));
-        stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_release(), {}));
-      }
+      append_copy_to_publish_cb(&stmts);
       if (Stmt release = ReleaseExactInputAfterUse(live_source, current_order_index);
           release.defined()) {
         stmts.push_back(release);
@@ -742,25 +790,74 @@ Stmt PlanTTKernelABI::GenerateLocalToCBSliceLoopSequence(const ForNode* op,
   };
   if (live_source_candidate.defined() && try_cast_source_live_form() &&
       live_source.num_tiles == num_pages) {
+    auto make_source_wait = [&]() {
+      return MakeBlackholeCall(blackhole_cb_wait_front(),
+                               {IntImm32(live_source.cb_id),
+                                IntImm32(live_source.num_tiles)});
+    };
+    auto make_source_pop = [&]() {
+      return MakeBlackholeCall(blackhole_cb_pop_front(),
+                               {IntImm32(live_source.cb_id),
+                                IntImm32(live_source.num_tiles)});
+    };
+    auto append_copy_to_publish_cb = [&](std::vector<Stmt>* out) {
+      for (int tile = 0; tile < num_pages; ++tile) {
+        out->push_back(MakeBlackholeCall(blackhole_tile_regs_acquire(), {}));
+        out->push_back(MakeBlackholeCall(blackhole_copy_tile_to_dst_init_short(),
+                                         {IntImm32(live_source.cb_id)}));
+        out->push_back(MakeBlackholeCall(blackhole_copy_tile(),
+                                         {IntImm32(live_source.cb_id),
+                                          IntImm32(tile), IntImm32(0)}));
+        out->push_back(MakeBlackholeCall(blackhole_tile_regs_commit(), {}));
+        out->push_back(MakeBlackholeCall(blackhole_tile_regs_wait(), {}));
+        out->push_back(
+            MakeBlackholeCall(blackhole_pack_reconfig_data_format(), {IntImm32(cb_id)}));
+        out->push_back(MakeBlackholeCall(blackhole_pack_tile(),
+                                         {IntImm32(0), IntImm32(cb_id),
+                                          IntImm32(tile)}));
+        out->push_back(MakeBlackholeCall(blackhole_tile_regs_release(), {}));
+      }
+    };
+    if (current_lowering_order_index_ >= 0) {
+      const FutureBufferUses source_future_uses =
+          ClassifyFutureLiveCBReadsBeforeNextWrite(live_source_candidate,
+                                                   current_lowering_order_index_);
+      const bool should_defer = ShouldDeferTerminalTransportPublicationAcrossSerialLoop(
+          match.dst, current_lowering_order_index_);
+      if (should_defer &&
+          !source_future_uses.has_compute_consume &&
+          !source_future_uses.has_transport_consume &&
+          !source_future_uses.has_reference) {
+        const PrimExpr final_iteration = BuildActiveSerialLoopFinalIterationPredicate();
+        ICHECK(final_iteration.defined())
+            << "Serial-loop terminal transport publication requires a final-lane predicate";
+        stmts.push_back(make_source_wait());
+        stmts.push_back(tir::IfThenElse(tir::Not(final_iteration), make_source_pop()));
+
+        std::vector<Stmt> publication;
+        publication.push_back(make_source_wait());
+        publication.push_back(MakeBlackholeCall(blackhole_cb_reserve_back(),
+                                                {IntImm32(cb_id),
+                                                 IntImm32(num_pages)}));
+        MarkExactCBValuesOverlap({live_source.cb_id, cb_id});
+        append_copy_to_publish_cb(&publication);
+        publication.push_back(make_source_pop());
+        publication.push_back(MakeBlackholeCall(blackhole_cb_push_back(),
+                                                {IntImm32(cb_id),
+                                                 IntImm32(num_pages)}));
+        RecordSerialLoopTerminalTransportPublication(
+            MaybeWrapComputeSegment(SeqStmt::Flatten(publication)));
+        ClearTiledCBLiveFormAliases(live_source_candidate);
+        RecordTiledCBLiveFormAliases(match.dst, cb_id);
+        return MaybeWrapComputeSegment(SeqStmt::Flatten(stmts));
+      }
+    }
     stmts.push_back(MakeBlackholeCall(blackhole_cb_wait_front(),
                                       {IntImm32(live_source.cb_id), IntImm32(live_source.num_tiles)}));
     stmts.push_back(MakeBlackholeCall(blackhole_cb_reserve_back(),
                                       {IntImm32(cb_id), IntImm32(num_pages)}));
     MarkExactCBValuesOverlap({live_source.cb_id, cb_id});
-    for (int tile = 0; tile < num_pages; ++tile) {
-      stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_acquire(), {}));
-      stmts.push_back(
-          MakeBlackholeCall(blackhole_copy_tile_to_dst_init_short(), {IntImm32(live_source.cb_id)}));
-      stmts.push_back(MakeBlackholeCall(blackhole_copy_tile(),
-                                        {IntImm32(live_source.cb_id), IntImm32(tile), IntImm32(0)}));
-      stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_commit(), {}));
-      stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_wait(), {}));
-      stmts.push_back(
-          MakeBlackholeCall(blackhole_pack_reconfig_data_format(), {IntImm32(cb_id)}));
-      stmts.push_back(MakeBlackholeCall(blackhole_pack_tile(),
-                                        {IntImm32(0), IntImm32(cb_id), IntImm32(tile)}));
-      stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_release(), {}));
-    }
+    append_copy_to_publish_cb(&stmts);
     if (current_lowering_order_index_ >= 0) {
       const FutureBufferUses future_uses = ClassifyFutureLiveCBReadsBeforeNextWrite(
           live_source_candidate, current_lowering_order_index_);

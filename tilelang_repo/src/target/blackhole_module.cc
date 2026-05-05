@@ -1564,6 +1564,19 @@ static bool HasPerWorkDescriptorForBuffer(const ExecutableSpec& spec,
                      });
 }
 
+static bool HasIndexTableTileStartDescriptorForBuffer(const ExecutableSpec& spec,
+                                                      const std::string& buffer) {
+  return std::any_of(spec.per_work_arg_specs.begin(), spec.per_work_arg_specs.end(),
+                     [&](const PerWorkArgSpec& arg_spec) {
+                       return arg_spec.buffer == buffer &&
+                              arg_spec.descriptor_kind ==
+                                  tl::blackhole_runtime_arg_schema::kDescriptorTileStart &&
+                              arg_spec.value_source ==
+                                  tl::blackhole_runtime_arg_schema::kValueSourceIndexTable &&
+                              !arg_spec.index_buffer.empty();
+                     });
+}
+
 static bool HasSegmentedRowRangeDescriptorForBuffer(const ExecutableSpec& spec,
                                                     const std::string& buffer) {
   return HasPerWorkDescriptorForBuffer(
@@ -1606,6 +1619,18 @@ static void ValidateGemmInputShape(const ExecutableSpec& spec,
   }
 
   if (binding.name == gemm.b_buffer) {
+    if (HasIndexTableTileStartDescriptorForBuffer(spec, binding.name)) {
+      const uint32_t expected_rows = gemm.transpose_B ? gemm.N
+                                                      : gemm.K * logical_grid_z;
+      const uint32_t expected_cols = gemm.transpose_B ? gemm.K * logical_grid_z
+                                                      : gemm.N;
+      ICHECK(cols == expected_cols && rows >= expected_rows)
+          << "Unexpected paged B tensor shape for GEMM direct path: got ("
+          << rows << ", " << cols << "), expected at least " << expected_rows
+          << " rows and " << expected_cols << " cols for transpose_B="
+          << gemm.transpose_B;
+      return;
+    }
     const uint32_t expected_rows = gemm.transpose_B ? gemm.N * logical_grid_x
                                                     : gemm.K * logical_grid_x * logical_grid_z;
     const uint32_t expected_cols = gemm.transpose_B ? gemm.K * logical_grid_z
@@ -1901,41 +1926,48 @@ static std::vector<uint8_t> BuildInputTransferData(const ExecutableSpec& spec,
   const size_t tensor_size = GetDataSize(*tensor);
   const auto gemm = GetPrimaryGemmCompute(spec);
 
-  if (!gemm.enabled || gemm.kind != "gemm" || !IsTwoDimTensor(tensor)) {
-    const auto& materialization = ResolveBufferMaterializationSpec(spec, binding.name);
-    const InterleavedTilePlan tile_plan =
-        BuildInterleavedTilePlan(spec, materialization, tensor);
-    if (tile_plan.enabled) {
-      if (tensor->dtype.bits == 16) {
-        auto tiled = BuildInterleavedTiledTransferData<uint16_t>(tensor, tile_plan);
-        if (BlackholeDebugIOEnabled()) {
-          const auto* values = reinterpret_cast<const uint16_t*>(tiled.data());
-          std::vector<uint16_t> preview(values, values + tiled.size() / sizeof(uint16_t));
-          LOG(INFO) << "Blackhole debug input " << binding.name
-                    << ": tiled preview=" << PreviewTensorValues(preview);
-        }
-        return tiled;
-      }
-      if (tensor->dtype.bits == 32) {
-        auto tiled = BuildInterleavedTiledTransferData<uint32_t>(tensor, tile_plan);
-        if (BlackholeDebugIOEnabled()) {
-          const auto* values = reinterpret_cast<const uint32_t*>(tiled.data());
-          std::vector<uint32_t> preview(values, values + tiled.size() / sizeof(uint32_t));
-          LOG(INFO) << "Blackhole debug input " << binding.name
-                    << ": tiled preview=" << PreviewTensorValues(preview);
-        }
-        return tiled;
-      }
-    }
+  auto build_raw_transfer = [&]() {
     std::vector<uint8_t> raw(tensor_size);
     std::memcpy(raw.data(), GetTensorData<uint8_t>(tensor), tensor_size);
     return raw;
+  };
+  if (gemm.enabled && gemm.kind == "gemm" && binding.name == gemm.a_buffer &&
+      HasSegmentedRowRangeDescriptorForBuffer(spec, binding.name)) {
+    return build_raw_transfer();
+  }
+
+  const auto& materialization = ResolveBufferMaterializationSpec(spec, binding.name);
+  const InterleavedTilePlan tile_plan =
+      BuildInterleavedTilePlan(spec, materialization, tensor);
+  if (tile_plan.enabled) {
+    if (tensor->dtype.bits == 16) {
+      auto tiled = BuildInterleavedTiledTransferData<uint16_t>(tensor, tile_plan);
+      if (BlackholeDebugIOEnabled()) {
+        const auto* values = reinterpret_cast<const uint16_t*>(tiled.data());
+        std::vector<uint16_t> preview(values, values + tiled.size() / sizeof(uint16_t));
+        LOG(INFO) << "Blackhole debug input " << binding.name
+                  << ": tiled preview=" << PreviewTensorValues(preview);
+      }
+      return tiled;
+    }
+    if (tensor->dtype.bits == 32) {
+      auto tiled = BuildInterleavedTiledTransferData<uint32_t>(tensor, tile_plan);
+      if (BlackholeDebugIOEnabled()) {
+        const auto* values = reinterpret_cast<const uint32_t*>(tiled.data());
+        std::vector<uint32_t> preview(values, values + tiled.size() / sizeof(uint32_t));
+        LOG(INFO) << "Blackhole debug input " << binding.name
+                  << ": tiled preview=" << PreviewTensorValues(preview);
+      }
+      return tiled;
+    }
+  }
+
+  if (!gemm.enabled || gemm.kind != "gemm" || !IsTwoDimTensor(tensor)) {
+    return build_raw_transfer();
   }
 
   if (binding.name != gemm.a_buffer && binding.name != gemm.b_buffer) {
-    std::vector<uint8_t> raw(tensor_size);
-    std::memcpy(raw.data(), GetTensorData<uint8_t>(tensor), tensor_size);
-    return raw;
+    return build_raw_transfer();
   }
 
   const std::string expected_tensor_dtype =
@@ -1953,11 +1985,9 @@ static std::vector<uint8_t> BuildInputTransferData(const ExecutableSpec& spec,
   const auto [rows, cols] = GetTensorShape2D(tensor);
   ValidateGemmInputShape(spec, binding, rows, cols);
 
-  if (binding.name == gemm.a_buffer &&
-      HasSegmentedRowRangeDescriptorForBuffer(spec, binding.name)) {
-    std::vector<uint8_t> raw_bytes(tensor_size);
-    std::memcpy(raw_bytes.data(), GetTensorData<uint8_t>(tensor), tensor_size);
-    return raw_bytes;
+  if (binding.name == gemm.b_buffer &&
+      HasIndexTableTileStartDescriptorForBuffer(spec, binding.name)) {
+    return build_raw_transfer();
   }
 
   std::vector<uint16_t> tiled;
@@ -3583,6 +3613,9 @@ static uint32_t EvaluateIndexTableSource(const std::string& source,
   if (source == tl::blackhole_runtime_arg_schema::kValueSourceLogicalBlockXYLinear) {
     return context.by * context.logical_grid_x + context.bx;
   }
+  if (source == tl::blackhole_runtime_arg_schema::kValueSourceLogicalBlockYXLinear) {
+    return context.bx * context.logical_grid_y + context.by;
+  }
   LOG(FATAL) << "Unsupported Blackhole index_table index source " << source;
   return 0;
 }
@@ -3636,6 +3669,9 @@ static uint32_t EvaluatePerWorkArgSpec(const PerWorkArgSpec& spec,
   }
   if (spec.value_source == tl::blackhole_runtime_arg_schema::kValueSourceLogicalBlockXYLinear) {
     return context.by * context.logical_grid_x + context.bx;
+  }
+  if (spec.value_source == tl::blackhole_runtime_arg_schema::kValueSourceLogicalBlockYXLinear) {
+    return context.bx * context.logical_grid_y + context.by;
   }
   if (spec.value_source ==
       tl::blackhole_runtime_arg_schema::kValueSourceLogicalBlockZKTileStart) {

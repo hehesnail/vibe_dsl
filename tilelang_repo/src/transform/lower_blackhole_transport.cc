@@ -49,6 +49,7 @@ using tir::Buffer;
 using tir::BufferLoadNode;
 using tir::BufferStoreNode;
 using tir::Call;
+using tir::Cast;
 using tir::Evaluate;
 using tir::For;
 using tir::ForNode;
@@ -761,24 +762,25 @@ bool ExprStructurallyEqualModuloCasts(const PrimExpr& lhs, const PrimExpr& rhs) 
 }
 
 std::optional<PrimExpr> MakeRaggedRowPredicateForPage(
-    const PrimExpr& predicate, const PrimExpr& row_expr, int page_row) {
+    const PrimExpr& predicate, const PrimExpr& row_expr,
+    const PrimExpr& page_row) {
   if (!predicate.defined() || !row_expr.defined()) {
     return std::nullopt;
   }
   if (const auto* lt = predicate.as<tir::LTNode>()) {
     if (ExprStructurallyEqualModuloCasts(lt->a, row_expr)) {
-      return IntImm32(page_row) < lt->b;
+      return page_row < lt->b;
     }
     if (ExprStructurallyEqualModuloCasts(lt->b, row_expr)) {
-      return lt->a < IntImm32(page_row);
+      return lt->a < page_row;
     }
   }
   if (const auto* le = predicate.as<tir::LENode>()) {
     if (ExprStructurallyEqualModuloCasts(le->a, row_expr)) {
-      return IntImm32(page_row) <= le->b;
+      return page_row <= le->b;
     }
     if (ExprStructurallyEqualModuloCasts(le->b, row_expr)) {
-      return le->a <= IntImm32(page_row);
+      return le->a <= page_row;
     }
   }
   return std::nullopt;
@@ -990,6 +992,30 @@ bool PlanTTKernelABI::ExprUsesTransportVar(const PrimExpr& expr,
   return uses_transport_var;
 }
 
+bool PlanTTKernelABI::ExprUsesTileLocalVar(const PrimExpr& expr,
+                                             const std::vector<Var>& loop_vars) const {
+  bool uses_tile_local_var = false;
+  tir::PostOrderVisit(expr, [&](const ObjectRef& node) {
+    if (const auto* var = node.as<tir::VarNode>()) {
+      if (thread_index_vars_.count(var)) {
+        uses_tile_local_var = true;
+        return;
+      }
+      if (thread_index_var_names_.count(var->name_hint)) {
+        uses_tile_local_var = true;
+        return;
+      }
+      for (const auto& loop_var : loop_vars) {
+        if (loop_var.defined() && var == loop_var.get()) {
+          uses_tile_local_var = true;
+          return;
+        }
+      }
+    }
+  });
+  return uses_tile_local_var;
+}
+
 Var PlanTTKernelABI::SelectLogicalRowThreadVar(int64_t logical_rows) const {
   std::vector<Var> exact_extent_matches;
   std::vector<Var> non_unit_matches;
@@ -1019,11 +1045,26 @@ Var PlanTTKernelABI::SelectLogicalRowThreadVar(int64_t logical_rows) const {
 
 std::pair<int, int> PlanTTKernelABI::SelectStagedCopyTransportAxes(
     const Array<PrimExpr>& global_indices, const std::vector<Var>& loop_vars) const {
+  std::vector<int> tile_local_axes;
   std::vector<int> transport_axes;
   for (size_t i = 0; i < global_indices.size(); ++i) {
+    if (ExprUsesTileLocalVar(global_indices[i], loop_vars)) {
+      tile_local_axes.push_back(static_cast<int>(i));
+    }
     if (ExprUsesTransportVar(global_indices[i], loop_vars)) {
       transport_axes.push_back(static_cast<int>(i));
     }
+  }
+  if (tile_local_axes.size() >= 2U) {
+    return {tile_local_axes.front(), tile_local_axes.back()};
+  }
+  if (tile_local_axes.size() == 1U && global_indices.size() >= 2U) {
+    const int row_axis = tile_local_axes.front();
+    int col_axis = static_cast<int>(global_indices.size() - 1U);
+    if (col_axis == row_axis) {
+      col_axis = row_axis == 0 ? 1 : 0;
+    }
+    return {row_axis, col_axis};
   }
   if (transport_axes.size() >= 2U) {
     return {transport_axes.front(), transport_axes.back()};
@@ -1927,6 +1968,17 @@ Stmt PlanTTKernelABI::GenerateStagedCopyLoopSequence(
     const bool materialize_to_local = direction == CopyDirection::kDramToLocal;
     const Buffer cb_producer_buffer =
         materialize_to_local ? op->buffer : SelectCBProducerBufferForDramToCB(op->buffer);
+    auto has_tile_compute_input_identity = [&](const Buffer& buffer) {
+      for (const std::string& identity : CollectBufferFlowIdentities(buffer)) {
+        if (tile_compute_input_buffers_.count(identity) != 0U) {
+          return true;
+        }
+      }
+      return false;
+    };
+    const bool guarded_copy_feeds_tile_compute =
+        has_tile_compute_input_identity(shared_buffer) ||
+        has_tile_compute_input_identity(cb_producer_buffer);
     int cb_id = AllocateRequirementIndex(
         cb_producer_buffer, segmented_gemm ? CBType::kInput : CBType::kIntermediate);
     RecordStagedCopyBufferBinding(op, direction);
@@ -1934,7 +1986,7 @@ Stmt PlanTTKernelABI::GenerateStagedCopyLoopSequence(
     const std::optional<PrimExpr> ragged_predicate = GetGuardedCopyPredicate(op);
     auto make_ragged_row_predicate_for_page =
         [&](const PrimExpr& predicate, const PrimExpr& row_expr,
-            int page_row) -> std::optional<PrimExpr> {
+            const PrimExpr& page_row) -> std::optional<PrimExpr> {
       if (std::optional<PrimExpr> simple =
               MakeRaggedRowPredicateForPage(predicate, row_expr, page_row)) {
         return simple;
@@ -1962,15 +2014,15 @@ Stmt PlanTTKernelABI::GenerateStagedCopyLoopSequence(
 
       auto rewrite_for_candidate =
           [&](const PrimExpr& expr, const PrimExpr& local_row_expr,
-              int row_value) -> RewriteResult {
+              const PrimExpr& row_value) -> RewriteResult {
         std::function<RewriteResult(const PrimExpr&)> rewrite =
             [&](const PrimExpr& current) -> RewriteResult {
           if (!current.defined()) {
             return RewriteResult{current, false, false, true};
           }
           if (ExprStructurallyEqualModuloCasts(current, local_row_expr)) {
-            return RewriteResult{
-                IntImm(current.dtype(), row_value), true, false, false};
+            return RewriteResult{Cast(current.dtype(), row_value),
+                                 true, false, false};
           }
           const PrimExpr stripped = StripCasts(current);
           if (const auto* var = stripped.as<tir::VarNode>()) {
@@ -2084,7 +2136,7 @@ Stmt PlanTTKernelABI::GenerateStagedCopyLoopSequence(
         ragged_predicate.has_value() &&
         !op->indices.empty() &&
         make_ragged_row_predicate_for_page(
-            ragged_predicate.value(), op->indices[0], 0).has_value();
+            ragged_predicate.value(), op->indices[0], IntImm32(0)).has_value();
     const bool can_materialize_segmented_tiled_rows =
         !materialize_to_local && segmented_gemm && has_segmented_row_bound &&
         has_admitted_row_predicate && !geometry.use_page_transport &&
@@ -2129,7 +2181,7 @@ Stmt PlanTTKernelABI::GenerateStagedCopyLoopSequence(
       for (int page_row = 0; page_row < shared_rows; ++page_row) {
         const std::optional<PrimExpr> maybe_row_predicate =
             make_ragged_row_predicate_for_page(
-                ragged_predicate.value(), op->indices[0], page_row);
+                ragged_predicate.value(), op->indices[0], IntImm32(page_row));
         ICHECK(maybe_row_predicate.has_value())
             << "Blackhole segmented tiled-row reader lost row predicate";
         PrimExpr row_predicate = analyzer.Simplify(maybe_row_predicate.value());
@@ -2196,7 +2248,8 @@ Stmt PlanTTKernelABI::GenerateStagedCopyLoopSequence(
       }
       return maybe_wrap_segment_stmt(SeqStmt::Flatten(stmts));
     }
-    if (!materialize_to_local && (has_ragged_row_bound || has_segmented_row_bound) &&
+    if (!materialize_to_local && !guarded_copy_feeds_tile_compute &&
+        (has_ragged_row_bound || has_segmented_row_bound) &&
         has_admitted_row_predicate &&
         !geometry.use_page_transport && geometry.shared_cols == kBlackholeTileCols &&
         geometry.global_cols == geometry.shared_cols) {
@@ -2217,37 +2270,39 @@ Stmt PlanTTKernelABI::GenerateStagedCopyLoopSequence(
           ragged_row_bound_shared_buffer_names_.insert(op_buffer_name);
         }
       }
-      for (int page_row = 0; page_row < shared_rows; ++page_row) {
-        const std::optional<PrimExpr> maybe_row_predicate =
-            make_ragged_row_predicate_for_page(
-                ragged_predicate.value(), op->indices[0], page_row);
-        ICHECK(maybe_row_predicate.has_value())
-            << "Blackhole row-bound reader lost row predicate";
-        PrimExpr row_predicate = analyzer.Simplify(maybe_row_predicate.value());
-        PrimExpr source_page_index =
-            has_segmented_row_bound ? make_segment_row_page_index(page_row)
-                                    : make_full_tile_row_page_index(page_row);
-        std::vector<Stmt> valid_row_stmts;
-        valid_row_stmts.push_back(MakeBlackholeCall(
-            blackhole_read_page_to_cb(),
-            {load->buffer->data, source_page_index, IntImm32(cb_id),
-             IntImm32(geometry.page_bytes), IntImm32(accessor_slot), IntImm32(0)}));
-        valid_row_stmts.push_back(MakeBlackholeCall(blackhole_noc_async_read_barrier(), {}));
-        std::vector<Stmt> zero_row_stmts;
-        zero_row_stmts.push_back(MakeBlackholeCall(
-            blackhole_zero_cb_page(),
-            {IntImm32(cb_id), IntImm32(geometry.page_bytes), IntImm32(0)}));
-        stmts.push_back(MakeBlackholeCall(
-            blackhole_cb_reserve_back(), {IntImm32(cb_id), IntImm32(1)}));
-        stmts.push_back(tir::IfThenElse(row_predicate,
-                                        SeqStmt::Flatten(valid_row_stmts),
-                                        SeqStmt::Flatten(zero_row_stmts)));
-        stmts.push_back(MakeBlackholeCall(
-            blackhole_cb_push_back(), {IntImm32(cb_id), IntImm32(1)}));
-        RegisterAccessor(segment_kind, load->buffer,
-                         accessor_slot, 2, 0, 0, 2, geometry.page_bytes, host_axis_order,
-                         false, "page_indexed");
-      }
+      Var page_row_var("__tl_page_row", DataType::Int(32));
+      PrimExpr page_row = page_row_var;
+      const std::optional<PrimExpr> maybe_row_predicate =
+          make_ragged_row_predicate_for_page(
+              ragged_predicate.value(), op->indices[0], page_row);
+      ICHECK(maybe_row_predicate.has_value())
+          << "Blackhole row-bound reader lost row predicate";
+      PrimExpr row_predicate = analyzer.Simplify(maybe_row_predicate.value());
+      PrimExpr source_page_index =
+          analyzer.Simplify(row_page_base_index + page_row);
+      std::vector<Stmt> valid_row_stmts;
+      valid_row_stmts.push_back(MakeBlackholeCall(
+          blackhole_read_page_to_cb(),
+          {load->buffer->data, source_page_index, IntImm32(cb_id),
+           IntImm32(geometry.page_bytes), IntImm32(accessor_slot), IntImm32(0)}));
+      valid_row_stmts.push_back(MakeBlackholeCall(blackhole_noc_async_read_barrier(), {}));
+      std::vector<Stmt> zero_row_stmts;
+      zero_row_stmts.push_back(MakeBlackholeCall(
+          blackhole_zero_cb_page(),
+          {IntImm32(cb_id), IntImm32(geometry.page_bytes), IntImm32(0)}));
+      std::vector<Stmt> loop_stmts;
+      loop_stmts.push_back(MakeBlackholeCall(
+          blackhole_cb_reserve_back(), {IntImm32(cb_id), IntImm32(1)}));
+      loop_stmts.push_back(tir::IfThenElse(row_predicate,
+                                           SeqStmt::Flatten(valid_row_stmts),
+                                           SeqStmt::Flatten(zero_row_stmts)));
+      loop_stmts.push_back(MakeBlackholeCall(
+          blackhole_cb_push_back(), {IntImm32(cb_id), IntImm32(1)}));
+      stmts.push_back(For(page_row_var, IntImm32(0), IntImm32(shared_rows),
+                          tir::ForKind::kSerial, SeqStmt::Flatten(loop_stmts)));
+      RegisterAccessor(segment_kind, load->buffer,
+                       accessor_slot, 2, 0, 0, 2, geometry.page_bytes, host_axis_order,
+                       false, "page_indexed");
       RecordTiledCBLiveFormAliases(cb_producer_buffer, cb_id);
       if (!SameBufferIdentity(cb_producer_buffer, op->buffer)) {
         RecordTiledCBLiveFormAliases(op->buffer, cb_id);

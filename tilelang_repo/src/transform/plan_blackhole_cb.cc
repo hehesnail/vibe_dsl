@@ -129,7 +129,30 @@ CBFlowClass CBFlowClassFromString(const std::string& flow_class) {
   return CBFlowClass::kState;
 }
 
-bool IsCompatibleForReuse(const CBRequirement& req, const CBConfig& config) {
+bool IsExclusiveRequirement(int requirement_index,
+                            const std::vector<bool>& exclusive_requirements) {
+  return requirement_index >= 0 &&
+         requirement_index < static_cast<int>(exclusive_requirements.size()) &&
+         exclusive_requirements[requirement_index];
+}
+
+bool ConfigHasExclusiveRequirement(const CBConfig& config,
+                                   const std::vector<bool>& exclusive_requirements) {
+  return std::any_of(config.requirement_indices.begin(),
+                     config.requirement_indices.end(),
+                     [&](int requirement_index) {
+                       return IsExclusiveRequirement(requirement_index,
+                                                     exclusive_requirements);
+                     });
+}
+
+bool IsCompatibleForReuse(const CBRequirement& req, int req_index,
+                          const CBConfig& config,
+                          const std::vector<bool>& exclusive_requirements) {
+  if (IsExclusiveRequirement(req_index, exclusive_requirements) ||
+      ConfigHasExclusiveRequirement(config, exclusive_requirements)) {
+    return false;
+  }
   if ((req.initial_reserve_pages > 0 && req.flow_class == CBFlowClass::kState) ||
       (config.initial_reserve_pages > 0 && config.flow_class == CBFlowClass::kState)) {
     return false;
@@ -169,7 +192,8 @@ std::vector<int> GetCBArgPositions(const std::string& op_name) {
       op_name == "tl.blackhole.copy_cb_page" ||
       op_name == "tl.blackhole.write_tile_from_cb" ||
       op_name == "tl.blackhole.write_page_from_cb" ||
-      op_name == "tl.blackhole.zero_cb_page") {
+      op_name == "tl.blackhole.zero_cb_page" ||
+      op_name == "tl.blackhole.row_bound_mask_to_cb") {
     if (op_name == "tl.blackhole.copy_cb_page") {
       return {0, 1};
     }
@@ -390,6 +414,41 @@ std::vector<CBRequirementEventInfo> CollectCBRequirementEventInfo(const tir::Stm
   return collector.Take();
 }
 
+std::vector<bool> CollectExclusiveRequirementMask(const tir::Stmt& body,
+                                                  int requirement_count) {
+  class Collector final : public tir::StmtExprVisitor {
+   public:
+    explicit Collector(int requirement_count)
+        : exclusive_(std::max(0, requirement_count), false) {}
+
+    using tir::StmtExprVisitor::VisitExpr_;
+
+    void Collect(const tir::Stmt& body) { VisitStmt(body); }
+
+    void VisitExpr_(const tir::CallNode* op) final {
+      if (IsBlackholeOp(op, "tl.blackhole.row_bound_mask_to_cb") &&
+          !op->args.empty()) {
+        if (const auto* cb_id = op->args[0].as<IntImmNode>()) {
+          if (cb_id->value >= 0 &&
+              cb_id->value < static_cast<int64_t>(exclusive_.size())) {
+            exclusive_[static_cast<size_t>(cb_id->value)] = true;
+          }
+        }
+      }
+      tir::StmtExprVisitor::VisitExpr_(op);
+    }
+
+    std::vector<bool> Take() { return std::move(exclusive_); }
+
+   private:
+    std::vector<bool> exclusive_;
+  };
+
+  Collector collector(requirement_count);
+  collector.Collect(body);
+  return collector.Take();
+}
+
 std::vector<int> CollectOutstandingReservedPages(const tir::Stmt& body,
                                                  int requirement_count) {
   class Collector final : public tir::StmtExprVisitor {
@@ -486,6 +545,16 @@ bool CanAutoManageStateFront(const CBRequirement& req) {
          req.flow_class == CBFlowClass::kState && req.initial_reserve_pages == 0;
 }
 
+bool CanAutoPopFrontBeforeProducer(const CBRequirement& req) {
+  if (CanAutoManageStateFront(req)) {
+    return true;
+  }
+  return req.type == CBType::kIntermediate &&
+         req.flow_class == CBFlowClass::kStream &&
+         req.initial_reserve_pages == 0 &&
+         std::max(req.publish_pages_per_event, req.consume_pages_per_event) > 0;
+}
+
 bool IsDirectLocalStateConfig(const CBConfig& config) {
   return config.role == "intermediate" && config.flow_class == CBFlowClass::kState &&
          config.initial_reserve_pages == 0 && config.publish_pages_per_event == 0 &&
@@ -562,15 +631,18 @@ tir::Stmt InsertStateFrontPopsBeforeReReserve(
         return;
       }
       const int cb_id = StaticCBId(op);
-      if (cb_id < 0 || !CanAutoManageStateFront(requirements_[cb_id]) ||
+      if (cb_id < 0 || !CanAutoPopFrontBeforeProducer(requirements_[cb_id]) ||
           available_front_pages_[cb_id] <= 0) {
         return;
       }
-      const int capacity_pages = std::max(1, requirements_[cb_id].num_pages);
       const int event_pages =
           requirements_[cb_id].consume_pages_per_event > 0
               ? requirements_[cb_id].consume_pages_per_event
               : std::max(1, requirements_[cb_id].publish_pages_per_event);
+      const int capacity_pages =
+          requirements_[cb_id].flow_class == CBFlowClass::kStream
+              ? std::max(1, event_pages)
+              : std::max(1, requirements_[cb_id].num_pages);
       const int producer_pages =
           is_reserve ? std::max(1, StaticPages(op)) : event_pages;
       const int overflow_pages =
@@ -586,7 +658,7 @@ tir::Stmt InsertStateFrontPopsBeforeReReserve(
 
     void RecordQueueMutation(const tir::CallNode* op) {
       const int cb_id = StaticCBId(op);
-      if (cb_id < 0 || !CanAutoManageStateFront(requirements_[cb_id])) {
+      if (cb_id < 0 || !CanAutoPopFrontBeforeProducer(requirements_[cb_id])) {
         return;
       }
       const int pages = StaticPages(op);
@@ -603,6 +675,134 @@ tir::Stmt InsertStateFrontPopsBeforeReReserve(
 
     const std::vector<CBRequirement>& requirements_;
     std::vector<int> available_front_pages_;
+  };
+
+  Inserter inserter(requirements);
+  return inserter.Rewrite(body);
+}
+
+std::vector<int> ComputeLoopLocalBackedgePopPages(
+    const tir::Stmt& body,
+    const std::vector<CBRequirement>& requirements) {
+  class Collector final : public tir::StmtExprVisitor {
+   public:
+    explicit Collector(const std::vector<CBRequirement>& requirements)
+        : requirements_(requirements),
+          pushed_pages_(requirements.size(), 0),
+          popped_pages_(requirements.size(), 0),
+          locally_available_pages_(requirements.size(), 0),
+          waits_after_local_publish_(requirements.size(), 0) {}
+
+    using tir::StmtExprVisitor::VisitExpr_;
+
+    void Collect(const tir::Stmt& body) { VisitStmt(body); }
+
+    std::vector<int> Take() const {
+      std::vector<int> pop_pages(requirements_.size(), 0);
+      for (size_t i = 0; i < requirements_.size(); ++i) {
+        const CBRequirement& req = requirements_[i];
+        if (req.type == CBType::kInput || req.flow_class == CBFlowClass::kState) {
+          continue;
+        }
+        const int net_local_front = pushed_pages_[i] - popped_pages_[i];
+        if (net_local_front <= 0 || waits_after_local_publish_[i] <= 0) {
+          continue;
+        }
+        pop_pages[i] = net_local_front;
+      }
+      return pop_pages;
+    }
+
+    void VisitExpr_(const tir::CallNode* op) final {
+      const int cb_id = StaticCBId(op);
+      const int pages = StaticPages(op);
+      if (cb_id >= 0 && pages > 0) {
+        if (IsBlackholeOp(op, "tl.blackhole.cb_push_back")) {
+          pushed_pages_[cb_id] += pages;
+          locally_available_pages_[cb_id] += pages;
+        } else if (IsBlackholeOp(op, "tl.blackhole.cb_pop_front")) {
+          popped_pages_[cb_id] += pages;
+          locally_available_pages_[cb_id] =
+              std::max(0, locally_available_pages_[cb_id] - pages);
+        } else if (IsBlackholeOp(op, "tl.blackhole.cb_wait_front") &&
+                   locally_available_pages_[cb_id] > 0) {
+          waits_after_local_publish_[cb_id] =
+              std::max(waits_after_local_publish_[cb_id], pages);
+        }
+      }
+      tir::StmtExprVisitor::VisitExpr_(op);
+    }
+
+   private:
+    int StaticCBId(const tir::CallNode* op) const {
+      if (op == nullptr || op->args.empty()) {
+        return -1;
+      }
+      const auto* cb_id = op->args[0].as<IntImmNode>();
+      if (cb_id == nullptr || cb_id->value < 0 ||
+          cb_id->value >= static_cast<int64_t>(requirements_.size())) {
+        return -1;
+      }
+      return static_cast<int>(cb_id->value);
+    }
+
+    int StaticPages(const tir::CallNode* op) const {
+      if (op == nullptr || op->args.size() < 2U) {
+        return 0;
+      }
+      const auto* pages = op->args[1].as<IntImmNode>();
+      return pages != nullptr ? static_cast<int>(pages->value) : 0;
+    }
+
+    const std::vector<CBRequirement>& requirements_;
+    std::vector<int> pushed_pages_;
+    std::vector<int> popped_pages_;
+    std::vector<int> locally_available_pages_;
+    std::vector<int> waits_after_local_publish_;
+  };
+
+  Collector collector(requirements);
+  collector.Collect(body);
+  return collector.Take();
+}
+
+tir::Stmt InsertLoopLocalBackedgePops(
+    const tir::Stmt& body,
+    const std::vector<CBRequirement>& requirements) {
+  class Inserter final : public tir::StmtExprMutator {
+   public:
+    explicit Inserter(const std::vector<CBRequirement>& requirements)
+        : requirements_(requirements) {}
+
+    using tir::StmtExprMutator::VisitStmt_;
+
+    tir::Stmt Rewrite(const tir::Stmt& body) { return VisitStmt(body); }
+
+    tir::Stmt VisitStmt_(const tir::ForNode* op) final {
+      tir::Stmt body = VisitStmt(op->body);
+      body = AppendBackedgePops(body);
+      return tir::For(op->loop_var, op->min, op->extent, op->kind, body,
+                      op->thread_binding, op->annotations, op->step, op->span);
+    }
+
+   private:
+    tir::Stmt AppendBackedgePops(const tir::Stmt& body) const {
+      const std::vector<int> pop_pages =
+          ComputeLoopLocalBackedgePopPages(body, requirements_);
+      std::vector<tir::Stmt> suffix;
+      suffix.push_back(body);
+      for (size_t i = 0; i < pop_pages.size(); ++i) {
+        if (pop_pages[i] > 0) {
+          suffix.push_back(MakeCBPopFrontStmt(static_cast<int>(i), pop_pages[i]));
+        }
+      }
+      if (suffix.size() == 1U) {
+        return body;
+      }
+      return tir::SeqStmt::Flatten(suffix);
+    }
+
+    const std::vector<CBRequirement>& requirements_;
   };
 
   Inserter inserter(requirements);
@@ -944,6 +1144,245 @@ tir::Stmt InsertPhysicalPopsBeforeBlockingReserve(
   return inserter.Rewrite(body);
 }
 
+tir::Stmt ClampIntermediatePopsToAvailableFront(
+    const tir::Stmt& body, const std::vector<CBConfig>& configs) {
+  int max_cb_id = -1;
+  for (const CBConfig& config : configs) {
+    max_cb_id = std::max(max_cb_id, config.cb_id);
+  }
+  std::vector<bool> is_local_intermediate(std::max(0, max_cb_id + 1), false);
+  for (const CBConfig& config : configs) {
+    if (config.cb_id >= 0 && config.role == "intermediate") {
+      is_local_intermediate[config.cb_id] = true;
+    }
+  }
+
+  class Rewriter final : public tir::StmtExprMutator {
+   public:
+    explicit Rewriter(std::vector<bool> is_local_intermediate)
+        : is_local_intermediate_(std::move(is_local_intermediate)),
+          front_pages_(is_local_intermediate_.size(), 0),
+          locally_pushed_pages_(is_local_intermediate_.size(), 0) {}
+
+    using tir::StmtExprMutator::VisitExpr_;
+
+    tir::Stmt Rewrite(const tir::Stmt& body) { return VisitStmt(body); }
+
+    PrimExpr VisitExpr_(const tir::CallNode* op) final {
+      PrimExpr expr = tir::StmtExprMutator::VisitExpr_(op);
+      const auto* rewritten = expr.as<tir::CallNode>();
+      if (rewritten == nullptr || !rewritten->op->IsInstance<OpNode>()) {
+        return expr;
+      }
+      const int cb_id = StaticCBId(rewritten);
+      const int pages = StaticPages(rewritten);
+      if (!IsTracked(cb_id) || pages <= 0) {
+        return expr;
+      }
+      if (IsBlackholeOp(rewritten, "tl.blackhole.cb_push_back")) {
+        front_pages_[cb_id] += pages;
+        locally_pushed_pages_[cb_id] += pages;
+        return expr;
+      }
+      if (!IsBlackholeOp(rewritten, "tl.blackhole.cb_pop_front")) {
+        return expr;
+      }
+      int pop_pages = pages;
+      if (locally_pushed_pages_[cb_id] > 0 && front_pages_[cb_id] > 0 &&
+          pages > front_pages_[cb_id]) {
+        pop_pages = front_pages_[cb_id];
+      }
+      front_pages_[cb_id] = std::max(0, front_pages_[cb_id] - pop_pages);
+      if (pop_pages == pages) {
+        return expr;
+      }
+      Array<PrimExpr> args = rewritten->args;
+      args.Set(1, tvm::IntImm(args[1].dtype(), pop_pages));
+      return tir::Call(rewritten->dtype, rewritten->op, args,
+                       rewritten->annotations, rewritten->span);
+    }
+
+   private:
+    bool IsTracked(int cb_id) const {
+      return cb_id >= 0 && cb_id < static_cast<int>(is_local_intermediate_.size()) &&
+             is_local_intermediate_[cb_id];
+    }
+
+    int StaticCBId(const tir::CallNode* op) const {
+      if (op == nullptr || op->args.empty()) {
+        return -1;
+      }
+      const auto* cb_id = op->args[0].as<IntImmNode>();
+      if (cb_id == nullptr || cb_id->value < 0 ||
+          cb_id->value >= static_cast<int64_t>(is_local_intermediate_.size())) {
+        return -1;
+      }
+      return static_cast<int>(cb_id->value);
+    }
+
+    int StaticPages(const tir::CallNode* op) const {
+      if (op == nullptr || op->args.size() < 2U) {
+        return 0;
+      }
+      const auto* pages = op->args[1].as<IntImmNode>();
+      return pages != nullptr ? static_cast<int>(pages->value) : 0;
+    }
+
+    std::vector<bool> is_local_intermediate_;
+    std::vector<int> front_pages_;
+    std::vector<int> locally_pushed_pages_;
+  };
+
+  Rewriter rewriter(std::move(is_local_intermediate));
+  return rewriter.Rewrite(body);
+}
+
+tir::Stmt RewriteRetainedStreamInputMatmulTileOffsets(
+    const tir::Stmt& body, const std::vector<CBConfig>& configs) {
+  int max_cb_id = -1;
+  for (const CBConfig& config : configs) {
+    max_cb_id = std::max(max_cb_id, config.cb_id);
+  }
+  struct StreamInputInfo {
+    bool tracked = false;
+    int capacity_pages = 0;
+    int event_pages = 1;
+  };
+  std::vector<StreamInputInfo> stream_inputs(std::max(0, max_cb_id + 1));
+  for (const CBConfig& config : configs) {
+    if (config.cb_id < 0 || config.cb_id >= static_cast<int>(stream_inputs.size()) ||
+        config.role != "input" || config.flow_class != CBFlowClass::kStream) {
+      continue;
+    }
+    const int event_pages = std::max(1, config.consume_pages_per_event);
+    if (config.num_pages <= event_pages) {
+      continue;
+    }
+    StreamInputInfo& info = stream_inputs[config.cb_id];
+    info.tracked = true;
+    info.capacity_pages = std::max(info.capacity_pages, config.num_pages);
+    info.event_pages = std::max(info.event_pages, event_pages);
+  }
+
+  class Rewriter final : public tir::StmtExprMutator {
+   public:
+    explicit Rewriter(std::vector<StreamInputInfo> stream_inputs)
+        : stream_inputs_(std::move(stream_inputs)),
+          next_tile_offset_(stream_inputs_.size(), 0),
+          active_event_base_(stream_inputs_.size(), -1) {}
+
+    PrimExpr VisitExpr_(const tir::CallNode* op) final {
+      PrimExpr expr = tir::StmtExprMutator::VisitExpr_(op);
+      const auto* rewritten = expr.as<tir::CallNode>();
+      if (rewritten == nullptr || !rewritten->op->IsInstance<OpNode>()) {
+        return expr;
+      }
+      if (IsBlackholeOp(rewritten, "tl.blackhole.cb_wait_front")) {
+        return VisitWait(rewritten, expr);
+      }
+      if (IsBlackholeOp(rewritten, "tl.blackhole.matmul_tiles")) {
+        return VisitMatmulTiles(rewritten, expr);
+      }
+      if (IsBlackholeOp(rewritten, "tl.blackhole.cb_pop_front")) {
+        return VisitPop(rewritten, expr);
+      }
+      return expr;
+    }
+
+   private:
+    int StaticCBId(const tir::CallNode* op) const {
+      if (op == nullptr || op->args.empty()) {
+        return -1;
+      }
+      const auto* cb_id = op->args[0].as<IntImmNode>();
+      if (cb_id == nullptr || cb_id->value < 0 ||
+          cb_id->value >= static_cast<int64_t>(stream_inputs_.size())) {
+        return -1;
+      }
+      return static_cast<int>(cb_id->value);
+    }
+
+    int StaticPages(const tir::CallNode* op) const {
+      if (op == nullptr || op->args.size() < 2U) {
+        return 0;
+      }
+      const auto* pages = op->args[1].as<IntImmNode>();
+      return pages != nullptr ? static_cast<int>(pages->value) : 0;
+    }
+
+    bool IsTracked(int cb_id) const {
+      return cb_id >= 0 && cb_id < static_cast<int>(stream_inputs_.size()) &&
+             stream_inputs_[cb_id].tracked;
+    }
+
+    PrimExpr VisitWait(const tir::CallNode* op, const PrimExpr& expr) {
+      const int cb_id = StaticCBId(op);
+      const int pages = StaticPages(op);
+      if (!IsTracked(cb_id) || pages <= 0) {
+        return expr;
+      }
+      active_event_base_[cb_id] = next_tile_offset_[cb_id];
+      next_tile_offset_[cb_id] =
+          std::min(stream_inputs_[cb_id].capacity_pages,
+                   next_tile_offset_[cb_id] + pages);
+      return expr;
+    }
+
+    PrimExpr VisitMatmulTiles(const tir::CallNode* op, const PrimExpr& expr) {
+      if (op->args.size() < 5U) {
+        return expr;
+      }
+      Array<PrimExpr> args = op->args;
+      bool changed = false;
+      auto apply_input_offset = [&](int cb_arg_pos, int tile_arg_pos) {
+        const auto* cb_id = args[cb_arg_pos].as<IntImmNode>();
+        const auto* tile = args[tile_arg_pos].as<IntImmNode>();
+        if (cb_id == nullptr || tile == nullptr || !IsTracked(static_cast<int>(cb_id->value))) {
+          return;
+        }
+        const int cb = static_cast<int>(cb_id->value);
+        const int base = active_event_base_[cb];
+        if (base <= 0) {
+          return;
+        }
+        args.Set(tile_arg_pos,
+                 tvm::IntImm(args[tile_arg_pos].dtype(), tile->value + base));
+        changed = true;
+      };
+      apply_input_offset(/*cb_arg_pos=*/0, /*tile_arg_pos=*/2);
+      apply_input_offset(/*cb_arg_pos=*/1, /*tile_arg_pos=*/3);
+      if (!changed) {
+        return expr;
+      }
+      return tir::Call(op->dtype, op->op, args, op->annotations, op->span);
+    }
+
+    PrimExpr VisitPop(const tir::CallNode* op, const PrimExpr& expr) {
+      const int cb_id = StaticCBId(op);
+      const int pages = StaticPages(op);
+      if (!IsTracked(cb_id) || pages <= 0) {
+        return expr;
+      }
+      const int pop_pages = std::max(pages, next_tile_offset_[cb_id]);
+      next_tile_offset_[cb_id] = std::max(0, next_tile_offset_[cb_id] - pop_pages);
+      active_event_base_[cb_id] = -1;
+      if (pop_pages == pages) {
+        return expr;
+      }
+      Array<PrimExpr> args = op->args;
+      args.Set(1, tvm::IntImm(args[1].dtype(), pop_pages));
+      return tir::Call(op->dtype, op->op, args, op->annotations, op->span);
+    }
+
+    std::vector<StreamInputInfo> stream_inputs_;
+    std::vector<int> next_tile_offset_;
+    std::vector<int> active_event_base_;
+  };
+
+  Rewriter rewriter(std::move(stream_inputs));
+  return rewriter(body);
+}
+
 }  // namespace
 
 // Main entry point
@@ -977,13 +1416,15 @@ PrimFunc PlanTTCBAlloc::Transform(const PrimFunc& func) {
   // range for larger flash-attn shapes.
   tir::Stmt body_with_state_front_pops =
       InsertStateFrontPopsBeforeReReserve(func->body, requirements);
+  tir::Stmt body_with_loop_local_pops =
+      InsertLoopLocalBackedgePops(body_with_state_front_pops, requirements);
   const std::vector<CBRequirementUseInfo> initial_use_info =
-      CollectCBRequirementUseInfo(body_with_state_front_pops,
+      CollectCBRequirementUseInfo(body_with_loop_local_pops,
                                   static_cast<int>(requirements.size()));
   const std::vector<int> auto_pop_pages =
-      ComputeAutoPopPages(requirements, initial_use_info, body_with_state_front_pops);
+      ComputeAutoPopPages(requirements, initial_use_info, body_with_loop_local_pops);
   tir::Stmt body_with_auto_pops =
-      InsertAutoPopsAfterLastUse(body_with_state_front_pops, initial_use_info, auto_pop_pages);
+      InsertAutoPopsAfterLastUse(body_with_loop_local_pops, initial_use_info, auto_pop_pages);
   const std::vector<CBRequirementUseInfo> use_info =
       CollectCBRequirementUseInfo(body_with_auto_pops, static_cast<int>(requirements.size()));
   ApplyIRUseIntervalsToRequirements(&requirements, use_info);
@@ -994,7 +1435,11 @@ PrimFunc PlanTTCBAlloc::Transform(const PrimFunc& func) {
     ApplyExactCBLiveIntervalsToRequirements(staged_program.value(), &requirements);
   }
   const std::vector<bool> referenced_requirements = ReferencedRequirementMask(use_info);
-  std::vector<CBConfig> configs = AssignCBIds(requirements, referenced_requirements);
+  const std::vector<bool> exclusive_requirements =
+      CollectExclusiveRequirementMask(body_with_auto_pops,
+                                      static_cast<int>(requirements.size()));
+  std::vector<CBConfig> configs =
+      AssignCBIds(requirements, referenced_requirements, exclusive_requirements);
 
   // Create mutable copy and store CB configuration
   PrimFunc new_func = func;
@@ -1020,6 +1465,8 @@ PrimFunc PlanTTCBAlloc::Transform(const PrimFunc& func) {
       config.total_size = config.page_size * config.num_pages;
     }
   }
+  physical_cb_body =
+      RewriteRetainedStreamInputMatmulTileOffsets(physical_cb_body, configs);
 
   // Validate the allocation
   ICHECK(Validate(configs))
@@ -1027,6 +1474,7 @@ PrimFunc PlanTTCBAlloc::Transform(const PrimFunc& func) {
 
   StoreCBConfig(new_func, configs);
   physical_cb_body = InsertPhysicalPopsBeforeBlockingReserve(physical_cb_body, configs);
+  physical_cb_body = ClampIntermediatePopsToAvailableFront(physical_cb_body, configs);
   new_func.CopyOnWrite()->body = physical_cb_body;
   cb_configs_ = configs;
 
@@ -1113,9 +1561,11 @@ std::vector<CBRequirement> PlanTTCBAlloc::GetCBRequirements(
 // Assign CB IDs to requirements
 std::vector<CBConfig> PlanTTCBAlloc::AssignCBIds(
     const std::vector<CBRequirement>& requirements,
-    const std::vector<bool>& referenced_requirements) {
+    const std::vector<bool>& referenced_requirements,
+    const std::vector<bool>& exclusive_requirements) {
   std::vector<CBConfig> configs;
   ICHECK_EQ(referenced_requirements.size(), requirements.size());
+  ICHECK_EQ(exclusive_requirements.size(), requirements.size());
 
   int next_input_id = kInputCBStart;
   int next_compute_cb_id = kOutputCBStart;
@@ -1158,7 +1608,8 @@ std::vector<CBConfig> PlanTTCBAlloc::AssignCBIds(
     const auto& req = requirements[req_index];
     bool reused = false;
     for (auto& config : configs) {
-      if (!IsCompatibleForReuse(req, config)) {
+      if (!IsCompatibleForReuse(req, static_cast<int>(req_index), config,
+                                exclusive_requirements)) {
         continue;
       }
       config.lifetime_end = std::max(config.lifetime_end, req.lifetime_end);
@@ -1215,6 +1666,20 @@ std::vector<CBConfig> PlanTTCBAlloc::AssignCBIds(
     if (IsDirectLocalStateConfig(config)) {
       config.num_pages =
           std::max(config.num_pages, static_cast<int>(config.requirement_indices.size()));
+      config.total_size = config.page_size * config.num_pages;
+    }
+    if (config.role == "input" && config.flow_class == CBFlowClass::kStream &&
+        config.requirement_indices.size() > 1U) {
+      int queued_producer_pages = 0;
+      for (int requirement_index : config.requirement_indices) {
+        ICHECK_GE(requirement_index, 0);
+        ICHECK_LT(requirement_index, static_cast<int>(requirements.size()));
+        const CBRequirement& req = requirements[requirement_index];
+        queued_producer_pages +=
+            std::max(1, req.publish_pages_per_event > 0 ? req.publish_pages_per_event
+                                                        : req.num_pages);
+      }
+      config.num_pages = std::max(config.num_pages, queued_producer_pages);
       config.total_size = config.page_size * config.num_pages;
     }
   }

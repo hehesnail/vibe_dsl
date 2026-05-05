@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 import torch
 
+from tilelang import language as T
 from tilelang.engine.lower import lower
 from tvm.target import Target
 
@@ -43,6 +44,299 @@ blackhole_gqa_example = _load_flash_attention_module_with_dtype(gqa_example.__fi
 blackhole_mha_example = _load_flash_attention_module_with_dtype(mha_example.__file__)
 
 
+def paged_gqa_decode_kernel(
+    *,
+    batch=2,
+    heads=4,
+    groups=4,
+    pages_per_sequence=2,
+    total_pages=4,
+    block_M=32,
+    block_N=32,
+    dim=32,
+):
+    """Ordinary TIR paged GQA decode tile for the first T9.2 slice."""
+    assert pages_per_sequence == 2
+    assert heads == groups
+    dtype = T.bfloat16
+    accum_dtype = T.float32
+    scale = (1.0 / dim) ** 0.5 * 1.44269504
+
+    @T.prim_func
+    def main(
+        Q: T.Tensor((batch, block_M, heads, dim), dtype),
+        KCache: T.Tensor((total_pages * block_N, dim), dtype),
+        VCache: T.Tensor((total_pages * block_N, dim), dtype),
+        PageTable: T.Tensor((batch, pages_per_sequence), "int32"),
+        CacheSeqLens: T.Tensor((batch,), "int32"),
+        Output: T.Tensor((batch, block_M, heads, dim), dtype),
+    ):
+        with T.Kernel(batch, heads, threads=128) as (bx, by):
+            Q_shared = T.alloc_shared((block_M, dim), dtype)
+            K0_shared = T.alloc_shared((block_N, dim), dtype)
+            V0_shared = T.alloc_shared((block_N, dim), dtype)
+            K1_shared = T.alloc_shared((block_N, dim), dtype)
+            V1_shared = T.alloc_shared((block_N, dim), dtype)
+            O_shared = T.alloc_shared((block_M, dim), dtype)
+            acc_s = T.alloc_fragment((block_M, block_N), accum_dtype)
+            acc_s_cast = T.alloc_fragment((block_M, block_N), dtype)
+            acc_o = T.alloc_fragment((block_M, dim), accum_dtype)
+            scores_max = T.alloc_fragment((block_M,), accum_dtype)
+            scores_max_prev = T.alloc_fragment((block_M,), accum_dtype)
+            scores_scale = T.alloc_fragment((block_M,), accum_dtype)
+            scores_sum = T.alloc_fragment((block_M,), accum_dtype)
+            logsum = T.alloc_fragment((block_M,), accum_dtype)
+
+            T.copy(Q[bx, 0:block_M, by, :], Q_shared)
+            T.fill(acc_o, 0)
+            T.fill(logsum, 0)
+            T.fill(scores_max, -T.infinity(accum_dtype))
+
+            cache_len = CacheSeqLens[bx]
+
+            page0_k = PageTable[bx, 0]
+            for i, j in T.Parallel(block_N, dim):
+                K0_shared[i, j] = T.if_then_else(
+                    i < cache_len,
+                    KCache[page0_k * block_N + i, j],
+                    0,
+                )
+            T.fill(acc_s, 0)
+            T.gemm(
+                Q_shared,
+                K0_shared,
+                acc_s,
+                transpose_B=True,
+                policy=T.GemmWarpPolicy.FullRow,
+            )
+            for i, j in T.Parallel(block_M, block_N):
+                acc_s[i, j] = T.if_then_else(
+                    j < cache_len,
+                    acc_s[i, j],
+                    -T.infinity(acc_s.dtype),
+                )
+            T.copy(scores_max, scores_max_prev)
+            T.fill(scores_max, -T.infinity(accum_dtype))
+            T.reduce_max(acc_s, scores_max, dim=1, clear=False)
+            for i in T.Parallel(block_M):
+                scores_max[i] = T.max(scores_max[i], scores_max_prev[i])
+            for i in T.Parallel(block_M):
+                scores_scale[i] = T.exp2(scores_max_prev[i] * scale - scores_max[i] * scale)
+            for i, j in T.Parallel(block_M, block_N):
+                acc_s[i, j] = T.exp2(acc_s[i, j] * scale - scores_max[i] * scale)
+            T.reduce_sum(acc_s, scores_sum, dim=1)
+            for i in T.Parallel(block_M):
+                logsum[i] = logsum[i] * scores_scale[i] + scores_sum[i]
+            T.copy(acc_s, acc_s_cast)
+            for i, j in T.Parallel(block_M, dim):
+                acc_o[i, j] *= scores_scale[i]
+            page0_v = PageTable[bx, 0]
+            for i, j in T.Parallel(block_N, dim):
+                V0_shared[i, j] = T.if_then_else(
+                    i < cache_len,
+                    VCache[page0_v * block_N + i, j],
+                    0,
+                )
+            T.gemm(acc_s_cast, V0_shared, acc_o, policy=T.GemmWarpPolicy.FullRow)
+
+            page1_k = PageTable[bx, 1]
+            for i, j in T.Parallel(block_N, dim):
+                K1_shared[i, j] = T.if_then_else(
+                    block_N + i < cache_len,
+                    KCache[page1_k * block_N + i, j],
+                    0,
+                )
+            T.fill(acc_s, 0)
+            T.gemm(
+                Q_shared,
+                K1_shared,
+                acc_s,
+                transpose_B=True,
+                policy=T.GemmWarpPolicy.FullRow,
+            )
+            for i, j in T.Parallel(block_M, block_N):
+                acc_s[i, j] = T.if_then_else(
+                    block_N + j < cache_len,
+                    acc_s[i, j],
+                    -T.infinity(acc_s.dtype),
+                )
+            T.copy(scores_max, scores_max_prev)
+            T.fill(scores_max, -T.infinity(accum_dtype))
+            T.reduce_max(acc_s, scores_max, dim=1, clear=False)
+            for i in T.Parallel(block_M):
+                scores_max[i] = T.max(scores_max[i], scores_max_prev[i])
+            for i in T.Parallel(block_M):
+                scores_scale[i] = T.exp2(scores_max_prev[i] * scale - scores_max[i] * scale)
+            for i, j in T.Parallel(block_M, block_N):
+                acc_s[i, j] = T.exp2(acc_s[i, j] * scale - scores_max[i] * scale)
+            T.reduce_sum(acc_s, scores_sum, dim=1)
+            for i in T.Parallel(block_M):
+                logsum[i] = logsum[i] * scores_scale[i] + scores_sum[i]
+            T.copy(acc_s, acc_s_cast)
+            for i, j in T.Parallel(block_M, dim):
+                acc_o[i, j] *= scores_scale[i]
+            page1_v = PageTable[bx, 1]
+            for i, j in T.Parallel(block_N, dim):
+                V1_shared[i, j] = T.if_then_else(
+                    block_N + i < cache_len,
+                    VCache[page1_v * block_N + i, j],
+                    0,
+                )
+            T.gemm(acc_s_cast, V1_shared, acc_o, policy=T.GemmWarpPolicy.FullRow)
+
+            for i, j in T.Parallel(block_M, dim):
+                acc_o[i, j] /= logsum[i]
+            T.copy(acc_o, O_shared)
+            T.copy(O_shared, Output[bx, 0:block_M, by, :])
+
+    return main
+
+
+def _paged_gqa_decode_reference(q, k_cache, v_cache, page_table, cache_seq_lens):
+    batch, _, heads, dim = q.shape
+    page_rows = 32
+    out = torch.empty_like(q)
+    scale = dim ** -0.5
+    for seq in range(batch):
+        pages = [
+            k_cache[int(page_table[seq, page]) * page_rows : (int(page_table[seq, page]) + 1) * page_rows]
+            for page in range(page_table.shape[1])
+        ]
+        values = [
+            v_cache[int(page_table[seq, page]) * page_rows : (int(page_table[seq, page]) + 1) * page_rows]
+            for page in range(page_table.shape[1])
+        ]
+        cache_len = int(cache_seq_lens[seq])
+        k_seq = torch.cat(pages, dim=0)[:cache_len]
+        v_seq = torch.cat(values, dim=0)[:cache_len]
+        for head in range(heads):
+            scores = torch.matmul(q[seq, :, head, :].float(), k_seq.float().T) * scale
+            probs = torch.softmax(scores, dim=-1)
+            out[seq, :, head, :] = torch.matmul(probs, v_seq.float()).to(q.dtype)
+    return out
+
+
+def paged_qk_gemm_kernel(
+    *,
+    batch=2,
+    heads=4,
+    pages_per_sequence=1,
+    page_column=0,
+    total_pages=4,
+    block_M=32,
+    block_N=32,
+    dim=32,
+):
+    dtype = T.bfloat16
+    accum_dtype = T.float32
+
+    @T.prim_func
+    def main(
+        Q: T.Tensor((batch, block_M, heads, dim), dtype),
+        KCache: T.Tensor((total_pages * block_N, dim), dtype),
+        PageTable: T.Tensor((batch, pages_per_sequence), "int32"),
+        Output: T.Tensor((batch, block_M, heads, block_N), accum_dtype),
+    ):
+        with T.Kernel(batch, heads, threads=128) as (bx, by):
+            Q_shared = T.alloc_shared((block_M, dim), dtype)
+            K_shared = T.alloc_shared((block_N, dim), dtype)
+            acc_s = T.alloc_fragment((block_M, block_N), accum_dtype)
+
+            T.copy(Q[bx, 0:block_M, by, :], Q_shared)
+            page = PageTable[bx, page_column]
+            for i, j in T.Parallel(block_N, dim):
+                K_shared[i, j] = KCache[page * block_N + i, j]
+            T.fill(acc_s, 0)
+            T.gemm(
+                Q_shared,
+                K_shared,
+                acc_s,
+                transpose_B=True,
+                policy=T.GemmWarpPolicy.FullRow,
+            )
+            T.copy(acc_s, Output[bx, 0:block_M, by, :])
+
+    return main
+
+
+def paged_av_gemm_kernel(
+    *,
+    batch=2,
+    heads=4,
+    pages_per_sequence=1,
+    page_column=0,
+    total_pages=4,
+    block_M=32,
+    block_N=32,
+    dim=32,
+):
+    dtype = T.bfloat16
+    accum_dtype = T.float32
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((batch, block_M, heads, block_N), dtype),
+        VCache: T.Tensor((total_pages * block_N, dim), dtype),
+        PageTable: T.Tensor((batch, pages_per_sequence), "int32"),
+        Output: T.Tensor((batch, block_M, heads, dim), accum_dtype),
+    ):
+        with T.Kernel(batch, heads, threads=128) as (bx, by):
+            A_shared = T.alloc_shared((block_M, block_N), dtype)
+            V_shared = T.alloc_shared((block_N, dim), dtype)
+            acc_o = T.alloc_fragment((block_M, dim), accum_dtype)
+
+            T.copy(A[bx, 0:block_M, by, :], A_shared)
+            page = PageTable[bx, page_column]
+            for i, j in T.Parallel(block_N, dim):
+                V_shared[i, j] = VCache[page * block_N + i, j]
+            T.fill(acc_o, 0)
+            T.gemm(A_shared, V_shared, acc_o, policy=T.GemmWarpPolicy.FullRow)
+            T.copy(acc_o, Output[bx, 0:block_M, by, :])
+
+    return main
+
+
+def seq_qk_gemm_kernel(
+    *,
+    batch=1,
+    heads=4,
+    seq_len=64,
+    block_M=32,
+    block_N=32,
+    dim=32,
+):
+    assert batch == 1
+    assert seq_len % block_M == 0
+    dtype = T.bfloat16
+    accum_dtype = T.float32
+    seq_tiles = seq_len // block_M
+
+    @T.prim_func
+    def main(
+        Q: T.Tensor((batch, seq_len, heads, dim), dtype),
+        K: T.Tensor((batch, seq_len, heads, dim), dtype),
+        Output: T.Tensor((batch, seq_len, heads, block_N), accum_dtype),
+    ):
+        with T.Kernel(seq_tiles, heads, threads=128) as (bx, by):
+            Q_shared = T.alloc_shared((block_M, dim), dtype)
+            K_shared = T.alloc_shared((block_N, dim), dtype)
+            acc_s = T.alloc_fragment((block_M, block_N), accum_dtype)
+
+            T.copy(Q[0, bx * block_M : bx * block_M + block_M, by, :], Q_shared)
+            T.copy(K[0, bx * block_N : bx * block_N + block_N, by, :], K_shared)
+            T.fill(acc_s, 0)
+            T.gemm(
+                Q_shared,
+                K_shared,
+                acc_s,
+                transpose_B=True,
+                policy=T.GemmWarpPolicy.FullRow,
+            )
+            T.copy(acc_s, Output[0, bx * block_M : bx * block_M + block_M, by, :])
+
+    return main
+
+
 def _lower_blackhole_flash_attention_metadata(kernel):
     target = Target("blackhole")
     with target:
@@ -70,6 +364,22 @@ def _has_multi_page_republish_event(metadata):
         )
         for config in metadata["cb_configs"]
     )
+
+
+def _extract_c_for_loop_body(source, header):
+    start = source.find(header)
+    assert start >= 0, f"missing C loop header: {header}"
+    open_brace = source.find("{", start)
+    assert open_brace >= 0, f"missing C loop open brace after: {header}"
+    depth = 0
+    for pos in range(open_brace, len(source)):
+        if source[pos] == "{":
+            depth += 1
+        elif source[pos] == "}":
+            depth -= 1
+            if depth == 0:
+                return source[open_brace + 1 : pos], source[pos + 1 :]
+    raise AssertionError(f"missing C loop close brace after: {header}")
 
 
 def _assert_t7_seq64_mha_exact_cb_partial_combine_contract(metadata):
@@ -116,6 +426,19 @@ def _assert_t7_seq64_mha_exact_cb_partial_combine_contract(metadata):
     assert "get_tile_address(0)" not in compute_source
     assert "add_tiles_init(" in compute_source
     assert "add_tiles(" in compute_source
+    q_cb = int(cb_by_name["Q_shared"]["cb_id"])
+    k_cb = int(cb_by_name["K_shared"]["cb_id"])
+    v_cb = int(cb_by_name["V_shared"]["cb_id"])
+    assert f"matmul_tiles({q_cb}, {k_cb}, 0, 0, 0);" in compute_source
+    assert f"matmul_tiles({q_cb}, {k_cb}, 0, 1, 0);" in compute_source
+    assert re.search(rf"matmul_tiles\(\d+, {v_cb}, 0, 0, 0\);", compute_source)
+    assert re.search(rf"matmul_tiles\(\d+, {v_cb}, 0, 1, 0\);", compute_source)
+    serial_loop_body, after_serial_loop = _extract_c_for_loop_body(
+        compute_source, "for (int32_t tx = 0; tx < 128; ++tx)"
+    )
+    for cb_id, pop_pages in ((q_cb, 1), (k_cb, 2), (v_cb, 2)):
+        assert f"cb_pop_front({cb_id}," not in serial_loop_body
+        assert f"cb_pop_front({cb_id}, {pop_pages});" in after_serial_loop
 
     merge_pairs = re.findall(r"add_tiles_init\((\d+), (\d+)\);", compute_source)
     assert merge_pairs
@@ -939,6 +1262,490 @@ def test_blackhole_flash_attention_seq64_gqa_bf16_forward_direct_runtime():
         atol=5e-2,
         rtol=5e-2,
         failure_message="Blackhole seq64 GQA bf16 flash-attention forward mismatch",
+    )
+
+
+def test_blackhole_t9_paged_gqa_decode_projects_page_table_and_cache_len_descriptors():
+    kernel = paged_gqa_decode_kernel()
+    _, metadata = _lower_blackhole_flash_attention_metadata(kernel)
+
+    reasons = [str(reason) for reason in metadata.get("direct_runtime_unsupported_reasons", [])]
+    assert reasons == []
+    assert list(metadata["tvm_arg_names"]) == [
+        "Q",
+        "KCache",
+        "VCache",
+        "PageTable",
+        "CacheSeqLens",
+        "Output",
+    ]
+
+    reader = next(kernel for kernel in metadata["kernels"] if str(kernel["kind"]) == "reader")
+    reader_source = str(reader["source_code"])
+    assert "PageTable" not in reader_source
+    assert "CacheSeqLens" not in reader_source
+    assert "get_arg_val<uint32_t>" in reader_source
+
+    page_specs = [
+        spec
+        for spec in reader["per_work_arg_specs"]
+        if str(spec["descriptor_kind"]) == "tile_start"
+        and str(spec.get("value_source", "")) == "index_table"
+        and str(spec.get("index_buffer", "")) == "PageTable"
+    ]
+    assert len(page_specs) >= 2
+    assert {str(spec.get("buffer", "")) for spec in page_specs} == {"KCache", "VCache"}
+    assert {
+        tuple(str(source) for source in spec["index_table_index_sources"])
+        for spec in page_specs
+    } >= {
+        ("logical_block_x", "constant:0"),
+        ("logical_block_x", "constant:1"),
+    }
+    assert all([int(v) for v in spec["index_table_shape"]] == [2, 2] for spec in page_specs)
+
+    valid_row_specs = [
+        spec
+        for spec in reader["per_work_arg_specs"]
+        if str(spec["descriptor_kind"]) == "valid_rows"
+        and str(spec.get("value_source", "")) == "index_table"
+        and str(spec.get("index_buffer", "")) == "CacheSeqLens"
+    ]
+    assert valid_row_specs
+    assert all(
+        [str(source) for source in spec["index_table_index_sources"]] == ["logical_block_x"]
+        for spec in valid_row_specs
+    )
+
+    compute_source = str(
+        next(
+            kernel["source_code"]
+            for kernel in metadata["kernels"]
+            if str(kernel["kind"]) == "compute"
+        )
+    )
+    writer_source = str(
+        next(
+            kernel["source_code"]
+            for kernel in metadata["kernels"]
+            if str(kernel["kind"]) == "writer"
+        )
+    )
+    assert "add_tiles_init(" in compute_source
+    assert "add_tiles(" in compute_source
+    assert "tilelang_add_fragment(dst, src, num_elements);" not in compute_source
+    assert "tilelang_cb_write_ptr_bytes_direct" not in compute_source
+
+    row_bound_mask_cb_ids = {
+        int(config["cb_id"])
+        for config in metadata["cb_configs"]
+        if str(config["role"]) == "input"
+        and any("_row_bound_mask_" in str(name) for name in config["requirement_names"])
+    }
+    assert row_bound_mask_cb_ids
+    for mask_cb_id in row_bound_mask_cb_ids:
+        mask_apply = re.search(
+            rf"binary_op_init_common\((\d+),\s*{mask_cb_id},\s*(\d+)\);"
+            rf"(?P<body>.*?)"
+            rf"reduce_tile<PoolType::MAX, ReduceDim::REDUCE_ROW>\((\d+),",
+            compute_source,
+            re.S,
+        )
+        assert mask_apply, f"missing row-bound mask apply followed by row max for CB {mask_cb_id}"
+        row_bound_out_cb = int(mask_apply.group(2))
+        reduce_src_cb = int(mask_apply.group(4))
+        assert reduce_src_cb == row_bound_out_cb
+        assert f"cb_pop_front({row_bound_out_cb}, 1);" not in mask_apply.group("body")
+
+    serial_loop_body, after_serial_loop = _extract_c_for_loop_body(
+        compute_source, "for (int32_t tx = 0; tx < 128; ++tx)"
+    )
+    reader_input_names = {"Q_shared", "K0_shared", "V0_shared", "K1_shared", "V1_shared"}
+    reader_input_cbs = [
+        config
+        for config in metadata["cb_configs"]
+        if str(config["role"]) == "input"
+        and any(str(name) in reader_input_names for name in config["requirement_names"])
+    ]
+    assert {str(config["name"]) for config in reader_input_cbs} == reader_input_names
+    for config in reader_input_cbs:
+        assert len(config["requirement_names"]) == 1
+        cb_id = int(config["cb_id"])
+        assert f"cb_pop_front({cb_id}," not in serial_loop_body
+        assert f"cb_pop_front({cb_id}, 1);" in after_serial_loop
+
+    writer_output_cb_ids = {
+        int(match)
+        for match in re.findall(r"get_read_ptr\((\d+)\)", writer_source)
+    }
+    assert writer_output_cb_ids
+    writer_wait_cb_ids = {
+        int(match)
+        for match in re.findall(r"cb_wait_front\((\d+),\s*1\);", writer_source)
+    }
+    writer_pop_cb_ids = {
+        int(match)
+        for match in re.findall(r"cb_pop_front\((\d+),\s*1\);", writer_source)
+    }
+    assert writer_wait_cb_ids == writer_output_cb_ids
+    assert writer_pop_cb_ids == writer_output_cb_ids
+    for cb_id in writer_output_cb_ids:
+        assert f"cb_reserve_back({cb_id}," not in serial_loop_body
+        assert f"cb_push_back({cb_id}," not in serial_loop_body
+        assert f"cb_reserve_back({cb_id}, 1);" in after_serial_loop
+        assert f"cb_push_back({cb_id}, 1);" in after_serial_loop
+
+
+def test_blackhole_t9_page_indexed_qk_gemm_b_direct_runtime():
+    can_run, msg = check_blackhole_direct_execution_requirements()
+    if not can_run:
+        pytest.skip(f"Blackhole requirements not met: {msg}")
+
+    batch = 2
+    heads = 4
+    total_pages = 4
+    block_M = 32
+    block_N = 32
+    dim = 32
+
+    torch.manual_seed(1)
+    q = torch.randn(
+        batch,
+        block_M,
+        heads,
+        dim,
+        dtype=BLACKHOLE_FLASH_ATTENTION_TORCH_DTYPE,
+    )
+    k_cache = torch.randn(
+        total_pages * block_N,
+        dim,
+        dtype=BLACKHOLE_FLASH_ATTENTION_TORCH_DTYPE,
+    )
+    page_table = torch.tensor([[2], [1]], dtype=torch.int32)
+    out = torch.zeros(
+        batch,
+        block_M,
+        heads,
+        block_N,
+        dtype=torch.float32,
+    )
+    ref = torch.empty_like(out)
+    for seq in range(batch):
+        page = int(page_table[seq, 0])
+        k_page = k_cache[page * block_N : (page + 1) * block_N, :]
+        for head in range(heads):
+            ref[seq, :, head, :] = torch.matmul(q[seq, :, head, :].float(), k_page.float().T)
+
+    kernel = paged_qk_gemm_kernel(
+        batch=batch,
+        heads=heads,
+        total_pages=total_pages,
+        block_M=block_M,
+        block_N=block_N,
+        dim=dim,
+    )
+    artifact, metadata = _lower_blackhole_flash_attention_metadata(kernel)
+    assert [str(reason) for reason in metadata.get("direct_runtime_unsupported_reasons", [])] == []
+
+    artifact.codegen_mod["main"](q, k_cache, page_table, out)
+    assert_tensors_close_or_dump(
+        out,
+        ref,
+        atol=2e-1,
+        rtol=2e-1,
+        failure_message="Blackhole page-indexed QK GEMM B direct runtime mismatch",
+    )
+
+
+def test_blackhole_t9_page_indexed_qk_gemm_b_page1_direct_runtime():
+    can_run, msg = check_blackhole_direct_execution_requirements()
+    if not can_run:
+        pytest.skip(f"Blackhole requirements not met: {msg}")
+
+    batch = 2
+    heads = 4
+    pages_per_sequence = 2
+    page_column = 1
+    total_pages = 4
+    block_M = 32
+    block_N = 32
+    dim = 32
+
+    torch.manual_seed(11)
+    q = torch.randn(
+        batch,
+        block_M,
+        heads,
+        dim,
+        dtype=BLACKHOLE_FLASH_ATTENTION_TORCH_DTYPE,
+    )
+    k_cache = torch.randn(
+        total_pages * block_N,
+        dim,
+        dtype=BLACKHOLE_FLASH_ATTENTION_TORCH_DTYPE,
+    )
+    page_table = torch.tensor([[2, 0], [3, 1]], dtype=torch.int32)
+    out = torch.zeros(batch, block_M, heads, block_N, dtype=torch.float32)
+    ref = torch.empty_like(out)
+    for seq in range(batch):
+        page = int(page_table[seq, page_column])
+        k_page = k_cache[page * block_N : (page + 1) * block_N, :]
+        for head in range(heads):
+            ref[seq, :, head, :] = torch.matmul(q[seq, :, head, :].float(), k_page.float().T)
+
+    kernel = paged_qk_gemm_kernel(
+        batch=batch,
+        heads=heads,
+        pages_per_sequence=pages_per_sequence,
+        page_column=page_column,
+        total_pages=total_pages,
+        block_M=block_M,
+        block_N=block_N,
+        dim=dim,
+    )
+    artifact, metadata = _lower_blackhole_flash_attention_metadata(kernel)
+    assert [str(reason) for reason in metadata.get("direct_runtime_unsupported_reasons", [])] == []
+
+    artifact.codegen_mod["main"](q, k_cache, page_table, out)
+    assert_tensors_close_or_dump(
+        out,
+        ref,
+        atol=2e-1,
+        rtol=2e-1,
+        failure_message="Blackhole page1-indexed QK GEMM B direct runtime mismatch",
+    )
+
+
+def test_blackhole_t9_page_indexed_av_gemm_b_direct_runtime():
+    can_run, msg = check_blackhole_direct_execution_requirements()
+    if not can_run:
+        pytest.skip(f"Blackhole requirements not met: {msg}")
+
+    batch = 2
+    heads = 4
+    total_pages = 4
+    block_M = 32
+    block_N = 32
+    dim = 32
+
+    torch.manual_seed(2)
+    a = torch.randn(
+        batch,
+        block_M,
+        heads,
+        block_N,
+        dtype=BLACKHOLE_FLASH_ATTENTION_TORCH_DTYPE,
+    )
+    v_cache = torch.randn(
+        total_pages * block_N,
+        dim,
+        dtype=BLACKHOLE_FLASH_ATTENTION_TORCH_DTYPE,
+    )
+    page_table = torch.tensor([[2], [1]], dtype=torch.int32)
+    out = torch.zeros(batch, block_M, heads, dim, dtype=torch.float32)
+    ref = torch.empty_like(out)
+    for seq in range(batch):
+        page = int(page_table[seq, 0])
+        v_page = v_cache[page * block_N : (page + 1) * block_N, :]
+        for head in range(heads):
+            ref[seq, :, head, :] = torch.matmul(a[seq, :, head, :].float(), v_page.float())
+
+    kernel = paged_av_gemm_kernel(
+        batch=batch,
+        heads=heads,
+        total_pages=total_pages,
+        block_M=block_M,
+        block_N=block_N,
+        dim=dim,
+    )
+    artifact, metadata = _lower_blackhole_flash_attention_metadata(kernel)
+    assert [str(reason) for reason in metadata.get("direct_runtime_unsupported_reasons", [])] == []
+
+    artifact.codegen_mod["main"](a, v_cache, page_table, out)
+    assert_tensors_close_or_dump(
+        out,
+        ref,
+        atol=2e-1,
+        rtol=2e-1,
+        failure_message="Blackhole page-indexed AV GEMM B direct runtime mismatch",
+    )
+
+
+def test_blackhole_t9_page_indexed_av_gemm_b_page1_direct_runtime():
+    can_run, msg = check_blackhole_direct_execution_requirements()
+    if not can_run:
+        pytest.skip(f"Blackhole requirements not met: {msg}")
+
+    batch = 2
+    heads = 4
+    pages_per_sequence = 2
+    page_column = 1
+    total_pages = 4
+    block_M = 32
+    block_N = 32
+    dim = 32
+
+    torch.manual_seed(12)
+    a = torch.randn(
+        batch,
+        block_M,
+        heads,
+        block_N,
+        dtype=BLACKHOLE_FLASH_ATTENTION_TORCH_DTYPE,
+    )
+    v_cache = torch.randn(
+        total_pages * block_N,
+        dim,
+        dtype=BLACKHOLE_FLASH_ATTENTION_TORCH_DTYPE,
+    )
+    page_table = torch.tensor([[2, 0], [3, 1]], dtype=torch.int32)
+    out = torch.zeros(batch, block_M, heads, dim, dtype=torch.float32)
+    ref = torch.empty_like(out)
+    for seq in range(batch):
+        page = int(page_table[seq, page_column])
+        v_page = v_cache[page * block_N : (page + 1) * block_N, :]
+        for head in range(heads):
+            ref[seq, :, head, :] = torch.matmul(a[seq, :, head, :].float(), v_page.float())
+
+    kernel = paged_av_gemm_kernel(
+        batch=batch,
+        heads=heads,
+        pages_per_sequence=pages_per_sequence,
+        page_column=page_column,
+        total_pages=total_pages,
+        block_M=block_M,
+        block_N=block_N,
+        dim=dim,
+    )
+    artifact, metadata = _lower_blackhole_flash_attention_metadata(kernel)
+    assert [str(reason) for reason in metadata.get("direct_runtime_unsupported_reasons", [])] == []
+
+    artifact.codegen_mod["main"](a, v_cache, page_table, out)
+    assert_tensors_close_or_dump(
+        out,
+        ref,
+        atol=2e-1,
+        rtol=2e-1,
+        failure_message="Blackhole page1-indexed AV GEMM B direct runtime mismatch",
+    )
+
+
+def test_blackhole_seq64_qk_gemm_direct_runtime_layout():
+    can_run, msg = check_blackhole_direct_execution_requirements()
+    if not can_run:
+        pytest.skip(f"Blackhole requirements not met: {msg}")
+
+    batch = 1
+    heads = 4
+    seq_len = 64
+    block_M = 32
+    block_N = 32
+    dim = 32
+
+    torch.manual_seed(5)
+    q = torch.randn(
+        batch,
+        seq_len,
+        heads,
+        dim,
+        dtype=BLACKHOLE_FLASH_ATTENTION_TORCH_DTYPE,
+    )
+    k = torch.randn(
+        batch,
+        seq_len,
+        heads,
+        dim,
+        dtype=BLACKHOLE_FLASH_ATTENTION_TORCH_DTYPE,
+    )
+    out = torch.zeros(batch, seq_len, heads, block_N, dtype=torch.float32)
+    ref = torch.empty_like(out)
+    for tile in range(seq_len // block_M):
+        rows = slice(tile * block_M, (tile + 1) * block_M)
+        cols = slice(tile * block_N, (tile + 1) * block_N)
+        for head in range(heads):
+            ref[0, rows, head, :] = torch.matmul(
+                q[0, rows, head, :].float(),
+                k[0, cols, head, :].float().T,
+            )
+
+    kernel = seq_qk_gemm_kernel(
+        batch=batch,
+        heads=heads,
+        seq_len=seq_len,
+        block_M=block_M,
+        block_N=block_N,
+        dim=dim,
+    )
+    artifact, metadata = _lower_blackhole_flash_attention_metadata(kernel)
+    assert [str(reason) for reason in metadata.get("direct_runtime_unsupported_reasons", [])] == []
+
+    artifact.codegen_mod["main"](q, k, out)
+    assert_tensors_close_or_dump(
+        out,
+        ref,
+        atol=2e-1,
+        rtol=2e-1,
+        failure_message="Blackhole seq64 QK GEMM layout direct runtime mismatch",
+    )
+
+
+def test_blackhole_t9_paged_gqa_decode_bf16_direct_runtime():
+    can_run, msg = check_blackhole_direct_execution_requirements()
+    if not can_run:
+        pytest.skip(f"Blackhole requirements not met: {msg}")
+
+    batch = 2
+    heads = 4
+    pages_per_sequence = 2
+    total_pages = 4
+    block_M = 32
+    block_N = 32
+    dim = 32
+
+    torch.manual_seed(0)
+    q = torch.randn(
+        batch,
+        block_M,
+        heads,
+        dim,
+        dtype=BLACKHOLE_FLASH_ATTENTION_TORCH_DTYPE,
+    )
+    k_cache = torch.randn(
+        total_pages * block_N,
+        dim,
+        dtype=BLACKHOLE_FLASH_ATTENTION_TORCH_DTYPE,
+    )
+    v_cache = torch.randn(
+        total_pages * block_N,
+        dim,
+        dtype=BLACKHOLE_FLASH_ATTENTION_TORCH_DTYPE,
+    )
+    page_table = torch.tensor([[2, 0], [3, 1]], dtype=torch.int32)
+    cache_seq_lens = torch.tensor([45, 64], dtype=torch.int32)
+    out = torch.zeros_like(q)
+
+    kernel = paged_gqa_decode_kernel(
+        batch=batch,
+        heads=heads,
+        groups=heads,
+        pages_per_sequence=pages_per_sequence,
+        total_pages=total_pages,
+        block_M=block_M,
+        block_N=block_N,
+        dim=dim,
+    )
+    artifact, metadata = _lower_blackhole_flash_attention_metadata(kernel)
+    assert [str(reason) for reason in metadata.get("direct_runtime_unsupported_reasons", [])] == []
+
+    artifact.codegen_mod["main"](q, k_cache, v_cache, page_table, cache_seq_lens, out)
+
+    ref = _paged_gqa_decode_reference(q, k_cache, v_cache, page_table, cache_seq_lens)
+    assert_tensors_close_or_dump(
+        out,
+        ref,
+        atol=5e-2,
+        rtol=5e-2,
+        failure_message="Blackhole T9 paged GQA decode bf16 direct runtime mismatch",
     )
 
 

@@ -54,7 +54,9 @@ bool IsBufferAddressRuntimeArgKind(const std::string& kind) {
 }
 
 bool IsATileStartRuntimeArgKind(const std::string& kind) {
-  return kind == "a_tile_start_id" || kind.rfind("a_tile_start_id_", 0) == 0;
+  return kind == "a_tile_start_id" || kind.rfind("a_tile_start_id_", 0) == 0 ||
+         kind == "indexed_tile_start_id" ||
+         kind.rfind("indexed_tile_start_id_", 0) == 0;
 }
 
 bool IsAValidRowsRuntimeArgKind(const std::string& kind) {
@@ -835,6 +837,7 @@ void CodeGenBlackhole::GenerateGenericKernelMain(const tvm::tir::PrimFunc &f,
   LoadCorePlan(f);
   LoadLogicalTileLayouts(f);
   LoadAccessorOffsets(f);
+  LoadCBConfigMetadata(f);
   if (HasRuntimeArgsForCodegen(f)) {
     EmitRuntimeArgLoads(f);
     if (TryEmitValueIndexSelectionKernel(f)) {
@@ -1293,16 +1296,10 @@ bool CodeGenBlackhole::LogicalTileLayoutRequiresGenericBridge(
   return !binding.inverse_logical_index_exprs.empty() && !binding.local_shape.empty();
 }
 
-void CodeGenBlackhole::EmitRuntimeArgLoads(const tvm::tir::PrimFunc &f) {
-  buffer_runtime_arg_map_.clear();
-  buffer_runtime_arg_map_by_name_.clear();
-  runtime_arg_vars_by_kind_.clear();
-  runtime_arg_vars_by_identity_.clear();
-  runtime_arg_vars_by_name_.clear();
-  per_work_arg_bindings_by_identity_.clear();
-  per_work_arg_bindings_.clear();
+void CodeGenBlackhole::LoadCBConfigMetadata(const tvm::tir::PrimFunc &f) {
   cb_page_size_by_id_.clear();
   cb_num_pages_by_id_.clear();
+  cb_data_format_by_id_.clear();
   cb_id_by_requirement_name_.clear();
   cb_num_pages_by_requirement_name_.clear();
   cb_publish_pages_by_requirement_name_.clear();
@@ -1360,6 +1357,17 @@ void CodeGenBlackhole::EmitRuntimeArgLoads(const tvm::tir::PrimFunc &f) {
       }
     }
   }
+}
+
+void CodeGenBlackhole::EmitRuntimeArgLoads(const tvm::tir::PrimFunc &f) {
+  buffer_runtime_arg_map_.clear();
+  buffer_runtime_arg_map_by_name_.clear();
+  runtime_arg_vars_by_kind_.clear();
+  runtime_arg_vars_by_identity_.clear();
+  runtime_arg_vars_by_name_.clear();
+  per_work_arg_bindings_by_identity_.clear();
+  per_work_arg_bindings_.clear();
+  LoadCBConfigMetadata(f);
 
   ffi::Array<ffi::Any> runtime_args = GetRuntimeArgsForCodegen(f);
   ffi::Array<ffi::Any> per_work_arg_specs = GetPerWorkArgSpecsForCodegen(f);
@@ -2123,6 +2131,19 @@ void CodeGenBlackhole::BindThreadIndex(const tvm::tir::IterVar &iv) {
         return std::string("0 /* explicit_xy_work_descriptor_y */");
       }
       if (binding.value_source ==
+          ::tvm::tl::blackhole_runtime_arg_schema::kValueSourceLogicalBlockYXLinear) {
+        if (want_x) {
+          if (logical_grid_y_ > 0) {
+            return "(" + arg_var.value() + " / " + std::to_string(logical_grid_y_) + ")";
+          }
+          return arg_var;
+        }
+        if (logical_grid_y_ > 0) {
+          return "(" + arg_var.value() + " % " + std::to_string(logical_grid_y_) + ")";
+        }
+        return std::string("0 /* explicit_yx_work_descriptor_y */");
+      }
+      if (binding.value_source ==
           ::tvm::tl::blackhole_runtime_arg_schema::kValueSourceLogicalBlockX) {
         if (want_x) {
           return arg_var;
@@ -2489,6 +2510,7 @@ bool CodeGenBlackhole::HandleBlackholeBuiltin(const tvm::tir::CallNode *op,
       "write_tile_from_cb",
       "write_page_from_cb",
       "zero_cb_page",
+      "row_bound_mask_to_cb",
   };
   if (core_type_ != CoreType::kTRISC &&
       kTRISCOnlyBuiltins.count(builtin_name)) {
@@ -2546,6 +2568,9 @@ bool CodeGenBlackhole::HandleBlackholeBuiltin(const tvm::tir::CallNode *op,
     return true;
   } else if (builtin_name == "zero_cb_page") {
     PrintZeroCBPage(op, os);
+    return true;
+  } else if (builtin_name == "row_bound_mask_to_cb") {
+    PrintRowBoundMaskToCB(op, os);
     return true;
   } else if (builtin_name == "get_semaphore") {
     PrintGetSemaphore(op, os);
@@ -3024,6 +3049,54 @@ void CodeGenBlackhole::PrintZeroCBPage(const tvm::tir::CallNode *op,
         "reinterpret_cast<volatile tt_l1_ptr uint32_t*>(cb_l1_addr); "
         "for (uint32_t i = 0; i < page_bytes / sizeof(uint32_t); ++i) { "
         "dst_words[i] = 0u; } }";
+}
+
+void CodeGenBlackhole::PrintRowBoundMaskToCB(const tvm::tir::CallNode *op,
+                                             std::ostream &os) {
+  ICHECK_EQ(op->args.size(), 4)
+      << "tl.blackhole.row_bound_mask_to_cb expects 4 arguments";
+  const auto* page_bytes = op->args[3].as<tvm::tir::IntImmNode>();
+  ICHECK(page_bytes != nullptr && page_bytes->value == 2048)
+      << "tl.blackhole.row_bound_mask_to_cb currently admits one bf16 tiled page";
+  need_dataflow_api_h_ = true;
+  const int cb_id = ResolveCBId(op->args[0]);
+  os << "{ const uint32_t valid_rows = static_cast<uint32_t>(";
+  PrintExpr(op->args[1], os);
+  os << "); const uint32_t page_base = static_cast<uint32_t>(";
+  PrintExpr(op->args[2], os);
+  os << "); const uint32_t valid_cols = "
+        "(valid_rows <= page_base) ? 0u : "
+        "(((valid_rows - page_base) >= 32u) ? 32u : (valid_rows - page_base)); "
+        "volatile tt_l1_ptr uint16_t* dst_u16 = "
+        "reinterpret_cast<volatile tt_l1_ptr uint16_t*>(get_write_ptr(" << cb_id << ")); "
+        "volatile tt_l1_ptr uint32_t* dst_u32 = "
+        "reinterpret_cast<volatile tt_l1_ptr uint32_t*>(get_write_ptr(" << cb_id << ")); "
+        "constexpr uint32_t kTileWords = 2048u / sizeof(uint32_t); "
+        "constexpr uint32_t kNegInfPair = 0xFF80FF80u; "
+        "constexpr uint16_t kNegInfBf16 = 0xFF80u; "
+        "if (valid_cols == 0u) { "
+        "for (uint32_t i = 0; i < kTileWords; ++i) { dst_u32[i] = kNegInfPair; } "
+        "} else { "
+        "for (uint32_t i = 0; i < kTileWords; ++i) { dst_u32[i] = 0u; } "
+        "if (valid_cols < 32u) { "
+        "const uint32_t cur_pos_in_tile = valid_cols - 1u; "
+        "const uint32_t face_start = (cur_pos_in_tile < 15u) ? 0u : 1u; "
+        "const uint32_t fill_pos_in_face = (cur_pos_in_tile + 1u) % 16u; "
+        "if (face_start == 0u) { "
+        "for (uint32_t face = 1u; face < 4u; face += 2u) { "
+        "const uint32_t face_word = face << 7; "
+        "for (uint32_t j = 0; j < 128u; ++j) { dst_u32[face_word + j] = kNegInfPair; } "
+        "} } "
+        "const bool fill_odd = (fill_pos_in_face % 2u) == 1u; "
+        "const uint32_t fill_word_col = (fill_pos_in_face + 1u) >> 1; "
+        "for (uint32_t face = face_start; face < 4u; face += 2u) { "
+        "const uint32_t face_u16 = face << 8; "
+        "const uint32_t face_u32 = face << 7; "
+        "for (uint32_t row = 0; row < 16u; ++row) { "
+        "if (fill_odd) { dst_u16[face_u16 + fill_pos_in_face + 16u * row] = kNegInfBf16; } "
+        "for (uint32_t col_word = fill_word_col; col_word < 8u; ++col_word) { "
+        "dst_u32[face_u32 + col_word + 8u * row] = kNegInfPair; "
+        "} } } } } }";
 }
 
 void CodeGenBlackhole::PrintMMInit(const tvm::tir::CallNode *op,
@@ -4374,6 +4447,10 @@ void CodeGenBlackhole::PrintRuntimeArgU32(const tvm::tir::CallNode *op,
   auto it = runtime_arg_vars_by_name_.find(arg_name->value);
   ICHECK(it != runtime_arg_vars_by_name_.end())
       << "Missing runtime arg binding for name: " << arg_name->value;
+  if (op->dtype.is_int() && op->dtype.bits() == 32) {
+    os << "static_cast<int32_t>(" << it->second << ")";
+    return;
+  }
   os << it->second;
 }
 

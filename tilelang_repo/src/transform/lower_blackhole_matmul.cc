@@ -586,6 +586,17 @@ Stmt PlanTTKernelABI::LowerMatmulCallWithFlowAnalysis(
     post_merge_cast = nullptr;
     post_merge_cast_order_index = -1;
   }
+  if (gemm_c_req_index_ >= 0 &&
+      gemm_c_req_index_ < static_cast<int>(cb_requirements_.size())) {
+    CBRequirement& c_req = cb_requirements_.at(gemm_c_req_index_);
+    if (publish_transport_out) {
+      ICHECK(c_req.type != CBType::kInput)
+          << "GEMM output CB requirement cannot be an input requirement";
+      c_req.type = CBType::kOutput;
+    } else if (c_req.type == CBType::kOutput) {
+      c_req.type = CBType::kIntermediate;
+    }
+  }
 
   return GenerateMatmulSequence(op, retain_in0, retain_in1, publish_out,
                                 publish_transport_out, preserve_out_local_state, reacquire_in0,
@@ -784,6 +795,8 @@ Stmt PlanTTKernelABI::GenerateMatmulSequenceForOutputRequirement(int out_req_ind
           blackhole_cb_reserve_back(),
           {IntImm32(in0_id), IntImm32(in0_event_tiles)}));
     }
+  } else {
+    RecordSerialLoopRetainedComputeInputPop(gemm_a_buffer_, in0_event_tiles);
   }
   if (!retain_in1) {
     stmts.push_back(MakeBlackholeCall(
@@ -794,6 +807,8 @@ Stmt PlanTTKernelABI::GenerateMatmulSequenceForOutputRequirement(int out_req_ind
           blackhole_cb_reserve_back(),
           {IntImm32(in1_id), IntImm32(in1_event_tiles)}));
     }
+  } else {
+    RecordSerialLoopRetainedComputeInputPop(gemm_b_buffer_, in1_event_tiles);
   }
 
   // 4-5. Commit and wait
@@ -1184,6 +1199,8 @@ Stmt PlanTTKernelABI::GenerateMatmulSequenceWithPartialReload(int out_req_index,
       deferred_reacquire_stmts.push_back(MakeBlackholeCall(
           blackhole_cb_reserve_back(), {IntImm32(in0_id), IntImm32(in0_event_tiles)}));
     }
+  } else {
+    RecordSerialLoopRetainedComputeInputPop(gemm_a_buffer_, in0_event_tiles);
   }
   if (!retain_in1) {
     stmts.push_back(MakeBlackholeCall(blackhole_cb_pop_front(),
@@ -1192,6 +1209,8 @@ Stmt PlanTTKernelABI::GenerateMatmulSequenceWithPartialReload(int out_req_index,
       deferred_reacquire_stmts.push_back(MakeBlackholeCall(
           blackhole_cb_reserve_back(), {IntImm32(in1_id), IntImm32(in1_event_tiles)}));
     }
+  } else {
+    RecordSerialLoopRetainedComputeInputPop(gemm_b_buffer_, in1_event_tiles);
   }
 
   stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_commit(), {}));
