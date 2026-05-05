@@ -190,6 +190,12 @@ def test_blackhole_leaf_readers_do_not_keep_legacy_defaults_or_slot_fallbacks():
         ],
         TARGET_SRC_DIR / "blackhole_module.cc": [
             "IsTileStartRuntimeArgKind",
+            "var->name_hint",
+            'name == "bx"',
+            'name == "by"',
+            'name == "bz"',
+            'name == "num_k_tiles"',
+            'name == "logical_n_tiles"',
         ],
     }
 

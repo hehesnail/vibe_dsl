@@ -2535,6 +2535,16 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   as extra formal input-buffer evidence, but a `value_expr` that references
   only work/compute context variables is neutral for buffer-role binding; do
   not reject it as missing schema.
+- 2026-05-06 Blackhole value_expr Var normalization:
+  Direct runtime must not recover `value_expr` semantics from `Var.name_hint`.
+  If a per-work expression depends on launch axes, normalize the IR variable
+  to an explicit `tl.blackhole.runtime_arg_u32("logical_block_*")` call during
+  ABI projection, using the pass-local `thread_extent` binding analysis.
+  Compute-derived values such as GEMM K-tile counts and N-tile strides should
+  be folded from typed GEMM/core-grid records into ordinary constants before
+  projection.  Keep `block_index_source_by_var_` as pass-local analysis until
+  all per-work specs are built; do not erase it as if it were only an
+  active-stack map before `StoreAccessorDescriptors`.
 - 2026-05-05 Blackhole guard-mask leaf naming:
   Guard mask materialization can be a Blackhole leaf builtin only if it stays
   generic: `guard_mask_to_cb(cb_id, bound_value, base_value, page_bytes)`.

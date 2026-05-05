@@ -1,3 +1,5 @@
+import json
+
 import pytest
 import torch
 
@@ -49,6 +51,18 @@ from .test_blackhole_copy_pipeline import (
     _require_blackhole_kernel,
     _require_spec_entry,
 )
+
+
+def _assert_no_non_handle_vars_in_value_expr(value_expr):
+    encoded = json.loads(str(value_expr))
+    offenders = []
+    for node_index, node in enumerate(encoded["nodes"]):
+        if node.get("type") != "tir.Var":
+            continue
+        dtype = node.get("data", {}).get("dtype")
+        if dtype != "handle":
+            offenders.append((node_index, dtype))
+    assert not offenders
 
 
 def _with_richer_accessor_schema(func, common_runtime_args=None):
@@ -1916,12 +1930,18 @@ def test_blackhole_t9_grouped_gemm_projects_segmented_a_bindings():
     }
     segment_start = bindings["per_work_value"]
     assert str(segment_start["value_source"]) == "value_expr"
-    assert "GroupOffsets" in str(segment_start["value_expr"])
+    segment_start_expr = str(segment_start["value_expr"])
+    assert "GroupOffsets" in segment_start_expr
+    assert "runtime_arg_u32" in segment_start_expr
+    _assert_no_non_handle_vars_in_value_expr(segment_start["value_expr"])
     assert "index_buffer" not in segment_start
 
     segment_count = bindings["per_work_value_1"]
     assert str(segment_count["value_source"]) == "value_expr"
-    assert "GroupSizes" in str(segment_count["value_expr"])
+    segment_count_expr = str(segment_count["value_expr"])
+    assert "GroupSizes" in segment_count_expr
+    assert "runtime_arg_u32" in segment_count_expr
+    _assert_no_non_handle_vars_in_value_expr(segment_count["value_expr"])
     assert "index_buffer" not in segment_count
 
     a_tile_count_specs = [
@@ -1932,7 +1952,11 @@ def test_blackhole_t9_grouped_gemm_projects_segmented_a_bindings():
     assert len(a_tile_count_specs) == 1
     assert str(a_tile_count_specs[0]["buffer"]) == "A"
     assert str(a_tile_count_specs[0]["value_source"]) == "value_expr"
-    assert "num_k_tiles" in str(a_tile_count_specs[0]["value_expr"])
+    a_tile_count_expr = str(a_tile_count_specs[0]["value_expr"])
+    assert "num_k_tiles" not in a_tile_count_expr
+    assert '"type": "ir.IntImm"' in a_tile_count_expr
+    assert '"dtype": "uint32"' in a_tile_count_expr
+    assert '"value": 4' in a_tile_count_expr
 
 
 def test_blackhole_t5_external_sharded_l1_gemm_direct_runtime_bf16():

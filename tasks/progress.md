@@ -44,13 +44,17 @@
   the matching region by structural IR expression.
 - Per-work runtime values that depend on a dynamic TIR expression use
   `value_source=value_expr`; the serialized TIR expression carries the
-  `BufferLoad` and launch-axis variables needed by runtime.
+  `BufferLoad`s needed by runtime, while launch-axis dependencies are
+  normalized into explicit `tl.blackhole.runtime_arg_u32(...)` calls before
+  projection.
   `index_buffer`, `index_value_scale`, `index_table_shape`,
   `index_table_index_sources`, and `value_source=index_table` are not public
   TTProgram / ExecutableSpec / runtime schema.
 - Per-work runtime values that depend on typed compute/work context, such as
   GEMM K-tile count, N-tile stride, or logical-z K offset, also use
-  `value_source=value_expr`.  Public schema must not grow
+  `value_source=value_expr`.  ABI lowering derives compute constants from
+  typed GEMM records and uses explicit logical-block runtime-arg calls for
+  launch axes.  Public schema must not grow
   `compute_op_reduction_extent`, `compute_op_output_x_extent`, or
   `logical_block_z_offset` value-source enums.
 - Public per-work schema no longer carries binding-kind subroles such as
@@ -230,6 +234,37 @@ Each checkpoint needs its own direct-runtime correctness proof:
 - Fresh TT-Sim selectors reported T9.1 grouped-GEMM projection/runtime and
   baseline external-sharded GEMM direct runtime `3 passed`; the public schema
   guard plus flash executable-spec projection reported `3 passed`.
+
+2026-05-06 UTC direct-runtime value_expr name-recovery cleanup checkpoint:
+
+- Removed direct-runtime `value_expr` evaluation by naked `Var.name_hint`.
+  `blackhole_module.cc` no longer recognizes `bx/by/bz`, `num_k_tiles`, or
+  `logical_n_tiles` by source name.
+- `PlanTTKernelABI` now normalizes block-index variables inside per-work
+  `value_expr`s into explicit `tl.blackhole.runtime_arg_u32(...)` calls before
+  `ExecutableSpec` projection.  The pass-local block-index source analysis is
+  retained until ABI projection, but no new cross-stage side channel or schema
+  field is introduced.
+- GEMM K-tile counts and N-tile strides are folded from typed GEMM/core-grid
+  records into ordinary `uint32` `value_expr` constants; logical-z K offsets
+  are expressed as an explicit logical-block-z runtime-arg call times that
+  typed K-tile count.
+- Segment runtime args for generic per-work values are now attached from the
+  segment body's actual `runtime_arg_u32` uses, so writer/compute segments do
+  not rely on a segment-kind whitelist and do not miss body-retained dynamic
+  values.
+- Source guard now rejects `Var.name_hint` and hardcoded work/compute variable
+  names in `blackhole_module.cc`; grouped-GEMM projection asserts dynamic
+  value expressions contain explicit runtime-arg calls and no non-handle
+  `tir.Var` nodes.
+- `cmake --build tilelang_repo/build -j32` passed.
+- Focused structural/projection selector covering the guard, grouped-GEMM
+  per-work binding projection, indexed copy value_expr, and ragged value_expr
+  reported `4 passed`.
+- Runtime note: after the cleanup, the previous `value_expr` fatal is gone in
+  metadata/projection checks.  A minimal grouped-GEMM TT-Sim direct-runtime
+  probe reached enqueue and timed out after `180s`, so direct GEMM correctness
+  was not used as completion evidence for this cleanup checkpoint.
 
 2026-05-05 UTC IR-first per-work schema cleanup checkpoint:
 

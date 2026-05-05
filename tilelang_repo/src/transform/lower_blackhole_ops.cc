@@ -1852,6 +1852,7 @@ PrimFunc PlanTTKernelABI::Transform(const PrimFunc& func) {
   needs_base_value_arg_ = false;
   needs_extent_value_for_base_arg_ = false;
   requires_compute_segment_ = false;
+  logical_grid_x_ = 1;
   logical_grid_z_ = 1;
   copy_input_buffer_ = Buffer();
   copy_output_buffer_ = Buffer();
@@ -2020,6 +2021,8 @@ PrimFunc PlanTTKernelABI::Transform(const PrimFunc& func) {
   gemm_c_dtype_ = DataType::Void();
   if (auto staged_program = func->GetAttr<TTProgram>(attr::kTLTTProgram)) {
     if (!staged_program.value()->core_groups.empty()) {
+      logical_grid_x_ =
+          std::max<int64_t>(1, staged_program.value()->core_groups[0]->logical_grid_x);
       logical_grid_z_ =
           std::max<int64_t>(1, staged_program.value()->core_groups[0]->logical_grid_z);
     }
@@ -3141,7 +3144,6 @@ Stmt PlanTTKernelABI::VisitStmt_(const AttrStmtNode* op) {
     } else if (transport_thread_var) {
       block_index_vars_.erase(iv->var.get());
       block_index_var_names_.erase(iv->var->name_hint);
-      block_index_source_by_var_.erase(iv->var.get());
     }
     Stmt lowered_loop =
         body.same_as(op->body) ? GetRef<Stmt>(op)

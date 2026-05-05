@@ -11,6 +11,7 @@
 #include <dmlc/memory_io.h>
 #include <tvm/ffi/function.h>
 #include <tvm/ffi/reflection/registry.h>
+#include <tvm/ir/op.h>
 #include <tvm/node/serialization.h>
 #include <tvm/runtime/data_type.h>
 #include <tvm/tir/expr.h>
@@ -2178,16 +2179,6 @@ static std::unordered_map<uint32_t, uint32_t> CreateSemaphoresFromSpec(Program& 
   return semaphore_ids;
 }
 
-static uint32_t GetRuntimeNumKTiles(const ExecutableSpec& spec) {
-  const auto gemm = GetPrimaryGemmCompute(spec);
-  if (gemm.enabled && gemm.kind == "gemm") {
-    ICHECK_GT(gemm.Kt, 0U)
-        << "Blackhole GEMM direct path requires compute_ops GEMM Kt to be populated";
-    return std::max<uint32_t>(1, gemm.Kt);
-  }
-  return 0;
-}
-
 static uint32_t GetRuntimeLogicalGridX(const ExecutableSpec& spec) {
   return std::max<uint32_t>(1, spec.core_plan.logical_grid_x);
 }
@@ -2198,17 +2189,6 @@ static uint32_t GetRuntimeLogicalGridY(const ExecutableSpec& spec) {
 
 static uint32_t GetRuntimeLogicalGridZ(const ExecutableSpec& spec) {
   return std::max<uint32_t>(1, spec.core_plan.logical_grid_z);
-}
-
-static uint32_t GetRuntimeLogicalNTiles(const ExecutableSpec& spec) {
-  const auto gemm = GetPrimaryGemmCompute(spec);
-  ICHECK(gemm.enabled && gemm.kind == "gemm")
-      << "logical_n_tiles is only defined for GEMM kernels in Blackhole direct runtime";
-  ICHECK_GT(gemm.Nt, 0U)
-      << "Blackhole GEMM direct path requires compute_ops GEMM Nt to be populated";
-  const uint32_t local_n_tiles = std::max<uint32_t>(1, gemm.Nt);
-  const uint32_t logical_grid_x = GetRuntimeLogicalGridX(spec);
-  return local_n_tiles * logical_grid_x;
 }
 
 static void CreateCircularBuffersFromSpec(
@@ -3550,16 +3530,13 @@ static bool TryAppendSharedRuntimeArg(
 }
 
 struct DirectRuntimeWorkContext {
-  uint32_t num_k_tiles = 0;
   uint32_t logical_grid_x = 0;
   uint32_t logical_grid_y = 0;
   uint32_t logical_grid_z = 0;
-  uint32_t logical_n_tiles = 0;
   uint32_t work_linear_id = 0;
   uint32_t bx = 0;
   uint32_t by = 0;
   uint32_t bz = 0;
-  bool has_gemm_compute_op = false;
 };
 
 static DirectRuntimeWorkContext BuildDirectRuntimeWorkContext(const KernelSpec& kernel,
@@ -3577,12 +3554,6 @@ static DirectRuntimeWorkContext BuildDirectRuntimeWorkContext(const KernelSpec& 
   context.bx = context.logical_grid_x == 0 ? 0 : (xy_linear % context.logical_grid_x);
   context.by = context.logical_grid_x == 0 ? 0 : (xy_linear / context.logical_grid_x);
   context.bz = xy_work == 0 ? 0 : (context.work_linear_id / xy_work);
-  const auto gemm_op = GetPrimaryGemmCompute(spec);
-  context.has_gemm_compute_op = gemm_op.enabled && gemm_op.kind == "gemm";
-  if (context.has_gemm_compute_op) {
-    context.num_k_tiles = GetRuntimeNumKTiles(spec);
-    context.logical_n_tiles = GetRuntimeLogicalNTiles(spec);
-  }
   return context;
 }
 
@@ -3618,37 +3589,40 @@ static int64_t CheckedFloorDiv(int64_t lhs, int64_t rhs,
   return quotient;
 }
 
-static int64_t EvaluateDirectRuntimeVar(
-    const tir::VarNode* var,
+static int64_t EvaluateDirectRuntimeValueSource(
+    const std::string& value_source,
     const DirectRuntimeWorkContext& context) {
-  const std::string name = static_cast<std::string>(var->name_hint);
-  if (name == "bx" ||
-      name == tl::blackhole_runtime_arg_schema::kValueSourceLogicalBlockX) {
-    return context.bx;
-  }
-  if (name == "by" ||
-      name == tl::blackhole_runtime_arg_schema::kValueSourceLogicalBlockY) {
-    return context.by;
-  }
-  if (name == "bz" ||
-      name == tl::blackhole_runtime_arg_schema::kValueSourceLogicalBlockZ) {
-    return context.bz;
-  }
-  if (name == "work_linear_id" ||
-      name == tl::blackhole_runtime_arg_schema::kValueSourceWorkLinearId) {
+  if (value_source == tl::blackhole_runtime_arg_schema::kValueSourceWorkLinearId) {
     return context.work_linear_id;
   }
-  if (name == "num_k_tiles") {
-    ICHECK(context.has_gemm_compute_op)
-        << "Blackhole direct runtime value_expr var num_k_tiles requires GEMM compute_op";
-    return context.num_k_tiles;
+  if (value_source == tl::blackhole_runtime_arg_schema::kValueSourceLogicalBlockX) {
+    return context.bx;
   }
-  if (name == "logical_n_tiles") {
-    ICHECK(context.has_gemm_compute_op)
-        << "Blackhole direct runtime value_expr var logical_n_tiles requires GEMM compute_op";
-    return context.logical_n_tiles;
+  if (value_source == tl::blackhole_runtime_arg_schema::kValueSourceLogicalBlockY) {
+    return context.by;
   }
-  LOG(FATAL) << "Unsupported Blackhole direct runtime value_expr var " << name;
+  if (value_source == tl::blackhole_runtime_arg_schema::kValueSourceLogicalBlockZ) {
+    return context.bz;
+  }
+  LOG(FATAL) << "Unsupported Blackhole direct runtime value_expr source " << value_source;
+  return 0;
+}
+
+static int64_t EvaluateDirectRuntimeCall(
+    const tir::CallNode* call,
+    const DirectRuntimeWorkContext& context) {
+  const auto* op = call->op.as<OpNode>();
+  if (op != nullptr && op->name == "tl.blackhole.runtime_arg_u32") {
+    ICHECK_EQ(call->args.size(), 1U)
+        << "tl.blackhole.runtime_arg_u32 value_expr call expects one source argument";
+    const auto* source = call->args[0].as<tir::StringImmNode>();
+    ICHECK(source != nullptr)
+        << "tl.blackhole.runtime_arg_u32 value_expr call expects a string source";
+    return EvaluateDirectRuntimeValueSource(source->value, context);
+  }
+  LOG(FATAL) << "Unsupported Blackhole direct runtime value_expr call "
+             << (op != nullptr ? static_cast<std::string>(op->name)
+                               : call->op->GetTypeKey());
   return 0;
 }
 
@@ -3748,8 +3722,10 @@ static int64_t EvaluateDirectRuntimeValueExpr(
   if (const auto* imm = expr.as<tir::IntImmNode>()) {
     return imm->value;
   }
-  if (const auto* var = expr.as<tir::VarNode>()) {
-    return EvaluateDirectRuntimeVar(var, context);
+  if (expr.as<tir::VarNode>() != nullptr) {
+    LOG(FATAL) << "Blackhole direct runtime value_expr requires work-dependent "
+                  "values to be normalized into explicit runtime_arg_u32 calls";
+    return 0;
   }
   if (const auto* cast = expr.as<tir::CastNode>()) {
     return EvaluateDirectRuntimeValueExpr(cast->value, context, buffer_bindings);
@@ -3795,6 +3771,9 @@ static int64_t EvaluateDirectRuntimeValueExpr(
   }
   if (const auto* load = expr.as<tir::BufferLoadNode>()) {
     return EvaluateDirectRuntimeBufferLoad(load, context, buffer_bindings);
+  }
+  if (const auto* call = expr.as<tir::CallNode>()) {
+    return EvaluateDirectRuntimeCall(call, context);
   }
   LOG(FATAL) << "Unsupported Blackhole direct runtime value_expr node "
              << expr->GetTypeKey();

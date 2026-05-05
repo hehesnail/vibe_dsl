@@ -2996,6 +2996,30 @@
   - `test_blackhole_t9_grouped_gemm_direct_runtime_bf16` passed under TT-Sim
     after the gate fix.
 
+### Direct-runtime value_expr fallback masked missing IR normalization
+
+- **症状**:
+  - Removing `Var.name_hint` fallback from `blackhole_module.cc` first exposed
+    `Blackhole direct runtime value_expr requires work-dependent values to be
+    normalized into explicit runtime_arg_u32 calls` on grouped GEMM per-work
+    table expressions.
+- **根因**:
+  - `PlanTTKernelABI` recorded table-derived `value_expr`s while inside
+    `blockIdx.*` scopes, but erased `block_index_source_by_var_` when leaving
+    the scope.  The later ABI projection step therefore could not rewrite the
+    stored block-axis `Var` inside `BufferLoad` indices.
+- **修法**:
+  - Treat `block_index_source_by_var_` as pass-local analysis that survives
+    until per-work specs are projected.  Normalize work-axis `Var`s into
+    explicit `tl.blackhole.runtime_arg_u32(...)` calls, and make direct
+    runtime fail closed on any remaining naked `Var`.
+- **验证**:
+  - Focused projection tests assert dynamic grouped-GEMM value expressions
+    contain `runtime_arg_u32` and no non-handle `tir.Var` nodes.
+  - A minimal grouped-GEMM TT-Sim direct-runtime probe then reached enqueue but
+    timed out after `180s`; treat that as remaining runtime/simulator work,
+    not as permission to restore name recovery.
+
 ### Leaf-time segment recovery duplicated or lost segment body statements
 
 - **症状**:

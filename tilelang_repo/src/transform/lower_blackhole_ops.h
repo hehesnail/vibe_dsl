@@ -943,6 +943,7 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
       const ffi::Array<PrimExpr>& subject_index_exprs,
       const std::string& value_source,
       const PrimExpr& value_expr);
+  tvm::PrimExpr NormalizePerWorkValueExpr(const tvm::PrimExpr& expr) const;
   tvm::PrimExpr NormalizeRuntimeTileStartScale(const tvm::PrimExpr& expr) const;
 
   // StmtExprMutator overrides
@@ -972,6 +973,7 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   bool needs_extent_value_for_base_arg_ = false;
   bool requires_compute_segment_ = false;
   bool select_compute_builtins_only_ = false;
+  int64_t logical_grid_x_ = 1;
   int64_t logical_grid_z_ = 1;
   tvm::tir::Buffer copy_input_buffer_;
   tvm::tir::Buffer copy_output_buffer_;

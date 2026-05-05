@@ -28,6 +28,7 @@
 #include "common/blackhole_tile_compute_covering.h"
 #include "common/blackhole_tile_compute_legalizer.h"
 #include "common/blackhole_utils.h"
+#include "../tir/builtin_blackhole.h"
 
 #include <tvm/tir/analysis.h>
 #include <tvm/tir/op.h>
@@ -36,6 +37,7 @@
 #include <algorithm>
 #include <optional>
 #include <sstream>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -59,6 +61,11 @@ namespace {
 
 constexpr int kBlackholeTileRows = 32;
 constexpr int kBlackholeTileCols = 32;
+
+static PrimExpr RuntimeArgValueExpr(const char* value_source, DataType dtype = DataType::UInt(32)) {
+  return tir::Call(dtype, tir::builtin::blackhole_runtime_arg_u32(),
+                   {tir::StringImm(value_source)});
+}
 
 bool IsBroadcastColsTileComputeOperation(const std::string& operation_name) {
   const std::optional<BlackholeTileComputeOperation> operation =
@@ -314,6 +321,29 @@ static Map<String, Any> MakeRuntimeArg(const std::string &name,
 }
 
 static constexpr const char* kLogicalBlockZRuntimeArg = "logical_block_z";
+
+static bool StmtUsesRuntimeArgName(const Stmt& body, const std::string& arg_name) {
+  if (!body.defined() || arg_name.empty()) {
+    return false;
+  }
+  bool found = false;
+  const auto runtime_arg_op = tir::builtin::blackhole_runtime_arg_u32();
+  tir::PostOrderVisit(body, [&](const ObjectRef& node) {
+    if (found) {
+      return;
+    }
+    const auto* call = node.as<CallNode>();
+    if (call == nullptr || call->args.size() != 1U) {
+      return;
+    }
+    if (!call->op.same_as(runtime_arg_op)) {
+      return;
+    }
+    const auto* name = call->args[0].as<tir::StringImmNode>();
+    found = name != nullptr && name->value == arg_name;
+  });
+  return found;
+}
 
 static Map<String, Any> MarkRuntimeArgRequiresPerWorkBinding(
     const Any &item) {
@@ -699,20 +729,24 @@ static TTPerWorkArgSpec MakePerWorkArgSpec(const std::string &arg_kind,
                           std::move(value_expr), String(value_usage));
 }
 
-static PrimExpr WorkContextVar(const char* name) {
-  return tir::Var(name, DataType::Int(32));
+static PrimExpr NumKTilesExpr(int gemm_k) {
+  ICHECK_EQ(gemm_k % kBlackholeTileCols, 0)
+      << "Blackhole GEMM per-work value_expr requires K divisible by tile cols";
+  return IntImm(DataType::UInt(32),
+                std::max<int64_t>(1, gemm_k / kBlackholeTileCols));
 }
 
-static PrimExpr NumKTilesExpr() {
-  return WorkContextVar("num_k_tiles");
+static PrimExpr LogicalNTilesExpr(int gemm_n, int64_t logical_grid_x) {
+  ICHECK_EQ(gemm_n % kBlackholeTileCols, 0)
+      << "Blackhole GEMM per-work value_expr requires N divisible by tile cols";
+  const int64_t local_n_tiles = std::max<int64_t>(1, gemm_n / kBlackholeTileCols);
+  return IntImm(DataType::UInt(32),
+                local_n_tiles * std::max<int64_t>(1, logical_grid_x));
 }
 
-static PrimExpr LogicalNTilesExpr() {
-  return WorkContextVar("logical_n_tiles");
-}
-
-static PrimExpr LogicalBlockZOffsetExpr() {
-  return WorkContextVar("bz") * NumKTilesExpr();
+static PrimExpr LogicalBlockZOffsetExpr(int gemm_k) {
+  return RuntimeArgValueExpr(blackhole_runtime_arg_schema::kValueSourceLogicalBlockZ) *
+         NumKTilesExpr(gemm_k);
 }
 
 static TTPerWorkArgSpec MakeValueExprPerWorkArgSpec(
@@ -1121,6 +1155,32 @@ static std::string CoreTypeForSegmentKind(const std::string &segment_kind) {
 
 } // namespace
 
+PrimExpr PlanTTKernelABI::NormalizePerWorkValueExpr(const PrimExpr& expr) const {
+  if (!expr.defined()) {
+    return expr;
+  }
+  class Rewriter : public tir::StmtExprMutator {
+   public:
+    explicit Rewriter(const std::unordered_map<const tir::VarNode*, std::string>& block_sources)
+        : block_sources_(block_sources) {}
+
+    PrimExpr Rewrite(const PrimExpr& expr) { return VisitExpr(expr); }
+
+    PrimExpr VisitExpr_(const tir::VarNode* op) final {
+      auto it = block_sources_.find(op);
+      if (it == block_sources_.end()) {
+        return tir::StmtExprMutator::VisitExpr_(op);
+      }
+      return RuntimeArgValueExpr(it->second.c_str(), op->dtype);
+    }
+
+   private:
+    const std::unordered_map<const tir::VarNode*, std::string>& block_sources_;
+  };
+  Rewriter rewriter(block_index_source_by_var_);
+  return rewriter.Rewrite(expr);
+}
+
 void PlanTTKernelABI::LoadSeededComputeOpPlans(const PrimFunc &func) {
   auto staged_program = func->GetAttr<TTProgram>(attr::kTLTTProgram);
   if (!staged_program) {
@@ -1167,20 +1227,21 @@ void PlanTTKernelABI::StoreSegmentPlan(PrimFunc &func) {
          "workloads; do not recover them as fused_dataflow";
 
   Array<Any> kernels;
-  auto has_indexed_per_work_runtime_arg = [&](const std::string &arg_name) {
-    return std::any_of(indexed_per_work_runtime_args_.begin(),
-                       indexed_per_work_runtime_args_.end(),
-                       [&](const IndexedPerWorkRuntimeArg &arg) {
-                         return arg.arg_name == arg_name;
-                       });
-  };
   auto append_indexed_per_work_runtime_args =
-      [&](Array<Any>* runtime_args, const std::string& kernel_kind) {
+      [&](Array<Any>* runtime_args, const std::string& kernel_kind,
+          const Stmt& kernel_body) {
     bool appended = false;
     std::unordered_set<std::string> appended_arg_names;
     for (const IndexedPerWorkRuntimeArg &arg :
          indexed_per_work_runtime_args_) {
-      if (kernel_kind == "compute" && !arg.include_in_compute_segment) {
+      const bool body_uses_arg =
+          StmtUsesRuntimeArgName(kernel_body, arg.arg_name);
+      if (kernel_kind == "compute" &&
+          !arg.include_in_compute_segment && !body_uses_arg) {
+        continue;
+      }
+      if (kernel_kind != "fused_dataflow" && kernel_kind != "reader" &&
+          kernel_kind != "compute" && !body_uses_arg) {
         continue;
       }
       if (!appended_arg_names.insert(arg.arg_name).second) {
@@ -1201,7 +1262,8 @@ void PlanTTKernelABI::StoreSegmentPlan(PrimFunc &func) {
         needs_base_value_arg_ || needs_extent_value_for_base_arg_ ||
         !indexed_per_work_runtime_args_.empty()) {
       Array<Any> runtime_args;
-      append_indexed_per_work_runtime_args(&runtime_args, "fused_dataflow");
+      append_indexed_per_work_runtime_args(&runtime_args, "fused_dataflow",
+                                           func->body);
       kernel.Set("runtime_args", runtime_args);
     }
     kernels.push_back(kernel);
@@ -1215,14 +1277,13 @@ void PlanTTKernelABI::StoreSegmentPlan(PrimFunc &func) {
       ICHECK(body_it != segment_bodies.end())
           << "PlanTTKernelABI requires a body for segment " << kind;
       kernel.Set(tt_program_segment_key::kBody, body_it->second);
-      if ((kind == "fused_dataflow" || kind == "reader" ||
-           kind == "compute") &&
-          (needs_bound_value_arg_ || needs_base_value_arg_ ||
-           needs_dynamic_value_arg_ || needs_extent_value_for_base_arg_ ||
-           !indexed_per_work_runtime_args_.empty())) {
+      if (needs_bound_value_arg_ || needs_base_value_arg_ ||
+          needs_dynamic_value_arg_ || needs_extent_value_for_base_arg_ ||
+          !indexed_per_work_runtime_args_.empty()) {
         Array<Any> runtime_args;
         const bool appended_indexed =
-            append_indexed_per_work_runtime_args(&runtime_args, kind);
+            append_indexed_per_work_runtime_args(&runtime_args, kind,
+                                                 body_it->second);
         if (appended_indexed || kind != "compute") {
           kernel.Set("runtime_args", runtime_args);
         }
@@ -1549,7 +1610,7 @@ void PlanTTKernelABI::StoreAccessorDescriptors(PrimFunc &func) {
       }
     }
     if (kind == "fused_dataflow" || kind == "reader" ||
-        kind == "compute") {
+        kind == "compute" || kind == "writer") {
       for (const IndexedPerWorkRuntimeArg &arg :
            indexed_per_work_runtime_args_) {
         if (!runtime_args_contain_kind(arg.arg_name.c_str())) {
@@ -1572,9 +1633,9 @@ void PlanTTKernelABI::StoreAccessorDescriptors(PrimFunc &func) {
         }
         upsert_spec(MakePerWorkArgSpec(
             arg.arg_name, runtime_arg_identity_for_kind(arg.arg_name.c_str()),
-            arg.value_source,
-            arg_buffer, 0, access_region, access_region_index,
-            arg.value_expr, arg.value_usage));
+            arg.value_source, arg_buffer, 0, access_region,
+            access_region_index, NormalizePerWorkValueExpr(arg.value_expr),
+            arg.value_usage));
       }
       if (!reader_uses_gemm_tile_contract &&
           runtime_args_contain_kind("a_tile_num_tiles")) {
@@ -1641,7 +1702,7 @@ void PlanTTKernelABI::StoreAccessorDescriptors(PrimFunc &func) {
                         ? MakeValueExprPerWorkArgSpec(
                               "a_tile_num_tiles",
                               runtime_arg_identity_for_kind("a_tile_num_tiles"),
-                              a_tile_buffer, NumKTilesExpr())
+                              a_tile_buffer, NumKTilesExpr(gemm_k_))
                         : MakePerWorkArgSpec(
                               "a_tile_num_tiles",
                               runtime_arg_identity_for_kind("a_tile_num_tiles"),
@@ -1670,7 +1731,7 @@ void PlanTTKernelABI::StoreAccessorDescriptors(PrimFunc &func) {
                         ? MakeValueExprPerWorkArgSpec(
                               "b_tile_num_tiles",
                               runtime_arg_identity_for_kind("b_tile_num_tiles"),
-                              b_tile_buffer, NumKTilesExpr())
+                              b_tile_buffer, NumKTilesExpr(gemm_k_))
                         : MakePerWorkArgSpec(
                               "b_tile_num_tiles",
                               runtime_arg_identity_for_kind("b_tile_num_tiles"),
@@ -1682,7 +1743,8 @@ void PlanTTKernelABI::StoreAccessorDescriptors(PrimFunc &func) {
                         ? MakeValueExprPerWorkArgSpec(
                               "b_tile_stride",
                               runtime_arg_identity_for_kind("b_tile_stride"),
-                              b_tile_buffer, LogicalNTilesExpr())
+                              b_tile_buffer,
+                              LogicalNTilesExpr(gemm_n_, logical_grid_x_))
                         : MakePerWorkArgSpec(
                               "b_tile_stride",
                               runtime_arg_identity_for_kind("b_tile_stride"),
@@ -1696,7 +1758,7 @@ void PlanTTKernelABI::StoreAccessorDescriptors(PrimFunc &func) {
                         ? MakeValueExprPerWorkArgSpec(
                               "k_tile_start_id",
                               runtime_arg_identity_for_kind("k_tile_start_id"),
-                              "", LogicalBlockZOffsetExpr())
+                              "", LogicalBlockZOffsetExpr(gemm_k_))
                         : MakePerWorkArgSpec(
                               "k_tile_start_id",
                               runtime_arg_identity_for_kind("k_tile_start_id"),
@@ -1708,7 +1770,7 @@ void PlanTTKernelABI::StoreAccessorDescriptors(PrimFunc &func) {
                         ? MakeValueExprPerWorkArgSpec(
                               "num_k_tiles",
                               runtime_arg_identity_for_kind("num_k_tiles"),
-                              "", NumKTilesExpr())
+                              "", NumKTilesExpr(gemm_k_))
                         : MakePerWorkArgSpec(
                               "num_k_tiles",
                               runtime_arg_identity_for_kind("num_k_tiles"),

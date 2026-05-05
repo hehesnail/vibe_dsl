@@ -249,6 +249,16 @@ serialized TIR expression; `index_buffer`, `index_value_scale`,
 `index_table_shape`, `index_table_index_sources`, and
 `value_source=index_table` are deleted protocol surfaces.
 
+`value_expr` must also stay IR-first when it depends on launch work state.
+The projected expression must not contain naked work-variable names for
+runtime to reinterpret.  ABI lowering normalizes block-axis variables to
+explicit `tl.blackhole.runtime_arg_u32(...)` calls derived from the current
+IR `thread_extent` binding, and direct runtime evaluates only that explicit
+call form.  Compute-derived quantities such as GEMM K-tile counts or N-tile
+strides are folded from typed GEMM/core-grid records into ordinary constant
+`value_expr`s before projection; do not reintroduce `num_k_tiles`,
+`logical_n_tiles`, or `bx/by/bz` name recovery in leaf readers.
+
 The same rule applies to table-derived ragged bounds.  If one work item has
 multiple independent guarded sparse reads, each bound table load gets its own
 generic runtime arg identity, e.g. `per_work_value` /
