@@ -1263,16 +1263,7 @@ def test_t8_per_work_runtime_values_use_generic_value_expr_not_case_schema():
     descriptor_values = set(
         re.findall(r'kDescriptor[A-Za-z0-9_]+\s*=\s*"([^"]+)"', schema_source)
     )
-    assert descriptor_values == {
-        "tile_start",
-        "tile_count",
-        "tile_stride",
-        "k_tile_start",
-        "k_tile_count",
-        "row_start",
-        "row_count",
-        "page_index",
-    }
+    assert descriptor_values == set()
     value_sources = set(
         re.findall(r'kValueSource[A-Za-z0-9_]+\s*=\s*"([^"]+)"', schema_source)
     )
@@ -1283,13 +1274,14 @@ def test_t8_per_work_runtime_values_use_generic_value_expr_not_case_schema():
         "logical_block_z",
         "logical_block_xy_linear",
         "logical_block_yx_linear",
-        "logical_block_z_k_tile_start",
-        "compute_op_num_k_tiles",
-        "compute_op_logical_n_tiles",
+        "logical_block_z_offset",
+        "compute_op_reduction_extent",
+        "compute_op_output_x_extent",
         "value_expr",
         "constant",
     }
     for forbidden in [
+        "descriptor_kind",
         "selection_plan",
         "selection_plans",
         "TTSelectionPlan",
@@ -1298,6 +1290,11 @@ def test_t8_per_work_runtime_values_use_generic_value_expr_not_case_schema():
         "ragged_page_index",
         "segment_row_start",
         "segment_row_count",
+        "row_start",
+        "row_count",
+        "page_index",
+        "per_work_row",
+        "per_work_page",
         "index_table",
         "index_buffer",
         "index_value_scale",
@@ -4122,23 +4119,32 @@ def test_algorithmic_live_form_solver_uses_boundary_coverage_for_consumer_bindin
     assert bool(binding.requires_full_logical_tile) is True
 
 
-def test_t8_tt_per_work_descriptors_reference_spatial_access_region_evidence():
+def test_t8_per_work_arg_specs_reference_spatial_access_region_evidence():
     mod = _prepare_blackhole_tt_program_module(grid_indexed_staged_copy_kernel(3, 2))
     main = mod["main"]
     plan = main.attrs["tl.spatial_plan"]
     tt_program = main.attrs["tl.tt_program"]
     region_names = {str(region.name) for region in plan.access_regions}
 
-    tile_start_specs = [
+    per_work_specs = [
         spec
         for kernel in tt_program.kernels
         for spec in kernel.per_work_arg_specs
-        if str(spec.descriptor_kind) == "tile_start"
+    ]
+    start_specs = [
+        spec
+        for spec in per_work_specs
+        if str(spec.arg_kind) in {"a_tile_start_id", "output_tile_start_id"}
     ]
 
-    assert tile_start_specs
-    assert all(str(spec.access_region) in region_names for spec in tile_start_specs)
-    assert all(int(spec.access_region_index) >= 0 for spec in tile_start_specs)
+    assert per_work_specs
+    assert {str(spec.arg_kind) for spec in start_specs} == {
+        "a_tile_start_id",
+        "output_tile_start_id",
+    }
+    assert all(str(spec.value_source) == "work_linear_id" for spec in start_specs)
+    assert all(str(spec.access_region) in region_names for spec in per_work_specs)
+    assert all(int(spec.access_region_index) >= 0 for spec in per_work_specs)
 
 
 def test_validate_tt_program_rejects_full_tile_consumer_bound_to_slice_live_form():

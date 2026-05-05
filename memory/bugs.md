@@ -2927,10 +2927,19 @@
     generic dynamic value names, and add a public-schema guard against
     reintroducing `descriptor_kind`, row/page identities, selection/topk, or
     index-table fields.
+  - Update projection/architecture tests so they reject all `kDescriptor*`
+    constants instead of preserving an expected row/page descriptor whitelist.
+    Tests must validate `AccessRegion` evidence through generic per-work
+    fields (`arg_kind`, `value_source`, `access_region`) rather than
+    `descriptor_kind`.
 - **验证**:
   - Focused structural/projection selectors covering indexed, ragged,
     segmented, paged, grouped-GEMM, and paged GQA/MLA binding projection
     passed.
+  - Follow-up schema guard selector covering no index-table side cache,
+    no work-linear-id fallback, no descriptor constants, generic
+    AccessRegion evidence, public schema field forbids, and no selection
+    plan projection reported `6 passed`.
   - TT-Sim direct-runtime copy selectors and T9.3 paged MLA selectors passed;
     T9.2 paged GQA remains at the typed PACR simulator boundary in the current
     run.

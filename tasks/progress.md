@@ -238,6 +238,10 @@ Each checkpoint needs its own direct-runtime correctness proof:
   tracked as remaining T9.2 runtime work, not as a row/page schema fallback.
 - `git diff --check` passed, and source audit found no public schema/source
   hits for removed `index_table*` constants, helpers, or value sources.
+- Follow-up guard cleanup removed stale test assertions that still treated
+  `descriptor_kind`, `row_start`, `row_count`, and `page_index` as acceptable
+  per-work descriptor vocabulary.  The focused schema/projection guard
+  selector now reports `6 passed`.
 
 2026-05-05 UTC T9.2 paged GQA decode checkpoint:
 
