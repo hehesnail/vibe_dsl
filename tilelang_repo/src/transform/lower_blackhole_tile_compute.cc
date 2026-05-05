@@ -85,7 +85,7 @@ using tir::builtin::blackhole_reduce_tile;
 using tir::builtin::blackhole_reduce_uninit;
 using tir::builtin::blackhole_sub_tiles;
 using tir::builtin::blackhole_sub_tiles_init;
-using tir::builtin::blackhole_row_bound_mask_to_cb;
+using tir::builtin::blackhole_guard_mask_to_cb;
 using tir::builtin::blackhole_tile_regs_acquire;
 using tir::builtin::blackhole_tile_regs_commit;
 using tir::builtin::blackhole_tile_regs_release;
@@ -1216,32 +1216,32 @@ Stmt PlanTTKernelABI::GenerateRowReductionSequence(const RowReductionMatch& matc
   return MaybeWrapComputeSegment(body);
 }
 
-Stmt PlanTTKernelABI::GenerateRowBoundMaskApplySequence(
-    const RowBoundMaskApplyMatch& match) {
+Stmt PlanTTKernelABI::GenerateGuardMaskApplySequence(
+    const GuardMaskApplyMatch& match) {
   ICHECK(match.dst.defined())
-      << "Blackhole row-bound mask apply requires a destination buffer";
+      << "Blackhole guard mask apply requires a destination buffer";
   const DataType storage_dtype = ExactTiledCBStorageDType(match.dst->dtype);
   ICHECK(storage_dtype.is_bfloat16())
-      << "Blackhole row-bound mask apply currently admits bf16 exact-CB storage";
+      << "Blackhole guard mask apply currently admits bf16 exact-CB storage";
   ICHECK(IsSingleFullTileLogicalMatrix(match.dst))
-      << "Blackhole row-bound mask apply requires one full logical tile";
+      << "Blackhole guard mask apply requires one full logical tile";
 
-  ExactTiledCBValue lhs_in = CreateExactInputCBValue(match.dst, "row_bound_mask_lhs");
+  ExactTiledCBValue lhs_in = CreateExactInputCBValue(match.dst, "guard_mask_lhs");
   if (Stmt publish_lhs = PublishExactInputToTiledCB(match.dst, &lhs_in);
       publish_lhs.defined()) {
     ICHECK(false)
-        << "Blackhole row-bound mask apply requires an existing exact tiled-CB input; "
+        << "Blackhole guard mask apply requires an existing exact tiled-CB input; "
         << "publishing through local fragments would reintroduce raw compute CB writes";
   }
   ExactTiledCBValue out;
   if (!TryCreateLoopCarriedExactOutputStateCBValue(match.dst, &out)) {
     out = CreateEmptyExactTiledCBValue(
-        match.dst, "row_bound_mask_out",
+        match.dst, "guard_mask_out",
         ExactOutputCBTypeForBuffer(match.dst, current_lowering_order_index_));
   }
 
   const std::string mask_name =
-      BufferIdentityName(match.dst) + "_row_bound_mask_" +
+      BufferIdentityName(match.dst) + "_guard_mask_" +
       std::to_string(next_requirement_index_);
   Buffer mask_buffer = tir::decl_buffer(
       match.dst->shape, storage_dtype, mask_name, "blackhole.cb");
@@ -1277,8 +1277,8 @@ Stmt PlanTTKernelABI::GenerateRowBoundMaskApplySequence(
   reader_stmts.push_back(MakeBlackholeCall(
       blackhole_cb_reserve_back(), {IntImm32(mask_cb_id), IntImm32(1)}));
   reader_stmts.push_back(MakeBlackholeCall(
-      blackhole_row_bound_mask_to_cb(),
-      {IntImm32(mask_cb_id), match.bound_value, IntImm32(match.page_base),
+      blackhole_guard_mask_to_cb(),
+      {IntImm32(mask_cb_id), match.bound_value, IntImm32(match.base_value),
        IntImm32(mask_page_bytes)}));
   reader_stmts.push_back(MakeBlackholeCall(
       blackhole_cb_push_back(), {IntImm32(mask_cb_id), IntImm32(1)}));

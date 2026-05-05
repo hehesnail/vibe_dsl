@@ -147,7 +147,7 @@ class CodeGenBlackhole : public CodeGenCHost {
   void PrintWriteTileFromCB(const tvm::tir::CallNode *op, std::ostream &os);
   void PrintWritePageFromCB(const tvm::tir::CallNode *op, std::ostream &os);
   void PrintZeroCBPage(const tvm::tir::CallNode *op, std::ostream &os);
-  void PrintRowBoundMaskToCB(const tvm::tir::CallNode *op, std::ostream &os);
+  void PrintGuardMaskToCB(const tvm::tir::CallNode *op, std::ostream &os);
   void PrintGetSemaphore(const tvm::tir::CallNode *op, std::ostream &os);
   void PrintRuntimeArgU32(const tvm::tir::CallNode *op, std::ostream &os);
   void PrintSemaphoreWait(const tvm::tir::CallNode *op, std::ostream &os);

@@ -277,10 +277,28 @@ Each checkpoint needs its own direct-runtime correctness proof:
   with the Blackhole lowering-support files so these deleted side-channel
   names cannot silently re-enter.
 - Remaining similar-looking code is classified separately: T6 still has the
-  documented dedicated row-rank backend scan emitter; `row_bound_mask_to_cb`
-  is an internal leaf builtin for row-bound mask materialization; and
-  `bound/base value table buffer` names are pass-local mechanics that must not
-  become public TTProgram / ExecutableSpec schema.
+  documented dedicated row-rank backend scan emitter; `guard_mask_to_cb`
+  is a generic internal leaf builtin for guard mask materialization, replacing
+  the former row-bound public builtin name; and `bound/base value table
+  buffer` names are pass-local mechanics that must not become public
+  TTProgram / ExecutableSpec schema.  The next schema-risk audit target is
+  consumption-side semantic recovery through `arg_kind` / value-expr buffer
+  materialization inference, not another workload-shaped schema extension.
+
+2026-05-05 UTC guard-mask leaf cleanup checkpoint:
+
+- Renamed the public/internal `row_bound_mask_to_cb` builtin surface to the
+  generic `guard_mask_to_cb` leaf.  Arguments are now `bound_value` and
+  `base_value`; old `valid_rows` / `page_base` wording is absent from the
+  audited source path.
+- Renamed the corresponding local matcher/transport mechanics from
+  `RowBoundMask*` / `row_bound*` / `row_page_base*` to guard/base-page terms.
+  This is still a leaf materialization primitive, not a paged/ragged schema
+  branch.
+- `cmake --build build -j32` passed.
+- Focused TT-Sim selector covering public schema guard, paged value-expr
+  projection, guard-mask flash projection, paged-valid-rows runtime, and
+  sparse-ragged runtime reported `5 passed`.
 
 2026-05-05 UTC T9.2 paged GQA decode checkpoint:
 

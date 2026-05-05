@@ -1579,14 +1579,14 @@ def test_blackhole_t9_paged_gqa_decode_projects_page_table_and_cache_len_binding
     assert "tilelang_add_fragment(dst, src, num_elements);" not in compute_source
     assert "tilelang_cb_write_ptr_bytes_direct" not in compute_source
 
-    row_bound_mask_cb_ids = {
+    guard_mask_cb_ids = {
         int(config["cb_id"])
         for config in metadata["cb_configs"]
         if str(config["role"]) == "input"
-        and any("_row_bound_mask_" in str(name) for name in config["requirement_names"])
+        and any("_guard_mask_" in str(name) for name in config["requirement_names"])
     }
-    assert row_bound_mask_cb_ids
-    for mask_cb_id in row_bound_mask_cb_ids:
+    assert guard_mask_cb_ids
+    for mask_cb_id in guard_mask_cb_ids:
         mask_apply = re.search(
             rf"binary_op_init_common\((\d+),\s*{mask_cb_id},\s*(\d+)\);"
             rf"(?P<body>.*?)"
@@ -1594,11 +1594,11 @@ def test_blackhole_t9_paged_gqa_decode_projects_page_table_and_cache_len_binding
             compute_source,
             re.S,
         )
-        assert mask_apply, f"missing row-bound mask apply followed by row max for CB {mask_cb_id}"
-        row_bound_out_cb = int(mask_apply.group(2))
+        assert mask_apply, f"missing guard mask apply followed by row max for CB {mask_cb_id}"
+        guard_out_cb = int(mask_apply.group(2))
         reduce_src_cb = int(mask_apply.group(4))
-        assert reduce_src_cb == row_bound_out_cb
-        assert f"cb_pop_front({row_bound_out_cb}, 1);" not in mask_apply.group("body")
+        assert reduce_src_cb == guard_out_cb
+        assert f"cb_pop_front({guard_out_cb}, 1);" not in mask_apply.group("body")
 
     serial_loop_body, after_serial_loop = _extract_c_for_loop_body(
         compute_source, "for (int32_t tx = 0; tx < 128; ++tx)"

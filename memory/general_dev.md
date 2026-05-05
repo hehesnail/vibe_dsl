@@ -2535,3 +2535,11 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   as extra formal input-buffer evidence, but a `value_expr` that references
   only work/compute context variables is neutral for buffer-role binding; do
   not reject it as missing schema.
+- 2026-05-05 Blackhole guard-mask leaf naming:
+  Guard mask materialization can be a Blackhole leaf builtin only if it stays
+  generic: `guard_mask_to_cb(cb_id, bound_value, base_value, page_bytes)`.
+  Do not expose row/page-shaped names such as `row_bound_mask_to_cb`,
+  `valid_rows`, or `page_base` in public TIR builtins, TTProgram,
+  ExecutableSpec, or leaf reader schema.  Internal matcher names should also
+  use guard/base-page language so future work does not treat this as a
+  ragged/paged side protocol.

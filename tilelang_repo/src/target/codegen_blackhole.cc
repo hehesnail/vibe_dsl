@@ -2484,7 +2484,7 @@ bool CodeGenBlackhole::HandleBlackholeBuiltin(const tvm::tir::CallNode *op,
       "write_tile_from_cb",
       "write_page_from_cb",
       "zero_cb_page",
-      "row_bound_mask_to_cb",
+      "guard_mask_to_cb",
   };
   if (core_type_ != CoreType::kTRISC &&
       kTRISCOnlyBuiltins.count(builtin_name)) {
@@ -2543,8 +2543,8 @@ bool CodeGenBlackhole::HandleBlackholeBuiltin(const tvm::tir::CallNode *op,
   } else if (builtin_name == "zero_cb_page") {
     PrintZeroCBPage(op, os);
     return true;
-  } else if (builtin_name == "row_bound_mask_to_cb") {
-    PrintRowBoundMaskToCB(op, os);
+  } else if (builtin_name == "guard_mask_to_cb") {
+    PrintGuardMaskToCB(op, os);
     return true;
   } else if (builtin_name == "get_semaphore") {
     PrintGetSemaphore(op, os);
@@ -3025,22 +3025,22 @@ void CodeGenBlackhole::PrintZeroCBPage(const tvm::tir::CallNode *op,
         "dst_words[i] = 0u; } }";
 }
 
-void CodeGenBlackhole::PrintRowBoundMaskToCB(const tvm::tir::CallNode *op,
-                                             std::ostream &os) {
+void CodeGenBlackhole::PrintGuardMaskToCB(const tvm::tir::CallNode *op,
+                                          std::ostream &os) {
   ICHECK_EQ(op->args.size(), 4)
-      << "tl.blackhole.row_bound_mask_to_cb expects 4 arguments";
+      << "tl.blackhole.guard_mask_to_cb expects 4 arguments";
   const auto* page_bytes = op->args[3].as<tvm::tir::IntImmNode>();
   ICHECK(page_bytes != nullptr && page_bytes->value == 2048)
-      << "tl.blackhole.row_bound_mask_to_cb currently admits one bf16 tiled page";
+      << "tl.blackhole.guard_mask_to_cb currently admits one bf16 tiled page";
   need_dataflow_api_h_ = true;
   const int cb_id = ResolveCBId(op->args[0]);
   os << "{ const uint32_t bound_value = static_cast<uint32_t>(";
   PrintExpr(op->args[1], os);
-  os << "); const uint32_t page_base = static_cast<uint32_t>(";
+  os << "); const uint32_t base_value = static_cast<uint32_t>(";
   PrintExpr(op->args[2], os);
   os << "); const uint32_t valid_cols = "
-        "(bound_value <= page_base) ? 0u : "
-        "(((bound_value - page_base) >= 32u) ? 32u : (bound_value - page_base)); "
+        "(bound_value <= base_value) ? 0u : "
+        "(((bound_value - base_value) >= 32u) ? 32u : (bound_value - base_value)); "
         "volatile tt_l1_ptr uint16_t* dst_u16 = "
         "reinterpret_cast<volatile tt_l1_ptr uint16_t*>(get_write_ptr(" << cb_id << ")); "
         "volatile tt_l1_ptr uint32_t* dst_u32 = "

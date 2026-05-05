@@ -193,7 +193,7 @@ std::vector<int> GetCBArgPositions(const std::string& op_name) {
       op_name == "tl.blackhole.write_tile_from_cb" ||
       op_name == "tl.blackhole.write_page_from_cb" ||
       op_name == "tl.blackhole.zero_cb_page" ||
-      op_name == "tl.blackhole.row_bound_mask_to_cb") {
+      op_name == "tl.blackhole.guard_mask_to_cb") {
     if (op_name == "tl.blackhole.copy_cb_page") {
       return {0, 1};
     }
@@ -426,7 +426,7 @@ std::vector<bool> CollectExclusiveRequirementMask(const tir::Stmt& body,
     void Collect(const tir::Stmt& body) { VisitStmt(body); }
 
     void VisitExpr_(const tir::CallNode* op) final {
-      if (IsBlackholeOp(op, "tl.blackhole.row_bound_mask_to_cb") &&
+      if (IsBlackholeOp(op, "tl.blackhole.guard_mask_to_cb") &&
           !op->args.empty()) {
         if (const auto* cb_id = op->args[0].as<IntImmNode>()) {
           if (cb_id->value >= 0 &&

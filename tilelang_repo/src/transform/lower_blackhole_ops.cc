@@ -2597,8 +2597,8 @@ bool ExtractIfThenElseParts(const PrimExpr& expr,
   return true;
 }
 
-bool ExtractRowBoundSelfUpdateParts(const BufferStoreNode* store,
-                                    PrimExpr* condition) {
+bool ExtractGuardMaskSelfUpdateParts(const BufferStoreNode* store,
+                                     PrimExpr* condition) {
   if (store == nullptr || !store->buffer.defined() ||
       !IsUnsupportedResidualLocalScope(store->buffer)) {
     return false;
@@ -2832,10 +2832,10 @@ bool PlanTTKernelABI::IsBoundValueRuntimeArgExpr(const PrimExpr& expr) const {
   return bound_value_runtime_arg_names_.count(name) != 0U;
 }
 
-bool PlanTTKernelABI::IsRowBoundMaskSelfUpdateStore(
+bool PlanTTKernelABI::IsGuardMaskSelfUpdateStore(
     const BufferStoreNode* store) const {
   PrimExpr condition;
-  if (!ExtractRowBoundSelfUpdateParts(store, &condition)) {
+  if (!ExtractGuardMaskSelfUpdateParts(store, &condition)) {
     return false;
   }
   bool has_bound_value_arg = false;
@@ -2854,16 +2854,16 @@ bool PlanTTKernelABI::IsRowBoundMaskSelfUpdateStore(
   return has_bound_value_arg;
 }
 
-bool PlanTTKernelABI::MatchRowBoundMaskSelfUpdateStore(
+bool PlanTTKernelABI::MatchGuardMaskSelfUpdateStore(
     const BufferStoreNode* store,
     const std::vector<Var>& loop_vars_to_zero,
-    RowBoundMaskApplyMatch* match) const {
+    GuardMaskApplyMatch* match) const {
   if (match == nullptr || store == nullptr ||
       !IsSingleFullTileLogicalMatrix(store->buffer)) {
     return false;
   }
   PrimExpr condition;
-  if (!ExtractRowBoundSelfUpdateParts(store, &condition)) {
+  if (!ExtractGuardMaskSelfUpdateParts(store, &condition)) {
     return false;
   }
 
@@ -2900,7 +2900,7 @@ bool PlanTTKernelABI::MatchRowBoundMaskSelfUpdateStore(
 
   match->dst = store->buffer;
   match->bound_value = bound_value;
-  match->page_base = static_cast<int>(base_value.value());
+  match->base_value = static_cast<int>(base_value.value());
   const auto order_it = stmt_order_index_by_node_.find(store);
   match->producer_order_index =
       order_it != stmt_order_index_by_node_.end()
@@ -2909,14 +2909,14 @@ bool PlanTTKernelABI::MatchRowBoundMaskSelfUpdateStore(
   return true;
 }
 
-bool PlanTTKernelABI::MatchRowBoundMaskSelfUpdateLoop(
-    const ForNode* op, RowBoundMaskApplyMatch* match) const {
+bool PlanTTKernelABI::MatchGuardMaskSelfUpdateLoop(
+    const ForNode* op, GuardMaskApplyMatch* match) const {
   if (op == nullptr || match == nullptr) {
     return false;
   }
   bool matched = false;
   bool invalid = false;
-  RowBoundMaskApplyMatch candidate;
+  GuardMaskApplyMatch candidate;
   std::vector<Var> loop_vars = active_serial_loop_vars_;
   auto visit = [&](const Stmt& stmt, auto&& visit_ref) -> void {
     if (invalid || !stmt.defined()) {
@@ -2951,8 +2951,8 @@ bool PlanTTKernelABI::MatchRowBoundMaskSelfUpdateLoop(
       return;
     }
     if (const auto* store = stmt.as<BufferStoreNode>()) {
-      RowBoundMaskApplyMatch store_match;
-      if (!MatchRowBoundMaskSelfUpdateStore(store, loop_vars, &store_match)) {
+      GuardMaskApplyMatch store_match;
+      if (!MatchGuardMaskSelfUpdateStore(store, loop_vars, &store_match)) {
         invalid = true;
         return;
       }
@@ -4851,9 +4851,9 @@ Stmt PlanTTKernelABI::VisitStmt_(const ForNode* op) {
       RecordTiledCBLiveFormAliases(match.store->buffer, src_cb_id);
     }
   }
-  RowBoundMaskApplyMatch row_bound_mask_match;
-  if (MatchRowBoundMaskSelfUpdateLoop(op, &row_bound_mask_match)) {
-    return GenerateRowBoundMaskApplySequence(row_bound_mask_match);
+  GuardMaskApplyMatch guard_mask_match;
+  if (MatchGuardMaskSelfUpdateLoop(op, &guard_mask_match)) {
+    return GenerateGuardMaskApplySequence(guard_mask_match);
   }
   if (!select_compute_builtins_only_ && IsPureCopyLoopNest(op->body)) {
     std::vector<Var> loop_stack;
@@ -4881,10 +4881,10 @@ Stmt PlanTTKernelABI::VisitStmt_(const ForNode* op) {
           cb_to_dram = &match;
         }
       }
-      const bool has_row_bound_transport =
+      const bool has_guarded_transport =
           needs_bound_value_arg_ || needs_base_value_arg_ ||
           needs_extent_value_for_base_arg_;
-      if (dram_to_cb && cb_to_dram && !has_row_bound_transport) {
+      if (dram_to_cb && cb_to_dram && !has_guarded_transport) {
         saw_copy_op_ = true;
         std::vector<Var> loop_vars_to_zero = dram_to_cb->loop_vars;
         for (const auto& v : cb_to_dram->loop_vars) {
@@ -5020,7 +5020,7 @@ Stmt PlanTTKernelABI::VisitStmt_(const ForNode* op) {
           !value_reads_buffer(store->value, store->buffer)) {
         return;
       }
-      if (IsRowBoundMaskSelfUpdateStore(store)) {
+      if (IsGuardMaskSelfUpdateStore(store)) {
         return;
       }
       const std::string identity = BufferIdentityName(store->buffer);

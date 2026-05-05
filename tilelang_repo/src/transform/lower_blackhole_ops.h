@@ -245,10 +245,10 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
     bool accumulate_existing = false;
   };
 
-  struct RowBoundMaskApplyMatch {
+  struct GuardMaskApplyMatch {
     tvm::tir::Buffer dst;
     tvm::PrimExpr bound_value;
-    int page_base = 0;
+    int base_value = 0;
     int producer_order_index = -1;
   };
 
@@ -769,13 +769,13 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   tvm::tir::Buffer ResolveRowReductionLiveFormDestination(
       const tvm::tir::Buffer& reduce_dst, int64_t reduce_dst_elements) const;
   bool IsBoundValueRuntimeArgExpr(const tvm::PrimExpr& expr) const;
-  bool IsRowBoundMaskSelfUpdateStore(const tvm::tir::BufferStoreNode* store) const;
-  bool MatchRowBoundMaskSelfUpdateStore(
+  bool IsGuardMaskSelfUpdateStore(const tvm::tir::BufferStoreNode* store) const;
+  bool MatchGuardMaskSelfUpdateStore(
       const tvm::tir::BufferStoreNode* store,
       const std::vector<tvm::tir::Var>& loop_vars_to_zero,
-      RowBoundMaskApplyMatch* match) const;
-  bool MatchRowBoundMaskSelfUpdateLoop(
-      const tvm::tir::ForNode* op, RowBoundMaskApplyMatch* match) const;
+      GuardMaskApplyMatch* match) const;
+  bool MatchGuardMaskSelfUpdateLoop(
+      const tvm::tir::ForNode* op, GuardMaskApplyMatch* match) const;
   bool MatchExplicitTileTypecast(const tvm::tir::CallNode* op,
                                  FragmentCastMatch* match) const;
   tvm::tir::Stmt LowerExplicitTileComputeCall(const tvm::tir::CallNode* op);
@@ -803,7 +803,7 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
       size_t index,
       const BlackholeTileComputeCoveringDecision& covering) const;
   tvm::tir::Stmt GenerateRowReductionSequence(const RowReductionMatch& match);
-  tvm::tir::Stmt GenerateRowBoundMaskApplySequence(const RowBoundMaskApplyMatch& match);
+  tvm::tir::Stmt GenerateGuardMaskApplySequence(const GuardMaskApplyMatch& match);
   tvm::tir::Stmt GenerateFillTileSequence(const tvm::tir::Buffer& dst,
                                           const tvm::PrimExpr& value,
                                           const tvm::PrimExpr& num_elements);

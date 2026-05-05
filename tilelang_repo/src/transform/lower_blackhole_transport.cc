@@ -1879,18 +1879,18 @@ Stmt PlanTTKernelABI::GenerateStagedCopyLoopSequence(
   const int pages_per_row =
       geometry.use_page_transport ? static_cast<int>(geometry.global_cols / geometry.shared_cols) : 0;
   Analyzer analyzer;
-  auto make_row_page_base_index = [&]() -> PrimExpr {
-    const StagedCopyGlobalIndexInfo row_page_info = ResolveStagedCopyGlobalIndexInfo(
+  auto make_base_page_index = [&]() -> PrimExpr {
+    const StagedCopyGlobalIndexInfo page_info = ResolveStagedCopyGlobalIndexInfo(
         global_buffer, global_indices, global_shape, row_axis, col_axis,
         "Blackhole staged copy currently expects static global buffer shape",
         "Blackhole staged copy requires rank-2 shape metadata after FlattenBuffer",
         [&](const PrimExpr& expr) { return ZeroThreadAndLoopVars(expr, loop_vars_to_zero); },
         &analyzer);
-    PrimExpr slice_offset = row_page_info.outer_slice_index *
+    PrimExpr slice_offset = page_info.outer_slice_index *
                             IntImm32(static_cast<int>(global_rows));
-    return analyzer.Simplify(slice_offset + row_page_info.base_row);
+    return analyzer.Simplify(slice_offset + page_info.base_row);
   };
-  const PrimExpr row_page_base_index = make_row_page_base_index();
+  const PrimExpr base_page_index = make_base_page_index();
 
   std::vector<Stmt> stmts;
   auto maybe_wrap_segment_stmt = [&](Stmt stmt) -> Stmt {
@@ -1914,17 +1914,17 @@ Stmt PlanTTKernelABI::GenerateStagedCopyLoopSequence(
     }
     return page_index;
   };
-  auto make_full_tile_row_page_index = [&](int page_row) -> PrimExpr {
+  auto make_full_tile_page_index = [&](int page_row) -> PrimExpr {
     ICHECK_EQ(geometry.global_cols, geometry.shared_cols)
-        << "Blackhole bound-value copy slice requires one row page per logical row";
-    PrimExpr page_index = row_page_base_index;
+        << "Blackhole guarded copy slice requires one source page per logical row";
+    PrimExpr page_index = base_page_index;
     if (page_row != 0) {
       page_index = analyzer.Simplify(page_index + IntImm32(page_row));
     }
     return page_index;
   };
   auto make_base_value_page_index = [&](int page_row) -> PrimExpr {
-    PrimExpr base_value = row_page_base_index;
+    PrimExpr base_value = base_page_index;
     if (page_row != 0) {
       base_value = analyzer.Simplify(base_value + IntImm32(page_row));
     }
@@ -1956,8 +1956,8 @@ Stmt PlanTTKernelABI::GenerateStagedCopyLoopSequence(
     RecordStagedCopyBufferBinding(op, direction);
     const int accessor_slot =
         GetReadAccessorSlot(segment_kind, load->buffer, direction);
-    const std::optional<PrimExpr> row_bound_predicate = GetGuardedCopyPredicate(op);
-    auto make_row_bound_predicate_for_page =
+    const std::optional<PrimExpr> guard_predicate = GetGuardedCopyPredicate(op);
+    auto make_guard_predicate_for_page =
         [&](const PrimExpr& predicate, const PrimExpr& row_expr,
             const PrimExpr& page_row) -> std::optional<PrimExpr> {
       if (std::optional<PrimExpr> simple =
@@ -2113,14 +2113,14 @@ Stmt PlanTTKernelABI::GenerateStagedCopyLoopSequence(
       }
       return std::nullopt;
     };
-    const bool has_admitted_row_predicate =
-        row_bound_predicate.has_value() &&
+    const bool has_admitted_guard_predicate =
+        guard_predicate.has_value() &&
         !op->indices.empty() &&
-        make_row_bound_predicate_for_page(
-            row_bound_predicate.value(), op->indices[0], IntImm32(0)).has_value();
+        make_guard_predicate_for_page(
+            guard_predicate.value(), op->indices[0], IntImm32(0)).has_value();
     const bool can_materialize_base_value_tiled_rows =
         !materialize_to_local && segmented_gemm && has_base_and_extent_values &&
-        has_admitted_row_predicate && !geometry.use_page_transport &&
+        has_admitted_guard_predicate && !geometry.use_page_transport &&
         geometry.shared_rows == kBlackholeTileRows &&
         geometry.shared_cols > kBlackholeTileCols &&
         geometry.shared_cols % kBlackholeTileCols == 0 &&
@@ -2160,18 +2160,18 @@ Stmt PlanTTKernelABI::GenerateStagedCopyLoopSequence(
           blackhole_cb_reserve_back(),
           {IntImm32(cb_id), IntImm32(total_subtiles)}));
       for (int page_row = 0; page_row < shared_rows; ++page_row) {
-        const std::optional<PrimExpr> maybe_row_predicate =
-            make_row_bound_predicate_for_page(
-                row_bound_predicate.value(), op->indices[0], IntImm32(page_row));
-        ICHECK(maybe_row_predicate.has_value())
-            << "Blackhole base-value tiled-row reader lost bound predicate";
-        PrimExpr row_predicate = analyzer.Simplify(maybe_row_predicate.value());
+        const std::optional<PrimExpr> maybe_guard_predicate =
+            make_guard_predicate_for_page(
+                guard_predicate.value(), op->indices[0], IntImm32(page_row));
+        ICHECK(maybe_guard_predicate.has_value())
+            << "Blackhole base-value tiled-row reader lost guard predicate";
+        PrimExpr row_predicate = analyzer.Simplify(maybe_guard_predicate.value());
         const int face_row = page_row / kBlackholeFaceRows;
         const int row_in_face = page_row % kBlackholeFaceRows;
         for (int subtile_col = 0; subtile_col < geometry.subtile_cols;
              ++subtile_col) {
           PrimExpr source_page_index =
-              analyzer.Simplify((row_page_base_index + IntImm32(page_row)) *
+              analyzer.Simplify((base_page_index + IntImm32(page_row)) *
                                     IntImm32(row_tile_pages_per_global_row) +
                                 IntImm32(subtile_col));
           std::vector<Stmt> valid_row_stmts;
@@ -2231,7 +2231,7 @@ Stmt PlanTTKernelABI::GenerateStagedCopyLoopSequence(
     }
     if (!materialize_to_local && !guarded_copy_feeds_tile_compute &&
         (has_bound_value || has_base_and_extent_values) &&
-        has_admitted_row_predicate &&
+        has_admitted_guard_predicate &&
         !geometry.use_page_transport && geometry.shared_cols == kBlackholeTileCols &&
         geometry.global_cols == geometry.shared_cols) {
       SetRequirementPageLayout(cb_id, geometry.page_bytes, static_cast<int>(geometry.shared_rows));
@@ -2253,14 +2253,14 @@ Stmt PlanTTKernelABI::GenerateStagedCopyLoopSequence(
       }
       Var page_row_var("__tl_page_row", DataType::Int(32));
       PrimExpr page_row = page_row_var;
-      const std::optional<PrimExpr> maybe_row_predicate =
-          make_row_bound_predicate_for_page(
-              row_bound_predicate.value(), op->indices[0], page_row);
-      ICHECK(maybe_row_predicate.has_value())
-          << "Blackhole row-bound reader lost row predicate";
-      PrimExpr row_predicate = analyzer.Simplify(maybe_row_predicate.value());
+      const std::optional<PrimExpr> maybe_guard_predicate =
+          make_guard_predicate_for_page(
+              guard_predicate.value(), op->indices[0], page_row);
+      ICHECK(maybe_guard_predicate.has_value())
+          << "Blackhole guarded reader lost guard predicate";
+      PrimExpr row_predicate = analyzer.Simplify(maybe_guard_predicate.value());
       PrimExpr source_page_index =
-          analyzer.Simplify(row_page_base_index + page_row);
+          analyzer.Simplify(base_page_index + page_row);
       std::vector<Stmt> valid_row_stmts;
       valid_row_stmts.push_back(MakeBlackholeCall(
           blackhole_read_page_to_cb(),
@@ -2396,12 +2396,12 @@ Stmt PlanTTKernelABI::GenerateStagedCopyLoopSequence(
     RecordStagedCopyBufferBinding(op, direction);
     const int accessor_slot = GetWriteAccessorSlot(segment_kind, op->buffer, direction);
     const std::string live_input_name = BufferIdentityName(load->buffer);
-    const bool shared_buffer_has_row_bound =
+    const bool shared_buffer_has_guarded_value =
         (has_bound_value &&
          bound_value_shared_buffer_names_.count(live_input_name) != 0U) ||
         (has_base_and_extent_values &&
          base_value_shared_buffer_names_.count(live_input_name) != 0U);
-    if (shared_buffer_has_row_bound &&
+    if (shared_buffer_has_guarded_value &&
         !geometry.use_page_transport && geometry.shared_cols == kBlackholeTileCols &&
         geometry.global_cols == geometry.shared_cols) {
       SetRequirementPageLayout(cb_id, geometry.page_bytes, static_cast<int>(geometry.shared_rows));
@@ -2410,7 +2410,7 @@ Stmt PlanTTKernelABI::GenerateStagedCopyLoopSequence(
             blackhole_cb_wait_front(), {IntImm32(cb_id), IntImm32(1)}));
         stmts.push_back(MakeBlackholeCall(
             blackhole_write_page_from_cb(),
-            {IntImm32(cb_id), op->buffer->data, make_full_tile_row_page_index(page_row),
+            {IntImm32(cb_id), op->buffer->data, make_full_tile_page_index(page_row),
              IntImm32(geometry.page_bytes), IntImm32(accessor_slot), IntImm32(0)}));
         stmts.push_back(MakeBlackholeCall(blackhole_noc_async_write_barrier(), {}));
         stmts.push_back(MakeBlackholeCall(

@@ -2199,7 +2199,7 @@ class SegmentBodyExtractor final : public tir::StmtMutator {
            op->op.same_as(tir::builtin::blackhole_read_page_to_cb()) ||
            op->op.same_as(tir::builtin::blackhole_read_bcast_cols_to_cb()) ||
            op->op.same_as(tir::builtin::blackhole_copy_cb_page()) ||
-           op->op.same_as(tir::builtin::blackhole_row_bound_mask_to_cb());
+           op->op.same_as(tir::builtin::blackhole_guard_mask_to_cb());
   }
 
   static bool IsWriterAnchor(const tir::CallNode* op) {
@@ -2290,7 +2290,7 @@ class SegmentBodyExtractor final : public tir::StmtMutator {
           if (dst_cb_id >= 0) {
             info.reader_anchor_cb_ids.insert(dst_cb_id);
           }
-        } else if (op->op.same_as(tir::builtin::blackhole_row_bound_mask_to_cb())) {
+        } else if (op->op.same_as(tir::builtin::blackhole_guard_mask_to_cb())) {
           const int cb_id = GetIntImmArg(op, 0);
           if (cb_id >= 0) {
             info.reader_anchor_cb_ids.insert(cb_id);
