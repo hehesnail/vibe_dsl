@@ -1861,6 +1861,20 @@ Stmt PlanTTKernelABI::GenerateStagedCopyLoopSequence(
   const int pages_per_row =
       geometry.use_page_transport ? static_cast<int>(geometry.global_cols / geometry.shared_cols) : 0;
   Analyzer analyzer;
+  auto make_row_page_base_index = [&]() -> PrimExpr {
+    const StagedCopyGlobalIndexInfo row_page_info = ResolveStagedCopyGlobalIndexInfo(
+        global_buffer, global_indices, global_shape, row_axis, col_axis,
+        "Blackhole staged copy currently expects static global buffer shape",
+        "Blackhole staged copy requires rank-2 shape metadata after FlattenBuffer",
+        [&](const PrimExpr& expr) { return ZeroThreadAndLoopVars(expr, loop_vars_to_zero); },
+        &analyzer);
+    const PrimExpr transport_row =
+        transpose_b_reader ? row_page_info.base_col : row_page_info.base_row;
+    PrimExpr slice_offset = row_page_info.outer_slice_index *
+                            IntImm32(static_cast<int>(effective_global_rows));
+    return analyzer.Simplify(slice_offset + transport_row);
+  };
+  const PrimExpr row_page_base_index = make_row_page_base_index();
 
   std::vector<Stmt> stmts;
   auto maybe_wrap_segment_stmt = [&](Stmt stmt) -> Stmt {
@@ -1887,26 +1901,18 @@ Stmt PlanTTKernelABI::GenerateStagedCopyLoopSequence(
   auto make_full_tile_row_page_index = [&](int page_row) -> PrimExpr {
     ICHECK_EQ(geometry.global_cols, geometry.shared_cols)
         << "Blackhole first ragged row-copy slice requires one row page per logical row";
-    PrimExpr page_index =
-        analyzer.Simplify(base_tile_index * IntImm32(kBlackholeTileRows));
+    PrimExpr page_index = row_page_base_index;
     if (page_row != 0) {
       page_index = analyzer.Simplify(page_index + IntImm32(page_row));
     }
     return page_index;
   };
   auto make_segment_row_page_index = [&](int page_row) -> PrimExpr {
-    PrimExpr segment_start =
-        Call(DataType::UInt(32), blackhole_runtime_arg_u32(),
-             {StringImm("a_segment_row_start")});
+    PrimExpr segment_start = row_page_base_index;
     if (page_row != 0) {
       segment_start = analyzer.Simplify(segment_start + IntImm32(page_row));
     }
     return segment_start;
-  };
-  auto make_segment_row_predicate = [&](int page_row) -> PrimExpr {
-    return IntImm32(page_row) <
-           Call(DataType::UInt(32), blackhole_runtime_arg_u32(),
-                {StringImm("a_segment_row_count")});
   };
   const bool has_segmented_row_bound =
       !segment_row_start_index_buffer_name_.empty() &&
@@ -2073,10 +2079,9 @@ Stmt PlanTTKernelABI::GenerateStagedCopyLoopSequence(
     };
     const bool has_admitted_row_predicate =
         ragged_predicate.has_value() &&
-        ((has_segmented_row_bound && !op->indices.empty()) ||
-         (!op->indices.empty() &&
-          make_ragged_row_predicate_for_page(
-              ragged_predicate.value(), op->indices[0], 0).has_value()));
+        !op->indices.empty() &&
+        make_ragged_row_predicate_for_page(
+            ragged_predicate.value(), op->indices[0], 0).has_value();
     if (!materialize_to_local && (has_ragged_row_bound || has_segmented_row_bound) &&
         has_admitted_row_predicate &&
         !geometry.use_page_transport && geometry.shared_cols == kBlackholeTileCols &&
@@ -2099,17 +2104,12 @@ Stmt PlanTTKernelABI::GenerateStagedCopyLoopSequence(
         }
       }
       for (int page_row = 0; page_row < shared_rows; ++page_row) {
-        PrimExpr row_predicate;
-        if (has_segmented_row_bound) {
-          row_predicate = analyzer.Simplify(make_segment_row_predicate(page_row));
-        } else {
-          const std::optional<PrimExpr> maybe_row_predicate =
-              make_ragged_row_predicate_for_page(
-                  ragged_predicate.value(), op->indices[0], page_row);
-          ICHECK(maybe_row_predicate.has_value())
-              << "Blackhole ragged row reader lost row-bound predicate";
-          row_predicate = analyzer.Simplify(maybe_row_predicate.value());
-        }
+        const std::optional<PrimExpr> maybe_row_predicate =
+            make_ragged_row_predicate_for_page(
+                ragged_predicate.value(), op->indices[0], page_row);
+        ICHECK(maybe_row_predicate.has_value())
+            << "Blackhole row-bound reader lost row predicate";
+        PrimExpr row_predicate = analyzer.Simplify(maybe_row_predicate.value());
         PrimExpr source_page_index =
             has_segmented_row_bound ? make_segment_row_page_index(page_row)
                                     : make_full_tile_row_page_index(page_row);

@@ -40,6 +40,7 @@ from .common import (
     require_tt_kernel,
     require_tt_program,
     ragged_row_masked_staged_copy_kernel,
+    segmented_two_range_masked_staged_copy_kernel,
     segmented_row_masked_staged_copy_kernel,
     staged_copy_kernel,
     staged_stick_copy_kernel,
@@ -1478,6 +1479,7 @@ def test_blackhole_segmented_row_copy_uses_segment_index_table_descriptors():
     source = str(kernel_spec["source_code"])
     assert "a_segment_row_start = get_arg_val<uint32_t>" in source
     assert "a_segment_row_count = get_arg_val<uint32_t>" in source
+    assert "a_segment_row_start / 32" not in source
     assert "a_tile_start_id = get_arg_val<uint32_t>" not in source
     assert "a_tile_num_tiles = get_arg_val<uint32_t>" not in source
     assert "a_tile_stride = get_arg_val<uint32_t>" not in source
@@ -1518,6 +1520,54 @@ def test_blackhole_segmented_row_copy_uses_segment_index_table_descriptors():
     assert int(materializations["SegmentOffsets"]["transport_page_size"]) == 4
     assert str(materializations["SegmentCounts"]["layout"]) == "page_indexed"
     assert int(materializations["SegmentCounts"]["transport_page_size"]) == 4
+
+
+def test_blackhole_two_segment_row_copy_uses_per_range_descriptors():
+    target = Target("blackhole")
+    with target:
+        artifact = lower(
+            segmented_two_range_masked_staged_copy_kernel(
+                grid_x=3,
+                source_rows=96,
+            ),
+            target=target,
+        )
+
+    executable_spec = _extract_blackhole_executable_spec(artifact)
+    kernel_spec = _require_blackhole_kernel(
+        executable_spec["kernels"], kind="fused_dataflow", core_type="brisc"
+    )
+    source = str(kernel_spec["source_code"])
+    assert "a_segment_row_start = get_arg_val<uint32_t>" in source
+    assert "a_segment_row_start_1 = get_arg_val<uint32_t>" in source
+    assert "a_segment_row_count = get_arg_val<uint32_t>" in source
+    assert "a_segment_row_count_1 = get_arg_val<uint32_t>" in source
+    assert "a_segment_row_start / 32" not in source
+    assert "a_segment_row_start_1 / 32" not in source
+    assert "a_tile_start_id = get_arg_val<uint32_t>" not in source
+    assert "SegmentOffsets" not in source
+    assert "SegmentCounts" not in source
+
+    by_identity = {
+        str(spec["arg_identity"]): spec
+        for spec in executable_spec["per_work_arg_specs"]
+        if str(spec.get("buffer", "")) == "A"
+    }
+    for identity, index_buffer, constant_source, descriptor_kind in [
+        ("a_segment_row_start", "SegmentOffsets", "constant:0", "segment_row_start"),
+        ("a_segment_row_start_1", "SegmentOffsets", "constant:1", "segment_row_start"),
+        ("a_segment_row_count", "SegmentCounts", "constant:0", "segment_row_count"),
+        ("a_segment_row_count_1", "SegmentCounts", "constant:1", "segment_row_count"),
+    ]:
+        spec = by_identity[identity]
+        assert str(spec["descriptor_kind"]) == descriptor_kind
+        assert str(spec["value_source"]) == "index_table"
+        assert str(spec["index_buffer"]) == index_buffer
+        assert [int(v) for v in spec["index_table_shape"]] == [3, 2]
+        assert [str(v) for v in spec["index_table_index_sources"]] == [
+            "logical_block_x",
+            constant_source,
+        ]
 
 
 def test_blackhole_paged_cache_len_copy_uses_page_table_and_ragged_page_descriptors():

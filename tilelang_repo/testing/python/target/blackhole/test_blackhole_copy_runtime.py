@@ -24,6 +24,7 @@ from .common import (
     grid_indexed_staged_copy_kernel,
     paged_cache_len_masked_staged_copy_kernel,
     ragged_row_masked_staged_copy_kernel,
+    segmented_two_range_masked_staged_copy_kernel,
     segmented_row_masked_staged_copy_kernel,
     rebuild_tt_buffer_distribution_plan,
     rebuild_tt_abi_plan,
@@ -1085,6 +1086,64 @@ def test_blackhole_module_direct_call_segmented_row_copy_uses_start_and_count_ta
         atol=1e-3,
         rtol=1e-3,
         failure_message="Segmented row direct-call output mismatch",
+    )
+
+
+def test_blackhole_module_direct_call_two_segment_row_copy_uses_per_range_tables():
+    can_run, msg = check_blackhole_direct_execution_requirements()
+    if not can_run:
+        pytest.skip(f"Blackhole requirements not met: {msg}")
+
+    grid_x, tile_m, tile_n = 3, 32, 32
+    source_rows = 96
+    a_torch = _bf16_matrix(source_rows, tile_n)
+    segment_offsets = torch.tensor(
+        [
+            [3, 40],
+            [12, 55],
+            [1, 70],
+        ],
+        dtype=torch.int32,
+    )
+    segment_counts = torch.tensor(
+        [
+            [11, 0],
+            [32, 7],
+            [19, 24],
+        ],
+        dtype=torch.int32,
+    )
+    b_output = torch.full((grid_x * 2 * tile_m, tile_n), -23, dtype=torch.bfloat16)
+    b_ref = torch.zeros_like(b_output)
+    for bx in range(grid_x):
+        out_start = bx * 2 * tile_m
+        for local_segment in range(2):
+            start = int(segment_offsets[bx, local_segment])
+            rows = int(segment_counts[bx, local_segment])
+            if rows > 0:
+                b_ref[
+                    out_start + local_segment * tile_m :
+                    out_start + local_segment * tile_m + rows,
+                    :,
+                ] = a_torch[start : start + rows, :]
+
+    target = Target("blackhole")
+    kernel = segmented_two_range_masked_staged_copy_kernel(
+        grid_x=grid_x,
+        source_rows=source_rows,
+        tile_m=tile_m,
+        tile_n=tile_n,
+    )
+    with target:
+        artifact = lower(kernel, target=target)
+
+    artifact.codegen_mod["main"](a_torch, segment_offsets, segment_counts, b_output)
+    assert_tensors_close_or_dump(
+        b_output,
+        b_ref,
+        atol=1e-3,
+        rtol=1e-3,
+        failure_message="Two-segment row direct-call output mismatch",
     )
 
 

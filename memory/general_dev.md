@@ -201,6 +201,11 @@
   the table shape/index sources on each `TTPerWorkArgSpec`; literal table
   dimensions belong in descriptor sources such as `constant:0`, not in
   source/runtime name recovery.
+- Row-page transport descriptors carry row ids, not tile ids.  When a staged
+  copy is lowered to 64-byte row pages, source page ids must come from the
+  zeroed TIR row expression plus the local row.  Reusing a full-tile
+  `base_tile_index` or dividing `segment_row_start` by 32 silently breaks
+  non-32-aligned segmented ranges.
 - For loop-carried exact-CB source rendering, keep the cursor singular and
   lifecycle-backed.  The old shape with separate `identity -> cb` and
   `identity -> buffer` maps plus a completed-state set allowed source lowering

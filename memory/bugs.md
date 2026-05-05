@@ -2625,6 +2625,31 @@
   - Segmented structure and direct-runtime selectors passed.
   - T8 indexed/ragged/segmented aggregate selectors reported `9 passed`.
 
+### Multiple segmented row ranges exposed row-page/tile-page confusion
+
+- **症状**:
+  - A two-range segmented row copy projected independent
+    `a_segment_row_start/_1` and `a_segment_row_count/_1` descriptors, but
+    direct runtime read row 0 when `SegmentOffsets[0,0]` was 3.
+  - The same WIP also regressed the single-range segmented row runtime case.
+- **根因**:
+  - The row-page source path reused `base_tile_index` from full-tile
+    linearization.  For `segment_start + row`, that value is
+    `floor(segment_start / 32)`, which loses the intra-tile row offset before
+    the 64-byte row-page reader renders page IDs.
+- **修法**:
+  - Derive row-page source IDs from the current zeroed TIR row expression and
+    add the unrolled local row, so segmented row pages use
+    `segment_row_start + page_row`.
+  - Keep one per-work arg identity per independent table load and reuse the
+    TIR predicate rewrite for both single- and multi-range row counts.
+- **验证**:
+  - Focused single/two-range segmented structure and direct-runtime selectors
+    reported `4 passed`.
+  - T8 indexed/ragged/segmented aggregate selectors including grid-indexed,
+    block-indexed, sparse, ragged, segmented, and paged cases reported
+    `24 passed`.
+
 ### Paged cache-length copy lost its ragged predicate through fused tile transport
 
 - **症状**:

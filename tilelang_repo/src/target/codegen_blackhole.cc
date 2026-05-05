@@ -61,6 +61,13 @@ bool IsAValidRowsRuntimeArgKind(const std::string& kind) {
   return kind == "a_valid_rows" || kind.rfind("a_valid_rows_", 0) == 0;
 }
 
+bool IsSegmentRowRuntimeArgKind(const std::string& kind) {
+  return kind == "a_segment_row_start" ||
+         kind.rfind("a_segment_row_start_", 0) == 0 ||
+         kind == "a_segment_row_count" ||
+         kind.rfind("a_segment_row_count_", 0) == 0;
+}
+
 std::string RequireStringImm(const tvm::PrimExpr& expr, const char* op_name,
                              const char* arg_name) {
   const auto* value = expr.as<tvm::tir::StringImmNode>();
@@ -1423,8 +1430,7 @@ void CodeGenBlackhole::EmitRuntimeArgLoads(const tvm::tir::PrimFunc &f) {
           arg_kind == "output_tile_stride" || arg_kind == "k_tile_start_id" ||
           arg_kind == "num_k_tiles" || IsAValidRowsRuntimeArgKind(arg_kind) ||
           arg_kind == "a_ragged_page_index" ||
-          arg_kind == "a_segment_row_start" ||
-          arg_kind == "a_segment_row_count";
+          IsSegmentRowRuntimeArgKind(arg_kind);
       if (!requires_explicit_per_work_binding) {
         continue;
       }

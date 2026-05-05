@@ -3191,7 +3191,15 @@ Stmt PlanTTKernelABI::VisitStmt_(const LetStmtNode* op) {
       }
       segment_row_start_index_buffer_name_ = index_buffer;
       needs_segment_row_start_arg_ = true;
-      arg_name = "a_segment_row_start";
+      std::optional<IndexTableAddressing> addressing =
+          ExtractIndexTableAddressing(table_load);
+      ICHECK(addressing.has_value())
+          << "Blackhole table-backed segment-row start requires explicit "
+          << "index-table addressing evidence";
+      arg_name = GetOrCreateIndexedPerWorkRuntimeArg(
+          "a_segment_row_start",
+          blackhole_runtime_arg_schema::kDescriptorSegmentRowStart,
+          index_buffer, addressing.value(), 1);
     } else if (coefficient.has_value() &&
                coefficient.value() > 0 &&
                coefficient.value() % kBlackholeTileRows == 0) {
@@ -3231,9 +3239,18 @@ Stmt PlanTTKernelABI::VisitStmt_(const LetStmtNode* op) {
       }
       segment_row_count_index_buffer_name_ = index_buffer;
       needs_segment_row_count_arg_ = true;
+      std::optional<IndexTableAddressing> addressing =
+          ExtractIndexTableAddressing(table_load);
+      ICHECK(addressing.has_value())
+          << "Blackhole table-backed segment-row count requires explicit "
+          << "index-table addressing evidence";
+      const std::string arg_name = GetOrCreateIndexedPerWorkRuntimeArg(
+          "a_segment_row_count",
+          blackhole_runtime_arg_schema::kDescriptorSegmentRowCount,
+          index_buffer, addressing.value(), 1);
       PrimExpr per_work_segment_row_count =
           Call(op->var.dtype(), blackhole_runtime_arg_u32(),
-               {StringImm("a_segment_row_count")});
+               {StringImm(arg_name)});
       Stmt rewritten =
           LetStmt(op->var, per_work_segment_row_count, op->body, op->span);
       return StmtExprMutator::VisitStmt_(rewritten.as<LetStmtNode>());

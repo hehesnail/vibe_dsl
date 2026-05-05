@@ -171,6 +171,17 @@ The admitted first segmented/grouped slice is a row-segment staged copy:
   page-indexed bf16 row-copy surface.  Wider grouped GEMM dispatch is a later
   workload path, but must reuse the same descriptor/evidence contract.
 
+The next segmented slice allows multiple independent row segments in one
+logical work item.  Each `SegmentOffsets[...]` table load that drives a source
+row expression gets its own `segment_row_start` runtime arg identity, and each
+matching guarded `SegmentCounts[...]` table load gets its own
+`segment_row_count` identity.  Row-page source rendering must use the runtime
+arg present in the current TIR access/predicate, not a hardcoded singleton
+`a_segment_row_start` / `a_segment_row_count` pair.  Because this path uses
+64-byte row pages, the source page id is the TIR-derived row start plus the
+local row; it must not reuse a full-tile `base_tile_index` or divide the row
+start by the tile height.
+
 Ragged bounds:
 
 - derive valid row/token bounds from TIR predicates;

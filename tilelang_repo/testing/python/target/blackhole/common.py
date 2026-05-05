@@ -1513,6 +1513,51 @@ def segmented_row_masked_staged_copy_kernel(
     raise ValueError(f"Unsupported segmented_row_masked_staged_copy_kernel dtype: {dtype}")
 
 
+def segmented_two_range_masked_staged_copy_kernel(
+    grid_x: int,
+    source_rows: int,
+    tile_m: int = 32,
+    tile_n: int = 32,
+    dtype: str = "bfloat16",
+):
+    """Define a two-segment per-work row copy from start/count tables."""
+    output_rows = grid_x * 2 * tile_m
+
+    if dtype == "bfloat16":
+        @T.prim_func
+        def main(
+            A: T.Tensor((source_rows, tile_n), "bfloat16"),
+            SegmentOffsets: T.Tensor((grid_x, 2), "int32"),
+            SegmentCounts: T.Tensor((grid_x, 2), "int32"),
+            B: T.Tensor((output_rows, tile_n), "bfloat16"),
+        ):
+            with T.Kernel(grid_x, 1) as (bx, by):
+                A0_shared = T.alloc_shared((tile_m, tile_n), "bfloat16")
+                A1_shared = T.alloc_shared((tile_m, tile_n), "bfloat16")
+                start0 = SegmentOffsets[bx, 0]
+                start1 = SegmentOffsets[bx, 1]
+                count0 = SegmentCounts[bx, 0]
+                count1 = SegmentCounts[bx, 1]
+                for i, j in T.Parallel(tile_m, tile_n):
+                    A0_shared[i, j] = T.if_then_else(
+                        i < count0,
+                        A[start0 + i, j],
+                        0,
+                    )
+                for i, j in T.Parallel(tile_m, tile_n):
+                    A1_shared[i, j] = T.if_then_else(
+                        i < count1,
+                        A[start1 + i, j],
+                        0,
+                    )
+                T.copy(A0_shared, B[bx * 2 * tile_m, 0])
+                T.copy(A1_shared, B[(bx * 2 + 1) * tile_m, 0])
+
+        return main
+
+    raise ValueError(f"Unsupported segmented_two_range_masked_staged_copy_kernel dtype: {dtype}")
+
+
 def paged_cache_len_masked_staged_copy_kernel(
     grid_x: int,
     pages_per_sequence: int,

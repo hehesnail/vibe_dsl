@@ -2678,6 +2678,12 @@ static bool RuntimeArgKindRequiresExplicitPerWorkBinding(std::string_view kind) 
     return candidate == "a_valid_rows" ||
            candidate.rfind("a_valid_rows_", 0) == 0;
   };
+  auto is_segment_row_kind = [](std::string_view candidate) {
+    return candidate == "a_segment_row_start" ||
+           candidate.rfind("a_segment_row_start_", 0) == 0 ||
+           candidate == "a_segment_row_count" ||
+           candidate.rfind("a_segment_row_count_", 0) == 0;
+  };
   return is_a_tile_start_kind(kind) || kind == "a_tile_num_tiles" ||
          kind == "a_tile_stride" || kind == "b_tile_start_id" ||
          kind == "b_tile_num_tiles" || kind == "b_tile_stride" ||
@@ -2685,7 +2691,7 @@ static bool RuntimeArgKindRequiresExplicitPerWorkBinding(std::string_view kind) 
          kind == "output_tile_stride" || kind == "k_tile_start_id" ||
          kind == "num_k_tiles" || is_a_valid_rows_kind(kind) ||
          kind == "a_ragged_page_index" ||
-         kind == "a_segment_row_start" || kind == "a_segment_row_count";
+         is_segment_row_kind(kind);
 }
 
 static void ValidateKernelExplicitPerWorkBindingSchema(const CorePlan& core_plan,

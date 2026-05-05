@@ -963,11 +963,13 @@ void PlanTTKernelABI::StoreSegmentPlan(PrimFunc &func) {
       runtime_args->push_back(MakeRuntimeArg(
           "a_ragged_page_index", "a_ragged_page_index", "uint32"));
     }
-    if (needs_segment_row_start_arg_) {
+    if (needs_segment_row_start_arg_ &&
+        !has_indexed_per_work_runtime_arg("a_segment_row_start")) {
       runtime_args->push_back(MakeRuntimeArg(
           "a_segment_row_start", "a_segment_row_start", "uint32"));
     }
-    if (needs_segment_row_count_arg_) {
+    if (needs_segment_row_count_arg_ &&
+        !has_indexed_per_work_runtime_arg("a_segment_row_count")) {
       runtime_args->push_back(MakeRuntimeArg(
           "a_segment_row_count", "a_segment_row_count", "uint32"));
     }
@@ -1301,6 +1303,13 @@ void PlanTTKernelABI::StoreAccessorDescriptors(PrimFunc &func) {
                 blackhole_runtime_arg_schema::kDescriptorValidRows &&
             !ragged_row_bound_subject_buffer_name_.empty()) {
           arg_buffer = ragged_row_bound_subject_buffer_name_;
+        }
+        if ((arg.descriptor_kind ==
+                 blackhole_runtime_arg_schema::kDescriptorSegmentRowStart ||
+             arg.descriptor_kind ==
+                 blackhole_runtime_arg_schema::kDescriptorSegmentRowCount) &&
+            !segment_row_subject_buffer_name_.empty()) {
+          arg_buffer = segment_row_subject_buffer_name_;
         }
         upsert_spec(MakePerWorkArgSpec(
             arg.arg_name, runtime_arg_identity_for_kind(arg.arg_name.c_str()),

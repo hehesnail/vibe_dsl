@@ -23,7 +23,7 @@
 | T6 `topk` | Complete | Existing-TIR row-wise value/index selection runs through direct runtime for fp32 and bf16 values with exact `int32` indices, without a frontend topk op or selection plan. |
 | T7 Exact-CB / materialization primitives | Complete | Exact-CB materialization is admitted through typed live-form/materialization/consumer-binding records, including GEMM post-merge `pack_tile`, source-live `cb_republish`, and seq64 bf16 flash-attn exact-CB partial-combine direct runtime correctness. |
 | T7.5 Exact-CB liveness / allocation cutover | Complete | Covered exact-CB resident tiles use typed TTProgram/ExecutableSpec lifecycle, allocation, and release records; old loop-carried owner maps, materialization-pop fallback, and full-tile/slice ambiguity are fail-closed or deleted from the active path. |
-| T8 Irregular work domains / indexed access | Implementation | Grid-indexed, one-dimensional and launch-axis two-dimensional table-indexed tile descriptors, scaled contiguous indexed-block copies, first sparse two-entry indexed traversal with per-entry ragged bounds, first predicate-derived ragged row bounds, copy-shaped paged `cache_seqlens`, and first non-uniform segmented row ranges carry TIR-derived evidence through TT per-work descriptors and direct runtime; broader sparse/page traversal and workload-level ragged/grouped gates remain open. |
+| T8 Irregular work domains / indexed access | Implementation | Grid-indexed, one-dimensional and launch-axis two-dimensional table-indexed tile descriptors, scaled contiguous indexed-block copies, first sparse two-entry indexed traversal with per-entry ragged bounds, first predicate-derived ragged row bounds, copy-shaped paged `cache_seqlens`, and single/multiple non-uniform segmented row ranges carry TIR-derived evidence through TT per-work descriptors and direct runtime; broader sparse/page traversal and workload-level ragged/grouped gates remain open. |
 | T9 Workload first paths | Queued | Workload checkpoints decomposed into admitted primitive surfaces with direct-runtime correctness. |
 | T10 Distributed production variants | Queued | Mesh, CCL, NoC/multicast/global scheduling, distributed workload correctness, and production partial-K reduction protocol. |
 
@@ -152,8 +152,8 @@ Every active implementation task uses this acceptance table.
 - Broader ragged token/page forms beyond the admitted one-dimensional
   row-count, per-entry sparse row-bound, and copy-shaped paged
   `cache_seqlens` predicate slices.
-- Broader segmented/grouped workload use beyond the admitted row-segment copy,
-  including grouped GEMM admission in T9.1.
+- Broader segmented/grouped workload use beyond the admitted single- and
+  two-range row-segment copy, including grouped GEMM admission in T9.1.
 - In every case, the derived evidence must drive source/runtime addressing.
   Projection-only tests do not complete T8.
 
@@ -195,6 +195,33 @@ Each checkpoint needs its own direct-runtime correctness proof:
   `M=320`, `N=352`, `K>=512`, `logical_grid=11x10x2` or larger.
 
 ## Recent Verification
+
+2026-05-05 UTC T8 multi-segment row-range checkpoint:
+
+- `cmake --build build -j32` passed.
+- Minimal two-range segmented row copy now admits two independent
+  `SegmentOffsets[bx, 0/1]` starts and two independent
+  `SegmentCounts[bx, 0/1]` bounds in one logical work item.
+- Source consumes `a_segment_row_start`, `a_segment_row_start_1`,
+  `a_segment_row_count`, and `a_segment_row_count_1`, with no raw
+  `SegmentOffsets` / `SegmentCounts` loads and no A-side tile-start fallback.
+- Row-page source rendering now derives the source page id from the zeroed TIR
+  row expression, so non-32-aligned row starts use
+  `segment_row_start + page_row` rather than `segment_row_start / 32`.
+- Direct runtime correctness passed for offsets
+  `[[3,40],[12,55],[1,70]]` and counts `[[11,0],[32,7],[19,24]]`,
+  including a zero-row second segment and full/partial rows.
+- Focused selectors
+  `test_blackhole_segmented_row_copy_uses_segment_index_table_descriptors`,
+  `test_blackhole_two_segment_row_copy_uses_per_range_descriptors`,
+  `test_blackhole_module_direct_call_segmented_row_copy_uses_start_and_count_tables`,
+  and
+  `test_blackhole_module_direct_call_two_segment_row_copy_uses_per_range_tables`
+  reported `4 passed`.
+- T8 indexed/ragged/segmented aggregate selectors including grid-indexed,
+  one- and two-dimensional block-indexed, scaled block, sparse, sparse+ragged,
+  ragged row, segmented row, two-range segmented row, and paged cache-length
+  cases reported `24 passed`.
 
 2026-05-05 UTC T8 sparse indexed plus per-entry ragged checkpoint:
 
