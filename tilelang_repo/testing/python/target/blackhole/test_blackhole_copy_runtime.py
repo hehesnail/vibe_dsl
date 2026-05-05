@@ -24,6 +24,7 @@ from .common import (
     extract_blackhole_work_per_core,
     grid_indexed_staged_copy_kernel,
     paged_cache_len_masked_staged_copy_kernel,
+    paged_valid_rows_masked_staged_copy_kernel,
     ragged_row_masked_staged_copy_kernel,
     segmented_two_range_masked_staged_copy_kernel,
     segmented_row_masked_staged_copy_kernel,
@@ -1246,6 +1247,63 @@ def test_blackhole_module_direct_call_paged_cache_len_copy_uses_page_table_and_s
         atol=1e-3,
         rtol=1e-3,
         failure_message="Paged cache-len direct-call output mismatch",
+    )
+
+
+def test_blackhole_module_direct_call_paged_valid_rows_copy_uses_per_page_bounds():
+    can_run, msg = check_blackhole_direct_execution_requirements()
+    if not can_run:
+        pytest.skip(f"Blackhole requirements not met: {msg}")
+
+    grid_x, pages_per_sequence, total_pages = 2, 3, 6
+    a_torch = _bf16_matrix(total_pages * 32, 32)
+    page_table = torch.tensor(
+        [
+            [4, 1, 5],
+            [2, 0, 3],
+        ],
+        dtype=torch.int32,
+    )
+    page_valid_rows = torch.tensor(
+        [
+            [32, 5, 0],
+            [17, 1, 24],
+        ],
+        dtype=torch.int32,
+    )
+    b_output = torch.full(
+        (grid_x * pages_per_sequence * 32, 32),
+        -31,
+        dtype=torch.bfloat16,
+    )
+    b_ref = torch.zeros_like(b_output)
+    for by in range(pages_per_sequence):
+        for bx in range(grid_x):
+            page = int(page_table[bx, by])
+            valid_rows = int(page_valid_rows[bx, by])
+            out_start = (by * grid_x + bx) * 32
+            if valid_rows > 0:
+                b_ref[out_start : out_start + valid_rows, :] = a_torch[
+                    page * 32 : page * 32 + valid_rows,
+                    :,
+                ]
+
+    target = Target("blackhole")
+    kernel = paged_valid_rows_masked_staged_copy_kernel(
+        grid_x=grid_x,
+        pages_per_sequence=pages_per_sequence,
+        total_pages=total_pages,
+    )
+    with target:
+        artifact = lower(kernel, target=target)
+
+    artifact.codegen_mod["main"](a_torch, page_table, page_valid_rows, b_output)
+    assert_tensors_close_or_dump(
+        b_output,
+        b_ref,
+        atol=1e-3,
+        rtol=1e-3,
+        failure_message="Paged valid-row direct-call output mismatch",
     )
 
 

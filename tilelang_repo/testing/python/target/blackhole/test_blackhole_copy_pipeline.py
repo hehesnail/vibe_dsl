@@ -33,6 +33,7 @@ from .common import (
     grid_indexed_staged_copy_kernel,
     lower_blackhole_to_tt_target,
     paged_cache_len_masked_staged_copy_kernel,
+    paged_valid_rows_masked_staged_copy_kernel,
     rebuild_tt_abi_plan,
     rebuild_tt_kernel,
     rebuild_tt_program,
@@ -1670,6 +1671,53 @@ def test_blackhole_paged_cache_len_copy_uses_page_table_and_ragged_page_descript
 
     page_index = descriptors[("A", "ragged_page_index")]
     assert str(page_index["value_source"]) == "logical_block_y"
+
+
+def test_blackhole_paged_valid_rows_copy_uses_per_page_row_bounds():
+    target = Target("blackhole")
+    with target:
+        artifact = lower(
+            paged_valid_rows_masked_staged_copy_kernel(
+                grid_x=2,
+                pages_per_sequence=3,
+                total_pages=6,
+            ),
+            target=target,
+        )
+
+    executable_spec = _extract_blackhole_executable_spec(artifact)
+    kernel_spec = _require_blackhole_kernel(
+        executable_spec["kernels"], kind="fused_dataflow", core_type="brisc"
+    )
+    source = str(kernel_spec["source_code"])
+    assert "a_tile_start_id = get_arg_val<uint32_t>" in source
+    assert "a_valid_rows = get_arg_val<uint32_t>" in source
+    assert "a_ragged_page_index = get_arg_val<uint32_t>" not in source
+    assert "PageTable" not in source
+    assert "PageValidRows" not in source
+
+    descriptors = {
+        (str(spec.get("buffer", "")), str(spec["descriptor_kind"])): spec
+        for spec in executable_spec["per_work_arg_specs"]
+    }
+
+    page_start = descriptors[("A", "tile_start")]
+    assert str(page_start["value_source"]) == "index_table"
+    assert str(page_start["index_buffer"]) == "PageTable"
+    assert [int(v) for v in page_start["index_table_shape"]] == [2, 3]
+    assert [str(v) for v in page_start["index_table_index_sources"]] == [
+        "logical_block_x",
+        "logical_block_y",
+    ]
+
+    valid_rows = descriptors[("A", "valid_rows")]
+    assert str(valid_rows["value_source"]) == "index_table"
+    assert str(valid_rows["index_buffer"]) == "PageValidRows"
+    assert [int(v) for v in valid_rows["index_table_shape"]] == [2, 3]
+    assert [str(v) for v in valid_rows["index_table_index_sources"]] == [
+        "logical_block_x",
+        "logical_block_y",
+    ]
 
 
 def test_blackhole_grid_indexed_copy_rejects_per_work_arg_kind_fallback_without_identity():

@@ -197,6 +197,13 @@ and a ragged page-index descriptor, so source can evaluate row validity from
 typed per-work args instead of leaving block-axis variables or cache-length
 table loads in device source.
 
+A broader ragged page slice uses a per-page row-bound table rather than a
+prefix sequence length: `PageTable[bx, by]` selects the source page and
+`PageValidRows[bx, by]` guards rows with `row < valid_rows`.  Both table loads
+must carry `[logical_block_x, logical_block_y]` addressing in their
+descriptors.  This remains a predicate-derived row-bound surface; it must not
+be recovered from table names or argument positions.
+
 Indexed block traversal:
 
 - derive table-driven block traversal from `BufferLoad` / `BufferStore` index
@@ -401,6 +408,13 @@ Implemented:
   invalid-row zero-fill semantics.
 - The admitted direct-runtime gate proves nontrivial page order and
   non-page-aligned cache lengths through `BlackholeModule`.
+- A broader page-local row-bound gate admits `PageValidRows[bx, by]` as the
+  row predicate source.  Its `valid_rows` descriptor carries
+  `index_table_shape=[grid_x, pages_per_sequence]` and
+  `index_table_index_sources=[logical_block_x, logical_block_y]`.  Unlike the
+  prefix cache-length form, this case does not need a separate
+  `ragged_page_index` descriptor because the TIR predicate is already local to
+  the selected page.
 
 2026-05-05 segmented row-segment slice status:
 

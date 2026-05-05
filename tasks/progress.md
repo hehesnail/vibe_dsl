@@ -23,7 +23,7 @@
 | T6 `topk` | Complete | Existing-TIR row-wise value/index selection runs through direct runtime for fp32 and bf16 values with exact `int32` indices, without a frontend topk op or selection plan. |
 | T7 Exact-CB / materialization primitives | Complete | Exact-CB materialization is admitted through typed live-form/materialization/consumer-binding records, including GEMM post-merge `pack_tile`, source-live `cb_republish`, and seq64 bf16 flash-attn exact-CB partial-combine direct runtime correctness. |
 | T7.5 Exact-CB liveness / allocation cutover | Complete | Covered exact-CB resident tiles use typed TTProgram/ExecutableSpec lifecycle, allocation, and release records; old loop-carried owner maps, materialization-pop fallback, and full-tile/slice ambiguity are fail-closed or deleted from the active path. |
-| T8 Irregular work domains / indexed access | Implementation | Grid-indexed, one-dimensional and launch-axis two-dimensional table-indexed tile descriptors, scaled contiguous indexed-block copies, sparse multi-entry indexed traversal with per-entry ragged bounds, first predicate-derived ragged row bounds, copy-shaped paged `cache_seqlens`, and single/multiple non-uniform segmented row ranges carry TIR-derived evidence through TT per-work descriptors and direct runtime; broader page traversal and workload-level ragged/grouped gates remain open. |
+| T8 Irregular work domains / indexed access | Implementation | Grid-indexed, one-dimensional and launch-axis two-dimensional table-indexed tile descriptors, scaled contiguous indexed-block copies, sparse multi-entry indexed traversal with per-entry ragged bounds, predicate-derived ragged row/page bounds, copy-shaped paged `cache_seqlens`, per-page valid-row tables, and single/multiple non-uniform segmented row ranges carry TIR-derived evidence through TT per-work descriptors and direct runtime; workload-level ragged/grouped gates remain open. |
 | T9 Workload first paths | Queued | Workload checkpoints decomposed into admitted primitive surfaces with direct-runtime correctness. |
 | T10 Distributed production variants | Queued | Mesh, CCL, NoC/multicast/global scheduling, distributed workload correctness, and production partial-K reduction protocol. |
 
@@ -150,8 +150,8 @@ Every active implementation task uses this acceptance table.
   `BufferLoad` / `BufferStore` indices use operands such as broader sparse
   `block_indices`.
 - Broader ragged token/page forms beyond the admitted one-dimensional
-  row-count, per-entry sparse row-bound, and copy-shaped paged
-  `cache_seqlens` predicate slices.
+  row-count, per-entry sparse row-bound, copy-shaped paged `cache_seqlens`,
+  and per-page valid-row predicate slices.
 - Broader segmented/grouped workload use beyond the admitted single- and
   two-range row-segment copy, including grouped GEMM admission in T9.1.
 - In every case, the derived evidence must drive source/runtime addressing.
@@ -195,6 +195,28 @@ Each checkpoint needs its own direct-runtime correctness proof:
   `M=320`, `N=352`, `K>=512`, `logical_grid=11x10x2` or larger.
 
 ## Recent Verification
+
+2026-05-05 UTC T8 per-page valid-row checkpoint:
+
+- `cmake --build build -j32` passed.
+- Minimal paged valid-row copy now admits `PageTable[bx, by]` for source page
+  selection and `PageValidRows[bx, by]` for per-page row bounds.
+- The A tile-start descriptor and A valid-row descriptor both carry
+  `value_source=index_table`, `index_table_shape=[2,3]`, and
+  `index_table_index_sources=[logical_block_x,logical_block_y]`.
+- Source consumes `a_tile_start_id` and `a_valid_rows`, emits no raw
+  `PageTable` / `PageValidRows` loads, and does not need
+  `a_ragged_page_index` because the predicate is already page-local
+  `row < valid_rows`.
+- Direct runtime correctness passed for nontrivial page order and per-page
+  bounds including 32, 24, 17, 5, 1, and 0 valid rows.
+- Focused selectors
+  `test_blackhole_paged_valid_rows_copy_uses_per_page_row_bounds`
+  and
+  `test_blackhole_module_direct_call_paged_valid_rows_copy_uses_per_page_bounds`
+  reported `2 passed`.
+- T8 indexed/ragged/segmented aggregate selectors including the per-page
+  valid-row case reported `28 passed`.
 
 2026-05-05 UTC T8 sparse multi-entry ragged checkpoint:
 

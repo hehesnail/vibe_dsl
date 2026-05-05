@@ -209,6 +209,11 @@
   zeroed TIR row expression plus the local row.  Reusing a full-tile
   `base_tile_index` or dividing `segment_row_start` by 32 silently breaks
   non-32-aligned segmented ranges.
+- Paged ragged row bounds have two different proven shapes: prefix
+  `cache_len[sequence]`, which needs a launch-page-index descriptor for
+  `page * rows + row < cache_len`, and page-local
+  `valid_rows[sequence,page]`, which should stay a plain `valid_rows`
+  descriptor addressed by `[logical_block_x, logical_block_y]`.
 - For loop-carried exact-CB source rendering, keep the cursor singular and
   lifecycle-backed.  The old shape with separate `identity -> cb` and
   `identity -> buffer` maps plus a completed-state set allowed source lowering
