@@ -1052,11 +1052,9 @@ def test_blackhole_serialized_block_indexed_2d_copy_preserves_table_addressing()
         for spec in executable_spec["per_work_arg_specs"]
     }
     a_tile_start = descriptors[("A", "tile_start")]
-    assert [int(v) for v in a_tile_start["index_table_shape"]] == [2, 3]
-    assert [str(v) for v in a_tile_start["index_table_index_sources"]] == [
-        "logical_block_x",
-        "logical_block_y",
-    ]
+    assert str(a_tile_start["value_source"]) == "value_expr"
+    assert "BlockIndices" in str(a_tile_start["value_expr"])
+    assert "index_buffer" not in a_tile_start
 
     loaded["main"](a_torch, block_indices, b_output)
     assert_tensors_close_or_dump(

@@ -426,7 +426,7 @@ bool StmtContainsReduceTileCall(const tvm::tir::Stmt& stmt) {
   return found;
 }
 
-int InferSelectionRankExtent(const tvm::tir::PrimFunc& f) {
+int InferRowRankReductionExtent(const tvm::tir::PrimFunc& f) {
   int extent = 1;
   tir::PostOrderVisit(f->body, [&](const ObjectRef& node) {
     const auto* loop = node.as<tvm::tir::ForNode>();
@@ -823,11 +823,15 @@ void CodeGenBlackhole::GenerateGenericKernelMain(const tvm::tir::PrimFunc &f,
   LoadCBConfigMetadata(f);
   if (HasRuntimeArgsForCodegen(f)) {
     EmitRuntimeArgLoads(f);
-    if (TryEmitValueIndexSelectionKernel(f)) {
+    if (TryEmitRowRankReductionScanKernel(f)) {
       stream << "}\n\n";
       return;
     }
     this->VisitStmt(f->body);
+    stream << "}\n\n";
+    return;
+  }
+  if (TryEmitRowRankReductionScanKernel(f)) {
     stream << "}\n\n";
     return;
   }
@@ -888,7 +892,7 @@ void CodeGenBlackhole::GenerateGenericKernelMain(const tvm::tir::PrimFunc &f,
   stream << "}\n\n";
 }
 
-bool CodeGenBlackhole::TryEmitValueIndexSelectionKernel(const tvm::tir::PrimFunc& f) {
+bool CodeGenBlackhole::TryEmitRowRankReductionScanKernel(const tvm::tir::PrimFunc& f) {
   if (core_type_ != CoreType::kTRISC) {
     return false;
   }
@@ -1024,8 +1028,8 @@ bool CodeGenBlackhole::TryEmitValueIndexSelectionKernel(const tvm::tir::PrimFunc
     return false;
   }
 
-  const int topk = InferSelectionRankExtent(f);
-  if (topk <= 0 || topk > 32) {
+  const int rank_extent = InferRowRankReductionExtent(f);
+  if (rank_extent <= 0 || rank_extent > 32) {
     return false;
   }
   int duplicate_groups = std::max(1, rows / 16);
@@ -1039,10 +1043,10 @@ bool CodeGenBlackhole::TryEmitValueIndexSelectionKernel(const tvm::tir::PrimFunc
   }
   const int input_tiles_per_row = cols / 32;
 
-  stream << "\n// Existing TIR value/index row selection lowered as one typed compute scan.\n";
+  stream << "\n// Existing TIR row-rank reduction lowered as one typed compute scan.\n";
   stream << "cb_wait_front(" << input_cb.id << ", " << input_cb.num_pages << ");\n";
-  stream << "float __tl_topk_values[" << rows * topk << "];\n";
-  stream << "int32_t __tl_topk_indices[" << rows * topk << "];\n";
+  stream << "float __tl_rank_values[" << rows * rank_extent << "];\n";
+  stream << "int32_t __tl_rank_indices[" << rows * rank_extent << "];\n";
   if (input_cb.data_format == "Float32") {
     stream << "const float* __tl_input_tiles[" << input_cb.num_pages << "];\n";
     stream << "{ experimental::CircularBuffer __tl_input_cb(" << input_cb.id << "); "
@@ -1059,18 +1063,18 @@ bool CodeGenBlackhole::TryEmitValueIndexSelectionKernel(const tvm::tir::PrimFunc
   stream << "MATH({\n";
   stream << "  constexpr uint32_t kRows = " << rows << ";\n";
   stream << "  constexpr uint32_t kCols = " << cols << ";\n";
-  stream << "  constexpr uint32_t kTopK = " << topk << ";\n";
+  stream << "  constexpr uint32_t kRankExtent = " << rank_extent << ";\n";
   stream << "  constexpr uint32_t kTilesPerRow = " << input_tiles_per_row << ";\n";
   stream << "  constexpr uint32_t kFaceRows = 16;\n";
   stream << "  constexpr uint32_t kFaceCols = 16;\n";
   stream << "  for (uint32_t row = 0; row < kRows; ++row) {\n";
-  stream << "    for (uint32_t rank = 0; rank < kTopK; ++rank) {\n";
+  stream << "    for (uint32_t rank = 0; rank < kRankExtent; ++rank) {\n";
   stream << "      float best = -std::numeric_limits<float>::infinity();\n";
   stream << "      int32_t best_idx = -1;\n";
   stream << "      for (uint32_t col = 0; col < kCols; ++col) {\n";
   stream << "        bool used = false;\n";
   stream << "        for (uint32_t prev = 0; prev < rank; ++prev) { "
-         << "used = used || (__tl_topk_indices[row * kTopK + prev] == "
+         << "used = used || (__tl_rank_indices[row * kRankExtent + prev] == "
          << "static_cast<int32_t>(col)); }\n";
   stream << "        if (used) { continue; }\n";
   stream << "        const uint32_t tile_index = (row / 32u) * kTilesPerRow + (col / 32u);\n";
@@ -1094,14 +1098,14 @@ bool CodeGenBlackhole::TryEmitValueIndexSelectionKernel(const tvm::tir::PrimFunc
   stream << "          best_idx = static_cast<int32_t>(col);\n";
   stream << "        }\n";
   stream << "      }\n";
-  stream << "      __tl_topk_values[row * kTopK + rank] = best;\n";
-  stream << "      __tl_topk_indices[row * kTopK + rank] = best_idx;\n";
+  stream << "      __tl_rank_values[row * kRankExtent + rank] = best;\n";
+  stream << "      __tl_rank_indices[row * kRankExtent + rank] = best_idx;\n";
   stream << "    }\n";
   stream << "  }\n";
   stream << "})\n";
 
   for (int group = 0; group < duplicate_groups; ++group) {
-    for (int rank = 0; rank < topk; ++rank) {
+    for (int rank = 0; rank < rank_extent; ++rank) {
       stream << "{\n";
       stream << "cb_reserve_back(" << value_cb.id << ", 1);\n";
       stream << "cb_reserve_back(" << index_cb.id << ", 1);\n";
@@ -1117,12 +1121,12 @@ bool CodeGenBlackhole::TryEmitValueIndexSelectionKernel(const tvm::tir::PrimFunc
       stream << "MATH({ for (uint32_t row = 0; row < " << rows << "; ++row) { ";
       if (value_page_bytes == 2) {
         stream << "__tl_values_out[row] = tilelang_float_to_bfloat_bits("
-               << "__tl_topk_values[row * " << topk << " + " << rank << "]); ";
+               << "__tl_rank_values[row * " << rank_extent << " + " << rank << "]); ";
       } else {
-        stream << "__tl_values_out[row] = __tl_topk_values[row * " << topk
+        stream << "__tl_values_out[row] = __tl_rank_values[row * " << rank_extent
                << " + " << rank << "]; ";
       }
-      stream << "__tl_indices_out[row] = __tl_topk_indices[row * " << topk
+      stream << "__tl_indices_out[row] = __tl_rank_indices[row * " << rank_extent
              << " + " << rank << "]; } "
              << "mailbox_write(ckernel::ThreadId::PackThreadId, 1); })\n";
       stream << "PACK({ volatile uint32_t __tl_done = "
@@ -1379,12 +1383,6 @@ void CodeGenBlackhole::EmitRuntimeArgLoads(const tvm::tir::PrimFunc &f) {
     }
     if (auto v = spec.Get(::tvm::tl::blackhole_runtime_arg_schema::kConstantValue)) {
       binding.constant_value = Downcast<tvm::Integer>(v.value()).IntValue();
-    }
-    if (auto v = spec.Get(::tvm::tl::blackhole_runtime_arg_schema::kIndexBuffer)) {
-      binding.index_buffer = Downcast<tvm::ffi::String>(v.value());
-    }
-    if (auto v = spec.Get(::tvm::tl::blackhole_runtime_arg_schema::kIndexValueScale)) {
-      binding.index_value_scale = Downcast<tvm::Integer>(v.value()).IntValue();
     }
     ICHECK(!binding.arg_identity.empty())
         << "Blackhole codegen requires per-work descriptor arg_identity";

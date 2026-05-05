@@ -1229,9 +1229,14 @@ def test_blackhole_compute_op_planning_has_no_map_seed_contract_surface():
 
 def test_t8_index_table_addressing_has_no_buffer_wide_side_cache():
     hits = _source_tree_rg(
-        r"index_table_addressing_by_buffer_|RecordIndexTableAddressing",
+        r"index_table_addressing_by_buffer_|RecordIndexTableAddressing|"
+        r"IndexTableAddressing|ExtractIndexTableAddressing|"
+        r"DeriveIndexTableDescriptor|IndexTableEvidence|"
+        r"index_buffer|index_value_scale|"
+        r"compute_consumes_row_bound|rfind\(\"a_valid_rows\"",
         REPO_ROOT / "tilelang_repo/src/transform/lower_blackhole_ops.h",
         REPO_ROOT / "tilelang_repo/src/transform/lower_blackhole_ops.cc",
+        REPO_ROOT / "tilelang_repo/src/transform/lower_blackhole_state.cc",
         REPO_ROOT / "tilelang_repo/src/transform/lower_blackhole_abi.cc",
     )
     assert hits == []
@@ -1255,18 +1260,71 @@ def test_t8_per_work_runtime_values_use_generic_value_expr_not_case_schema():
     module_source = (REPO_ROOT / "tilelang_repo/src/target/blackhole_module.cc").read_text()
 
     assert 'kValueExpr = "value_expr"' in schema_source
+    descriptor_values = set(
+        re.findall(r'kDescriptor[A-Za-z0-9_]+\s*=\s*"([^"]+)"', schema_source)
+    )
+    assert descriptor_values == {
+        "tile_start",
+        "tile_count",
+        "tile_stride",
+        "k_tile_start",
+        "k_tile_count",
+        "row_start",
+        "row_count",
+        "page_index",
+    }
+    value_sources = set(
+        re.findall(r'kValueSource[A-Za-z0-9_]+\s*=\s*"([^"]+)"', schema_source)
+    )
+    assert value_sources == {
+        "work_linear_id",
+        "logical_block_x",
+        "logical_block_y",
+        "logical_block_z",
+        "logical_block_xy_linear",
+        "logical_block_yx_linear",
+        "logical_block_z_k_tile_start",
+        "compute_op_num_k_tiles",
+        "compute_op_logical_n_tiles",
+        "value_expr",
+        "constant",
+    }
     for forbidden in [
         "selection_plan",
         "selection_plans",
         "TTSelectionPlan",
         "topk",
+        "valid_rows",
+        "ragged_page_index",
+        "segment_row_start",
+        "segment_row_count",
+        "index_table",
+        "index_buffer",
+        "index_value_scale",
+        "index_table_shape",
+        "index_table_index_sources",
         "index_table_index_constant_values",
     ]:
         assert forbidden not in schema_source
 
     assert "EvaluateIndexTableSource" not in module_source
     assert "EvaluateIndexTableElementIndex" not in module_source
-    assert "table shape/source metadata is not a" in module_source
+    assert "index_table_shape" not in module_source
+    assert "index_table_index_sources" not in module_source
+
+
+def test_t6_value_index_scan_codegen_has_no_topk_named_protocol_surface():
+    source = (REPO_ROOT / "tilelang_repo/src/target/codegen_blackhole.cc").read_text()
+    header = (REPO_ROOT / "tilelang_repo/src/target/codegen_blackhole.h").read_text()
+
+    for forbidden in [
+        "InferSelectionRankExtent",
+        "TryEmitValueIndexSelectionKernel",
+        "__tl_topk",
+        "kTopK",
+    ]:
+        assert forbidden not in source
+        assert forbidden not in header
 
 
 def test_exact_cb_release_source_does_not_keep_local_last_use_fallback():

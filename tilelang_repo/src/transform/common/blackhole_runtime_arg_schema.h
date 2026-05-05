@@ -41,20 +41,15 @@ inline constexpr const char* kValueExpr = "value_expr";
 inline constexpr const char* kConstantValue = "constant_value";
 inline constexpr const char* kAccessRegion = "access_region";
 inline constexpr const char* kAccessRegionIndex = "access_region_index";
-inline constexpr const char* kIndexBuffer = "index_buffer";
-inline constexpr const char* kIndexValueScale = "index_value_scale";
-inline constexpr const char* kIndexTableShape = "index_table_shape";
-inline constexpr const char* kIndexTableIndexSources = "index_table_index_sources";
 
 inline constexpr const char* kDescriptorTileStart = "tile_start";
 inline constexpr const char* kDescriptorTileCount = "tile_count";
 inline constexpr const char* kDescriptorTileStride = "tile_stride";
 inline constexpr const char* kDescriptorKTileStart = "k_tile_start";
 inline constexpr const char* kDescriptorKTileCount = "k_tile_count";
-inline constexpr const char* kDescriptorValidRows = "valid_rows";
-inline constexpr const char* kDescriptorRaggedPageIndex = "ragged_page_index";
-inline constexpr const char* kDescriptorSegmentRowStart = "segment_row_start";
-inline constexpr const char* kDescriptorSegmentRowCount = "segment_row_count";
+inline constexpr const char* kDescriptorRowStart = "row_start";
+inline constexpr const char* kDescriptorRowCount = "row_count";
+inline constexpr const char* kDescriptorPageIndex = "page_index";
 
 inline constexpr const char* kValueSourceWorkLinearId = "work_linear_id";
 inline constexpr const char* kValueSourceLogicalBlockX = "logical_block_x";
@@ -68,7 +63,7 @@ inline constexpr const char* kValueSourceLogicalBlockZKTileStart =
     "logical_block_z_k_tile_start";
 inline constexpr const char* kValueSourceComputeNumKTiles = "compute_op_num_k_tiles";
 inline constexpr const char* kValueSourceComputeLogicalNTiles = "compute_op_logical_n_tiles";
-inline constexpr const char* kValueSourceIndexTable = "index_table";
+inline constexpr const char* kValueSourceValueExpr = "value_expr";
 inline constexpr const char* kValueSourceConstant = "constant";
 
 }  // namespace blackhole_runtime_arg_schema

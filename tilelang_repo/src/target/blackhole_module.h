@@ -251,10 +251,6 @@ struct PerWorkArgSpec {
   uint32_t constant_value = 0;
   std::string access_region;
   int64_t access_region_index = -1;
-  std::string index_buffer;
-  int64_t index_value_scale = 1;
-  std::vector<int64_t> index_table_shape;
-  std::vector<std::string> index_table_index_sources;
 
   void Save(dmlc::JSONWriter* writer) const {
     writer->BeginObject();
@@ -284,21 +280,6 @@ struct PerWorkArgSpec {
       writer->WriteObjectKeyValue(
           tl::blackhole_runtime_arg_schema::kConstantValue,
           static_cast<int64_t>(constant_value));
-    }
-    if (value_source == tl::blackhole_runtime_arg_schema::kValueSourceIndexTable) {
-      writer->WriteObjectKeyValue(
-          tl::blackhole_runtime_arg_schema::kIndexBuffer, index_buffer);
-      writer->WriteObjectKeyValue(
-          tl::blackhole_runtime_arg_schema::kIndexValueScale,
-          static_cast<int64_t>(index_value_scale));
-      if (!index_table_shape.empty()) {
-        writer->WriteObjectKeyValue(
-            tl::blackhole_runtime_arg_schema::kIndexTableShape,
-            index_table_shape);
-        writer->WriteObjectKeyValue(
-            tl::blackhole_runtime_arg_schema::kIndexTableIndexSources,
-            index_table_index_sources);
-      }
     }
     if (!access_region.empty()) {
       writer->WriteObjectKeyValue(

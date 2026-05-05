@@ -1544,32 +1544,22 @@ def test_blackhole_t9_paged_gqa_decode_projects_page_table_and_cache_len_descrip
         spec
         for spec in reader["per_work_arg_specs"]
         if str(spec["descriptor_kind"]) == "tile_start"
-        and str(spec.get("value_source", "")) == "index_table"
-        and str(spec.get("index_buffer", "")) == "PageTable"
+        and str(spec.get("value_source", "")) == "value_expr"
+        and "PageTable" in str(spec.get("value_expr", ""))
     ]
     assert len(page_specs) >= 2
     assert {str(spec.get("buffer", "")) for spec in page_specs} == {"KCache", "VCache"}
-    assert {
-        tuple(str(source) for source in spec["index_table_index_sources"])
-        for spec in page_specs
-    } >= {
-        ("logical_block_x", "constant:0"),
-        ("logical_block_x", "constant:1"),
-    }
-    assert all([int(v) for v in spec["index_table_shape"]] == [2, 2] for spec in page_specs)
+    assert all("index_buffer" not in spec for spec in page_specs)
 
     valid_row_specs = [
         spec
         for spec in reader["per_work_arg_specs"]
-        if str(spec["descriptor_kind"]) == "valid_rows"
-        and str(spec.get("value_source", "")) == "index_table"
-        and str(spec.get("index_buffer", "")) == "CacheSeqLens"
+        if str(spec["descriptor_kind"]) == "row_count"
+        and str(spec.get("value_source", "")) == "value_expr"
+        and "CacheSeqLens" in str(spec.get("value_expr", ""))
     ]
     assert valid_row_specs
-    assert all(
-        [str(source) for source in spec["index_table_index_sources"]] == ["logical_block_x"]
-        for spec in valid_row_specs
-    )
+    assert all("index_buffer" not in spec for spec in valid_row_specs)
 
     compute_source = str(
         next(
@@ -1676,37 +1666,23 @@ def test_blackhole_t9_paged_mla_decode_projects_latent_and_pe_page_descriptors()
         spec
         for spec in reader["per_work_arg_specs"]
         if str(spec["descriptor_kind"]) == "tile_start"
-        and str(spec.get("value_source", "")) == "index_table"
-        and str(spec.get("index_buffer", "")) == "PageTable"
+        and str(spec.get("value_source", "")) == "value_expr"
+        and "PageTable" in str(spec.get("value_expr", ""))
     ]
     assert len(page_specs) >= 4
-    page_sources_by_buffer = {}
-    for spec in page_specs:
-        page_sources_by_buffer.setdefault(str(spec.get("buffer", "")), set()).add(
-            tuple(str(source) for source in spec["index_table_index_sources"])
-        )
-        assert [int(v) for v in spec["index_table_shape"]] == [2, 2]
-    assert page_sources_by_buffer["KVLatentCache"] >= {
-        ("logical_block_x", "constant:0"),
-        ("logical_block_x", "constant:1"),
-    }
-    assert page_sources_by_buffer["KPeCache"] >= {
-        ("logical_block_x", "constant:0"),
-        ("logical_block_x", "constant:1"),
-    }
+    page_buffers = {str(spec.get("buffer", "")) for spec in page_specs}
+    assert {"KVLatentCache", "KPeCache"} <= page_buffers
+    assert all("index_buffer" not in spec for spec in page_specs)
 
     valid_row_specs = [
         spec
         for spec in reader["per_work_arg_specs"]
-        if str(spec["descriptor_kind"]) == "valid_rows"
-        and str(spec.get("value_source", "")) == "index_table"
-        and str(spec.get("index_buffer", "")) == "CacheSeqLens"
+        if str(spec["descriptor_kind"]) == "row_count"
+        and str(spec.get("value_source", "")) == "value_expr"
+        and "CacheSeqLens" in str(spec.get("value_expr", ""))
     ]
     assert valid_row_specs
-    assert all(
-        [str(source) for source in spec["index_table_index_sources"]] == ["logical_block_x"]
-        for spec in valid_row_specs
-    )
+    assert all("index_buffer" not in spec for spec in valid_row_specs)
 
     reader_input_names = {
         "QNope_shared",

@@ -83,78 +83,6 @@ bool IsBlackholeOpName(const tir::CallNode* op, const char* op_name) {
   return Downcast<Op>(op->op)->name == op_name;
 }
 
-struct IndexTableEvidence {
-  std::string buffer;
-  int64_t coefficient = 0;
-  bool valid = true;
-};
-
-void AccumulateIndexTableCoefficient(const PrimExpr& expr, int64_t sign,
-                                     IndexTableEvidence* evidence) {
-  if (!expr.defined() || evidence == nullptr || !evidence->valid) {
-    return;
-  }
-  if (const auto* cast = expr.as<tir::CastNode>()) {
-    AccumulateIndexTableCoefficient(cast->value, sign, evidence);
-    return;
-  }
-  if (const auto* add = expr.as<tir::AddNode>()) {
-    AccumulateIndexTableCoefficient(add->a, sign, evidence);
-    AccumulateIndexTableCoefficient(add->b, sign, evidence);
-    return;
-  }
-  if (const auto* sub = expr.as<tir::SubNode>()) {
-    AccumulateIndexTableCoefficient(sub->a, sign, evidence);
-    AccumulateIndexTableCoefficient(sub->b, -sign, evidence);
-    return;
-  }
-  if (const auto* mul = expr.as<tir::MulNode>()) {
-    if (const auto* lhs = mul->a.as<tir::IntImmNode>()) {
-      AccumulateIndexTableCoefficient(mul->b, sign * lhs->value, evidence);
-      return;
-    }
-    if (const auto* rhs = mul->b.as<tir::IntImmNode>()) {
-      AccumulateIndexTableCoefficient(mul->a, sign * rhs->value, evidence);
-      return;
-    }
-  }
-  if (const auto* load = expr.as<tir::BufferLoadNode>()) {
-    const std::string buffer = BufferIdentityName(load->buffer);
-    if (buffer.empty()) {
-      evidence->valid = false;
-      return;
-    }
-    if (!evidence->buffer.empty() && evidence->buffer != buffer) {
-      evidence->valid = false;
-      return;
-    }
-    evidence->buffer = buffer;
-    evidence->coefficient += sign;
-    return;
-  }
-}
-
-std::pair<std::string, int64_t> DeriveIndexTableDescriptor(
-    const AccessRegion& region) {
-  if (region->index_exprs.empty() || region->access_kind != "read") {
-    return {"", 1};
-  }
-  IndexTableEvidence evidence;
-  AccumulateIndexTableCoefficient(region->index_exprs[0], 1, &evidence);
-  if (!evidence.valid || evidence.buffer.empty() ||
-      evidence.buffer == static_cast<std::string>(region->subject) ||
-      evidence.coefficient <= 0) {
-    return {"", 1};
-  }
-  if (evidence.coefficient == 1) {
-    return {evidence.buffer, 1};
-  }
-  if (evidence.coefficient % kBlackholeTileRows != 0) {
-    return {"", 1};
-  }
-  return {evidence.buffer, evidence.coefficient / kBlackholeTileRows};
-}
-
 bool SamePrimExprArray(const ffi::Array<PrimExpr>& lhs,
                        const ffi::Array<PrimExpr>& rhs) {
   if (lhs.size() != rhs.size()) {
@@ -353,13 +281,11 @@ void PlanTTKernelABI::LoadSpatialAccessRegions(const SpatialPlan& plan) {
       continue;
     }
     const std::string key = subject + "|" + access_kind;
-    const auto [index_buffer, index_value_scale] =
-        DeriveIndexTableDescriptor(region);
     spatial_access_region_positions_by_subject_access_[key].push_back(
         spatial_access_regions_.size());
     spatial_access_regions_.push_back(SpatialAccessRegionRef{
         static_cast<std::string>(region->name), i, subject, access_kind,
-        region->index_exprs, index_buffer, index_value_scale});
+        region->index_exprs});
   }
 }
 

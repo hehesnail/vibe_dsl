@@ -90,6 +90,21 @@ EXPECTED_UNIFIED_COPY_RUNTIME_ARG_KINDS = [
 ]
 
 
+def _assert_value_expr_descriptor(spec, *expected_buffer_names):
+    assert str(spec["value_source"]) == "value_expr"
+    value_expr = str(spec.get("value_expr", ""))
+    assert value_expr
+    for forbidden in [
+        "index_buffer",
+        "index_value_scale",
+        "index_table_shape",
+        "index_table_index_sources",
+    ]:
+        assert forbidden not in spec
+    for buffer_name in expected_buffer_names:
+        assert buffer_name in value_expr
+
+
 def test_blackhole_leaf_readers_do_not_keep_legacy_defaults_or_slot_fallbacks():
     legacy_richer_accessor_slot = "richer_accessor" + '["slot"]'
     legacy_value_kind_spec = "spec" + '["value_kind"]'
@@ -1235,10 +1250,7 @@ def test_blackhole_block_indexed_copy_per_work_spec_uses_index_table_descriptor(
     }
 
     a_tile_start = descriptors[("A", "tile_start")]
-    assert str(a_tile_start["value_source"]) == "index_table"
-    assert str(a_tile_start["value_expr"])
-    assert str(a_tile_start["index_buffer"]) == "BlockIndices"
-    assert int(a_tile_start["index_value_scale"]) == 1
+    _assert_value_expr_descriptor(a_tile_start, "BlockIndices")
     assert str(a_tile_start["access_region"])
     assert int(a_tile_start["access_region_index"]) >= 0
     assert descriptors[("B", "tile_start")]["value_source"] == "work_linear_id"
@@ -1249,7 +1261,7 @@ def test_blackhole_block_indexed_copy_per_work_spec_uses_index_table_descriptor(
     }
     assert str(materializations["BlockIndices"]["layout"]) == "page_indexed"
     assert str(materializations["BlockIndices"]["memory_space"]) == "dram"
-    assert int(materializations["BlockIndices"]["transport_page_size"]) == 4
+    assert int(materializations["BlockIndices"]["transport_page_size"]) == 12
 
 
 def test_blackhole_block_indexed_2d_copy_per_work_spec_carries_table_addressing():
@@ -1278,13 +1290,7 @@ def test_blackhole_block_indexed_2d_copy_per_work_spec_carries_table_addressing(
     }
 
     a_tile_start = descriptors[("A", "tile_start")]
-    assert str(a_tile_start["value_source"]) == "index_table"
-    assert str(a_tile_start["index_buffer"]) == "BlockIndices"
-    assert [int(v) for v in a_tile_start["index_table_shape"]] == [2, 3]
-    assert [str(v) for v in a_tile_start["index_table_index_sources"]] == [
-        "logical_block_x",
-        "logical_block_y",
-    ]
+    _assert_value_expr_descriptor(a_tile_start, "BlockIndices")
     assert str(a_tile_start["access_region"])
     assert int(a_tile_start["access_region_index"]) >= 0
 
@@ -1294,7 +1300,7 @@ def test_blackhole_block_indexed_2d_copy_per_work_spec_carries_table_addressing(
     }
     assert str(materializations["BlockIndices"]["layout"]) == "page_indexed"
     assert str(materializations["BlockIndices"]["memory_space"]) == "dram"
-    assert int(materializations["BlockIndices"]["transport_page_size"]) == 4
+    assert int(materializations["BlockIndices"]["transport_page_size"]) == 24
 
 
 def test_blackhole_block_indexed_2tile_copy_scales_index_table_descriptor():
@@ -1328,9 +1334,7 @@ def test_blackhole_block_indexed_2tile_copy_scales_index_table_descriptor():
     }
 
     a_tile_start = descriptors[("A", "tile_start")]
-    assert str(a_tile_start["value_source"]) == "index_table"
-    assert str(a_tile_start["index_buffer"]) == "BlockIndices"
-    assert int(a_tile_start["index_value_scale"]) == 2
+    _assert_value_expr_descriptor(a_tile_start, "BlockIndices")
     assert str(a_tile_start["access_region"])
     assert int(a_tile_start["access_region_index"]) >= 0
 
@@ -1366,22 +1370,8 @@ def test_blackhole_sparse_2tile_copy_uses_two_index_table_tile_start_descriptors
     assert set(by_identity) >= {"a_tile_start_id", "a_tile_start_id_1"}
     first = by_identity["a_tile_start_id"]
     second = by_identity["a_tile_start_id_1"]
-    assert str(first["value_source"]) == "index_table"
-    assert str(second["value_source"]) == "index_table"
-    assert str(first["index_buffer"]) == "BlockIndices"
-    assert str(second["index_buffer"]) == "BlockIndices"
-    assert [int(v) for v in first["index_table_shape"]] == [3, 2]
-    assert [int(v) for v in second["index_table_shape"]] == [3, 2]
-    assert [str(v) for v in first["index_table_index_sources"]] == [
-        "logical_block_x",
-        "constant:0",
-    ]
-    assert [str(v) for v in second["index_table_index_sources"]] == [
-        "logical_block_x",
-        "constant:1",
-    ]
-    assert int(first["index_value_scale"]) == 1
-    assert int(second["index_value_scale"]) == 1
+    _assert_value_expr_descriptor(first, "BlockIndices")
+    _assert_value_expr_descriptor(second, "BlockIndices")
     assert str(first["access_region"])
     assert str(second["access_region"])
     assert str(first["access_region"]) != str(second["access_region"])
@@ -1419,18 +1409,12 @@ def test_blackhole_sparse_2tile_ragged_copy_uses_per_entry_valid_rows():
     for identity, index_buffer, constant_source, descriptor_kind in [
         ("a_tile_start_id", "BlockIndices", "constant:0", "tile_start"),
         ("a_tile_start_id_1", "BlockIndices", "constant:1", "tile_start"),
-        ("a_valid_rows", "ValidRows", "constant:0", "valid_rows"),
-        ("a_valid_rows_1", "ValidRows", "constant:1", "valid_rows"),
+        ("a_valid_rows", "ValidRows", "constant:0", "row_count"),
+        ("a_valid_rows_1", "ValidRows", "constant:1", "row_count"),
     ]:
         spec = by_identity[identity]
         assert str(spec["descriptor_kind"]) == descriptor_kind
-        assert str(spec["value_source"]) == "index_table"
-        assert str(spec["index_buffer"]) == index_buffer
-        assert [int(v) for v in spec["index_table_shape"]] == [3, 2]
-        assert [str(v) for v in spec["index_table_index_sources"]] == [
-            "logical_block_x",
-            constant_source,
-        ]
+        _assert_value_expr_descriptor(spec, index_buffer)
 
 
 def test_blackhole_sparse_3tile_ragged_copy_scales_per_entry_descriptors():
@@ -1482,19 +1466,13 @@ def test_blackhole_sparse_3tile_ragged_copy_scales_per_entry_descriptors():
         ("a_tile_start_id", "BlockIndices", "constant:0", "tile_start"),
         ("a_tile_start_id_1", "BlockIndices", "constant:1", "tile_start"),
         ("a_tile_start_id_2", "BlockIndices", "constant:2", "tile_start"),
-        ("a_valid_rows", "ValidRows", "constant:0", "valid_rows"),
-        ("a_valid_rows_1", "ValidRows", "constant:1", "valid_rows"),
-        ("a_valid_rows_2", "ValidRows", "constant:2", "valid_rows"),
+        ("a_valid_rows", "ValidRows", "constant:0", "row_count"),
+        ("a_valid_rows_1", "ValidRows", "constant:1", "row_count"),
+        ("a_valid_rows_2", "ValidRows", "constant:2", "row_count"),
     ]:
         spec = by_identity[identity]
         assert str(spec["descriptor_kind"]) == descriptor_kind
-        assert str(spec["value_source"]) == "index_table"
-        assert str(spec["index_buffer"]) == index_buffer
-        assert [int(v) for v in spec["index_table_shape"]] == [3, 3]
-        assert [str(v) for v in spec["index_table_index_sources"]] == [
-            "logical_block_x",
-            constant_source,
-        ]
+        _assert_value_expr_descriptor(spec, index_buffer)
 
 
 def test_blackhole_per_work_runtime_arg_requirement_is_explicit_not_kind_suffix():
@@ -1558,10 +1536,8 @@ def test_blackhole_ragged_row_copy_uses_valid_rows_index_table_descriptor():
         (str(spec.get("buffer", "")), str(spec["descriptor_kind"])): spec
         for spec in executable_spec["per_work_arg_specs"]
     }
-    valid_rows = descriptors[("A", "valid_rows")]
-    assert str(valid_rows["value_source"]) == "index_table"
-    assert str(valid_rows["index_buffer"]) == "RowCounts"
-    assert int(valid_rows["index_value_scale"]) == 1
+    valid_rows = descriptors[("A", "row_count")]
+    _assert_value_expr_descriptor(valid_rows, "RowCounts")
     assert str(valid_rows["access_region"])
     assert int(valid_rows["access_region_index"]) >= 0
 
@@ -1574,7 +1550,7 @@ def test_blackhole_ragged_row_copy_uses_valid_rows_index_table_descriptor():
     assert str(materializations["B"]["layout"]) == "page_indexed"
     assert int(materializations["B"]["transport_page_size"]) == 64
     assert str(materializations["RowCounts"]["layout"]) == "page_indexed"
-    assert int(materializations["RowCounts"]["transport_page_size"]) == 4
+    assert int(materializations["RowCounts"]["transport_page_size"]) == 12
 
 
 def test_blackhole_segmented_row_copy_uses_segment_index_table_descriptors():
@@ -1604,17 +1580,13 @@ def test_blackhole_segmented_row_copy_uses_segment_index_table_descriptors():
         (str(spec.get("buffer", "")), str(spec["descriptor_kind"])): spec
         for spec in executable_spec["per_work_arg_specs"]
     }
-    segment_start = descriptors[("A", "segment_row_start")]
-    assert str(segment_start["value_source"]) == "index_table"
-    assert str(segment_start["index_buffer"]) == "SegmentOffsets"
-    assert int(segment_start["index_value_scale"]) == 1
+    segment_start = descriptors[("A", "row_start")]
+    _assert_value_expr_descriptor(segment_start, "SegmentOffsets")
     assert str(segment_start["access_region"])
     assert int(segment_start["access_region_index"]) >= 0
 
-    segment_count = descriptors[("A", "segment_row_count")]
-    assert str(segment_count["value_source"]) == "index_table"
-    assert str(segment_count["index_buffer"]) == "SegmentCounts"
-    assert int(segment_count["index_value_scale"]) == 1
+    segment_count = descriptors[("A", "row_count")]
+    _assert_value_expr_descriptor(segment_count, "SegmentCounts")
     assert str(segment_count["access_region"])
     assert int(segment_count["access_region_index"]) >= 0
     assert ("A", "tile_start") not in descriptors
@@ -1630,9 +1602,9 @@ def test_blackhole_segmented_row_copy_uses_segment_index_table_descriptors():
     assert str(materializations["B"]["layout"]) == "page_indexed"
     assert int(materializations["B"]["transport_page_size"]) == 64
     assert str(materializations["SegmentOffsets"]["layout"]) == "page_indexed"
-    assert int(materializations["SegmentOffsets"]["transport_page_size"]) == 4
+    assert int(materializations["SegmentOffsets"]["transport_page_size"]) == 12
     assert str(materializations["SegmentCounts"]["layout"]) == "page_indexed"
-    assert int(materializations["SegmentCounts"]["transport_page_size"]) == 4
+    assert int(materializations["SegmentCounts"]["transport_page_size"]) == 12
 
 
 def test_blackhole_two_segment_row_copy_uses_per_range_descriptors():
@@ -1667,20 +1639,14 @@ def test_blackhole_two_segment_row_copy_uses_per_range_descriptors():
         if str(spec.get("buffer", "")) == "A"
     }
     for identity, index_buffer, constant_source, descriptor_kind in [
-        ("a_segment_row_start", "SegmentOffsets", "constant:0", "segment_row_start"),
-        ("a_segment_row_start_1", "SegmentOffsets", "constant:1", "segment_row_start"),
-        ("a_segment_row_count", "SegmentCounts", "constant:0", "segment_row_count"),
-        ("a_segment_row_count_1", "SegmentCounts", "constant:1", "segment_row_count"),
+        ("a_segment_row_start", "SegmentOffsets", "constant:0", "row_start"),
+        ("a_segment_row_start_1", "SegmentOffsets", "constant:1", "row_start"),
+        ("a_segment_row_count", "SegmentCounts", "constant:0", "row_count"),
+        ("a_segment_row_count_1", "SegmentCounts", "constant:1", "row_count"),
     ]:
         spec = by_identity[identity]
         assert str(spec["descriptor_kind"]) == descriptor_kind
-        assert str(spec["value_source"]) == "index_table"
-        assert str(spec["index_buffer"]) == index_buffer
-        assert [int(v) for v in spec["index_table_shape"]] == [3, 2]
-        assert [str(v) for v in spec["index_table_index_sources"]] == [
-            "logical_block_x",
-            constant_source,
-        ]
+        _assert_value_expr_descriptor(spec, index_buffer)
 
 
 def test_blackhole_paged_cache_len_copy_uses_page_table_and_ragged_page_descriptors():
@@ -1712,23 +1678,12 @@ def test_blackhole_paged_cache_len_copy_uses_page_table_and_ragged_page_descript
     }
 
     page_start = descriptors[("A", "tile_start")]
-    assert str(page_start["value_source"]) == "index_table"
-    assert str(page_start["index_buffer"]) == "PageTable"
-    assert [int(v) for v in page_start["index_table_shape"]] == [2, 3]
-    assert [str(v) for v in page_start["index_table_index_sources"]] == [
-        "logical_block_x",
-        "logical_block_y",
-    ]
+    _assert_value_expr_descriptor(page_start, "PageTable")
 
-    valid_rows = descriptors[("A", "valid_rows")]
-    assert str(valid_rows["value_source"]) == "index_table"
-    assert str(valid_rows["index_buffer"]) == "CacheSeqLens"
-    assert [int(v) for v in valid_rows["index_table_shape"]] == [2]
-    assert [str(v) for v in valid_rows["index_table_index_sources"]] == [
-        "logical_block_x",
-    ]
+    valid_rows = descriptors[("A", "row_count")]
+    _assert_value_expr_descriptor(valid_rows, "CacheSeqLens")
 
-    page_index = descriptors[("A", "ragged_page_index")]
+    page_index = descriptors[("A", "page_index")]
     assert str(page_index["value_source"]) == "logical_block_y"
 
 
@@ -1761,22 +1716,10 @@ def test_blackhole_paged_valid_rows_copy_uses_per_page_row_bounds():
     }
 
     page_start = descriptors[("A", "tile_start")]
-    assert str(page_start["value_source"]) == "index_table"
-    assert str(page_start["index_buffer"]) == "PageTable"
-    assert [int(v) for v in page_start["index_table_shape"]] == [2, 3]
-    assert [str(v) for v in page_start["index_table_index_sources"]] == [
-        "logical_block_x",
-        "logical_block_y",
-    ]
+    _assert_value_expr_descriptor(page_start, "PageTable")
 
-    valid_rows = descriptors[("A", "valid_rows")]
-    assert str(valid_rows["value_source"]) == "index_table"
-    assert str(valid_rows["index_buffer"]) == "PageValidRows"
-    assert [int(v) for v in valid_rows["index_table_shape"]] == [2, 3]
-    assert [str(v) for v in valid_rows["index_table_index_sources"]] == [
-        "logical_block_x",
-        "logical_block_y",
-    ]
+    valid_rows = descriptors[("A", "row_count")]
+    _assert_value_expr_descriptor(valid_rows, "PageValidRows")
 
 
 def test_blackhole_grid_indexed_copy_rejects_per_work_arg_kind_fallback_without_identity():

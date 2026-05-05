@@ -829,14 +829,7 @@ void TTPerWorkArgSpecNode::RegisterReflection() {
       .def_ro("constant_value", &TTPerWorkArgSpecNode::constant_value)
       .def_ro("access_region", &TTPerWorkArgSpecNode::access_region)
       .def_ro("access_region_index",
-              &TTPerWorkArgSpecNode::access_region_index)
-      .def_ro("index_buffer", &TTPerWorkArgSpecNode::index_buffer)
-      .def_ro("index_value_scale",
-              &TTPerWorkArgSpecNode::index_value_scale)
-      .def_ro("index_table_shape",
-              &TTPerWorkArgSpecNode::index_table_shape)
-      .def_ro("index_table_index_sources",
-              &TTPerWorkArgSpecNode::index_table_index_sources);
+              &TTPerWorkArgSpecNode::access_region_index);
 }
 
 TTPerWorkArgSpec::TTPerWorkArgSpec(ffi::String arg_kind,
@@ -847,8 +840,7 @@ TTPerWorkArgSpec::TTPerWorkArgSpec(ffi::String arg_kind,
     : TTPerWorkArgSpec(std::move(arg_kind), std::move(arg_identity),
                        std::move(buffer), std::move(descriptor_kind),
                        std::move(value_source), constant_value,
-                       ffi::String(), -1, ffi::String(), 1,
-                       ffi::Array<Integer>{}, ffi::Array<ffi::String>{}) {}
+                       ffi::String(), -1) {}
 
 TTPerWorkArgSpec::TTPerWorkArgSpec(ffi::String arg_kind,
                                    ffi::String arg_identity, ffi::String buffer,
@@ -861,33 +853,13 @@ TTPerWorkArgSpec::TTPerWorkArgSpec(ffi::String arg_kind,
                        std::move(buffer), std::move(descriptor_kind),
                        std::move(value_source), constant_value,
                        std::move(access_region), access_region_index,
-                       ffi::String(), 1, ffi::Array<Integer>{},
-                       ffi::Array<ffi::String>{}) {}
-
-TTPerWorkArgSpec::TTPerWorkArgSpec(ffi::String arg_kind,
-                                   ffi::String arg_identity, ffi::String buffer,
-                                   ffi::String descriptor_kind,
-                                   ffi::String value_source,
-                                   int64_t constant_value,
-                                   ffi::String access_region,
-                                   int64_t access_region_index,
-                                   ffi::String index_buffer,
-                                   int64_t index_value_scale)
-    : TTPerWorkArgSpec(std::move(arg_kind), std::move(arg_identity),
-                       std::move(buffer), std::move(descriptor_kind),
-                       std::move(value_source), constant_value,
-                       std::move(access_region), access_region_index,
-                       std::move(index_buffer), index_value_scale,
-                       ffi::Array<Integer>{}, ffi::Array<ffi::String>{}) {}
+                       PrimExpr()) {}
 
 TTPerWorkArgSpec::TTPerWorkArgSpec(
     ffi::String arg_kind, ffi::String arg_identity, ffi::String buffer,
     ffi::String descriptor_kind, ffi::String value_source,
     int64_t constant_value, ffi::String access_region,
-    int64_t access_region_index, ffi::String index_buffer,
-    int64_t index_value_scale, ffi::Array<Integer> index_table_shape,
-    ffi::Array<ffi::String> index_table_index_sources,
-    PrimExpr value_expr) {
+    int64_t access_region_index, PrimExpr value_expr) {
   auto n = ffi::make_object<TTPerWorkArgSpecNode>();
   n->arg_kind = std::move(arg_kind);
   n->arg_identity = std::move(arg_identity);
@@ -898,10 +870,6 @@ TTPerWorkArgSpec::TTPerWorkArgSpec(
   n->constant_value = constant_value;
   n->access_region = std::move(access_region);
   n->access_region_index = access_region_index;
-  n->index_buffer = std::move(index_buffer);
-  n->index_value_scale = index_value_scale <= 0 ? 1 : index_value_scale;
-  n->index_table_shape = std::move(index_table_shape);
-  n->index_table_index_sources = std::move(index_table_index_sources);
   data_ = std::move(n);
 }
 
@@ -2081,39 +2049,19 @@ TVM_FFI_STATIC_INIT_BLOCK() {
                               std::move(value_source), constant_value,
                               std::move(access_region), access_region_index);
                         });
-  refl::GlobalDef().def("tl.TTPerWorkArgSpecWithIndexTable",
+  refl::GlobalDef().def("tl.TTPerWorkArgSpecWithValueExpr",
                         [](ffi::String arg_kind, ffi::String arg_identity,
                            ffi::String buffer, ffi::String descriptor_kind,
                            ffi::String value_source, int64_t constant_value,
                            ffi::String access_region,
                            int64_t access_region_index,
-                           ffi::String index_buffer,
-                           int64_t index_value_scale) {
+                           PrimExpr value_expr) {
                           return TTPerWorkArgSpec(
                               std::move(arg_kind), std::move(arg_identity),
                               std::move(buffer), std::move(descriptor_kind),
                               std::move(value_source), constant_value,
                               std::move(access_region), access_region_index,
-                              std::move(index_buffer), index_value_scale);
-                        });
-  refl::GlobalDef().def("tl.TTPerWorkArgSpecWithIndexTableAddressing",
-                        [](ffi::String arg_kind, ffi::String arg_identity,
-                           ffi::String buffer, ffi::String descriptor_kind,
-                           ffi::String value_source, int64_t constant_value,
-                           ffi::String access_region,
-                           int64_t access_region_index,
-                           ffi::String index_buffer,
-                           int64_t index_value_scale,
-                           ffi::Array<Integer> index_table_shape,
-                           ffi::Array<ffi::String> index_table_index_sources) {
-                          return TTPerWorkArgSpec(
-                              std::move(arg_kind), std::move(arg_identity),
-                              std::move(buffer), std::move(descriptor_kind),
-                              std::move(value_source), constant_value,
-                              std::move(access_region), access_region_index,
-                              std::move(index_buffer), index_value_scale,
-                              std::move(index_table_shape),
-                              std::move(index_table_index_sources));
+                              std::move(value_expr));
                         });
   refl::GlobalDef().def(
       "tl.TTKernel",

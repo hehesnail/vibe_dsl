@@ -305,13 +305,6 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
     std::string subject;
     std::string access_kind;
     ffi::Array<PrimExpr> index_exprs;
-    std::string index_buffer;
-    int64_t index_value_scale = 1;
-  };
-
-  struct IndexTableAddressing {
-    std::vector<int64_t> shape;
-    std::vector<std::string> index_sources;
   };
 
   struct IndexedPerWorkRuntimeArg {
@@ -319,10 +312,8 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
     std::string descriptor_kind;
     std::string subject_buffer;
     ffi::Array<PrimExpr> subject_index_exprs;
-    std::string index_buffer;
-    int64_t index_value_scale = 1;
-    IndexTableAddressing addressing;
     PrimExpr value_expr;
+    bool include_in_compute_segment = false;
   };
 
   /*! \brief Get CB configuration from function attributes */
@@ -934,25 +925,18 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   void RecordExactComputeOpPlan(const std::string& kind,
                                 const std::string& operation_name,
                                 const std::vector<ComputeOperandPlanSeed>& operands);
-  std::optional<IndexTableAddressing> ExtractIndexTableAddressing(
-      const tvm::tir::BufferLoadNode* table_load) const;
   std::string GetOrCreateIndexedPerWorkRuntimeArg(
       const std::string& arg_prefix,
       const std::string& descriptor_kind,
       const std::string& subject_buffer,
       const ffi::Array<PrimExpr>& subject_index_exprs,
-      const std::string& index_buffer,
-      const IndexTableAddressing& addressing,
-      int64_t index_value_scale,
-      const PrimExpr& value_expr);
+      const PrimExpr& value_expr,
+      bool include_in_compute_segment);
   void RecordIndexedPerWorkRuntimeArgSubjectAlias(
       const std::string& arg_name,
       const std::string& descriptor_kind,
       const std::string& subject_buffer,
       const ffi::Array<PrimExpr>& subject_index_exprs,
-      const std::string& index_buffer,
-      const IndexTableAddressing& addressing,
-      int64_t index_value_scale,
       const PrimExpr& value_expr);
   tvm::PrimExpr NormalizeRuntimeTileStartScale(const tvm::PrimExpr& expr) const;
 
@@ -990,12 +974,12 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   std::string copy_output_buffer_name_;
   std::vector<std::string> copy_input_buffer_names_;
   std::vector<std::string> copy_output_buffer_names_;
-  std::string ragged_row_bound_index_buffer_name_;
+  std::string ragged_row_bound_table_buffer_name_;
   std::string ragged_row_bound_subject_buffer_name_;
   std::string ragged_page_index_value_source_;
   std::unordered_set<std::string> ragged_row_bound_shared_buffer_names_;
-  std::string segment_row_start_index_buffer_name_;
-  std::string segment_row_count_index_buffer_name_;
+  std::string segment_row_start_table_buffer_name_;
+  std::string segment_row_count_table_buffer_name_;
   std::string segment_row_subject_buffer_name_;
   std::unordered_set<std::string> segment_row_shared_buffer_names_;
   std::unordered_map<std::string, int64_t> runtime_arg_tile_start_scale_by_name_;

@@ -1888,19 +1888,25 @@ def test_blackhole_t9_grouped_gemm_projects_segmented_a_descriptors():
         (str(spec.get("buffer", "")), str(spec["descriptor_kind"])): spec
         for spec in executable_spec["per_work_arg_specs"]
     }
-    segment_start = descriptors[("A", "segment_row_start")]
-    assert str(segment_start["value_source"]) == "index_table"
-    assert str(segment_start["index_buffer"]) == "GroupOffsets"
-    assert [str(v) for v in segment_start["index_table_index_sources"]] == [
-        "logical_block_x"
-    ]
+    segment_start = descriptors[("A", "row_start")]
+    assert str(segment_start["value_source"]) == "value_expr"
+    assert "GroupOffsets" in str(segment_start["value_expr"])
+    assert "index_buffer" not in segment_start
 
-    segment_count = descriptors[("A", "segment_row_count")]
-    assert str(segment_count["value_source"]) == "index_table"
-    assert str(segment_count["index_buffer"]) == "GroupSizes"
-    assert [str(v) for v in segment_count["index_table_index_sources"]] == [
-        "logical_block_x"
+    segment_count = descriptors[("A", "row_count")]
+    assert str(segment_count["value_source"]) == "value_expr"
+    assert "GroupSizes" in str(segment_count["value_expr"])
+    assert "index_buffer" not in segment_count
+
+    a_tile_count_specs = [
+        spec
+        for spec in executable_spec["per_work_arg_specs"]
+        if str(spec.get("arg_identity", "")) == "a_tile_num_tiles:A"
+        and str(spec.get("descriptor_kind", "")) == "tile_count"
     ]
+    assert len(a_tile_count_specs) == 1
+    assert str(a_tile_count_specs[0]["buffer"]) == "A"
+    assert str(a_tile_count_specs[0]["value_source"]) == "compute_op_num_k_tiles"
 
 
 def test_blackhole_t5_external_sharded_l1_gemm_direct_runtime_bf16():

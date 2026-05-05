@@ -13,7 +13,7 @@ from .test_blackhole_copy_pipeline import _extract_blackhole_executable_spec
 
 
 VALUE_INDEX_SELECTION_MARKER = (
-    "Existing TIR value/index row selection lowered as one typed compute scan."
+    "Existing TIR row-rank reduction lowered as one typed compute scan."
 )
 
 
@@ -118,6 +118,9 @@ def test_blackhole_existing_tir_value_index_selection_projects_contracts():
     assert "((float*)logits)" not in compute_source
     assert "logits[" not in compute_source
     assert VALUE_INDEX_SELECTION_MARKER in compute_source
+    assert "topk" not in compute_source
+    assert "__tl_topk" not in compute_source
+    assert "kTopK" not in compute_source
     assert "reduce_tile<PoolType::MAX, ReduceDim::REDUCE_ROW>" not in compute_source
     assert "tl.blackhole.topk" not in compute_source
     assert "TTSelectionPlan" not in compute_source

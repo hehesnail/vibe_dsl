@@ -64,7 +64,7 @@ the normal writer path.  This replaces the unsupported standalone
 topk op, `TTSelectionPlan`, `selection_plans`, or a source-name side channel.
 
 Architecture audit `2026-05-05`: this is runtime-complete but not a clean final
-lowering pattern.  `CodeGenBlackhole::TryEmitValueIndexSelectionKernel` is still
+lowering pattern.  `CodeGenBlackhole::TryEmitRowRankReductionScanKernel` is still
 a dedicated backend emitter for a value/index row-selection shape, and it uses
 generated output-CB naming to bind the value/index result pages.  The desired
 cleanup is to express the same semantics through a generic typed compute-region

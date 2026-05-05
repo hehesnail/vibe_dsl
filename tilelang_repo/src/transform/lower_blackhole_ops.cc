@@ -1858,12 +1858,12 @@ PrimFunc PlanTTKernelABI::Transform(const PrimFunc& func) {
   copy_output_buffer_name_.clear();
   copy_input_buffer_names_.clear();
   copy_output_buffer_names_.clear();
-  ragged_row_bound_index_buffer_name_.clear();
+  ragged_row_bound_table_buffer_name_.clear();
   ragged_row_bound_subject_buffer_name_.clear();
   ragged_page_index_value_source_.clear();
   ragged_row_bound_shared_buffer_names_.clear();
-  segment_row_start_index_buffer_name_.clear();
-  segment_row_count_index_buffer_name_.clear();
+  segment_row_start_table_buffer_name_.clear();
+  segment_row_count_table_buffer_name_.clear();
   segment_row_subject_buffer_name_.clear();
   segment_row_shared_buffer_names_.clear();
   runtime_arg_tile_start_scale_by_name_.clear();
@@ -2829,7 +2829,7 @@ bool PlanTTKernelABI::IsValidRowsRuntimeArgExpr(const PrimExpr& expr) const {
   const std::string name = arg_name->value;
   for (const IndexedPerWorkRuntimeArg& arg : indexed_per_work_runtime_args_) {
     if (arg.arg_name == name &&
-        arg.descriptor_kind == blackhole_runtime_arg_schema::kDescriptorValidRows) {
+        arg.descriptor_kind == blackhole_runtime_arg_schema::kDescriptorRowCount) {
       return true;
     }
   }
@@ -3262,74 +3262,19 @@ Stmt PlanTTKernelABI::VisitStmt_(const AllocateNode* op) {
   return StmtExprMutator::VisitStmt_(op);
 }
 
-std::optional<PlanTTKernelABI::IndexTableAddressing>
-PlanTTKernelABI::ExtractIndexTableAddressing(
-    const BufferLoadNode* table_load) const {
-  if (table_load == nullptr) {
-    return std::nullopt;
-  }
-  IndexTableAddressing addressing;
-  addressing.shape.reserve(table_load->buffer->shape.size());
-  for (const PrimExpr& dim : table_load->buffer->shape) {
-    const auto* extent = dim.as<IntImmNode>();
-    if (extent == nullptr || extent->value <= 0) {
-      return std::nullopt;
-    }
-    addressing.shape.push_back(extent->value);
-  }
-  if (addressing.shape.size() != table_load->indices.size()) {
-    return std::nullopt;
-  }
-  auto index_source = [&](PrimExpr expr) -> std::string {
-    while (const auto* cast = expr.as<CastNode>()) {
-      expr = cast->value;
-    }
-    if (const auto* imm = expr.as<IntImmNode>()) {
-      if (imm->value < 0) {
-        return "";
-      }
-      return "constant:" + std::to_string(imm->value);
-    }
-    const auto* var = expr.as<VarNode>();
-    if (var == nullptr) {
-      return "";
-    }
-    auto source_it = block_index_source_by_var_.find(var);
-    if (source_it == block_index_source_by_var_.end()) {
-      return "";
-    }
-    return source_it->second;
-  };
-  addressing.index_sources.reserve(table_load->indices.size());
-  for (const PrimExpr& index : table_load->indices) {
-    std::string source = index_source(index);
-    if (source.empty()) {
-      return std::nullopt;
-    }
-    addressing.index_sources.push_back(std::move(source));
-  }
-  return addressing;
-}
-
 std::string PlanTTKernelABI::GetOrCreateIndexedPerWorkRuntimeArg(
     const std::string& arg_prefix,
     const std::string& descriptor_kind,
     const std::string& subject_buffer,
     const ffi::Array<PrimExpr>& subject_index_exprs,
-    const std::string& index_buffer,
-    const IndexTableAddressing& addressing,
-    int64_t index_value_scale,
-    const PrimExpr& value_expr) {
+    const PrimExpr& value_expr,
+    bool include_in_compute_segment) {
   ICHECK(!arg_prefix.empty())
       << "Blackhole indexed per-work runtime arg requires arg prefix";
   ICHECK(!descriptor_kind.empty())
       << "Blackhole indexed per-work runtime arg requires descriptor kind";
   ICHECK(!subject_buffer.empty())
       << "Blackhole indexed per-work runtime arg requires subject buffer";
-  ICHECK(!index_buffer.empty())
-      << "Blackhole indexed per-work runtime arg requires index table buffer";
-  ICHECK_GT(index_value_scale, 0)
-      << "Blackhole indexed per-work runtime arg requires positive value scale";
   ICHECK(value_expr.defined())
       << "Blackhole indexed per-work runtime arg requires value_expr";
   auto same_index_exprs = [](const ffi::Array<PrimExpr>& lhs,
@@ -3356,8 +3301,7 @@ std::string PlanTTKernelABI::GetOrCreateIndexedPerWorkRuntimeArg(
     return equal(lhs, rhs);
   };
   int prefix_count = 0;
-  for (const IndexedPerWorkRuntimeArg& existing :
-       indexed_per_work_runtime_args_) {
+  for (IndexedPerWorkRuntimeArg& existing : indexed_per_work_runtime_args_) {
     if (existing.arg_name == arg_prefix ||
         existing.arg_name.rfind(arg_prefix + "_", 0) == 0) {
       ++prefix_count;
@@ -3365,11 +3309,9 @@ std::string PlanTTKernelABI::GetOrCreateIndexedPerWorkRuntimeArg(
     if (existing.descriptor_kind == descriptor_kind &&
         existing.subject_buffer == subject_buffer &&
         same_index_exprs(existing.subject_index_exprs, subject_index_exprs) &&
-        existing.index_buffer == index_buffer &&
-        existing.index_value_scale == index_value_scale &&
-        same_value_expr(existing.value_expr, value_expr) &&
-        existing.addressing.shape == addressing.shape &&
-        existing.addressing.index_sources == addressing.index_sources) {
+        same_value_expr(existing.value_expr, value_expr)) {
+      existing.include_in_compute_segment =
+          existing.include_in_compute_segment || include_in_compute_segment;
       return existing.arg_name;
     }
   }
@@ -3380,10 +3322,8 @@ std::string PlanTTKernelABI::GetOrCreateIndexedPerWorkRuntimeArg(
   arg.descriptor_kind = descriptor_kind;
   arg.subject_buffer = subject_buffer;
   arg.subject_index_exprs = subject_index_exprs;
-  arg.index_buffer = index_buffer;
-  arg.index_value_scale = index_value_scale;
-  arg.addressing = addressing;
   arg.value_expr = value_expr;
+  arg.include_in_compute_segment = include_in_compute_segment;
   indexed_per_work_runtime_args_.push_back(std::move(arg));
   return indexed_per_work_runtime_args_.back().arg_name;
 }
@@ -3393,9 +3333,6 @@ void PlanTTKernelABI::RecordIndexedPerWorkRuntimeArgSubjectAlias(
     const std::string& descriptor_kind,
     const std::string& subject_buffer,
     const ffi::Array<PrimExpr>& subject_index_exprs,
-    const std::string& index_buffer,
-    const IndexTableAddressing& addressing,
-    int64_t index_value_scale,
     const PrimExpr& value_expr) {
   ICHECK(!arg_name.empty())
       << "Blackhole indexed per-work runtime arg alias requires arg name";
@@ -3403,10 +3340,6 @@ void PlanTTKernelABI::RecordIndexedPerWorkRuntimeArgSubjectAlias(
       << "Blackhole indexed per-work runtime arg alias requires descriptor kind";
   ICHECK(!subject_buffer.empty())
       << "Blackhole indexed per-work runtime arg alias requires subject buffer";
-  ICHECK(!index_buffer.empty())
-      << "Blackhole indexed per-work runtime arg alias requires index table buffer";
-  ICHECK_GT(index_value_scale, 0)
-      << "Blackhole indexed per-work runtime arg alias requires positive value scale";
   ICHECK(value_expr.defined())
       << "Blackhole indexed per-work runtime arg alias requires value_expr";
   auto same_index_exprs = [](const ffi::Array<PrimExpr>& lhs,
@@ -3433,24 +3366,17 @@ void PlanTTKernelABI::RecordIndexedPerWorkRuntimeArgSubjectAlias(
     return equal(lhs, rhs);
   };
   bool found_primary = false;
+  bool include_in_compute_segment = false;
   for (const IndexedPerWorkRuntimeArg& existing :
        indexed_per_work_runtime_args_) {
     if (existing.arg_name != arg_name) {
       continue;
     }
     found_primary = true;
+    include_in_compute_segment =
+        include_in_compute_segment || existing.include_in_compute_segment;
     ICHECK_EQ(existing.descriptor_kind, descriptor_kind)
         << "Blackhole indexed per-work runtime arg alias descriptor mismatch for "
-        << arg_name;
-    ICHECK_EQ(existing.index_buffer, index_buffer)
-        << "Blackhole indexed per-work runtime arg alias index buffer mismatch for "
-        << arg_name;
-    ICHECK_EQ(existing.index_value_scale, index_value_scale)
-        << "Blackhole indexed per-work runtime arg alias scale mismatch for "
-        << arg_name;
-    ICHECK(existing.addressing.shape == addressing.shape &&
-           existing.addressing.index_sources == addressing.index_sources)
-        << "Blackhole indexed per-work runtime arg alias addressing mismatch for "
         << arg_name;
     ICHECK(same_value_expr(existing.value_expr, value_expr))
         << "Blackhole indexed per-work runtime arg alias value_expr mismatch for "
@@ -3468,10 +3394,8 @@ void PlanTTKernelABI::RecordIndexedPerWorkRuntimeArgSubjectAlias(
   arg.descriptor_kind = descriptor_kind;
   arg.subject_buffer = subject_buffer;
   arg.subject_index_exprs = subject_index_exprs;
-  arg.index_buffer = index_buffer;
-  arg.index_value_scale = index_value_scale;
-  arg.addressing = addressing;
   arg.value_expr = value_expr;
+  arg.include_in_compute_segment = include_in_compute_segment;
   indexed_per_work_runtime_args_.push_back(std::move(arg));
 }
 
@@ -3691,13 +3615,13 @@ Stmt PlanTTKernelABI::VisitStmt_(const LetStmtNode* op) {
       body_uses_let_var_for_copy_index(op->body)) {
     const std::optional<int64_t> coefficient =
         copy_source_row_index_var_coefficient(op->body);
-    const std::string index_buffer = BufferIdentityName(table_load->buffer);
+    const std::string table_buffer = BufferIdentityName(table_load->buffer);
     const BufferLoadNode* subject_load = find_copy_load_using_let_var(op->body);
     ICHECK(subject_load != nullptr)
         << "Blackhole table-backed copy index requires a subject buffer load";
     const std::string subject_buffer = BufferIdentityName(subject_load->buffer);
-    ICHECK(!index_buffer.empty())
-        << "Blackhole table-backed copy index requires named index-table buffer";
+    ICHECK(!table_buffer.empty())
+        << "Blackhole table-backed copy index requires named table buffer";
     ICHECK(!subject_buffer.empty())
         << "Blackhole table-backed copy index requires named subject buffer";
     const ffi::Array<PrimExpr> subject_index_exprs =
@@ -3706,59 +3630,44 @@ Stmt PlanTTKernelABI::VisitStmt_(const LetStmtNode* op) {
         collect_copy_load_subject_accesses_using_let_var(op->body);
     std::string arg_name = "a_tile_start_id";
     std::string descriptor_kind;
-    int64_t index_value_scale = 1;
+    int64_t tile_start_scale = 1;
     PrimExpr runtime_value_expr = op->value;
-    std::optional<IndexTableAddressing> runtime_arg_addressing;
     if (coefficient.has_value() && coefficient.value() == 1) {
-      if (!segment_row_start_index_buffer_name_.empty()) {
-        ICHECK_EQ(segment_row_start_index_buffer_name_, index_buffer)
+      if (!segment_row_start_table_buffer_name_.empty()) {
+        ICHECK_EQ(segment_row_start_table_buffer_name_, table_buffer)
             << "Blackhole first segmented row slice admits one row-start "
-            << "index table per fused dataflow kernel";
+            << "table buffer per fused dataflow kernel";
       }
-      segment_row_start_index_buffer_name_ = index_buffer;
+      segment_row_start_table_buffer_name_ = table_buffer;
       needs_segment_row_start_arg_ = true;
-      std::optional<IndexTableAddressing> addressing =
-          ExtractIndexTableAddressing(table_load);
-      ICHECK(addressing.has_value())
-          << "Blackhole table-backed segment-row start requires explicit "
-          << "index-table addressing evidence";
-      descriptor_kind = blackhole_runtime_arg_schema::kDescriptorSegmentRowStart;
-      runtime_arg_addressing = addressing;
+      descriptor_kind = blackhole_runtime_arg_schema::kDescriptorRowStart;
       arg_name = GetOrCreateIndexedPerWorkRuntimeArg(
           "a_segment_row_start",
           descriptor_kind,
-          subject_buffer, subject_index_exprs, index_buffer,
-          addressing.value(), 1, op->value);
+          subject_buffer, subject_index_exprs, op->value, false);
     } else if (coefficient.has_value() &&
                coefficient.value() > 0 &&
                coefficient.value() % kBlackholeTileRows == 0) {
-      std::optional<IndexTableAddressing> addressing =
-          ExtractIndexTableAddressing(table_load);
-      ICHECK(addressing.has_value())
-          << "Blackhole table-backed tile-start requires explicit index-table "
-          << "addressing evidence";
       const std::string tile_start_arg_prefix =
           requires_compute_segment_ ? "indexed_tile_start_id"
                                     : "a_tile_start_id";
       descriptor_kind = blackhole_runtime_arg_schema::kDescriptorTileStart;
-      index_value_scale = coefficient.value() / kBlackholeTileRows;
-      runtime_arg_addressing = addressing;
-      if (index_value_scale != 1) {
+      tile_start_scale = coefficient.value() / kBlackholeTileRows;
+      if (tile_start_scale != 1) {
         Analyzer analyzer;
         runtime_value_expr = analyzer.Simplify(
-            op->value * IntImm(op->value.dtype(), index_value_scale));
+            op->value * IntImm(op->value.dtype(), tile_start_scale));
       }
       arg_name = GetOrCreateIndexedPerWorkRuntimeArg(
           tile_start_arg_prefix,
           descriptor_kind,
-          subject_buffer, subject_index_exprs, index_buffer, addressing.value(),
-          index_value_scale, runtime_value_expr);
+          subject_buffer, subject_index_exprs, runtime_value_expr, false);
       runtime_arg_tile_start_scale_by_name_[arg_name] =
           coefficient.value() / kBlackholeTileRows;
       runtime_arg_tile_start_scale_by_var_[op->var.get()] =
           coefficient.value() / kBlackholeTileRows;
     }
-    if (!descriptor_kind.empty() && runtime_arg_addressing.has_value()) {
+    if (!descriptor_kind.empty()) {
       for (const SubjectAccessCandidate& alias_access : subject_accesses) {
         if (alias_access.buffer == subject_buffer &&
             same_index_exprs(alias_access.index_exprs, subject_index_exprs)) {
@@ -3766,9 +3675,7 @@ Stmt PlanTTKernelABI::VisitStmt_(const LetStmtNode* op) {
         }
         RecordIndexedPerWorkRuntimeArgSubjectAlias(
             arg_name, descriptor_kind, alias_access.buffer,
-            alias_access.index_exprs, index_buffer,
-            runtime_arg_addressing.value(), index_value_scale,
-            runtime_value_expr);
+            alias_access.index_exprs, runtime_value_expr);
       }
     }
     PrimExpr per_work_table_value =
@@ -3780,13 +3687,13 @@ Stmt PlanTTKernelABI::VisitStmt_(const LetStmtNode* op) {
       table_load->buffer->dtype.is_int() && table_load->buffer->dtype.bits() == 32 &&
       GetStorageScope(table_load->buffer) == "global" &&
       body_uses_let_var_for_guarded_copy_predicate(op->body)) {
-    const std::string index_buffer = BufferIdentityName(table_load->buffer);
+    const std::string table_buffer = BufferIdentityName(table_load->buffer);
     const BufferLoadNode* subject_load = find_copy_load_using_let_var(op->body);
     ICHECK(subject_load != nullptr)
         << "Blackhole ragged row bound requires a subject buffer load";
     const std::string subject_buffer = BufferIdentityName(subject_load->buffer);
-    ICHECK(!index_buffer.empty())
-        << "Blackhole ragged row bound requires named index-table buffer";
+    ICHECK(!table_buffer.empty())
+        << "Blackhole ragged row bound requires named table buffer";
     ICHECK(!subject_buffer.empty())
         << "Blackhole ragged row bound requires named subject buffer";
     const ffi::Array<PrimExpr> subject_index_exprs =
@@ -3794,32 +3701,25 @@ Stmt PlanTTKernelABI::VisitStmt_(const LetStmtNode* op) {
     const std::vector<SubjectAccessCandidate> subject_accesses =
         collect_copy_load_subject_accesses_using_let_var(op->body);
     if (needs_segment_row_start_arg_) {
-      if (!segment_row_count_index_buffer_name_.empty()) {
-        ICHECK_EQ(segment_row_count_index_buffer_name_, index_buffer)
+      if (!segment_row_count_table_buffer_name_.empty()) {
+        ICHECK_EQ(segment_row_count_table_buffer_name_, table_buffer)
             << "Blackhole first segmented row slice admits one row-count "
-            << "index table per fused dataflow kernel";
+            << "table buffer per fused dataflow kernel";
       }
-      segment_row_count_index_buffer_name_ = index_buffer;
+      segment_row_count_table_buffer_name_ = table_buffer;
       needs_segment_row_count_arg_ = true;
-      std::optional<IndexTableAddressing> addressing =
-          ExtractIndexTableAddressing(table_load);
-      ICHECK(addressing.has_value())
-          << "Blackhole table-backed segment-row count requires explicit "
-          << "index-table addressing evidence";
       const std::string arg_name = GetOrCreateIndexedPerWorkRuntimeArg(
           "a_segment_row_count",
-          blackhole_runtime_arg_schema::kDescriptorSegmentRowCount,
-          subject_buffer, subject_index_exprs, index_buffer,
-          addressing.value(), 1, op->value);
+          blackhole_runtime_arg_schema::kDescriptorRowCount,
+          subject_buffer, subject_index_exprs, op->value, false);
       for (const SubjectAccessCandidate& alias_access : subject_accesses) {
         if (alias_access.buffer == subject_buffer &&
             same_index_exprs(alias_access.index_exprs, subject_index_exprs)) {
           continue;
         }
         RecordIndexedPerWorkRuntimeArgSubjectAlias(
-            arg_name, blackhole_runtime_arg_schema::kDescriptorSegmentRowCount,
-            alias_access.buffer, alias_access.index_exprs, index_buffer,
-            addressing.value(), 1, op->value);
+            arg_name, blackhole_runtime_arg_schema::kDescriptorRowCount,
+            alias_access.buffer, alias_access.index_exprs, op->value);
       }
       PrimExpr per_work_segment_row_count =
           Call(op->var.dtype(), blackhole_runtime_arg_u32(),
@@ -3828,32 +3728,25 @@ Stmt PlanTTKernelABI::VisitStmt_(const LetStmtNode* op) {
           LetStmt(op->var, per_work_segment_row_count, op->body, op->span);
       return StmtExprMutator::VisitStmt_(rewritten.as<LetStmtNode>());
     }
-    if (!ragged_row_bound_index_buffer_name_.empty()) {
-      ICHECK_EQ(ragged_row_bound_index_buffer_name_, index_buffer)
+    if (!ragged_row_bound_table_buffer_name_.empty()) {
+      ICHECK_EQ(ragged_row_bound_table_buffer_name_, table_buffer)
           << "Blackhole first ragged row-bound slice admits one row-count "
-          << "index table per fused dataflow kernel";
+          << "table buffer per fused dataflow kernel";
     }
-    ragged_row_bound_index_buffer_name_ = index_buffer;
+    ragged_row_bound_table_buffer_name_ = table_buffer;
     needs_ragged_row_bound_arg_ = true;
-    std::optional<IndexTableAddressing> addressing =
-        ExtractIndexTableAddressing(table_load);
-    ICHECK(addressing.has_value())
-        << "Blackhole table-backed valid-row bound requires explicit "
-        << "index-table addressing evidence";
     const std::string arg_name = GetOrCreateIndexedPerWorkRuntimeArg(
         "a_valid_rows",
-        blackhole_runtime_arg_schema::kDescriptorValidRows,
-        subject_buffer, subject_index_exprs, index_buffer,
-        addressing.value(), 1, op->value);
+        blackhole_runtime_arg_schema::kDescriptorRowCount,
+        subject_buffer, subject_index_exprs, op->value, true);
     for (const SubjectAccessCandidate& alias_access : subject_accesses) {
       if (alias_access.buffer == subject_buffer &&
           same_index_exprs(alias_access.index_exprs, subject_index_exprs)) {
         continue;
       }
       RecordIndexedPerWorkRuntimeArgSubjectAlias(
-          arg_name, blackhole_runtime_arg_schema::kDescriptorValidRows,
-          alias_access.buffer, alias_access.index_exprs, index_buffer,
-          addressing.value(), 1, op->value);
+          arg_name, blackhole_runtime_arg_schema::kDescriptorRowCount,
+          alias_access.buffer, alias_access.index_exprs, op->value);
     }
     PrimExpr per_work_valid_rows =
         Call(op->var.dtype(), blackhole_runtime_arg_u32(),

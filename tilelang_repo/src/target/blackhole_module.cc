@@ -14,6 +14,7 @@
 #include <tvm/node/serialization.h>
 #include <tvm/runtime/data_type.h>
 #include <tvm/tir/expr.h>
+#include <tvm/tir/stmt_functor.h>
 
 #include <algorithm>
 #include <atomic>
@@ -423,10 +424,6 @@ static void WritePerWorkArgSpec(dmlc::Stream* stream, const PerWorkArgSpec& spec
   WriteUInt32(stream, spec.constant_value);
   WriteString(stream, spec.access_region);
   WriteInt64(stream, spec.access_region_index);
-  WriteString(stream, spec.index_buffer);
-  WriteInt64(stream, spec.index_value_scale);
-  WriteInt64Vector(stream, spec.index_table_shape);
-  WriteStringVector(stream, spec.index_table_index_sources);
 }
 
 static PerWorkArgSpec ReadPerWorkArgSpec(dmlc::Stream* stream) {
@@ -440,12 +437,6 @@ static PerWorkArgSpec ReadPerWorkArgSpec(dmlc::Stream* stream) {
   spec.constant_value = ReadUInt32(stream, "per_work_arg.constant_value");
   spec.access_region = ReadString(stream, "per_work_arg.access_region");
   spec.access_region_index = ReadInt64(stream, "per_work_arg.access_region_index");
-  spec.index_buffer = ReadString(stream, "per_work_arg.index_buffer");
-  spec.index_value_scale = ReadInt64(stream, "per_work_arg.index_value_scale");
-  spec.index_table_shape =
-      ReadInt64Vector(stream, "per_work_arg.index_table_shape");
-  spec.index_table_index_sources =
-      ReadStringVector(stream, "per_work_arg.index_table_index_sources");
   return spec;
 }
 
@@ -1571,16 +1562,16 @@ static bool HasPerWorkDescriptorForBuffer(const ExecutableSpec& spec,
                      });
 }
 
-static bool HasIndexTableTileStartDescriptorForBuffer(const ExecutableSpec& spec,
-                                                      const std::string& buffer) {
+static bool HasValueExprTileStartDescriptorForBuffer(const ExecutableSpec& spec,
+                                                     const std::string& buffer) {
   return std::any_of(spec.per_work_arg_specs.begin(), spec.per_work_arg_specs.end(),
                      [&](const PerWorkArgSpec& arg_spec) {
                        return arg_spec.buffer == buffer &&
                               arg_spec.descriptor_kind ==
                                   tl::blackhole_runtime_arg_schema::kDescriptorTileStart &&
                               arg_spec.value_source ==
-                                  tl::blackhole_runtime_arg_schema::kValueSourceIndexTable &&
-                              !arg_spec.index_buffer.empty();
+                                  tl::blackhole_runtime_arg_schema::kValueSourceValueExpr &&
+                              !arg_spec.value_expr_json.empty();
                      });
 }
 
@@ -1588,10 +1579,10 @@ static bool HasSegmentedRowRangeDescriptorForBuffer(const ExecutableSpec& spec,
                                                     const std::string& buffer) {
   return HasPerWorkDescriptorForBuffer(
              spec, buffer,
-             tl::blackhole_runtime_arg_schema::kDescriptorSegmentRowStart) &&
+             tl::blackhole_runtime_arg_schema::kDescriptorRowStart) &&
          HasPerWorkDescriptorForBuffer(
              spec, buffer,
-             tl::blackhole_runtime_arg_schema::kDescriptorSegmentRowCount);
+             tl::blackhole_runtime_arg_schema::kDescriptorRowCount);
 }
 
 static void ValidateGemmInputShape(const ExecutableSpec& spec,
@@ -1626,7 +1617,7 @@ static void ValidateGemmInputShape(const ExecutableSpec& spec,
   }
 
   if (binding.name == gemm.b_buffer) {
-    if (HasIndexTableTileStartDescriptorForBuffer(spec, binding.name)) {
+    if (HasValueExprTileStartDescriptorForBuffer(spec, binding.name)) {
       const uint32_t expected_rows = gemm.transpose_B ? gemm.N
                                                       : gemm.K * logical_grid_z;
       const uint32_t expected_cols = gemm.transpose_B ? gemm.K * logical_grid_z
@@ -1993,7 +1984,7 @@ static std::vector<uint8_t> BuildInputTransferData(const ExecutableSpec& spec,
   ValidateGemmInputShape(spec, binding, rows, cols);
 
   if (binding.name == gemm.b_buffer &&
-      HasIndexTableTileStartDescriptorForBuffer(spec, binding.name)) {
+      HasValueExprTileStartDescriptorForBuffer(spec, binding.name)) {
     return build_raw_transfer();
   }
 
@@ -3861,15 +3852,29 @@ static uint32_t EvaluatePerWorkArgSpec(const PerWorkArgSpec& spec,
   if (spec.value_source == tl::blackhole_runtime_arg_schema::kValueSourceConstant) {
     return spec.constant_value;
   }
-  if (spec.value_source == tl::blackhole_runtime_arg_schema::kValueSourceIndexTable) {
-    LOG(FATAL) << "Blackhole direct runtime index_table per_work_arg_spec for "
-               << spec.arg_identity
-               << " requires value_expr; table shape/source metadata is not a "
-               << "runtime value evaluator";
-  }
   LOG(FATAL) << "Unsupported Blackhole per_work_arg_spec value_source " << spec.value_source
              << " for arg " << spec.arg_identity;
   return 0;
+}
+
+static std::unordered_set<std::string> CollectValueExprBufferNames(
+    const std::string& value_expr_json) {
+  std::unordered_set<std::string> names;
+  if (value_expr_json.empty()) {
+    return names;
+  }
+  const PrimExpr expr = Downcast<PrimExpr>(tvm::LoadJSON(value_expr_json));
+  tir::PostOrderVisit(expr, [&](const ObjectRef& node) {
+    const auto* load = node.as<tir::BufferLoadNode>();
+    if (load == nullptr) {
+      return;
+    }
+    const std::string buffer_name = static_cast<std::string>(load->buffer->name);
+    if (!buffer_name.empty()) {
+      names.insert(buffer_name);
+    }
+  });
+  return names;
 }
 
 static bool TryAppendPerWorkRuntimeArg(const KernelSpec& kernel,
@@ -4656,28 +4661,19 @@ void BlackholeWrappedFunc::operator()(ffi::PackedArgs args, ffi::Any* rv,
   append_buffer_contract(info_.common_runtime_args);
   for (const auto& per_work_arg : info_.per_work_arg_specs) {
     if (per_work_arg.value_source !=
-        tl::blackhole_runtime_arg_schema::kValueSourceIndexTable) {
+        tl::blackhole_runtime_arg_schema::kValueSourceValueExpr) {
       continue;
     }
-    ICHECK(!per_work_arg.index_buffer.empty())
-        << "Blackhole direct runtime index_table per-work binding requires index_buffer for "
-        << per_work_arg.arg_identity;
     ICHECK(!per_work_arg.value_expr_json.empty())
-        << "Blackhole direct runtime index_table per-work binding requires "
+        << "Blackhole direct runtime value_expr per-work binding requires "
         << "generic value_expr for " << per_work_arg.arg_identity;
-    ICHECK(!per_work_arg.index_table_shape.empty())
-        << "Blackhole direct runtime index_table per-work binding requires explicit "
-        << "table shape for " << per_work_arg.arg_identity;
-    ICHECK_EQ(per_work_arg.index_table_shape.size(),
-              per_work_arg.index_table_index_sources.size())
-        << "Blackhole direct runtime index_table per-work binding requires one "
-        << "index source per table shape dimension for "
-        << per_work_arg.arg_identity;
-    auto [it, inserted] =
-        buffer_is_output_by_name.emplace(per_work_arg.index_buffer, false);
-    ICHECK(inserted || !it->second)
-        << "Blackhole direct runtime index_table buffer cannot also be an output buffer: "
-        << per_work_arg.index_buffer;
+    for (const std::string& buffer_name :
+         CollectValueExprBufferNames(per_work_arg.value_expr_json)) {
+      auto [it, inserted] = buffer_is_output_by_name.emplace(buffer_name, false);
+      ICHECK(inserted || !it->second)
+          << "Blackhole direct runtime value_expr buffer cannot also be an "
+          << "output buffer: " << buffer_name;
+    }
   }
   ICHECK(!buffer_is_output_by_name.empty())
       << "Blackhole direct runtime requires explicit buffer role schema";

@@ -1959,10 +1959,10 @@ Stmt PlanTTKernelABI::GenerateStagedCopyLoopSequence(
     return segment_start;
   };
   const bool has_segmented_row_bound =
-      !segment_row_start_index_buffer_name_.empty() &&
-      !segment_row_count_index_buffer_name_.empty();
+      !segment_row_start_table_buffer_name_.empty() &&
+      !segment_row_count_table_buffer_name_.empty();
   const bool has_ragged_row_bound =
-      !ragged_row_bound_index_buffer_name_.empty();
+      !ragged_row_bound_table_buffer_name_.empty();
 
   if (IsDramToDeviceCopyDirection(direction)) {
     const bool materialize_to_local = direction == CopyDirection::kDramToLocal;

@@ -57,7 +57,7 @@ class CodeGenBlackhole : public CodeGenCHost {
   // Generate generic kernel_main entry point (IR-driven, no hardcoded paths)
   void GenerateGenericKernelMain(const tvm::tir::PrimFunc &f,
                                  const std::string &func_name);
-  bool TryEmitValueIndexSelectionKernel(const tvm::tir::PrimFunc &f);
+  bool TryEmitRowRankReductionScanKernel(const tvm::tir::PrimFunc &f);
 
   // Override visitor to handle TT-Metal builtin calls
   void VisitExpr_(const tvm::tir::CallNode *op,
@@ -270,8 +270,6 @@ class CodeGenBlackhole : public CodeGenCHost {
     std::string descriptor_kind;
     std::string value_source;
     uint32_t constant_value{0};
-    std::string index_buffer;
-    int64_t index_value_scale{1};
   };
 
   // Per-instance header emission flag (replaces static variable)

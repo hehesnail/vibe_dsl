@@ -965,23 +965,6 @@ static std::vector<PerWorkArgSpec> ExtractPerWorkArgSpecsFromArray(
     if (auto v = spec_info.Get(::tvm::tl::blackhole_runtime_arg_schema::kAccessRegionIndex)) {
       spec.access_region_index = Downcast<Integer>(v.value())->value;
     }
-    if (auto v = spec_info.Get(::tvm::tl::blackhole_runtime_arg_schema::kIndexBuffer)) {
-      spec.index_buffer = Downcast<String>(v.value());
-    }
-    if (auto v = spec_info.Get(::tvm::tl::blackhole_runtime_arg_schema::kIndexValueScale)) {
-      spec.index_value_scale = Downcast<Integer>(v.value())->value;
-    }
-    if (auto v = spec_info.Get(::tvm::tl::blackhole_runtime_arg_schema::kIndexTableShape)) {
-      for (const auto& extent : Downcast<ffi::Array<ffi::Any>>(v.value())) {
-        spec.index_table_shape.push_back(Downcast<Integer>(extent).IntValue());
-      }
-    }
-    if (auto v = spec_info.Get(
-            ::tvm::tl::blackhole_runtime_arg_schema::kIndexTableIndexSources)) {
-      for (const auto& source : Downcast<ffi::Array<ffi::Any>>(v.value())) {
-        spec.index_table_index_sources.push_back(Downcast<String>(source));
-      }
-    }
     ICHECK(!spec.arg_identity.empty())
         << "Blackhole per-work descriptor requires explicit arg_identity";
     ICHECK(!spec.descriptor_kind.empty())
@@ -990,30 +973,11 @@ static std::vector<PerWorkArgSpec> ExtractPerWorkArgSpecsFromArray(
     ICHECK(!spec.value_source.empty())
         << "Blackhole per-work descriptor for " << spec.arg_identity
         << " requires value_source";
-    if (spec.value_source == ::tvm::tl::blackhole_runtime_arg_schema::kValueSourceIndexTable) {
-      ICHECK(!spec.index_buffer.empty())
-          << "Blackhole index_table per-work descriptor for "
-          << spec.arg_identity << " requires index_buffer";
+    if (spec.value_source == ::tvm::tl::blackhole_runtime_arg_schema::kValueSourceValueExpr) {
       ICHECK(!spec.value_expr_json.empty())
-          << "Blackhole index_table per-work descriptor for "
+          << "Blackhole value_expr per-work descriptor for "
           << spec.arg_identity
           << " requires explicit per-work descriptor value_expr owner truth";
-      ICHECK_GT(spec.index_value_scale, 0)
-          << "Blackhole index_table per-work descriptor for "
-          << spec.arg_identity << " requires positive index_value_scale";
-      ICHECK(!spec.index_table_shape.empty())
-          << "Blackhole index_table per-work descriptor for "
-          << spec.arg_identity << " requires explicit table shape";
-      ICHECK_EQ(spec.index_table_shape.size(),
-                spec.index_table_index_sources.size())
-          << "Blackhole index_table per-work descriptor for "
-          << spec.arg_identity
-          << " requires one table index source per shape dimension";
-      for (int64_t extent : spec.index_table_shape) {
-        ICHECK_GT(extent, 0)
-            << "Blackhole index_table per-work descriptor for "
-            << spec.arg_identity << " requires positive table shape";
-      }
     }
     per_work_arg_specs.push_back(std::move(spec));
   }
@@ -1052,15 +1016,7 @@ static std::vector<PerWorkArgSpec> AggregateSegmentPerWorkArgSpecs(
     std::ostringstream os;
     os << spec.arg_identity << "|" << spec.descriptor_kind << "|"
        << spec.buffer << "|" << spec.value_source << "|"
-       << spec.value_expr_json << "|"
-       << spec.index_buffer << "|" << spec.index_value_scale << "|"
-       << spec.access_region;
-    for (int64_t extent : spec.index_table_shape) {
-      os << "|shape:" << extent;
-    }
-    for (const std::string& source : spec.index_table_index_sources) {
-      os << "|source:" << source;
-    }
+       << spec.value_expr_json << "|" << spec.access_region;
     return os.str();
   };
   for (const auto& item : segment_plan) {
@@ -2670,36 +2626,6 @@ static ffi::Array<ffi::Any> EncodePerWorkArgSpecs(
       spec_info.Set(::tvm::tl::blackhole_runtime_arg_schema::kConstantValue,
                     Integer(static_cast<int>(spec.constant_value)));
     }
-    if (spec.value_source ==
-        ::tvm::tl::blackhole_runtime_arg_schema::kValueSourceIndexTable) {
-      ICHECK(!spec.index_buffer.empty())
-          << "Blackhole index_table per-work descriptor metadata requires index_buffer for "
-          << spec.arg_identity;
-      spec_info.Set(::tvm::tl::blackhole_runtime_arg_schema::kIndexBuffer,
-                    ffi::String(spec.index_buffer));
-      spec_info.Set(::tvm::tl::blackhole_runtime_arg_schema::kIndexValueScale,
-                    Integer(spec.index_value_scale));
-      if (!spec.index_table_shape.empty()) {
-        ICHECK_EQ(spec.index_table_shape.size(),
-                  spec.index_table_index_sources.size())
-            << "Blackhole index_table per-work descriptor metadata for "
-            << spec.arg_identity
-            << " requires one table index source per shape dimension";
-        ffi::Array<ffi::Any> shape;
-        for (int64_t extent : spec.index_table_shape) {
-          shape.push_back(Integer(extent));
-        }
-        ffi::Array<ffi::Any> sources;
-        for (const std::string& source : spec.index_table_index_sources) {
-          sources.push_back(ffi::String(source));
-        }
-        spec_info.Set(::tvm::tl::blackhole_runtime_arg_schema::kIndexTableShape,
-                      shape);
-        spec_info.Set(
-            ::tvm::tl::blackhole_runtime_arg_schema::kIndexTableIndexSources,
-            sources);
-      }
-    }
     if (!spec.access_region.empty()) {
       spec_info.Set(::tvm::tl::blackhole_runtime_arg_schema::kAccessRegion,
                     ffi::String(spec.access_region));
@@ -2732,6 +2658,9 @@ static bool IsOutputBufferArgKind(const std::string& kind) {
   return kind == "output_buffer_addr32" || kind == "output_buffer_addr";
 }
 
+static std::unordered_set<std::string> CollectValueExprBufferNames(
+    const std::string& value_expr_json);
+
 static uint32_t ChooseBufferMaterializationPageSize(const ExecutableSpec& spec,
                                                     const std::string& buffer_name) {
   uint32_t inferred_page_size = 0;
@@ -2748,6 +2677,12 @@ static uint32_t ChooseBufferMaterializationPageSize(const ExecutableSpec& spec,
         << buffer_name << " used both " << inferred_page_size << " and " << candidate_page_size
         << " from " << source_name;
   };
+  for (const auto& distribution : spec.buffer_distribution_plans) {
+    if (distribution.buffer == buffer_name) {
+      record_page_size(distribution.page_size_bytes, "buffer_distribution");
+    }
+  }
+  bool value_expr_references_buffer = false;
   for (const auto& kernel : spec.kernels) {
     for (const auto& accessor : kernel.accessors) {
       if (accessor.buffer != buffer_name) {
@@ -2764,12 +2699,16 @@ static uint32_t ChooseBufferMaterializationPageSize(const ExecutableSpec& spec,
     }
     for (const auto& per_work_arg_spec : kernel.per_work_arg_specs) {
       if (per_work_arg_spec.value_source !=
-              ::tvm::tl::blackhole_runtime_arg_schema::kValueSourceIndexTable ||
-          per_work_arg_spec.index_buffer != buffer_name) {
+              ::tvm::tl::blackhole_runtime_arg_schema::kValueSourceValueExpr ||
+          !CollectValueExprBufferNames(per_work_arg_spec.value_expr_json)
+               .count(buffer_name)) {
         continue;
       }
-      record_page_size(sizeof(int32_t), "index_table_per_work_arg");
+      value_expr_references_buffer = true;
     }
+  }
+  if (value_expr_references_buffer && inferred_page_size == 0) {
+    record_page_size(sizeof(int32_t), "value_expr_buffer_load");
   }
   if (inferred_page_size != 0) {
     return inferred_page_size;
@@ -3303,6 +3242,26 @@ static void EnforceMultiBlockExactCBRepublishGate(ExecutableSpec* spec) {
   }
 }
 
+static std::unordered_set<std::string> CollectValueExprBufferNames(
+    const std::string& value_expr_json) {
+  std::unordered_set<std::string> names;
+  if (value_expr_json.empty()) {
+    return names;
+  }
+  const PrimExpr expr = Downcast<PrimExpr>(tvm::LoadJSON(value_expr_json));
+  tir::PostOrderVisit(expr, [&](const ObjectRef& node) {
+    const auto* load = node.as<tir::BufferLoadNode>();
+    if (load == nullptr) {
+      return;
+    }
+    const std::string buffer_name = static_cast<std::string>(load->buffer->name);
+    if (!buffer_name.empty()) {
+      names.insert(buffer_name);
+    }
+  });
+  return names;
+}
+
 static void EnforceExplicitBufferRoleSchemaGate(ExecutableSpec* spec) {
   ICHECK(spec != nullptr);
   size_t n_buffer_args = 0;
@@ -3334,27 +3293,29 @@ static void EnforceExplicitBufferRoleSchemaGate(ExecutableSpec* spec) {
       bound_buffer_names.insert(arg.buffer);
     }
   };
-  auto record_per_work_index_tables =
+  auto record_per_work_value_exprs =
       [&](const std::vector<PerWorkArgSpec>& per_work_arg_specs) {
     for (const auto& arg : per_work_arg_specs) {
       if (arg.value_source !=
-          ::tvm::tl::blackhole_runtime_arg_schema::kValueSourceIndexTable) {
+          ::tvm::tl::blackhole_runtime_arg_schema::kValueSourceValueExpr) {
         continue;
       }
-      if (arg.index_buffer.empty()) {
+      const std::unordered_set<std::string> buffers =
+          CollectValueExprBufferNames(arg.value_expr_json);
+      if (buffers.empty()) {
         missing_buffer_name = true;
         continue;
       }
-      bound_buffer_names.insert(arg.index_buffer);
+      bound_buffer_names.insert(buffers.begin(), buffers.end());
     }
   };
   record_args(spec->runtime_args);
   record_args(spec->common_runtime_args);
-  record_per_work_index_tables(spec->per_work_arg_specs);
+  record_per_work_value_exprs(spec->per_work_arg_specs);
   for (const auto& kernel : spec->kernels) {
     record_args(kernel.runtime_args);
     record_args(kernel.common_runtime_args);
-    record_per_work_index_tables(kernel.per_work_arg_specs);
+    record_per_work_value_exprs(kernel.per_work_arg_specs);
   }
 
   if (missing_buffer_name || bound_buffer_names.empty()) {
@@ -3389,9 +3350,26 @@ static std::unordered_set<std::string> CollectRuntimeBoundBufferNames(
   };
   record_args(spec.runtime_args);
   record_args(spec.common_runtime_args);
+  for (const auto& arg : spec.per_work_arg_specs) {
+    if (arg.value_source ==
+        ::tvm::tl::blackhole_runtime_arg_schema::kValueSourceValueExpr) {
+      std::unordered_set<std::string> buffers =
+          CollectValueExprBufferNames(arg.value_expr_json);
+      names.insert(buffers.begin(), buffers.end());
+    }
+  }
   for (const auto& kernel : spec.kernels) {
     record_args(kernel.runtime_args);
     record_args(kernel.common_runtime_args);
+    for (const auto& arg : kernel.per_work_arg_specs) {
+      if (arg.value_source !=
+          ::tvm::tl::blackhole_runtime_arg_schema::kValueSourceValueExpr) {
+        continue;
+      }
+      std::unordered_set<std::string> buffers =
+          CollectValueExprBufferNames(arg.value_expr_json);
+      names.insert(buffers.begin(), buffers.end());
+    }
   }
   return names;
 }
@@ -3813,13 +3791,13 @@ static void PopulateBufferMaterializationSpecs(
     }
     for (const auto& per_work_arg_spec : kernel.per_work_arg_specs) {
       if (per_work_arg_spec.value_source !=
-          ::tvm::tl::blackhole_runtime_arg_schema::kValueSourceIndexTable) {
+          ::tvm::tl::blackhole_runtime_arg_schema::kValueSourceValueExpr) {
         continue;
       }
-      ICHECK(!per_work_arg_spec.index_buffer.empty())
-          << "Blackhole index_table per-work descriptor requires index_buffer for "
-          << per_work_arg_spec.arg_identity;
-      register_buffer(per_work_arg_spec.index_buffer, "page_indexed", "dram");
+      for (const std::string& buffer_name :
+           CollectValueExprBufferNames(per_work_arg_spec.value_expr_json)) {
+        register_buffer(buffer_name, "page_indexed", "dram");
+      }
     }
   }
 

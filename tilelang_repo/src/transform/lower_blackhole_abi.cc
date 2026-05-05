@@ -670,28 +670,13 @@ static TTPerWorkArgSpec MakePerWorkArgSpec(const std::string &arg_kind,
                                            uint32_t constant_value = 0,
                                            const std::string &access_region = "",
                                            int64_t access_region_index = -1,
-                                           const std::string &index_buffer = "",
-                                           int64_t index_value_scale = 1,
-                                           const std::vector<int64_t>
-                                               &index_table_shape = {},
-                                           const std::vector<std::string>
-                                               &index_table_index_sources = {},
                                            PrimExpr value_expr = PrimExpr()) {
-  Array<Integer> shape;
-  for (int64_t extent : index_table_shape) {
-    shape.push_back(Integer(extent));
-  }
-  Array<String> sources;
-  for (const std::string &source : index_table_index_sources) {
-    sources.push_back(String(source));
-  }
   return TTPerWorkArgSpec(String(arg_kind), String(arg_identity),
                           String(buffer), String(descriptor_kind),
                           String(value_source),
                           static_cast<int64_t>(constant_value),
                           String(access_region), access_region_index,
-                          String(index_buffer), index_value_scale,
-                          shape, sources, std::move(value_expr));
+                          std::move(value_expr));
 }
 
 static TTKernelLaunchSpec MakeLaunchSpec(const std::string &core_type,
@@ -1027,9 +1012,7 @@ void PlanTTKernelABI::StoreSegmentPlan(PrimFunc &func) {
     std::unordered_set<std::string> appended_arg_names;
     for (const IndexedPerWorkRuntimeArg &arg :
          indexed_per_work_runtime_args_) {
-      if (kernel_kind == "compute" &&
-          arg.descriptor_kind !=
-              blackhole_runtime_arg_schema::kDescriptorValidRows) {
+      if (kernel_kind == "compute" && !arg.include_in_compute_segment) {
         continue;
       }
       if (!appended_arg_names.insert(arg.arg_name).second) {
@@ -1257,6 +1240,9 @@ void PlanTTKernelABI::StoreAccessorDescriptors(PrimFunc &func) {
     const std::string copy_output_buffer_name =
         copy_output_buffer_.defined() ? BufferIdentityName(copy_output_buffer_)
                                       : copy_output_buffer_name_;
+    const bool reader_uses_gemm_tile_contract =
+        kind == "reader" && !gemm_a_buffer_name_.empty() &&
+        !gemm_b_buffer_name_.empty();
 
     auto runtime_arg_identity_for_kind =
         [&](const char *arg_kind) -> std::string {
@@ -1350,32 +1336,17 @@ void PlanTTKernelABI::StoreAccessorDescriptors(PrimFunc &func) {
         return spec;
       }
       std::string value_source = static_cast<std::string>(spec->value_source);
-      std::string index_buffer = static_cast<std::string>(spec->index_buffer);
-      int64_t index_value_scale = spec->index_value_scale;
-      std::vector<int64_t> index_table_shape;
-      std::vector<std::string> index_table_index_sources;
-      for (const Integer &extent : spec->index_table_shape) {
-        index_table_shape.push_back(extent.IntValue());
-      }
-      for (const String &source : spec->index_table_index_sources) {
-        index_table_index_sources.push_back(static_cast<std::string>(source));
-      }
       if (static_cast<std::string>(spec->descriptor_kind) ==
               blackhole_runtime_arg_schema::kDescriptorTileStart &&
-          !region->index_buffer.empty()) {
-        value_source = blackhole_runtime_arg_schema::kValueSourceIndexTable;
-        if (index_buffer.empty()) {
-          index_buffer = region->index_buffer;
-          index_value_scale = region->index_value_scale;
-        }
+          spec->value_expr.defined()) {
+        value_source = blackhole_runtime_arg_schema::kValueSourceValueExpr;
       }
       return MakePerWorkArgSpec(
           static_cast<std::string>(spec->arg_kind),
           static_cast<std::string>(spec->arg_identity),
           static_cast<std::string>(spec->descriptor_kind), value_source, buffer,
           static_cast<uint32_t>(spec->constant_value), region->name,
-          region->index, index_buffer, index_value_scale,
-          index_table_shape, index_table_index_sources, spec->value_expr);
+          region->index, spec->value_expr);
     };
     auto upsert_spec = [&](const TTPerWorkArgSpec &raw_spec) {
       const TTPerWorkArgSpec spec = attach_access_region_evidence(raw_spec);
@@ -1420,14 +1391,14 @@ void PlanTTKernelABI::StoreAccessorDescriptors(PrimFunc &func) {
                        ? gemm_a_buffer_name_
                        : copy_input_buffer_name);
         if (arg.descriptor_kind ==
-                blackhole_runtime_arg_schema::kDescriptorValidRows &&
+                blackhole_runtime_arg_schema::kDescriptorRowCount &&
             !ragged_row_bound_subject_buffer_name_.empty()) {
           arg_buffer = ragged_row_bound_subject_buffer_name_;
         }
         if ((arg.descriptor_kind ==
-                 blackhole_runtime_arg_schema::kDescriptorSegmentRowStart ||
+                 blackhole_runtime_arg_schema::kDescriptorRowStart ||
              arg.descriptor_kind ==
-                 blackhole_runtime_arg_schema::kDescriptorSegmentRowCount) &&
+                 blackhole_runtime_arg_schema::kDescriptorRowCount) &&
             !segment_row_subject_buffer_name_.empty()) {
           arg_buffer = segment_row_subject_buffer_name_;
         }
@@ -1443,13 +1414,12 @@ void PlanTTKernelABI::StoreAccessorDescriptors(PrimFunc &func) {
         upsert_spec(MakePerWorkArgSpec(
             arg.arg_name, runtime_arg_identity_for_kind(arg.arg_name.c_str()),
             arg.descriptor_kind,
-            blackhole_runtime_arg_schema::kValueSourceIndexTable,
+            blackhole_runtime_arg_schema::kValueSourceValueExpr,
             arg_buffer, 0, access_region, access_region_index,
-            arg.index_buffer,
-            arg.index_value_scale, arg.addressing.shape,
-            arg.addressing.index_sources, arg.value_expr));
+            arg.value_expr));
       }
-      if (runtime_args_contain_kind("a_tile_num_tiles")) {
+      if (!reader_uses_gemm_tile_contract &&
+          runtime_args_contain_kind("a_tile_num_tiles")) {
         upsert_spec(MakePerWorkArgSpec(
             "a_tile_num_tiles",
             runtime_arg_identity_for_kind("a_tile_num_tiles"),
@@ -1457,7 +1427,8 @@ void PlanTTKernelABI::StoreAccessorDescriptors(PrimFunc &func) {
             blackhole_runtime_arg_schema::kValueSourceConstant,
             copy_input_buffer_name, 1));
       }
-      if (runtime_args_contain_kind("a_tile_stride")) {
+      if (!reader_uses_gemm_tile_contract &&
+          runtime_args_contain_kind("a_tile_stride")) {
         upsert_spec(MakePerWorkArgSpec(
             "a_tile_stride", runtime_arg_identity_for_kind("a_tile_stride"),
             blackhole_runtime_arg_schema::kDescriptorTileStride,
@@ -1476,7 +1447,7 @@ void PlanTTKernelABI::StoreAccessorDescriptors(PrimFunc &func) {
         upsert_spec(MakePerWorkArgSpec(
             "a_ragged_page_index",
             runtime_arg_identity_for_kind("a_ragged_page_index"),
-            blackhole_runtime_arg_schema::kDescriptorRaggedPageIndex,
+            blackhole_runtime_arg_schema::kDescriptorPageIndex,
             value_source,
             bound_subject));
       }

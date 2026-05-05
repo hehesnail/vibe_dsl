@@ -76,7 +76,7 @@ The required evidence chain is:
 
 ```text
 TIR GroupOffsets/GroupSizes loads
-  -> segment_row_start / segment_row_count per-work descriptors for A
+  -> row_start / row_count per-work descriptors for A
   -> row-page A materialization with zero-fill
   -> compute-compatible A live form for matmul_tiles
   -> grouped GEMM direct runtime correctness
@@ -89,8 +89,8 @@ materialization records or fail closed with a typed reason.
 The admitted implementation materializes A from row-major DRAM pages into a
 compute-compatible tiled CB:
 
-- the reader consumes A `segment_row_start` / `segment_row_count`
-  descriptors; raw `GroupOffsets` / `GroupSizes` loads are not present in
+- the reader consumes A `row_start` / `row_count` descriptor kinds through
+  runtime args; raw `GroupOffsets` / `GroupSizes` loads are not present in
   source;
 - the A accessor is page-indexed over 64-byte bf16 row tiles, so non-32-row
   group offsets are row-addressed instead of tile-addressed;
@@ -134,7 +134,7 @@ The required evidence chain is:
 ```text
 TIR PageTable / CacheSeqLens loads
   -> per-page tile_start descriptors for K and V cache reads
-  -> valid_rows descriptors for the same guarded row copies
+  -> row_count descriptors for the same guarded row copies
   -> compute-compatible K/V live forms
   -> existing flash partial-combine compute/materialization path
   -> paged GQA direct runtime correctness
@@ -148,11 +148,11 @@ before source/runtime guessing.
 
 The admitted implementation keeps the workload surface in that chain:
 
-- K cache and V cache page selection are ordinary table-backed per-work
-  descriptors with `value_source=index_table`, table shape, and explicit
-  index sources.  Page 0 and page 1 are separate static TIR statements that
-  differ by descriptor constants, not by a frontend decode op.
-- `CacheSeqLens[sequence]` lowers to valid-row descriptors paired with the
+- K cache and V cache page selection are ordinary TIR-derived per-work
+  descriptors with `value_source=value_expr`.  Page 0 and page 1 are separate
+  static TIR statements that differ by their serialized value expression, not
+  by a frontend decode op.
+- `CacheSeqLens[sequence]` lowers to row-count descriptors paired with the
   page-local row predicate.  Source consumes the projected runtime args and
   does not reload the page table or cache-length buffers.
 - Direct runtime materializes page-indexed K/V inputs from the executable
@@ -199,7 +199,7 @@ The required evidence chain is:
 ```text
 TIR PageTable / CacheSeqLens loads
   -> per-page tile_start descriptors for latent-KV and K-PE reads
-  -> valid_rows descriptors for the guarded page copies
+  -> row_count descriptors for the guarded page copies
   -> compute-compatible latent-KV and K-PE live forms
   -> two explicit score GEMMs into acc_s
   -> latent-KV retained until the value GEMM in the same page step
@@ -233,15 +233,15 @@ runtime correctness gate before broadening.
 
 Structure/source:
 
-- the grouped GEMM lowered executable contains A `segment_row_start` and
-  `segment_row_count` per-work descriptors derived from
+- the grouped GEMM lowered executable contains A `row_start` and
+  `row_count` descriptor kinds derived from
   `GroupOffsets[g]` and `GroupSizes[g]`;
 - source contains no raw `GroupOffsets` / `GroupSizes` loads;
 - source contains a real `matmul_tiles` compute path for the grouped GEMM;
-- the paged GQA executable contains table-backed K/V tile-start descriptors
-  and valid-row descriptors for both static page steps;
-- the paged MLA executable contains table-backed latent-KV and K-PE
-  tile-start descriptors and valid-row descriptors for both static page
+- the paged GQA executable contains value-expr K/V tile-start descriptors
+  and row-count descriptors for both static page steps;
+- the paged MLA executable contains value-expr latent-KV and K-PE
+  tile-start descriptors and row-count descriptors for both static page
   steps;
 - source contains no raw `PageTable` / `CacheSeqLens` loads and no workload
   decode registry;
