@@ -2439,3 +2439,14 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   predicate is `logical_page * page_rows + local_row < cache_len`.  Row-bound
   transport must bypass fused full-tile copy lowering so invalid rows are
   zero-filled page by page.
+- 2026-05-05 T9 segmented GEMM A materialization:
+  A segmented row range that feeds `matmul_tiles` cannot use
+  `segment_row_start / 32` tile addressing, and it also cannot DMA 32-byte
+  half-row fragments directly into arbitrary nfaces offsets on Blackhole:
+  TT-Sim exposes a NOC alignment fault when source and destination low
+  address bits differ.  The admitted shape is to read a 64-byte bf16 row tile
+  through a page-indexed accessor into a scratch CB, then copy the two
+  32-byte face lines into the destination tiled CB with a local data-movement
+  builtin and zero-fill invalid rows.  Direct runtime should keep the
+  segmented A backing tensor raw row-major; only complete 32x32 tile pages use
+  host nfaces tilization.

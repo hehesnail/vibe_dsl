@@ -49,6 +49,7 @@ TIR_DEFINE_BUILTIN(noc_async_write_barrier)
 TIR_DEFINE_BUILTIN(read_tile_to_cb)
 TIR_DEFINE_BUILTIN(read_page_to_cb)
 TIR_DEFINE_BUILTIN(read_bcast_cols_to_cb)
+TIR_DEFINE_BUILTIN(copy_cb_page)
 TIR_DEFINE_BUILTIN(write_tile_from_cb)
 TIR_DEFINE_BUILTIN(write_page_from_cb)
 TIR_DEFINE_BUILTIN(zero_cb_page)
@@ -190,6 +191,15 @@ TVM_REGISTER_OP("tl.blackhole.read_bcast_cols_to_cb")
     .add_argument("page_bytes", "int", "Source page size in bytes")
     .add_argument("accessor_slot", "int", "Accessor slot for later TT-Metal mapping")
     .add_argument("vector_len", "int", "Number of vector elements in the broadcast column");
+
+TVM_REGISTER_OP("tl.blackhole.copy_cb_page")
+    .set_num_inputs(5)
+    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque))
+    .add_argument("src_cb_id", "int", "Source CB ID")
+    .add_argument("dst_cb_id", "int", "Destination CB ID")
+    .add_argument("page_bytes", "int", "Number of bytes to copy")
+    .add_argument("src_offset_bytes", "int", "Byte offset within the source CB page")
+    .add_argument("dst_offset_bytes", "int", "Byte offset within the destination CB page");
 
 TVM_REGISTER_OP("tl.blackhole.write_tile_from_cb")
     .set_num_inputs(5)

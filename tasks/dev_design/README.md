@@ -40,6 +40,7 @@
 | `2026-05-03-blackhole-t6-topk.md` | T6 standalone value/index selection boundary。 |
 | `2026-05-05-blackhole-exact-cb-liveness-allocation.md` | Exact-CB virtual value liveness、loop-carried lifetime、physical CB allocation、release-event cutover contract。 |
 | `2026-05-05-blackhole-t8-irregular-indexed-access.md` | T8 irregular work domains、ragged predicates、indexed access evidence, and per-work descriptor cutover contract。 |
+| `2026-05-05-blackhole-t9-workload-first.md` | T9 workload-first direct-runtime checkpoints, starting with pre-grouped GEMM over TIR-derived non-uniform token ranges。 |
 | `blackhole_first_principles_protocol_audit.md` | Historical fake/legacy protocol audit table。 |
 
 ## Stable Architecture Skeleton

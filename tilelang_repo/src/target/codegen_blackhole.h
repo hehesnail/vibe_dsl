@@ -143,6 +143,7 @@ class CodeGenBlackhole : public CodeGenCHost {
   void PrintReadTileToCB(const tvm::tir::CallNode *op, std::ostream &os);
   void PrintReadPageToCB(const tvm::tir::CallNode *op, std::ostream &os);
   void PrintReadBcastColsToCB(const tvm::tir::CallNode *op, std::ostream &os);
+  void PrintCopyCBPage(const tvm::tir::CallNode *op, std::ostream &os);
   void PrintWriteTileFromCB(const tvm::tir::CallNode *op, std::ostream &os);
   void PrintWritePageFromCB(const tvm::tir::CallNode *op, std::ostream &os);
   void PrintZeroCBPage(const tvm::tir::CallNode *op, std::ostream &os);

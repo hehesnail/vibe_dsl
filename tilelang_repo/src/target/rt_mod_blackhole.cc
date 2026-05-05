@@ -2213,7 +2213,8 @@ class SegmentBodyExtractor final : public tir::StmtMutator {
   static bool IsReaderAnchor(const tir::CallNode* op) {
     return op->op.same_as(tir::builtin::blackhole_read_tile_to_cb()) ||
            op->op.same_as(tir::builtin::blackhole_read_page_to_cb()) ||
-           op->op.same_as(tir::builtin::blackhole_read_bcast_cols_to_cb());
+           op->op.same_as(tir::builtin::blackhole_read_bcast_cols_to_cb()) ||
+           op->op.same_as(tir::builtin::blackhole_copy_cb_page());
   }
 
   static bool IsWriterAnchor(const tir::CallNode* op) {
@@ -2238,6 +2239,7 @@ class SegmentBodyExtractor final : public tir::StmtMutator {
            !op->op.same_as(tir::builtin::blackhole_noc_async_write()) &&
            !op->op.same_as(tir::builtin::blackhole_noc_async_read_barrier()) &&
            !op->op.same_as(tir::builtin::blackhole_noc_async_write_barrier()) &&
+           !op->op.same_as(tir::builtin::blackhole_copy_cb_page()) &&
            !op->op.same_as(tir::builtin::blackhole_zero_cb_page()) &&
            !op->op.same_as(tir::builtin::blackhole_get_semaphore()) &&
            !op->op.same_as(tir::builtin::blackhole_runtime_arg_u32()) &&

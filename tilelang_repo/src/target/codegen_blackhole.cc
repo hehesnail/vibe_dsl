@@ -2485,6 +2485,7 @@ bool CodeGenBlackhole::HandleBlackholeBuiltin(const tvm::tir::CallNode *op,
       "read_tile_to_cb",
       "read_page_to_cb",
       "read_bcast_cols_to_cb",
+      "copy_cb_page",
       "write_tile_from_cb",
       "write_page_from_cb",
       "zero_cb_page",
@@ -2533,6 +2534,9 @@ bool CodeGenBlackhole::HandleBlackholeBuiltin(const tvm::tir::CallNode *op,
     return true;
   } else if (builtin_name == "read_bcast_cols_to_cb") {
     PrintReadBcastColsToCB(op, os);
+    return true;
+  } else if (builtin_name == "copy_cb_page") {
+    PrintCopyCBPage(op, os);
     return true;
   } else if (builtin_name == "write_tile_from_cb") {
     PrintWriteTileFromCB(op, os);
@@ -2953,6 +2957,27 @@ void CodeGenBlackhole::PrintReadBcastColsToCB(const tvm::tir::CallNode *op,
         "} "
         "for (uint32_t i = 0; i < page_elements; ++i) { "
         "dst_bits[scratch_element_offset + i] = 0; } }";
+}
+
+void CodeGenBlackhole::PrintCopyCBPage(const tvm::tir::CallNode *op,
+                                       std::ostream &os) {
+  ICHECK_EQ(op->args.size(), 5)
+      << "tl.blackhole.copy_cb_page expects 5 arguments";
+  need_dataflow_api_h_ = true;
+  const int src_cb_id = ResolveCBId(op->args[0]);
+  const int dst_cb_id = ResolveCBId(op->args[1]);
+  os << "{ const uint32_t page_bytes = ";
+  PrintExpr(op->args[2], os);
+  os << "; const uint32_t src_l1_addr = get_read_ptr(" << src_cb_id << ") + ";
+  PrintExpr(op->args[3], os);
+  os << "; const uint32_t dst_l1_addr = get_write_ptr(" << dst_cb_id << ") + ";
+  PrintExpr(op->args[4], os);
+  os << "; const volatile uint8_t* src_bytes = "
+        "reinterpret_cast<const volatile uint8_t*>(src_l1_addr); "
+        "volatile tt_l1_ptr uint8_t* dst_bytes = "
+        "reinterpret_cast<volatile tt_l1_ptr uint8_t*>(dst_l1_addr); "
+        "for (uint32_t i = 0; i < page_bytes; ++i) { "
+        "dst_bytes[i] = src_bytes[i]; } }";
 }
 
 void CodeGenBlackhole::PrintWritePageFromCB(const tvm::tir::CallNode *op,

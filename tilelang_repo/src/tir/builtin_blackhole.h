@@ -122,6 +122,16 @@ TVM_DLL const Op& blackhole_read_page_to_cb();
 TVM_DLL const Op& blackhole_read_bcast_cols_to_cb();
 
 /*!
+ * \brief Copy one contiguous slice from a CB page to another CB page.
+ * \param src_cb_id Source circular buffer ID
+ * \param dst_cb_id Destination circular buffer ID
+ * \param page_bytes Number of bytes to copy
+ * \param src_offset_bytes Byte offset within the current source CB page
+ * \param dst_offset_bytes Byte offset within the current destination CB page
+ */
+TVM_DLL const Op& blackhole_copy_cb_page();
+
+/*!
  * \brief Write one tile from a CB/L1 staging area back to a backing buffer.
  * \param cb_id Source circular buffer ID
  * \param buffer Backing buffer handle

@@ -352,6 +352,45 @@ def multicore_gemm_kernel(
     return main
 
 
+def grouped_gemm_kernel(
+    groups: int = 3,
+    total_rows: int = 80,
+    N: int = 32,
+    K: int = 128,
+    tile_m: int = 32,
+    tile_n: int = 32,
+):
+    """Pre-grouped GEMM with TIR-derived non-uniform A row ranges."""
+    output_rows = groups * tile_m
+    weight_rows = groups * N
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((total_rows, K), "bfloat16"),
+        W: T.Tensor((weight_rows, K), "bfloat16"),
+        GroupOffsets: T.Tensor((groups,), "int32"),
+        GroupSizes: T.Tensor((groups,), "int32"),
+        C: T.Tensor((output_rows, N), "float32"),
+    ):
+        with T.Kernel(groups, 1) as (gx, by):
+            A_shared = T.alloc_shared((tile_m, K), "bfloat16")
+            W_shared = T.alloc_shared((tile_n, K), "bfloat16")
+            C_local = T.alloc_fragment((tile_m, tile_n), "float32")
+            row_start = GroupOffsets[gx]
+            row_count = GroupSizes[gx]
+            for i, j in T.Parallel(tile_m, K):
+                A_shared[i, j] = T.if_then_else(
+                    i < row_count,
+                    A[row_start + i, j],
+                    0,
+                )
+            T.copy(W[gx * N, 0], W_shared)
+            T.gemm(A_shared, W_shared, C_local, transpose_B=True)
+            T.copy(C_local, C[gx * tile_m, 0])
+
+    return main
+
+
 def external_sharded_l1_gemm_kernel(
     *,
     input_grid=(1, 1),
@@ -1815,6 +1854,55 @@ def test_blackhole_t5_external_sharded_l1_gemm_rejects_unmapped_shard_grid():
             lower(kernel, target=target)
 
 
+def test_blackhole_t9_grouped_gemm_projects_segmented_a_descriptors():
+    target = Target("blackhole")
+    kernel = grouped_gemm_kernel()
+
+    with target:
+        artifact = lower(kernel, target=target)
+
+    executable_spec = _extract_blackhole_executable_spec(artifact)
+    reader = _require_blackhole_kernel(
+        executable_spec["kernels"], kind="reader", core_type="brisc"
+    )
+    compute = _require_compute_kernel_spec(executable_spec)
+    reader_source = str(reader["source_code"])
+    compute_source = str(compute["source_code"])
+
+    assert "a_segment_row_start = get_arg_val<uint32_t>" in reader_source
+    assert "a_segment_row_count = get_arg_val<uint32_t>" in reader_source
+    assert "GroupOffsets" not in reader_source
+    assert "GroupSizes" not in reader_source
+    assert "(a_segment_row_start / 32)" not in reader_source
+    assert "matmul_tiles(" in compute_source
+
+    a_accessor = next(
+        accessor
+        for accessor in reader["accessors"]
+        if str(accessor["buffer"]) == "A"
+    )
+    assert str(a_accessor["layout"]) == "page_indexed"
+    assert int(a_accessor["transport_page_size"]) == 64
+
+    descriptors = {
+        (str(spec.get("buffer", "")), str(spec["descriptor_kind"])): spec
+        for spec in executable_spec["per_work_arg_specs"]
+    }
+    segment_start = descriptors[("A", "segment_row_start")]
+    assert str(segment_start["value_source"]) == "index_table"
+    assert str(segment_start["index_buffer"]) == "GroupOffsets"
+    assert [str(v) for v in segment_start["index_table_index_sources"]] == [
+        "logical_block_x"
+    ]
+
+    segment_count = descriptors[("A", "segment_row_count")]
+    assert str(segment_count["value_source"]) == "index_table"
+    assert str(segment_count["index_buffer"]) == "GroupSizes"
+    assert [str(v) for v in segment_count["index_table_index_sources"]] == [
+        "logical_block_x"
+    ]
+
+
 def test_blackhole_t5_external_sharded_l1_gemm_direct_runtime_bf16():
     can_run, msg = check_blackhole_direct_execution_requirements()
     if not can_run:
@@ -1838,6 +1926,56 @@ def test_blackhole_t5_external_sharded_l1_gemm_direct_runtime_bf16():
         atol=2e-1,
         rtol=2e-1,
         failure_message="External sharded L1 GEMM direct-call output mismatch",
+    )
+
+
+def test_blackhole_t9_grouped_gemm_direct_runtime_bf16():
+    can_run, msg = check_blackhole_direct_execution_requirements()
+    if not can_run:
+        pytest.skip(f"Blackhole requirements not met: {msg}")
+
+    groups, total_rows, n, k, tile_m = 3, 80, 32, 128, 32
+    torch.manual_seed(0)
+    a_torch = torch.randn(total_rows, k, dtype=torch.bfloat16)
+    w_torch = torch.randn(groups * n, k, dtype=torch.bfloat16)
+    group_offsets = torch.tensor([3, 40, 12], dtype=torch.int32)
+    group_sizes = torch.tensor([17, 0, 32], dtype=torch.int32)
+    c_output = torch.full((groups * tile_m, n), -7, dtype=torch.float32)
+    c_ref = torch.zeros_like(c_output)
+    for group in range(groups):
+        rows = int(group_sizes[group])
+        if rows > 0:
+            row_start = int(group_offsets[group])
+            c_ref[group * tile_m : group * tile_m + rows, :] = torch.matmul(
+                a_torch[row_start : row_start + rows, :].float(),
+                w_torch[group * n : (group + 1) * n, :].float().transpose(0, 1),
+            )
+
+    target = Target("blackhole")
+    kernel = grouped_gemm_kernel(
+        groups=groups,
+        total_rows=total_rows,
+        N=n,
+        K=k,
+        tile_m=tile_m,
+        tile_n=n,
+    )
+    with target:
+        artifact = lower(kernel, target=target)
+
+    artifact.codegen_mod["main"](
+        a_torch,
+        w_torch,
+        group_offsets,
+        group_sizes,
+        c_output,
+    )
+    assert_tensors_close_or_dump(
+        c_output,
+        c_ref,
+        atol=2e-1,
+        rtol=2e-1,
+        failure_message="T9 grouped GEMM direct-call output mismatch",
     )
 
 

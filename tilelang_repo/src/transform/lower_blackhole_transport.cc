@@ -65,6 +65,7 @@ using tir::builtin::blackhole_cb_pop_front;
 using tir::builtin::blackhole_cb_push_back;
 using tir::builtin::blackhole_cb_reserve_back;
 using tir::builtin::blackhole_cb_wait_front;
+using tir::builtin::blackhole_copy_cb_page;
 using tir::builtin::blackhole_noc_async_read;
 using tir::builtin::blackhole_noc_async_read_barrier;
 using tir::builtin::blackhole_noc_async_write;
@@ -92,6 +93,8 @@ namespace {
 
 constexpr int kBlackholeTileRows = 32;
 constexpr int kBlackholeTileCols = 32;
+constexpr int kBlackholeFaceRows = 16;
+constexpr int kBlackholeFaceCols = 16;
 
 Stmt MakeBlackholeCall(const Op& op, const std::vector<PrimExpr>& args) {
   return Evaluate(Call(DataType::Int(32), op, args));
@@ -2082,6 +2085,117 @@ Stmt PlanTTKernelABI::GenerateStagedCopyLoopSequence(
         !op->indices.empty() &&
         make_ragged_row_predicate_for_page(
             ragged_predicate.value(), op->indices[0], 0).has_value();
+    const bool can_materialize_segmented_tiled_rows =
+        !materialize_to_local && segmented_gemm && has_segmented_row_bound &&
+        has_admitted_row_predicate && !geometry.use_page_transport &&
+        geometry.shared_rows == kBlackholeTileRows &&
+        geometry.shared_cols > kBlackholeTileCols &&
+        geometry.shared_cols % kBlackholeTileCols == 0 &&
+        geometry.global_cols == geometry.shared_cols &&
+        geometry.global_cols % kBlackholeFaceCols == 0;
+    if (can_materialize_segmented_tiled_rows) {
+      const int total_subtiles = geometry.subtile_rows * geometry.subtile_cols;
+      ICHECK_EQ(geometry.subtile_rows, 1)
+          << "Blackhole segmented tiled-row materialization currently admits "
+             "one M tile per work item";
+      ICHECK_GT(total_subtiles, 0);
+      const int element_bytes = static_cast<int>(shared_buffer->dtype.bytes());
+      const int row_tile_page_bytes = kBlackholeTileCols * element_bytes;
+      const int face_line_bytes = kBlackholeFaceCols * element_bytes;
+      const int row_tile_pages_per_global_row =
+          static_cast<int>(geometry.global_cols / kBlackholeTileCols);
+      const int scratch_cb_id = next_requirement_index_++;
+      CBRequirement scratch_req;
+      scratch_req.name = BufferIdentityName(shared_buffer) +
+                         "_segment_row_scratch_" +
+                         std::to_string(scratch_cb_id);
+      scratch_req.type = CBType::kIntermediate;
+      scratch_req.page_size = row_tile_page_bytes;
+      scratch_req.num_pages = 1;
+      scratch_req.data_format = DataTypeToDataFormatForBlackhole(shared_buffer->dtype);
+      cb_requirements_.push_back(scratch_req);
+      SetRequirementPageLayout(cb_id, geometry.tile_bytes, total_subtiles);
+      const std::string source_buffer_name = BufferIdentityName(load->buffer);
+      const std::string cb_producer_name = BufferIdentityName(cb_producer_buffer);
+      const std::string op_buffer_name = BufferIdentityName(op->buffer);
+      segment_row_subject_buffer_name_ = source_buffer_name;
+      segment_row_shared_buffer_names_.insert(cb_producer_name);
+      if (!SameBufferIdentity(cb_producer_buffer, op->buffer)) {
+        segment_row_shared_buffer_names_.insert(op_buffer_name);
+      }
+      stmts.push_back(MakeBlackholeCall(
+          blackhole_cb_reserve_back(),
+          {IntImm32(cb_id), IntImm32(total_subtiles)}));
+      for (int page_row = 0; page_row < shared_rows; ++page_row) {
+        const std::optional<PrimExpr> maybe_row_predicate =
+            make_ragged_row_predicate_for_page(
+                ragged_predicate.value(), op->indices[0], page_row);
+        ICHECK(maybe_row_predicate.has_value())
+            << "Blackhole segmented tiled-row reader lost row predicate";
+        PrimExpr row_predicate = analyzer.Simplify(maybe_row_predicate.value());
+        const int face_row = page_row / kBlackholeFaceRows;
+        const int row_in_face = page_row % kBlackholeFaceRows;
+        for (int subtile_col = 0; subtile_col < geometry.subtile_cols;
+             ++subtile_col) {
+          PrimExpr source_page_index =
+              analyzer.Simplify((row_page_base_index + IntImm32(page_row)) *
+                                    IntImm32(row_tile_pages_per_global_row) +
+                                IntImm32(subtile_col));
+          std::vector<Stmt> valid_row_stmts;
+          valid_row_stmts.push_back(MakeBlackholeCall(
+              blackhole_cb_reserve_back(),
+              {IntImm32(scratch_cb_id), IntImm32(1)}));
+          valid_row_stmts.push_back(MakeBlackholeCall(
+              blackhole_read_page_to_cb(),
+              {load->buffer->data, source_page_index, IntImm32(scratch_cb_id),
+               IntImm32(row_tile_page_bytes), IntImm32(accessor_slot),
+               IntImm32(0)}));
+          valid_row_stmts.push_back(
+              MakeBlackholeCall(blackhole_noc_async_read_barrier(), {}));
+          valid_row_stmts.push_back(MakeBlackholeCall(
+              blackhole_cb_push_back(),
+              {IntImm32(scratch_cb_id), IntImm32(1)}));
+          std::vector<Stmt> zero_row_stmts;
+          for (int face_col = 0; face_col < kBlackholeTileCols / kBlackholeFaceCols;
+               ++face_col) {
+            const int tiled_offset_elements =
+                face_row * (kBlackholeFaceRows * kBlackholeTileCols) +
+                face_col * (kBlackholeFaceRows * kBlackholeFaceCols) +
+                row_in_face * kBlackholeFaceCols;
+            const int l1_byte_offset =
+                subtile_col * geometry.tile_bytes +
+                tiled_offset_elements * element_bytes;
+            valid_row_stmts.push_back(MakeBlackholeCall(
+                blackhole_copy_cb_page(),
+                {IntImm32(scratch_cb_id), IntImm32(cb_id),
+                 IntImm32(face_line_bytes),
+                 IntImm32(face_col * face_line_bytes),
+                 IntImm32(l1_byte_offset)}));
+            zero_row_stmts.push_back(MakeBlackholeCall(
+                blackhole_zero_cb_page(),
+                {IntImm32(cb_id), IntImm32(face_line_bytes),
+                 IntImm32(l1_byte_offset)}));
+          }
+          valid_row_stmts.push_back(MakeBlackholeCall(
+              blackhole_cb_pop_front(),
+              {IntImm32(scratch_cb_id), IntImm32(1)}));
+          stmts.push_back(tir::IfThenElse(row_predicate,
+                                          SeqStmt::Flatten(valid_row_stmts),
+                                          SeqStmt::Flatten(zero_row_stmts)));
+        }
+      }
+      stmts.push_back(MakeBlackholeCall(
+          blackhole_cb_push_back(),
+          {IntImm32(cb_id), IntImm32(total_subtiles)}));
+      RegisterAccessor(segment_kind, load->buffer,
+                       accessor_slot, 2, 0, 0, 2, row_tile_page_bytes,
+                       host_axis_order, false, "page_indexed");
+      RecordTiledCBLiveFormAliases(cb_producer_buffer, cb_id);
+      if (!SameBufferIdentity(cb_producer_buffer, op->buffer)) {
+        RecordTiledCBLiveFormAliases(op->buffer, cb_id);
+      }
+      return maybe_wrap_segment_stmt(SeqStmt::Flatten(stmts));
+    }
     if (!materialize_to_local && (has_ragged_row_bound || has_segmented_row_bound) &&
         has_admitted_row_predicate &&
         !geometry.use_page_transport && geometry.shared_cols == kBlackholeTileCols &&

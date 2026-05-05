@@ -408,12 +408,7 @@ EnsureSegmentBufferRuntimeArgs(const std::string &segment_kind,
   const bool is_writer = segment_kind == "writer";
   const bool is_compute = segment_kind == "compute";
   if (is_compute) {
-    Array<Any> runtime_args = existing_runtime_args;
-    if (FindRuntimeArgIndex(runtime_args, "work_linear_id") < 0) {
-      runtime_args.push_back(
-          MakeRuntimeArg("work_linear_id", "work_linear_id", "uint32"));
-    }
-    return runtime_args;
+    return existing_runtime_args;
   }
   if (!is_reader && !is_writer) {
     return existing_runtime_args;
@@ -1001,7 +996,7 @@ void PlanTTKernelABI::StoreSegmentPlan(PrimFunc &func) {
       kernel.Set("name", String(kind));
       kernel.Set("kind", String(kind));
       kernel.Set("core_type", String(CoreTypeForSegmentKind(kind)));
-      if (kind == "fused_dataflow" &&
+      if ((kind == "fused_dataflow" || kind == "reader") &&
           (needs_ragged_row_bound_arg_ || needs_segment_row_start_arg_ ||
            needs_ragged_page_index_arg_ || needs_segment_row_count_arg_ ||
            !indexed_per_work_runtime_args_.empty())) {
@@ -1293,12 +1288,17 @@ void PlanTTKernelABI::StoreAccessorDescriptors(PrimFunc &func) {
             blackhole_runtime_arg_schema::kValueSourceWorkLinearId,
             copy_input_buffer_name));
       }
+    }
+    if (kind == "fused_dataflow" || kind == "reader") {
       for (const IndexedPerWorkRuntimeArg &arg :
            indexed_per_work_runtime_args_) {
         if (!runtime_args_contain_kind(arg.arg_name.c_str())) {
           continue;
         }
-        std::string arg_buffer = copy_input_buffer_name;
+        std::string arg_buffer =
+            kind == "reader" && !gemm_a_buffer_name_.empty()
+                ? gemm_a_buffer_name_
+                : copy_input_buffer_name;
         if (arg.descriptor_kind ==
                 blackhole_runtime_arg_schema::kDescriptorValidRows &&
             !ragged_row_bound_subject_buffer_name_.empty()) {
@@ -1368,7 +1368,9 @@ void PlanTTKernelABI::StoreAccessorDescriptors(PrimFunc &func) {
         const std::string segment_subject =
             !segment_row_subject_buffer_name_.empty()
                 ? segment_row_subject_buffer_name_
-                : copy_input_buffer_name;
+                : ((kind == "reader" && !gemm_a_buffer_name_.empty())
+                       ? gemm_a_buffer_name_
+                       : copy_input_buffer_name);
         upsert_spec(MakePerWorkArgSpec(
             "a_segment_row_start",
             runtime_arg_identity_for_kind("a_segment_row_start"),
@@ -1382,7 +1384,9 @@ void PlanTTKernelABI::StoreAccessorDescriptors(PrimFunc &func) {
         const std::string segment_subject =
             !segment_row_subject_buffer_name_.empty()
                 ? segment_row_subject_buffer_name_
-                : copy_input_buffer_name;
+                : ((kind == "reader" && !gemm_a_buffer_name_.empty())
+                       ? gemm_a_buffer_name_
+                       : copy_input_buffer_name);
         upsert_spec(MakePerWorkArgSpec(
             "a_segment_row_count",
             runtime_arg_identity_for_kind("a_segment_row_count"),

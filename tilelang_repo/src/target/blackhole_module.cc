@@ -1554,6 +1554,26 @@ static void ValidateGemmComputeDirectRuntimeConstraints(const ExecutableSpec& sp
   }
 }
 
+static bool HasPerWorkDescriptorForBuffer(const ExecutableSpec& spec,
+                                          const std::string& buffer,
+                                          const std::string& descriptor_kind) {
+  return std::any_of(spec.per_work_arg_specs.begin(), spec.per_work_arg_specs.end(),
+                     [&](const PerWorkArgSpec& arg_spec) {
+                       return arg_spec.buffer == buffer &&
+                              arg_spec.descriptor_kind == descriptor_kind;
+                     });
+}
+
+static bool HasSegmentedRowRangeDescriptorForBuffer(const ExecutableSpec& spec,
+                                                    const std::string& buffer) {
+  return HasPerWorkDescriptorForBuffer(
+             spec, buffer,
+             tl::blackhole_runtime_arg_schema::kDescriptorSegmentRowStart) &&
+         HasPerWorkDescriptorForBuffer(
+             spec, buffer,
+             tl::blackhole_runtime_arg_schema::kDescriptorSegmentRowCount);
+}
+
 static void ValidateGemmInputShape(const ExecutableSpec& spec,
                                    const RuntimeTensorBinding& binding,
                                    uint32_t rows,
@@ -1564,6 +1584,16 @@ static void ValidateGemmInputShape(const ExecutableSpec& spec,
   const uint32_t logical_grid_z = std::max<uint32_t>(1, spec.core_plan.logical_grid_z);
 
   if (binding.name == gemm.a_buffer) {
+    if (HasSegmentedRowRangeDescriptorForBuffer(spec, binding.name)) {
+      ICHECK(!gemm.transpose_A)
+          << "Blackhole segmented GEMM A direct path requires non-transposed A";
+      const uint32_t expected_cols = gemm.K * logical_grid_z;
+      ICHECK(cols == expected_cols && rows >= gemm.M)
+          << "Unexpected segmented A tensor shape for GEMM direct path: got ("
+          << rows << ", " << cols << "), expected at least " << gemm.M
+          << " rows and " << expected_cols << " cols";
+      return;
+    }
     const uint32_t expected_rows = gemm.transpose_A ? gemm.K * logical_grid_y * logical_grid_z
                                                     : gemm.M * logical_grid_y;
     const uint32_t expected_cols = gemm.transpose_A ? gemm.M : gemm.K * logical_grid_z;
@@ -1596,6 +1626,18 @@ static void ValidateGemmOutputShape(const ExecutableSpec& spec,
   const auto gemm = GetPrimaryGemmCompute(spec);
   const uint32_t logical_grid_x = std::max<uint32_t>(1, spec.core_plan.logical_grid_x);
   const uint32_t logical_grid_y = std::max<uint32_t>(1, spec.core_plan.logical_grid_y);
+  if (HasSegmentedRowRangeDescriptorForBuffer(spec, gemm.a_buffer)) {
+    ICHECK_EQ(logical_grid_y, 1U)
+        << "Blackhole segmented GEMM direct output currently admits one logical Y tile";
+    const uint32_t expected_rows = gemm.M * logical_grid_x;
+    const uint32_t expected_cols = gemm.N;
+    ICHECK(rows == expected_rows && cols == expected_cols)
+        << "Unexpected segmented GEMM C tensor shape for direct path: got ("
+        << rows << ", " << cols << "), expected (" << expected_rows
+        << ", " << expected_cols << ") for logical grid " << logical_grid_x
+        << "x" << logical_grid_y;
+    return;
+  }
   const uint32_t expected_rows = gemm.M * logical_grid_y;
   const uint32_t expected_cols = gemm.N * logical_grid_x;
   ICHECK(rows == expected_rows && cols == expected_cols)
@@ -1910,6 +1952,13 @@ static std::vector<uint8_t> BuildInputTransferData(const ExecutableSpec& spec,
   const auto* raw = GetTensorData<uint16_t>(tensor);
   const auto [rows, cols] = GetTensorShape2D(tensor);
   ValidateGemmInputShape(spec, binding, rows, cols);
+
+  if (binding.name == gemm.a_buffer &&
+      HasSegmentedRowRangeDescriptorForBuffer(spec, binding.name)) {
+    std::vector<uint8_t> raw_bytes(tensor_size);
+    std::memcpy(raw_bytes.data(), GetTensorData<uint8_t>(tensor), tensor_size);
+    return raw_bytes;
+  }
 
   std::vector<uint16_t> tiled;
   if ((binding.name == gemm.a_buffer && gemm.transpose_A) ||

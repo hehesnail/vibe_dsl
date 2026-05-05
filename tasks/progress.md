@@ -7,7 +7,7 @@
 ## Status
 
 - Date: `2026-05-05`
-- Active task: `T8 Irregular work domains / indexed access`
+- Active task: `T9 Workload first paths`
 - Main chain:
   `Normalized Tile TIR -> SpatialPlan -> TTProgram -> ExecutableSpec`
 
@@ -23,8 +23,8 @@
 | T6 `topk` | Complete | Existing-TIR row-wise value/index selection runs through direct runtime for fp32 and bf16 values with exact `int32` indices, without a frontend topk op or selection plan. |
 | T7 Exact-CB / materialization primitives | Complete | Exact-CB materialization is admitted through typed live-form/materialization/consumer-binding records, including GEMM post-merge `pack_tile`, source-live `cb_republish`, and seq64 bf16 flash-attn exact-CB partial-combine direct runtime correctness. |
 | T7.5 Exact-CB liveness / allocation cutover | Complete | Covered exact-CB resident tiles use typed TTProgram/ExecutableSpec lifecycle, allocation, and release records; old loop-carried owner maps, materialization-pop fallback, and full-tile/slice ambiguity are fail-closed or deleted from the active path. |
-| T8 Irregular work domains / indexed access | Implementation | Grid-indexed, one-dimensional and launch-axis two-dimensional table-indexed tile descriptors, scaled contiguous indexed-block copies, sparse multi-entry indexed traversal with per-entry ragged bounds, predicate-derived ragged row/page bounds, copy-shaped paged `cache_seqlens`, per-page valid-row tables, and single/multiple non-uniform segmented row ranges carry TIR-derived evidence through TT per-work descriptors and direct runtime; workload-level ragged/grouped gates remain open. |
-| T9 Workload first paths | Queued | Workload checkpoints decomposed into admitted primitive surfaces with direct-runtime correctness. |
+| T8 Irregular work domains / indexed access | Implementation | Grid-indexed, one-dimensional and launch-axis two-dimensional table-indexed tile descriptors, scaled contiguous indexed-block copies, sparse multi-entry indexed traversal with per-entry ragged bounds, predicate-derived ragged row/page bounds, copy-shaped paged `cache_seqlens`, per-page valid-row tables, single/multiple non-uniform segmented row ranges, and the T9.1 segmented A grouped-GEMM feed carry TIR-derived evidence through TT per-work descriptors and direct runtime; broader irregular forms remain open. |
+| T9 Workload first paths | Implementation | T9.1 pre-grouped MoE/routed grouped GEMM is admitted through ordinary TIR-derived segment-row descriptors, scratch-CB tiled A materialization, and bf16 direct-runtime correctness; T9.2-T9.6 remain queued. |
 | T10 Distributed production variants | Queued | Mesh, CCL, NoC/multicast/global scheduling, distributed workload correctness, and production partial-K reduction protocol. |
 
 ## Active Boundary Notes
@@ -153,7 +153,7 @@ Every active implementation task uses this acceptance table.
   row-count, per-entry sparse row-bound, copy-shaped paged `cache_seqlens`,
   and per-page valid-row predicate slices.
 - Broader segmented/grouped workload use beyond the admitted single- and
-  two-range row-segment copy, including grouped GEMM admission in T9.1.
+  two-range row-segment copy and T9.1 grouped-GEMM feed.
 - In every case, the derived evidence must drive source/runtime addressing.
   Projection-only tests do not complete T8.
 
@@ -161,8 +161,6 @@ Every active implementation task uses this acceptance table.
 
 Each checkpoint needs its own direct-runtime correctness proof:
 
-- T9.1 pre-grouped MoE / routed grouped GEMM:
-  bf16 grouped GEMM with explicit non-uniform token ranges.
 - T9.2 paged GQA decode:
   bf16 page/block-table KV reads with ragged `cache_seqlens`, more than one
   page, and the admitted partial combine path.
@@ -195,6 +193,35 @@ Each checkpoint needs its own direct-runtime correctness proof:
   `M=320`, `N=352`, `K>=512`, `logical_grid=11x10x2` or larger.
 
 ## Recent Verification
+
+2026-05-05 UTC T9.1 pre-grouped GEMM checkpoint:
+
+- `cmake --build build -j32` passed.
+- The grouped GEMM frontend remains ordinary Tile TIR: `GroupOffsets[g]`
+  drives A row start, `GroupSizes[g]` drives the guarded A copy predicate,
+  W is selected by the same logical group axis, and no frontend grouped-GEMM
+  op or registry was added.
+- The reader executable contains A `segment_row_start` and
+  `segment_row_count` descriptors with `value_source=index_table`,
+  `index_buffer=GroupOffsets/GroupSizes`, and
+  `index_table_index_sources=[logical_block_x]`.
+- Source contains no raw `GroupOffsets` / `GroupSizes` loads and no
+  `a_segment_row_start / 32` tile addressing.  A materialization uses a
+  page-indexed 64-byte row-tile accessor, a scratch CB, `copy_cb_page`, and
+  zero-fill for invalid rows before publishing tiled CB pages to GEMM.
+- Direct runtime accepts the segmented A backing tensor as raw row-major,
+  decodes grouped output as `(groups * tile_m, tile_n)`, and compares bf16
+  grouped GEMM output against a host reference with non-uniform group sizes
+  `[17, 0, 32]` and offsets `[3, 40, 12]`.
+- Focused selectors
+  `test_blackhole_t9_grouped_gemm_projects_segmented_a_descriptors` and
+  `test_blackhole_t9_grouped_gemm_direct_runtime_bf16` reported `2 passed`.
+- Adjacent T8 indexed/ragged/segmented/page selectors over
+  `test_blackhole_copy_pipeline.py` and `test_blackhole_copy_runtime.py`
+  reported `32 passed`.
+- GEMM schema/source selector
+  `test_blackhole_gemm.py -k 'not direct_runtime and not direct_call and not gemm_basic and not multicore'`
+  reported all selected tests passed with one expected skip.
 
 2026-05-05 UTC T8 per-page valid-row checkpoint:
 
