@@ -218,6 +218,7 @@ TVM_DLL const Op& blackhole_semaphore_set_remote();
  * \param in0_cb_id Input CB 0 (A matrix)
  * \param in1_cb_id Input CB 1 (B matrix)
  * \param out_cb_id Output CB (C matrix)
+ * \param transpose_b Optional TT-Metal B transpose flag
  */
 TVM_DLL const Op& blackhole_mm_init();
 
@@ -232,6 +233,7 @@ TVM_DLL const Op& blackhole_reconfig_data_format();
  * \brief Reconfigure the compute engine back to matmul mode after a DST reload.
  * \param in0_cb_id Input CB 0 (A matrix)
  * \param in1_cb_id Input CB 1 (B matrix)
+ * \param transpose_b Optional TT-Metal B transpose flag
  */
 TVM_DLL const Op& blackhole_mm_init_short();
 
@@ -240,6 +242,7 @@ TVM_DLL const Op& blackhole_mm_init_short();
  * \param in0_cb_id Input CB 0 (A matrix)
  * \param in1_cb_id Input CB 1 (B matrix)
  * \param old_srca_cb_id Previous SrcA CB used during the reload step
+ * \param transpose_b Optional TT-Metal B transpose flag
  */
 TVM_DLL const Op& blackhole_mm_init_short_with_dt();
 

@@ -49,7 +49,7 @@ backend consume it:
 ```text
 Normalized Tile TIR access / predicate / loop evidence
   -> SpatialPlan AccessRegion indexed and guarded evidence
-  -> TTProgram per-work / indexed-access descriptors
+  -> TTProgram per-work / indexed-access bindings
   -> ExecutableSpec source/runtime addressing records
   -> BlackholeModule direct runtime consumes those records
 ```
@@ -109,8 +109,8 @@ TT planning for the admitted subset.
 TTProgram owns target realization of indexed work/addressing.
 
 The first implementation reuses and tightens `TTPerWorkArgSpec` for simple
-per-work tile descriptors, while adding an explicit reference back to the
-SpatialPlan `AccessRegion` evidence when the descriptor is derived from an
+per-work tile bindings, while adding an explicit reference back to the
+SpatialPlan `AccessRegion` evidence when the binding is derived from an
 indexed region.
 
 Later T8 slices may add focused objects for:
@@ -124,12 +124,12 @@ rather than to workload names.
 
 ### ExecutableSpec
 
-ExecutableSpec projects the selected per-work and indexed descriptors.
+ExecutableSpec projects the selected per-work and indexed bindings.
 
-Runtime/source may consume projected descriptors, but must not recompute:
+Runtime/source may consume projected bindings, but must not recompute:
 
 - logical block axes from source text;
-- tile starts from raw `work_linear_id` when a stronger descriptor exists;
+- tile starts from raw `work_linear_id` when a stronger binding exists;
 - ragged bounds or index-table traversal from argument names.
 
 ## First Implementation Slice
@@ -140,9 +140,9 @@ The first T8 slice is deliberately narrow:
    expressions and whether the access is guarded.
 2. `ValidateSpatialPlan` rejects malformed indexed regions.
 3. `TTPerWorkArgSpec` / executable projection preserve a link to the source
-   `AccessRegion` for per-work tile descriptors derived from indexed access.
-4. Codegen/runtime continue to consume the projected per-work descriptors; the
-   descriptor is no longer an untraceable source-emitter default.
+   `AccessRegion` for per-work tile bindings derived from indexed access.
+4. Codegen/runtime continue to consume the projected per-work bindings; the
+   binding is no longer an untraceable source-emitter default.
 5. A direct-runtime grid-indexed copy remains the positive gate because it is
    already a real multi-work item addressing path.
 
@@ -157,29 +157,31 @@ Segmented/grouped dispatch:
   expressions;
 - operands such as `group_sizes` or `group_offsets` are evidence only if read
   by those expressions;
-- source/runtime descriptors must carry the selected segment start/count.
+- source/runtime bindings must carry the selected segment start/count.
 
 The admitted first segmented/grouped slice is a row-segment staged copy:
 
 - a one-dimensional `int32` table load used in the source address row
-  expression becomes a per-work `row_start` descriptor;
+  expression becomes a generic per-work value binding whose `value_expr`
+  carries that TIR load;
 - a one-dimensional `int32` table load used in the guarded copy predicate
-  becomes a per-work `row_count` descriptor;
-- the device source consumes runtime args derived from those descriptors and
+  becomes another generic per-work value binding whose `predicate_exprs`
+  connect it to the guarded `AccessRegion`;
+- the device source consumes runtime args derived from those bindings and
   must not emit raw source reads from the tables;
 - the copied output is a compact per-work tile-sized block, so invalid rows
   are zero-filled inside that block and cannot clobber a neighboring segment;
 - this slice admits non-uniform segment starts/counts only for a single
   page-indexed bf16 row-copy surface.  Wider grouped GEMM dispatch is a later
-  workload path, but must reuse the same descriptor/evidence contract.
+  workload path, but must reuse the same binding/evidence contract.
 
 The next segmented slice allows multiple independent row segments in one
 logical work item.  Each `SegmentOffsets[...]` table load that drives a source
-row expression gets its own row-start runtime arg identity, and each
+row expression gets its own generic value runtime arg identity, and each
 matching guarded `SegmentCounts[...]` table load gets its own
-row-count identity.  Row-page source rendering must use the runtime
+generic value identity.  Row-page source rendering must use the runtime
 arg present in the current TIR access/predicate, not a hardcoded singleton
-`per_work_row_start` / `per_work_row_count` pair.  Because this path uses
+`per_work_value` / `per_work_value_1` pair.  Because this path uses
 64-byte row pages, the source page id is the TIR-derived row start plus the
 local row; it must not reuse a full-tile `base_tile_index` or divide the row
 start by the tile height.
@@ -194,16 +196,16 @@ Ragged bounds:
 The next ragged token/page slice admits a copy-shaped paged decode primitive:
 `PageTable[bx, by]` selects the source page and `CacheSeqLens[bx]` is consumed
 by a predicate of the form `by * page_rows + row < cache_len`.  This is still
-ordinary TIR.  TTProgram must project both the page-table tile-start descriptor
-and a ragged page-index descriptor, so source can evaluate row validity from
-typed per-work args instead of leaving block-axis variables or cache-length
-table loads in device source.
+ordinary TIR.  TTProgram must project both the page-table tile-start binding
+and generic value bindings for the predicate bound / launch-axis value, so
+source can evaluate row validity from typed per-work args instead of leaving
+block-axis variables or cache-length table loads in device source.
 
 A broader ragged page slice uses a per-page row-bound table rather than a
 prefix sequence length: `PageTable[bx, by]` selects the source page and
 `PageValidRows[bx, by]` guards rows with `row < valid_rows`.  Both table loads
 must carry `[logical_block_x, logical_block_y]` addressing in their
-descriptors.  This remains a predicate-derived row-bound surface; it must not
+bindings.  This remains a predicate-derived row-bound surface; it must not
 be recovered from table names or argument positions.
 
 Indexed block traversal:
@@ -212,15 +214,15 @@ Indexed block traversal:
   expressions;
 - operands such as `block_indices` are evidence only if they are read and used
   to form a memory address;
-- source/runtime must consume the projected table descriptor.
+- source/runtime must consume the projected table binding.
 
-The admitted first table-indexed form is a per-work tile descriptor derived
+The admitted first table-indexed form is a per-work tile binding derived
 from ordinary TIR indexed access.  The owner truth is the `AccessRegion`
 `index_exprs` plus the typed per-work binding back to that region; source code
 consumes the normal tile-start runtime arg and must not emit a raw `BufferLoad`
 from the index table to recover the tile id.
 
-The next indexed-block slice broadens that same descriptor to table address
+The next indexed-block slice broadens that same binding to table address
 expressions that are not equivalent to `work_linear_id`.  When the TIR address
 uses a table load such as `BlockIndices[bx, by]`, `TTPerWorkArgSpec` must carry
 the generic TIR `value_expr` for the runtime arg value.  Direct runtime
@@ -249,18 +251,19 @@ serialized TIR expression; `index_buffer`, `index_value_scale`,
 
 The same rule applies to table-derived ragged bounds.  If one work item has
 multiple independent guarded sparse reads, each bound table load gets its own
-row-count runtime arg identity, e.g. `per_work_row_count` /
-`per_work_row_count_1`, with a distinct `value_expr` on the corresponding
+generic runtime arg identity, e.g. `per_work_value` /
+`per_work_value_1`, with a distinct `value_expr` on the corresponding
 `TTPerWorkArgSpec`.  A later row-page reader may use those args to decide
 per-row zero-fill, but it must not collapse distinct guarded reads back into
-one shared `per_work_row_count` value.
+one shared generic value.
 
 The next sparse slice broadens this from exactly two entries to more than two
 entries in the same logical work item.  The contract is not a special
 three-entry object: every independent `BlockIndices[bx, k]` and
 `ValidRows[bx, k]` TIR load must allocate or reuse the matching per-work arg
-identity solely from descriptor kind plus table-addressing evidence, with
-literal `k` represented as `constant:k`.
+identity from structural `value_expr` equality plus the matched
+`AccessRegion.index_exprs` / `predicate_exprs`, with literal `k` represented
+as `constant:k`.
 
 ## Validation Plan
 
@@ -276,23 +279,23 @@ Structure:
 
 Source/spec:
 
-- per-work descriptors in TTProgram / ExecutableSpec point back to the
+- per-work bindings in TTProgram / ExecutableSpec point back to the
   `AccessRegion` used to derive them.
 - removing that evidence fails validation or source build.
 
 Runtime:
 
 - existing grid-indexed copy direct runtime remains green and proves that
-  projected per-work descriptors drive source/runtime addressing.
+  projected per-work bindings drive source/runtime addressing.
 - segmented/ragged/table-indexed direct runtime cases are required before T8
   can be marked complete.
 
 Unsupported diagnostics:
 
 - missing TIR index/predicate evidence: `lowering_missing`;
-- indexed evidence exists but no admitted TT descriptor exists:
+- indexed evidence exists but no admitted TT binding exists:
   `backend_op_missing`;
-- descriptor exists but runtime cannot execute the shape:
+- binding exists but runtime cannot execute the shape:
   `admission_blocked` or typed simulator boundary.
 
 ## 2026-05-05 First Slice Status
@@ -306,7 +309,7 @@ Implemented:
   whose `index_exprs` do not match logical rank.
 - `TTPerWorkArgSpec`, executable projection, serialization, and direct runtime
   metadata carry `access_region` and `access_region_index` for per-work tile
-  descriptors derived from indexed access.
+  bindings derived from indexed access.
 - The grid-indexed direct-runtime copy path remains green through
   `BlackholeModule`.
 - A larger flash-attn regression tightened the first-slice evidence boundary:
@@ -319,12 +322,12 @@ Implemented:
 2026-05-05 table-indexed slice status:
 
 - A minimal `BlockIndices[bx]` staged copy is admitted as the first
-  table-backed per-work tile descriptor.
+  table-backed per-work tile binding.
 - `BuildSpatialPlan` substitutes active `LetStmt` bindings when recording
   `AccessRegion.index_exprs`, so the A read evidence contains the actual
   table-derived index expression rather than an unbound temporary.
 - `TTPerWorkArgSpec` carries a generic TIR `value_expr` for the runtime value
-  that a per-work descriptor must pass to source.  This is not an
+  that a per-work binding must pass to source.  This is not an
   index-table-specific schema: the expression can contain the original
   `BufferLoad`, arithmetic, and launch-axis variables.  The old
   `value_source=index_table`, `index_buffer`, `index_value_scale`,
@@ -342,10 +345,10 @@ Implemented:
   typed materialization page count.  Out-of-range table entries fail closed
   instead of relying on the original TIR guard after source lowering.
 - A two-dimensional `BlockIndices[bx, by]` staged copy is now admitted for the
-  indexed-block traversal slice.  The A tile-start descriptor carries
+  indexed-block traversal slice.  The A tile-start binding carries
   `value_source=value_expr`; the serialized TIR expression contains the
   `BlockIndices` `BufferLoad` and launch-axis variables.
-- Direct runtime evaluates the descriptor's generic `value_expr` under the
+- Direct runtime evaluates the binding's generic `value_expr` under the
   current logical work context, including integer `BufferLoad` reads from the
   materialized host-side table data.  It does not compute the runtime value
   from side metadata, and there is no `work_linear_id` compatibility fallback
@@ -355,7 +358,7 @@ Implemented:
   table addressing contract.
 - A minimal multi-tile indexed block copy is admitted for contiguous block
   traversal.  When the TIR source row expression uses
-  `BlockIndices[bx] * block_rows + row`, the A tile-start descriptor's
+  `BlockIndices[bx] * block_rows + row`, the A tile-start binding's
   `value_expr` includes the scale arithmetic, direct runtime passes the scaled
   tile start, and source lowering consumes that runtime arg as the base tile
   id for each subtile instead of multiplying it by the block scale again.
@@ -363,13 +366,13 @@ Implemented:
   reading two independently indexed source tiles.  `BlockIndices[bx, 0]` and
   `BlockIndices[bx, 1]` lower to separate A tile-start runtime args
   `a_tile_start_id` and `a_tile_start_id_1`.  `SpatialPlan` now preserves the
-  two A read regions separately and descriptor binding selects the matching
+  two A read regions separately and binding binding selects the matching
   region by structural `index_exprs`, so the second entry cannot silently bind
   to the first A read region.  Source consumes the two projected runtime args
   and emits no raw index-table read.
 - The sparse two-entry surface also admits independent per-entry row bounds.
-  `ValidRows[bx, 0]` and `ValidRows[bx, 1]` lower to A `row_count`
-  descriptors with identities `per_work_row_count` and `per_work_row_count_1`, carrying
+  `ValidRows[bx, 0]` and `ValidRows[bx, 1]` lower to generic A value
+  bindings with identities `per_work_value` and `per_work_value_1`, carrying
   distinct `value_expr` evidence.  The row-page reader uses the matching
   runtime arg for each sparse tile and zero-fills invalid rows
   independently.
@@ -383,10 +386,10 @@ Implemented:
   For the admitted ragged row-bound shape, the A read region records
   `T.shift_right(tx, 2) < RowCounts[bx]`.  `ValidateSpatialPlan` rejects a
   guarded region without predicate expressions, so later TT planning cannot
-  recover the row-bound predicate from runtime arg names or descriptor kinds.
+  recover the row-bound predicate from runtime arg names or binding kinds.
 - The old buffer-wide `index_buffer -> table addressing` side cache in
   TT lowering has been deleted.  Table addressing must be present on the
-  concrete per-work descriptor produced from the TIR load / matching
+  concrete per-work binding produced from the TIR load / matching
   `AccessRegion`; a later ABI step can no longer fill missing table shape or
   index-source fields by looking up only the index-buffer name.
 - The later pass-local `IndexTableAddressing` helper has also been deleted.
@@ -394,22 +397,21 @@ Implemented:
   `value_expr` equality plus the matched `AccessRegion.index_exprs`, not from
   a second table-shape/index-source object.
 - Compute-segment admission for row-bound runtime args is carried by a
-  pass-local control flag.  It must not be inferred from a `per_work_row_count`
+  pass-local control flag.  It must not be inferred from a `per_work_value`
   prefix or any other runtime-arg naming convention.
 - Direct runtime no longer falls back to `work_linear_id` for table-backed
-  descriptors with missing value evidence.  `value_source=value_expr` requires
+  bindings with missing value evidence.  `value_source=value_expr` requires
   a generic `value_expr` owner.  The old ABI synthesis branches that rebuilt
-  row-count / row-start descriptors from only an index-buffer name were
-  removed; missing descriptor evidence must fail closed instead.
+  row-count / row-start bindings from only an index-buffer name were
+  removed; missing binding evidence must fail closed instead.
 
 2026-05-05 ragged row-bound slice status:
 
 - A minimal `RowCounts[bx]` staged copy is admitted as the first
-  predicate-derived ragged bound descriptor.
+  predicate-derived ragged bound binding.
 - The TIR predicate `i < valid_rows`, where `valid_rows` is bound by a real
-  `BufferLoad` from the row-count table, is lowered to a `per_work_row_count`
-  runtime arg with `TTPerWorkArgSpec` descriptor kind `row_count` and
-  `value_source=value_expr`.
+  `BufferLoad` from the bound table, is lowered to a generic `per_work_value`
+  runtime arg with `value_source=value_expr`.
 - The reader source consumes the projected per-work arg, reads only valid
   row pages from the input, and writes zero pages for invalid rows before
   publishing the CB.  The writer consumes the same 32 published row pages and
@@ -426,12 +428,12 @@ Implemented:
 - A copy-shaped paged decode primitive is admitted for the first
   `PageTable[bx, by]` plus `CacheSeqLens[bx]` shape.
 - The page table participates in the TIR source address expression and lowers
-  to the existing A `tile_start` descriptor with
+  to the existing A `tile_start` binding with
   `value_source=value_expr`.
 - The cache-length table participates in the TIR guarded-copy predicate and
-  lowers to A `row_count` with `value_source=value_expr`.
-- The launch page axis is represented by a typed A `page_index`
-  descriptor with `value_source=logical_block_y`.  Source evaluates row
+  lowers to a generic A value binding with `value_source=value_expr`.
+- The launch page axis is represented by a generic A value binding with
+  `value_source=logical_block_y`.  Source evaluates row
   validity as `logical_block_y * page_rows + page_row < cache_len` from
   projected runtime args; it does not leave raw `PageTable` /
   `CacheSeqLens` loads or block-axis variables in the device source.
@@ -441,9 +443,9 @@ Implemented:
 - The admitted direct-runtime gate proves nontrivial page order and
   non-page-aligned cache lengths through `BlackholeModule`.
 - A broader page-local row-bound gate admits `PageValidRows[bx, by]` as the
-  row predicate source.  Its A `row_count` descriptor carries
+  row predicate source.  Its generic A value binding carries
   `value_source=value_expr`.  Unlike the prefix cache-length form, this case
-  does not need a separate `page_index` descriptor because the TIR predicate
+  does not need a separate launch-axis value binding because the TIR predicate
   is already local to the selected page.
 
 2026-05-05 segmented row-segment slice status:
@@ -451,17 +453,16 @@ Implemented:
 - A minimal non-uniform row segment copy is admitted as the first
   segmented/grouped dispatch surface.
 - The row start table is used in the TIR source address expression and lowers
-  to a `per_work_row_start` runtime arg with descriptor kind
-  `row_start` and `value_source=value_expr`.
+  to a generic `per_work_value` runtime arg with `value_source=value_expr`.
 - The row count table is used in the TIR guarded-copy predicate and lowers to
-  a `per_work_row_count` runtime arg with descriptor kind `row_count` and
+  another generic `per_work_value*` runtime arg with
   `value_source=value_expr`.
-- Source consumes those two projected per-work descriptors and must not emit
+- Source consumes those two projected per-work bindings and must not emit
   raw source reads from `SegmentOffsets` / `SegmentCounts`.
 - The segmented reader uses page-indexed row pages
-  `segment_row_start + page_row`; the writer emits a compact per-work output
+  `base_value + page_row`; the writer emits a compact per-work output
   block and writes explicit zero pages for invalid rows.  The old input
-  `a_tile_start_id` / tile-count / tile-stride descriptors are not synthesized
+  `a_tile_start_id` / tile-count / tile-stride bindings are not synthesized
   for this segmented input path.
 - The admitted direct-runtime gate proves non-32-aligned starts and
   non-uniform counts, including a zero-count segment, through `BlackholeModule`.
@@ -480,10 +481,10 @@ T8 is implemented only when:
 
 - segmented/grouped, ragged, and indexed-block evidence are derived from TIR
   structure, not workload names;
-- every projected TT/indexed descriptor references explicit SpatialPlan
+- every projected TT/indexed binding references explicit SpatialPlan
   evidence;
 - validators reject missing or inconsistent indexed evidence;
-- source/runtime addressing consumes the projected descriptors;
+- source/runtime addressing consumes the projected bindings;
 - at least one admitted positive path in each T8 family has direct-runtime
   correctness or a typed simulator capability boundary after source/spec
   admission;

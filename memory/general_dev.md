@@ -189,31 +189,31 @@
   use.  Old buffer-identity live-form maps may be private cursors while
   rendering a validated plan, but they must not remain as active-chain owner
   truth or fallback behavior.
-- Table-backed per-work descriptors need to carry the table address expression,
+- Table-backed per-work bindings need to carry the table address expression,
   not just the table buffer.  `BlockIndices[bx]` can accidentally work by
   reading at `work_linear_id`, but `BlockIndices[bx, by]` requires the
-  original TIR value expression to survive as descriptor owner truth.  The old
+  original TIR value expression to survive as binding owner truth.  The old
   table-shape / index-source projection fields were deleted; direct runtime
   consumes serialized `value_expr`.
 - Multiple table-backed per-work values in one work item are not one logical
   runtime arg.  Allocate one runtime arg identity per independent TIR table
-  load that drives a descriptor such as `tile_start` or `row_count`, and keep
+  load that drives a leaf ABI tile-start value or a generic bound/base value, and keep
   the corresponding `value_expr` on each `TTPerWorkArgSpec`; literal table
-  dimensions must remain inside the TIR expression / descriptor evidence, not
+  dimensions must remain inside the TIR expression / binding evidence, not
   in source/runtime name recovery.
 - Do not treat `_1` suffix support as proof of a generic sparse protocol.
   Cover at least a third independent table-derived entry when claiming that
-  per-work descriptor allocation scales beyond a pair of operands.
-- Row-page transport descriptors carry row ids, not tile ids.  When a staged
+  per-work binding allocation scales beyond a pair of operands.
+- Row-page transport bindings carry row ids, not tile ids.  When a staged
   copy is lowered to 64-byte row pages, source page ids must come from the
   zeroed TIR row expression plus the local row.  Reusing a full-tile
   `base_tile_index` or dividing `segment_row_start` by 32 silently breaks
   non-32-aligned segmented ranges.
 - Paged ragged row bounds have two different proven shapes: prefix
-  `cache_len[sequence]`, which needs a launch-page-index descriptor for
+  `cache_len[sequence]`, which needs a generic launch-axis value binding for
   `page * rows + row < cache_len`, and page-local
-  `valid_rows[sequence,page]`, which should stay a plain `row_count`
-  descriptor whose value comes from the TIR `BufferLoad`.
+  `valid_rows[sequence,page]`, which should stay a generic bound-value binding
+  whose value comes from the TIR `BufferLoad`.
 - For loop-carried exact-CB source rendering, keep the cursor singular and
   lifecycle-backed.  The old shape with separate `identity -> cb` and
   `identity -> buffer` maps plus a completed-state set allowed source lowering
@@ -451,18 +451,21 @@
   direct-runtime schema
   处 fail-close
 - per-work runtime args
-  需要用 typed descriptor
+  需要用 typed binding
   表达：
   `arg_identity`
   绑定具体 runtime arg，
-  `descriptor_kind`
-  描述 tile/start/count/stride
-  这类 per-work 角色，
-  `value_source`
-  描述来自 work-linear-id /
-  logical block /
-  compute-op dims /
-  constant
+  `arg_kind`
+  描述 leaf ABI 消费点，
+  `value_source` / `value_expr`
+  描述值从 work context、
+  compute-op dims、
+  constant、
+  或显式 TIR expression 派生，
+  `access_region`
+  绑定回 IR 证据；
+  不要再增加 `descriptor_kind`
+  或 row/page workload-shaped 子角色
   的值来源。
   codegen/runtime
   不应按
@@ -889,8 +892,8 @@
   或重新降回局部 `blackhole.*` attrs
 - per-work/access truth 一旦 formalize 成 `per_work_arg_specs`，
   就要先 canonicalize 成 kernel-local `TTKernel / ExecutableSpec` contract；
-  codegen/runtime 只能解释 typed `descriptor_kind` /
-  `value_source`，
+  codegen/runtime 只能解释 typed `arg_kind` /
+  `value_source` / `value_expr` / `access_region`，
   不能再按 arg kind 名字推语义，
   也不能保留旧 `value_kind`
   作为兼容真源
@@ -2376,7 +2379,7 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   `BufferLoad` / `BufferStore` expression contains a real participating index
   variable.  Constant full-tile accesses such as `[0, 0]` are still useful
   coverage evidence, but they must not force downstream `loop_vars` or
-  indexed descriptor admission.
+  indexed binding admission.
 - 2026-05-05 loop-carried accumulator reload:
   For clear-accum=false GEMM in a structured loop, loop-carried status must
   come from read-before-write over real TIR / exact-CB leaf accesses.  A
@@ -2391,7 +2394,7 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   otherwise source codegen must keep it as compute-local stack storage.  This
   prevents metadata-only requirements such as `acc_s` / `acc_o` from sharing a
   physical CB write pointer after allocator reuse.
-- 2026-05-05 T8 table-indexed per-work descriptors:
+- 2026-05-05 T8 table-indexed per-work bindings:
   A table-derived tile start must be owned by ordinary TIR-derived
   `AccessRegion.index_exprs` plus a typed per-work binding back to that
   region.  Source should consume the ordinary tile-start runtime arg
@@ -2402,22 +2405,22 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   expression.
 - 2026-05-05 T8 no buffer-wide index-table addressing cache:
   Do not keep a pass-local `index_buffer -> addressing` map as a fallback for
-  missing per-work descriptor evidence.  It lets a later ABI step recover
+  missing per-work binding evidence.  It lets a later ABI step recover
   table coordinates from the buffer name and can bind the wrong expression
   when one table has multiple columns/constants.  Addressing evidence must be
   attached to the concrete per-work arg derived from the matching TIR table
   load / `AccessRegion`.
-- 2026-05-05 T8 no work-linear fallback for table-derived descriptors:
-  `value_source=value_expr` descriptors must carry the serialized TIR
+- 2026-05-05 T8 no work-linear fallback for table-derived bindings:
+  `value_source=value_expr` bindings must carry the serialized TIR
   expression that computes the value.  Falling back to `work_linear_id` when
   expression evidence is absent silently reintroduces launch-order semantics
-  outside IR.  Likewise, ABI lowering must not synthesize row-count or
-  row-start descriptors from only a table-buffer name; the concrete per-work
-  arg derived from the TIR table load owns that evidence.
+  outside IR.  Likewise, ABI lowering must not synthesize bound/base bindings
+  from only a table-buffer name; the concrete per-work arg derived from the
+  TIR table load owns that evidence.
 - 2026-05-05 T8 same-subject indexed access regions:
   Do not collapse multiple reads of the same buffer/access kind into one
   `AccessRegion`.  Sparse forms such as `BlockIndices[bx,0]` and
-  `BlockIndices[bx,1]` must produce distinct regions and descriptor binding
+  `BlockIndices[bx,1]` must produce distinct regions and per-work binding
   must select by structural `index_exprs` equality after substituting active
   Let-bound table loads.  A subject/access first-match silently reuses the
   wrong indexed access.
@@ -2427,16 +2430,16 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   `ValidateSpatialPlan` reject guarded regions without them.  Do not create
   `valid_rows`-, segmented-, paged-, or topk-shaped schema fields to recover
   predicate meaning downstream.
-- 2026-05-05 T8 scaled indexed-block descriptors:
+- 2026-05-05 T8 scaled indexed-block bindings:
   If a table value is a block id and the TIR row expression scales it by a
   whole number of 32-row tiles, keep the scale inside the generic
   `value_expr`.  Direct runtime should pass the evaluated tile start, and
   source tile-index inference should consume that runtime arg as tile units.
   Do not multiply `a_tile_start_id` by the same scale again in generated
   source.
-- 2026-05-05 T8 ragged row-bound descriptors:
-  Predicate-derived row bounds should be represented as typed per-work args
-  (`descriptor_kind=row_count`, `value_source=value_expr`) when a TIR
+- 2026-05-05 T8 predicate-bound per-work values:
+  Predicate-derived row bounds should be represented as generic typed
+  per-work value bindings (`value_source=value_expr`) when a TIR
   predicate consumes a table-loaded bound such as `RowCounts[bx]`.  For
   `if_then_else(load, 0)` semantics, the dataflow reader should publish one CB
   page per logical row: valid rows read DRAM, invalid rows explicitly zero the
@@ -2448,19 +2451,20 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   64-byte float32 16-column sticks are row-major pages and must be copied raw
   on host transfer; otherwise predicates over logical rows operate on TT face
   pages and produce grouped/rounded row counts.
-- 2026-05-05 T8 segmented row descriptors:
-  A table load used with coefficient 1 in a source row address is a row-start
-  descriptor, not a tile-start descriptor.  Lower it to a generic `row_start`
-  per-work arg, pair it with a predicate-derived `row_count` descriptor, and
-  make row transport use the evaluated row start plus `page_row`.  Do not
-  leave the default A-side
-  `a_tile_start_id` / tile-count / tile-stride descriptor as a compatibility
-  path when the segmented input address is already owned by row descriptors.
-- 2026-05-05 T8 paged ragged row descriptors:
+- 2026-05-05 T8 segmented row value bindings:
+  A table load used with coefficient 1 in a source row address is a generic
+  base-value binding, not a tile-start ABI binding.  Pair it with the
+  predicate-derived bound-value binding and make row transport use the
+  evaluated base row plus `page_row`.  Do not leave the default A-side
+  `a_tile_start_id` / tile-count / tile-stride path as a compatibility path
+  when the segmented input address is already owned by explicit TIR-derived
+  value bindings.
+- 2026-05-05 T8 paged ragged value bindings:
   For paged decode-like TIR, `PageTable[bx, by]` and
-  `CacheSeqLens[bx]` should lower as ordinary typed descriptors:
-  table-backed A `tile_start`, table-backed A `row_count`, and A
-  `page_index` from `logical_block_y`.  Predicate recognition needs to
+  `CacheSeqLens[bx]` should lower as ordinary typed bindings:
+  the page-table expression feeds the leaf tile-start ABI arg, while cache
+  length and any needed launch-axis value are generic `per_work_value*`
+  bindings.  Predicate recognition needs to
   look inside conjunctions and compare the page-local row expression, because
   the source address is `page_id * page_rows + local_row` while the validity
   predicate is `logical_page * page_rows + local_row < cache_len`.  Row-bound
@@ -2482,8 +2486,8 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   `BufferMaterializationSpec` records for any input binding, not only
   copy-shaped tests.  Complete 32x32 tile pages can use host nfaces
   tilization; sub-tile row/stick pages stay raw row-major.  Indexed GEMM-B
-  buffers with explicit tile-start descriptors should also remain raw so the
-  per-work descriptor is the owner of page selection.
+  buffers with explicit tile-start ABI bindings should also remain raw so the
+  per-work binding is the owner of page selection.
 - 2026-05-05 local intermediate stream CB lifecycle:
   A local stream intermediate that is produced, consumed, then produced again
   on the same physical CB must pop the stale front page before the later
@@ -2497,7 +2501,7 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   Compute segments can legally have no runtime args and still need CB metadata
   for typed operations such as `untilize_cb_front_tile_fragment`.
 - 2026-05-05 T8 per-work runtime value ownership:
-  If a per-work descriptor value comes from a TIR expression, carry that
+  If a per-work binding value comes from a TIR expression, carry that
   expression as generic `value_expr` through `TTPerWorkArgSpec`,
   `ExecutableSpec`, runtime-module extraction, and module serialization.
   Direct runtime should evaluate the TIR expression under the logical work
@@ -2508,16 +2512,14 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   Public per-work schema must not export `index_table`-specific fields either.
   Table-backed runtime values are just `value_source=value_expr` plus the
   serialized TIR expression; any input buffers required by that expression are
-  discovered from its `BufferLoad` nodes.  Descriptor kinds should stay
-  generic address/extent/page concepts (`tile_start`, `row_start`,
-  `row_count`, `page_index`) rather than workload names such as `valid_rows`,
-  segmented, ragged, or topk.  TT lowering also must not keep a second
+  discovered from its `BufferLoad` nodes.  Public schema must not grow
+  `descriptor_kind` or row/page subrole fields; the durable identity for
+  dynamic values is generic `per_work_value`, `per_work_value_1`, ...
+  plus `arg_kind`, `value_source`, `value_expr`, and matched
+  `AccessRegion` evidence.  TT lowering also must not keep a second
   pass-local table-addressing object such as `IndexTableAddressing`,
   `index_buffer`, or `index_value_scale`; per-work runtime-arg identity should
   deduplicate from structural `value_expr` equality plus matched
-  `AccessRegion.index_exprs`.  Use generic public identities such as
-  `per_work_row_start`, `per_work_row_count`, and `per_work_page_index`, not
-  workload-shaped names like valid-rows / segmented-row / ragged-page.  If a
-  per-work runtime arg must be admitted to a compute segment, carry that as
-  pass-local control state; do not infer it from a `per_work_row_count`-style
-  name prefix.
+  `AccessRegion.index_exprs` / `predicate_exprs`.  If a per-work runtime arg
+  must be admitted to a compute segment, carry that as pass-local control
+  state; do not infer it from a runtime-arg name prefix.

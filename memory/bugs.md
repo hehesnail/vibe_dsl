@@ -2519,7 +2519,7 @@
   - Recognize guarded zero-fill copy loads for both `SelectNode` and
     `tir.if_then_else`.
   - Substitute `LetStmt` bindings into `AccessRegion.index_exprs` and derive a
-    table-backed tile-start descriptor from that evidence.
+    table-backed tile-start binding from that evidence.
   - Project `index_buffer` / `index_value_scale` through TTProgram,
     executable metadata, serialization, and Python helpers.
   - Register index tables as page-indexed DRAM input materializations and
@@ -2534,13 +2534,13 @@
 
 - **症状**:
   - A `BlockIndices[bx, by]` staged copy carried only `index_buffer` /
-    `index_value_scale` in the A tile-start descriptor.
+    `index_value_scale` in the A tile-start binding.
   - Direct runtime read the index table at `work_linear_id`, so a non-symmetric
     table shaped `(grid_x, grid_y)` produced the sequence
     `[table[0,0], table[0,1], ...]` instead of the launch-axis order
     `[table[0,0], table[1,0], ...]`.
 - **根因**:
-  - The descriptor expressed which table to read but not how the TIR table load
+  - The binding expressed which table to read but not how the TIR table load
     was addressed.  `work_linear_id` was a hidden addressing assumption that
     happened to match the first one-dimensional case.
 - **修法**:
@@ -2586,7 +2586,7 @@
   - Existing 64-byte page-indexed stick direct-runtime selectors remained
     green.
 
-### Segment row offsets were lowered as tile-start descriptors
+### Segment row offsets were lowered as tile-start bindings
 
 - **症状**:
   - A non-uniform segmented row copy using `SegmentOffsets[bx]` and
@@ -2595,7 +2595,7 @@
   - Direct runtime failed before correctness with a TT-Metal buffer
     `size % page_size == 0` fatal for a source tensor whose row count was not
     a multiple of a 32x32 tile page.
-  - The executable also carried a stale A-side `a_tile_start_id` descriptor
+  - The executable also carried a stale A-side `a_tile_start_id` binding
     pointing at `SegmentOffsets`, even though the source address semantics
     were row offsets.
 - **根因**:
@@ -2604,22 +2604,22 @@
     usage (`tile_id * 32 + row`) from coefficient-1 row-start usage
     (`segment_start + row`).
   - Fused dataflow ABI synthesis then added default A tile-start/count/stride
-    runtime args even after the segmented input address had a stronger row
-    descriptor.
+    runtime args even after the segmented input address had a stronger
+    TIR-derived value binding.
   - The row predicate matcher attempted to re-match the original predicate
     against a flattened shared index instead of consuming the projected
-    segment-row-count descriptor.
+    bound-value binding.
 - **修法**:
   - Compute the table variable coefficient in copy index expressions by
     substituting table var `0` and `1`; coefficient 1 lowers to
     `a_segment_row_start`, while the existing coefficient-32 case remains the
     tile-start path.
-  - Lower the predicate table load to `a_segment_row_count` when a segment
-    row-start descriptor is active.
-  - Use `segment_row_start + page_row` for reader page IDs and
-    `page_row < segment_row_count` for row validity, with zero CB pages for
+  - Lower the predicate table load to a generic bound-value binding when a
+    segment base-value binding is active.
+  - Use the evaluated base value plus `page_row` for reader page IDs and
+    compare `page_row` against the evaluated bound value, with zero CB pages for
     invalid rows.
-  - Suppress default A tile-start/count/stride descriptors for the segmented
+  - Suppress default A tile-start/count/stride bindings for the segmented
     input path.
 - **验证**:
   - Segmented structure and direct-runtime selectors passed.
@@ -2629,7 +2629,7 @@
 
 - **症状**:
   - A two-range segmented row copy projected independent
-    `a_segment_row_start/_1` and `a_segment_row_count/_1` descriptors, but
+    multiple base/bound value bindings, but
     direct runtime read row 0 when `SegmentOffsets[0,0]` was 3.
   - The same WIP also regressed the single-range segmented row runtime case.
 - **根因**:
@@ -2640,7 +2640,7 @@
 - **修法**:
   - Derive row-page source IDs from the current zeroed TIR row expression and
     add the unrolled local row, so segmented row pages use
-    `segment_row_start + page_row`.
+    the evaluated base value plus `page_row`.
   - Keep one per-work arg identity per independent table load and reuse the
     TIR predicate rewrite for both single- and multi-range row counts.
 - **验证**:
@@ -2654,8 +2654,8 @@
 
 - **症状**:
   - A copy-shaped paged surface using `PageTable[bx, by]` and
-    `CacheSeqLens[bx]` projected A `tile_start` and `valid_rows`
-    descriptors, but generated source still emitted a full-tile
+    `CacheSeqLens[bx]` projected page and predicate-bound values, but
+    generated source still emitted a full-tile
     `read_tile_to_cb`.
   - Direct runtime copied rows beyond the cache length because invalid rows
     were never zero-filled.
@@ -2671,10 +2671,10 @@
 - **修法**:
   - Flatten conjunctions and select the comparison conjunct that contains the
     TIR-derived local row expression.
-  - Rewrite `logical_block_y` in that comparison to a typed
-    `a_ragged_page_index` per-work descriptor, while `CacheSeqLens[bx]`
-    remains the table-backed `valid_rows` descriptor.
-  - Disable fused full-tile transport when row-bound descriptors are active,
+  - Rewrite `logical_block_y` in that comparison to a generic per-work value
+    binding, while `CacheSeqLens[bx]` remains a table-backed generic
+    predicate-bound binding.
+  - Disable fused full-tile transport when predicate-bound bindings are active,
     so the reader/writer use row-page transport with explicit invalid-row
     zero-fill.
 - **验证**:
@@ -2696,7 +2696,7 @@
     and stored on `TTPerWorkArgSpec`, but source tile-index inference still
     evaluated the original TIR block-id expression under the Let-bound runtime
     arg variable.
-  - That left the descriptor scale as owner truth for runtime while source
+  - That left the binding scale as owner truth for runtime while source
     kept an implicit copy of the same scale in the address expression.
 - **修法**:
   - Record the TIR-derived tile scale as pass-local mechanics on the
@@ -2759,7 +2759,7 @@
     `3 passed, 3 skipped`; the skips are the existing typed TT-Sim
     `tensix_execute_pacr: count=1` capability boundary.
 
-### Sparse indexed copy bound both tile-start descriptors to the first A read region
+### Sparse indexed copy bound both tile-start bindings to the first A read region
 
 - **症状**:
   - The sparse two-entry indexed copy emitted two runtime args,
@@ -2784,7 +2784,7 @@
 - **验证**:
   - `test_t8_spatial_plan_preserves_distinct_same_subject_indexed_access_regions`
     passed.
-  - `test_blackhole_sparse_2tile_copy_uses_two_index_table_tile_start_descriptors`
+  - `test_blackhole_sparse_2tile_copy_uses_two_value_expr_tile_start_bindings`
     now asserts distinct access-region bindings and passed.
   - T8 irregular aggregate selector reported `14 passed, 66 deselected`.
 
@@ -2794,7 +2794,7 @@
   - Ragged and segmented copies could mark an `AccessRegion` as `guarded`
     while the region itself did not preserve the boolean TIR predicate that
     guarded the read.
-  - Downstream code could still pass by relying on per-work descriptor kind
+  - Downstream code could still pass by relying on per-work subrole names
     such as `valid_rows`, which is exactly the schema-shaped semantic recovery
     the IR-first design forbids.
 - **根因**:
@@ -2821,50 +2821,51 @@
 
 - **症状**:
   - TT lowering kept a pass-local `index_buffer -> addressing` cache and ABI
-    lowering could fill missing descriptor table shape/source fields by
+    lowering could fill missing binding table shape/source fields by
     looking up only the index-buffer name.
-  - That fallback was redundant for current explicit per-work descriptors and
+  - That fallback was redundant for current explicit per-work bindings and
     unsafe for sparse forms where one table is addressed through multiple
     independent constants or launch-axis expressions.
 - **根因**:
-  - Early table-backed descriptors were brought up one buffer at a time, so
+  - Early table-backed bindings were brought up one buffer at a time, so
     table addressing was cached by buffer identity before same-subject /
     same-table multi-entry cases existed.
 - **修法**:
   - Delete `index_table_addressing_by_buffer_` and
     `RecordIndexTableAddressing`.
-  - Require table addressing to be carried by the concrete per-work descriptor
+  - Require table addressing to be carried by the concrete per-work binding
     produced from the matching TIR table load / `AccessRegion`.
   - Add a source-level regression test that rejects reintroducing the
     buffer-wide side cache.
 - **验证**:
   - The new no-side-cache regression test passed after deletion.
-  - Focused 1D/2D/scaled/sparse descriptor tests reported `4 passed`.
+  - Focused 1D/2D/scaled/sparse binding tests reported `4 passed`.
   - The T8 copy-pipeline selector covering per-work, sparse, ragged, paged,
     and segmented cases reported `14 passed, 66 deselected`.
 
-### Index-table descriptors without addressing fell back to work-linear order
+### Index-table bindings without addressing fell back to work-linear order
 
 - **症状**:
-  - Direct runtime evaluated a table-backed per-work descriptor at
+  - Direct runtime evaluated a table-backed per-work binding at
     `work_linear_id` when `index_table_shape` and
     `index_table_index_sources` were absent.
   - After removing the buffer-wide addressing cache, the segmented row-start
     path exposed another old ABI branch that synthesized
     `a_segment_row_start` from only `segment_row_start_index_buffer_name_`,
-    overwriting the concrete descriptor that carried the table shape/source
+    overwriting the concrete binding that carried the table shape/source
     evidence.
 - **根因**:
-  - Early one-dimensional table descriptors treated launch linearization as a
+  - Early one-dimensional table bindings treated launch linearization as a
     harmless default.  Once table loads can be `[bx, by]`, `[bx, k]`, or
     constants, launch order is not semantic owner truth.
 - **修法**:
-  - `value_source=index_table` now requires explicit table shape and one
-    index source per dimension during executable extraction and direct-runtime
-    admission.
+  - The intermediate fix made `value_source=index_table` require explicit
+    table shape and one index source per dimension during executable
+    extraction and direct-runtime admission; this was later replaced by
+    generic serialized `value_expr`.
   - Delete the `work_linear_id` fallback in direct runtime.
   - Delete old ABI synthesis branches for `valid_rows`,
-    `segment_row_start`, and `segment_row_count` descriptors that only knew
+    `segment_row_start`, and `segment_row_count` bindings that only knew
     the index-buffer name.
 - **验证**:
   - A source-level regression test rejects the direct-runtime work-linear
@@ -2875,14 +2876,14 @@
 ### Index-table shape/source metadata started acting like a second value evaluator
 
 - **症状**:
-  - After moving table addressing onto per-work descriptors, direct runtime
+  - After moving table addressing onto per-work bindings, direct runtime
     still computed table-backed per-work values from
     `index_table_shape/index_table_index_sources`.
   - That made the legacy projection fields look like owner truth and invited
     more case-shaped schema additions, even though the original TIR already
     contains the exact value expression.
 - **根因**:
-  - The descriptor carried enough metadata for the first table cases, so the
+  - The binding carried enough metadata for the first table cases, so the
     runtime grew an index-table-specific evaluator instead of consuming a
     generic expression lowered through the IR chain.
 - **修法**:
@@ -2891,7 +2892,7 @@
     binary serialization.
   - Direct runtime now evaluates the serialized TIR expression, including
     integer `BufferLoad` from materialized host-side table data, and rejects
-    table-backed descriptors without `value_expr`.
+    table-backed bindings without `value_expr`.
   - Delete the direct-runtime `EvaluateIndexTable*` value evaluator and guard
     against new selection/topk/index-table-constant schema fields.
 - **验证**:
@@ -2900,6 +2901,58 @@
   - The TT-Sim direct-runtime selector covering indexed, ragged, segmented,
     paged, sparse, and serialized indexed copies reported
     `10 passed, 37 deselected`.
+
+### Per-work descriptor_kind / row-page identities became a second schema
+
+- **症状**:
+  - Public per-work schema had grown workload-shaped subroles such as
+    `descriptor_kind`, row/page identities, and implementation names like
+    `page_value_arg_name`.
+  - Even after `value_expr` became the real owner truth, docs/tests still
+    described row-start, row-count, and page-index as public binding kinds.
+- **根因**:
+  - The cleanup stopped at moving table evaluation into `value_expr`, but left
+    a second semantic vocabulary beside IR evidence.  That made it too easy
+    for later passes to infer meaning from subrole names instead of
+    `AccessRegion`, `predicate_exprs`, and the serialized TIR expression.
+- **修法**:
+  - Delete public `descriptor_kind` and row/page identities from
+    `TTPerWorkArgSpec`, `ExecutableSpec`, runtime metadata, and module
+    serialization.
+  - Use generic `per_work_value`, `per_work_value_1`, ... identities for
+    dynamic base/bound/launch-axis values.  Keep `arg_kind` only as the leaf
+    ABI consumption point and keep owner truth in `value_source`,
+    `value_expr`, and `AccessRegion` evidence.
+  - Rename implementation-only `page_value_arg_name` style variables to
+    generic dynamic value names, and add a public-schema guard against
+    reintroducing `descriptor_kind`, row/page identities, selection/topk, or
+    index-table fields.
+- **验证**:
+  - Focused structural/projection selectors covering indexed, ragged,
+    segmented, paged, grouped-GEMM, and paged GQA/MLA binding projection
+    passed.
+  - TT-Sim direct-runtime copy selectors and T9.3 paged MLA selectors passed;
+    T9.2 paged GQA remains at the typed PACR simulator boundary in the current
+    run.
+
+### T9.2 paged GQA reaches TT-Sim PACR capability boundary
+
+- **症状**:
+  - The paged GQA decode direct-runtime selector compiles, creates reader /
+    compute / writer kernels, and launches the multi-core workload, then
+    TT-Sim aborts with
+    `UnsupportedFunctionality: tensix_execute_pacr: intermediate_format=0 late_from_format=5`.
+- **根因**:
+  - The failure is below the per-work binding/schema layer: source/spec
+    projection has already reached TT-Metal execution, and the thrown reason
+    is TT-Sim PACR format capability.
+- **修法**:
+  - Track this as T9.2 runtime/simulator-boundary work.  Do not work around it
+    by reintroducing row/page descriptors, page-value side variables,
+    source-name recovery, or a paged-GQA-specific execution path.
+- **验证**:
+  - The focused T9.2 selector currently reproduces the PACR boundary after the
+    IR-first per-work schema cleanup.
 
 ## 3. 环境问题速查
 

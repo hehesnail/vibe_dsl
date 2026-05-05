@@ -68,6 +68,7 @@ using tir::builtin::blackhole_copy_tile_to_dst_init_short;
 using tir::builtin::blackhole_pack_fill_fragment_to_tiled_cb;
 using tir::builtin::blackhole_pack_reconfig_data_format;
 using tir::builtin::blackhole_pack_tile;
+using tir::builtin::blackhole_reconfig_data_format;
 using tir::builtin::blackhole_tile_regs_acquire;
 using tir::builtin::blackhole_tile_regs_commit;
 using tir::builtin::blackhole_tile_regs_release;
@@ -534,6 +535,9 @@ Stmt PlanTTKernelABI::GenerateFragmentCastSequence(const FragmentCastMatch& matc
       auto append_copy_to_publish_cb = [&](std::vector<Stmt>* out) {
         for (int tile = 0; tile < num_pages; ++tile) {
           out->push_back(MakeBlackholeCall(blackhole_tile_regs_acquire(), {}));
+          out->push_back(MakeBlackholeCall(blackhole_reconfig_data_format(),
+                                           {IntImm32(live_source.cb_id),
+                                            IntImm32(live_source.cb_id)}));
           out->push_back(MakeBlackholeCall(blackhole_copy_tile_to_dst_init_short(),
                                            {IntImm32(live_source.cb_id)}));
           out->push_back(MakeBlackholeCall(blackhole_copy_tile(),
@@ -803,6 +807,9 @@ Stmt PlanTTKernelABI::GenerateLocalToCBSliceLoopSequence(const ForNode* op,
     auto append_copy_to_publish_cb = [&](std::vector<Stmt>* out) {
       for (int tile = 0; tile < num_pages; ++tile) {
         out->push_back(MakeBlackholeCall(blackhole_tile_regs_acquire(), {}));
+        out->push_back(MakeBlackholeCall(blackhole_reconfig_data_format(),
+                                         {IntImm32(live_source.cb_id),
+                                          IntImm32(live_source.cb_id)}));
         out->push_back(MakeBlackholeCall(blackhole_copy_tile_to_dst_init_short(),
                                          {IntImm32(live_source.cb_id)}));
         out->push_back(MakeBlackholeCall(blackhole_copy_tile(),

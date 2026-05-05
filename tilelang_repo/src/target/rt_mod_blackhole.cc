@@ -733,8 +733,8 @@ static std::vector<KernelArgSpec> ExtractRuntimeArgsFromArray(const ffi::Array<f
       arg.identity = Downcast<String>(v.value());
     }
     if (auto v = arg_info.Get(
-            ::tvm::tl::blackhole_runtime_arg_schema::kRequiresPerWorkDescriptor)) {
-      arg.requires_per_work_descriptor = Downcast<Bool>(v.value());
+            ::tvm::tl::blackhole_runtime_arg_schema::kRequiresPerWorkBinding)) {
+      arg.requires_per_work_binding = Downcast<Bool>(v.value());
     }
     if (auto v = arg_info.Get("core_x")) {
       arg.core_x = static_cast<uint32_t>(Downcast<Integer>(v.value()).IntValue());
@@ -942,9 +942,6 @@ static std::vector<PerWorkArgSpec> ExtractPerWorkArgSpecsFromArray(
     if (auto v = spec_info.Get(::tvm::tl::blackhole_runtime_arg_schema::kBuffer)) {
       spec.buffer = Downcast<String>(v.value());
     }
-    if (auto v = spec_info.Get(::tvm::tl::blackhole_runtime_arg_schema::kDescriptorKind)) {
-      spec.descriptor_kind = Downcast<String>(v.value());
-    }
     if (auto v = spec_info.Get(::tvm::tl::blackhole_runtime_arg_schema::kValueSource)) {
       spec.value_source = Downcast<String>(v.value());
     }
@@ -966,18 +963,15 @@ static std::vector<PerWorkArgSpec> ExtractPerWorkArgSpecsFromArray(
       spec.access_region_index = Downcast<Integer>(v.value())->value;
     }
     ICHECK(!spec.arg_identity.empty())
-        << "Blackhole per-work descriptor requires explicit arg_identity";
-    ICHECK(!spec.descriptor_kind.empty())
-        << "Blackhole per-work descriptor for " << spec.arg_identity
-        << " requires descriptor_kind";
+        << "Blackhole per-work binding requires explicit arg_identity";
     ICHECK(!spec.value_source.empty())
-        << "Blackhole per-work descriptor for " << spec.arg_identity
+        << "Blackhole per-work binding for " << spec.arg_identity
         << " requires value_source";
     if (spec.value_source == ::tvm::tl::blackhole_runtime_arg_schema::kValueSourceValueExpr) {
       ICHECK(!spec.value_expr_json.empty())
-          << "Blackhole value_expr per-work descriptor for "
+          << "Blackhole value_expr per-work binding for "
           << spec.arg_identity
-          << " requires explicit per-work descriptor value_expr owner truth";
+          << " requires explicit per-work binding value_expr owner truth";
     }
     per_work_arg_specs.push_back(std::move(spec));
   }
@@ -1014,8 +1008,7 @@ static std::vector<PerWorkArgSpec> AggregateSegmentPerWorkArgSpecs(
   std::unordered_set<std::string> seen;
   auto dedupe_key_for_spec = [](const PerWorkArgSpec& spec) {
     std::ostringstream os;
-    os << spec.arg_identity << "|" << spec.descriptor_kind << "|"
-       << spec.buffer << "|" << spec.value_source << "|"
+    os << spec.arg_identity << "|" << spec.buffer << "|" << spec.value_source << "|"
        << spec.value_expr_json << "|" << spec.access_region;
     return os.str();
   };
@@ -2495,8 +2488,8 @@ static ffi::Array<ffi::Any> EncodeRuntimeArgs(const std::vector<KernelArgSpec>& 
     arg_info.Set("kind", ffi::String(arg.kind));
     arg_info.Set("dtype", ffi::String(arg.dtype));
     arg_info.Set("identity", ffi::String(arg.identity));
-    if (arg.requires_per_work_descriptor) {
-      arg_info.Set(::tvm::tl::blackhole_runtime_arg_schema::kRequiresPerWorkDescriptor,
+    if (arg.requires_per_work_binding) {
+      arg_info.Set(::tvm::tl::blackhole_runtime_arg_schema::kRequiresPerWorkBinding,
                    Bool(true));
     }
     if (!arg.buffer.empty()) {
@@ -2608,10 +2601,6 @@ static ffi::Array<ffi::Any> EncodePerWorkArgSpecs(
     }
     if (!spec.buffer.empty()) {
       spec_info.Set(::tvm::tl::blackhole_runtime_arg_schema::kBuffer, ffi::String(spec.buffer));
-    }
-    if (!spec.descriptor_kind.empty()) {
-      spec_info.Set(::tvm::tl::blackhole_runtime_arg_schema::kDescriptorKind,
-                    ffi::String(spec.descriptor_kind));
     }
     if (!spec.value_source.empty()) {
       spec_info.Set(::tvm::tl::blackhole_runtime_arg_schema::kValueSource,
@@ -2746,17 +2735,17 @@ static void ValidateKernelExplicitPerWorkBindingSchema(const CorePlan& core_plan
   }
   for (const auto& arg : kernel.runtime_args) {
     if (per_work_identities.count(arg.identity) != 0U) {
-      ICHECK(arg.requires_per_work_descriptor)
+      ICHECK(arg.requires_per_work_binding)
           << "Blackhole build requires runtime arg '" << arg.name
           << "' identity '" << arg.identity
-          << "' to declare requires_per_work_descriptor when a per-work "
-          << "descriptor binds that identity";
+          << "' to declare requires_per_work_binding when a per-work "
+          << "binding covers that identity";
     }
-    if (!arg.requires_per_work_descriptor) {
+    if (!arg.requires_per_work_binding) {
       continue;
     }
     ICHECK(!arg.identity.empty())
-        << "Blackhole build requires runtime arg identity before per-work descriptor binding for "
+        << "Blackhole build requires runtime arg identity before per-work binding for "
         << arg.name << " kind=" << arg.kind << " on kernel " << kernel.name << " of "
         << func_name;
     ICHECK(PerWorkArgSpecsContainArgIdentity(kernel.per_work_arg_specs, arg.identity))
@@ -3067,7 +3056,7 @@ static void EnforceExplicitPerWorkAccessDescriptorGate(
     return;
   }
 
-  auto kernel_is_missing_explicit_access_descriptor =
+  auto kernel_is_missing_explicit_access_binding =
       [](const std::vector<KernelArgSpec>& runtime_args,
          const std::vector<PerWorkArgSpec>& per_work_arg_specs) {
         const bool has_reader_tile_coords =
@@ -3080,7 +3069,7 @@ static void EnforceExplicitPerWorkAccessDescriptorGate(
         }
 
         for (const auto& arg : runtime_args) {
-          if (arg.requires_per_work_descriptor) {
+          if (arg.requires_per_work_binding) {
             if (arg.identity.empty() ||
                 !PerWorkArgSpecsContainArgIdentity(per_work_arg_specs, arg.identity)) {
               return true;
@@ -3090,27 +3079,27 @@ static void EnforceExplicitPerWorkAccessDescriptorGate(
         return false;
       };
 
-  bool missing_explicit_descriptor = false;
+  bool missing_explicit_binding = false;
   if (!spec->kernels.empty()) {
     for (const auto& kernel : spec->kernels) {
-      if (kernel_is_missing_explicit_access_descriptor(kernel.runtime_args,
+      if (kernel_is_missing_explicit_access_binding(kernel.runtime_args,
                                                        kernel.per_work_arg_specs)) {
-        missing_explicit_descriptor = true;
+        missing_explicit_binding = true;
         break;
       }
     }
   } else {
-    missing_explicit_descriptor = kernel_is_missing_explicit_access_descriptor(
+    missing_explicit_binding = kernel_is_missing_explicit_access_binding(
         spec->runtime_args, spec->per_work_arg_specs);
   }
 
-  if (!missing_explicit_descriptor) {
+  if (!missing_explicit_binding) {
     return;
   }
 
   AppendDirectRuntimeUnsupportedReason(
       spec,
-      "missing explicit per-work access descriptor; direct runtime must not "
+      "missing explicit per-work access binding; direct runtime must not "
       "reconstruct tile access from work_linear_id when total logical work "
       "items > 1 for materialized buffers with rank > 2");
 }

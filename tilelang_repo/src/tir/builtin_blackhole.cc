@@ -276,11 +276,12 @@ TVM_REGISTER_OP("tl.blackhole.semaphore_set_remote")
     .add_argument("remote_l1_addr", "uint32", "Destination core's local semaphore address");
 
 TVM_REGISTER_OP("tl.blackhole.mm_init")
-    .set_num_inputs(3)
+    .set_num_inputs(-1)
     .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque))
     .add_argument("in0_cb_id", "int", "Input CB 0 ID (A matrix)")
     .add_argument("in1_cb_id", "int", "Input CB 1 ID (B matrix)")
-    .add_argument("out_cb_id", "int", "Output CB ID (C matrix)");
+    .add_argument("out_cb_id", "int", "Output CB ID (C matrix)")
+    .add_argument("transpose_b", "int", "Optional TT-Metal B transpose flag");
 
 TVM_REGISTER_OP("tl.blackhole.reconfig_data_format")
     .set_num_inputs(2)
@@ -289,17 +290,19 @@ TVM_REGISTER_OP("tl.blackhole.reconfig_data_format")
     .add_argument("in1_cb_id", "int", "New SrcB CB ID");
 
 TVM_REGISTER_OP("tl.blackhole.mm_init_short")
-    .set_num_inputs(2)
-    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque))
-    .add_argument("in0_cb_id", "int", "Input CB 0 ID (A matrix)")
-    .add_argument("in1_cb_id", "int", "Input CB 1 ID (B matrix)");
-
-TVM_REGISTER_OP("tl.blackhole.mm_init_short_with_dt")
-    .set_num_inputs(3)
+    .set_num_inputs(-1)
     .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque))
     .add_argument("in0_cb_id", "int", "Input CB 0 ID (A matrix)")
     .add_argument("in1_cb_id", "int", "Input CB 1 ID (B matrix)")
-    .add_argument("old_srca_cb_id", "int", "Previously configured SrcA CB ID");
+    .add_argument("transpose_b", "int", "Optional TT-Metal B transpose flag");
+
+TVM_REGISTER_OP("tl.blackhole.mm_init_short_with_dt")
+    .set_num_inputs(-1)
+    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque))
+    .add_argument("in0_cb_id", "int", "Input CB 0 ID (A matrix)")
+    .add_argument("in1_cb_id", "int", "Input CB 1 ID (B matrix)")
+    .add_argument("old_srca_cb_id", "int", "Previously configured SrcA CB ID")
+    .add_argument("transpose_b", "int", "Optional TT-Metal B transpose flag");
 
 TVM_REGISTER_OP("tl.blackhole.matmul_tiles")
     .set_num_inputs(5)

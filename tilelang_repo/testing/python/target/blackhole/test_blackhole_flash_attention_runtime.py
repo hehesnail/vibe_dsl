@@ -904,6 +904,7 @@ def test_blackhole_flash_attention_final_publish_consumes_normalized_live_form()
             rf"cb_wait_front\((?P<src>\d+), 1\);\s*"
             rf"cb_reserve_back\({output_cb}, 1\);\s*"
             r"tile_regs_acquire\(\);\s*"
+            r"reconfig_data_format\((?P=src), (?P=src)\);\s*"
             r"copy_tile_to_dst_init_short(?:_with_dt)?\((?:\d+,\s*)?(?P=src)\);\s*"
             r"copy_tile\((?P=src), 0, 0\);\s*"
             r"tile_regs_commit\(\);\s*"
@@ -1065,7 +1066,7 @@ def test_blackhole_flash_attention_reader_reserves_each_input_cb_before_read():
         ),
     ],
 )
-def test_blackhole_flash_attention_multi_work_item_metadata_exposes_explicit_per_work_access_descriptors(
+def test_blackhole_flash_attention_multi_work_item_metadata_exposes_explicit_per_work_access_bindings(
     kernel,
 ):
     _, metadata = _lower_blackhole_flash_attention_metadata(
@@ -1073,7 +1074,7 @@ def test_blackhole_flash_attention_multi_work_item_metadata_exposes_explicit_per
     )
 
     reasons = [str(reason) for reason in metadata.get("direct_runtime_unsupported_reasons", [])]
-    assert not any("missing explicit per-work access descriptor" in reason for reason in reasons)
+    assert not any("missing explicit per-work access binding" in reason for reason in reasons)
     assert not any("thread-distributed cb_republish materialization" in reason for reason in reasons)
     if _has_multi_page_republish_event(metadata):
         assert any(MULTI_PAGE_EXACT_CB_REPUBLISH_REASON in reason for reason in reasons)
@@ -1094,18 +1095,18 @@ def test_blackhole_flash_attention_multi_work_item_metadata_exposes_explicit_per
     ]
     assert reader_specs
     assert writer_specs
-    assert all(str(spec["descriptor_kind"]) for spec in reader_specs + writer_specs)
+    assert all(str(spec["arg_kind"]) for spec in reader_specs + writer_specs)
     assert all(str(spec["value_source"]) for spec in reader_specs + writer_specs)
     assert all(str(spec["arg_identity"]) for spec in reader_specs + writer_specs)
 
     reader_start_sources = {
         str(spec["value_source"])
         for spec in reader_specs
-        if str(spec["descriptor_kind"]) == "tile_start"
+        if str(spec["arg_kind"]) in {"a_tile_start_id", "b_tile_start_id"}
     }
     assert reader_start_sources & {"logical_block_y", "work_linear_id"}
     assert any(
-        str(spec["descriptor_kind"]) == "tile_start"
+        str(spec["arg_kind"]) in {"a_tile_start_id", "b_tile_start_id", "output_tile_start_id"}
         and str(spec["value_source"]) == "work_linear_id"
         for spec in reader_specs + writer_specs
     )
@@ -1519,7 +1520,7 @@ def test_blackhole_flash_attention_seq64_gqa_bf16_forward_direct_runtime():
     )
 
 
-def test_blackhole_t9_paged_gqa_decode_projects_page_table_and_cache_len_descriptors():
+def test_blackhole_t9_paged_gqa_decode_projects_page_table_and_cache_len_bindings():
     kernel = paged_gqa_decode_kernel()
     _, metadata = _lower_blackhole_flash_attention_metadata(kernel)
 
@@ -1543,8 +1544,7 @@ def test_blackhole_t9_paged_gqa_decode_projects_page_table_and_cache_len_descrip
     page_specs = [
         spec
         for spec in reader["per_work_arg_specs"]
-        if str(spec["descriptor_kind"]) == "tile_start"
-        and str(spec.get("value_source", "")) == "value_expr"
+        if str(spec.get("value_source", "")) == "value_expr"
         and "PageTable" in str(spec.get("value_expr", ""))
     ]
     assert len(page_specs) >= 2
@@ -1554,8 +1554,7 @@ def test_blackhole_t9_paged_gqa_decode_projects_page_table_and_cache_len_descrip
     valid_row_specs = [
         spec
         for spec in reader["per_work_arg_specs"]
-        if str(spec["descriptor_kind"]) == "row_count"
-        and str(spec.get("value_source", "")) == "value_expr"
+        if str(spec.get("value_source", "")) == "value_expr"
         and "CacheSeqLens" in str(spec.get("value_expr", ""))
     ]
     assert valid_row_specs
@@ -1640,7 +1639,7 @@ def test_blackhole_t9_paged_gqa_decode_projects_page_table_and_cache_len_descrip
         assert f"cb_push_back({cb_id}, 1);" in after_serial_loop
 
 
-def test_blackhole_t9_paged_mla_decode_projects_latent_and_pe_page_descriptors():
+def test_blackhole_t9_paged_mla_decode_projects_latent_and_pe_page_bindings():
     kernel = paged_mla_decode_kernel()
     _, metadata = _lower_blackhole_flash_attention_metadata(kernel)
 
@@ -1665,8 +1664,7 @@ def test_blackhole_t9_paged_mla_decode_projects_latent_and_pe_page_descriptors()
     page_specs = [
         spec
         for spec in reader["per_work_arg_specs"]
-        if str(spec["descriptor_kind"]) == "tile_start"
-        and str(spec.get("value_source", "")) == "value_expr"
+        if str(spec.get("value_source", "")) == "value_expr"
         and "PageTable" in str(spec.get("value_expr", ""))
     ]
     assert len(page_specs) >= 4
@@ -1677,8 +1675,7 @@ def test_blackhole_t9_paged_mla_decode_projects_latent_and_pe_page_descriptors()
     valid_row_specs = [
         spec
         for spec in reader["per_work_arg_specs"]
-        if str(spec["descriptor_kind"]) == "row_count"
-        and str(spec.get("value_source", "")) == "value_expr"
+        if str(spec.get("value_source", "")) == "value_expr"
         and "CacheSeqLens" in str(spec.get("value_expr", ""))
     ]
     assert valid_row_specs

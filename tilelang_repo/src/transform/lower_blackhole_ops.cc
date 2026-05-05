@@ -1571,7 +1571,8 @@ PrimFunc PlanTTKernelABI::SelectComputeBuiltins(const PrimFunc& func) {
   block_index_vars_.clear();
   block_index_var_names_.clear();
   block_index_source_by_var_.clear();
-  valid_rows_runtime_arg_vars_.clear();
+  bound_value_runtime_arg_vars_.clear();
+  bound_value_runtime_arg_names_.clear();
   indexed_per_work_runtime_args_.clear();
   cb_consumed_compute_input_pages_by_buffer_identity_.clear();
   cb_consumed_compute_input_use_count_by_buffer_identity_.clear();
@@ -1846,10 +1847,10 @@ PrimFunc PlanTTKernelABI::Transform(const PrimFunc& func) {
   next_requirement_index_ = 0;
   saw_copy_op_ = false;
   needs_copy_runtime_args_ = false;
-  needs_ragged_row_bound_arg_ = false;
-  needs_ragged_page_index_arg_ = false;
-  needs_segment_row_start_arg_ = false;
-  needs_segment_row_count_arg_ = false;
+  needs_bound_value_arg_ = false;
+  needs_dynamic_value_arg_ = false;
+  needs_base_value_arg_ = false;
+  needs_extent_value_for_base_arg_ = false;
   requires_compute_segment_ = false;
   logical_grid_z_ = 1;
   copy_input_buffer_ = Buffer();
@@ -1858,17 +1859,18 @@ PrimFunc PlanTTKernelABI::Transform(const PrimFunc& func) {
   copy_output_buffer_name_.clear();
   copy_input_buffer_names_.clear();
   copy_output_buffer_names_.clear();
-  ragged_row_bound_table_buffer_name_.clear();
-  ragged_row_bound_subject_buffer_name_.clear();
-  ragged_page_index_value_source_.clear();
-  ragged_row_bound_shared_buffer_names_.clear();
-  segment_row_start_table_buffer_name_.clear();
-  segment_row_count_table_buffer_name_.clear();
-  segment_row_subject_buffer_name_.clear();
-  segment_row_shared_buffer_names_.clear();
+  bound_value_table_buffer_name_.clear();
+  bound_value_subject_buffer_name_.clear();
+  dynamic_value_source_.clear();
+  bound_value_shared_buffer_names_.clear();
+  base_value_table_buffer_name_.clear();
+  extent_value_for_base_table_buffer_name_.clear();
+  base_value_subject_buffer_name_.clear();
+  base_value_shared_buffer_names_.clear();
   runtime_arg_tile_start_scale_by_name_.clear();
   runtime_arg_tile_start_scale_by_var_.clear();
-  valid_rows_runtime_arg_vars_.clear();
+  bound_value_runtime_arg_vars_.clear();
+  bound_value_runtime_arg_names_.clear();
   indexed_per_work_runtime_args_.clear();
   host_buffer_by_compute_operand_buffer_.clear();
   direct_copy_source_by_buffer_identity_.clear();
@@ -2811,10 +2813,10 @@ bool HasResidualScalarLoadBroadcast(const Stmt& body) {
 
 }  // namespace
 
-bool PlanTTKernelABI::IsValidRowsRuntimeArgExpr(const PrimExpr& expr) const {
+bool PlanTTKernelABI::IsBoundValueRuntimeArgExpr(const PrimExpr& expr) const {
   const PrimExpr stripped = StripValueCasts(expr);
   if (const auto* var = stripped.as<VarNode>()) {
-    return valid_rows_runtime_arg_vars_.count(var) != 0U;
+    return bound_value_runtime_arg_vars_.count(var) != 0U;
   }
   const auto* call = stripped.as<CallNode>();
   if (!IsBlackholeBuiltinCall(call, blackhole_runtime_arg_u32(),
@@ -2827,13 +2829,7 @@ bool PlanTTKernelABI::IsValidRowsRuntimeArgExpr(const PrimExpr& expr) const {
     return false;
   }
   const std::string name = arg_name->value;
-  for (const IndexedPerWorkRuntimeArg& arg : indexed_per_work_runtime_args_) {
-    if (arg.arg_name == name &&
-        arg.descriptor_kind == blackhole_runtime_arg_schema::kDescriptorRowCount) {
-      return true;
-    }
-  }
-  return false;
+  return bound_value_runtime_arg_names_.count(name) != 0U;
 }
 
 bool PlanTTKernelABI::IsRowBoundMaskSelfUpdateStore(
@@ -2842,20 +2838,20 @@ bool PlanTTKernelABI::IsRowBoundMaskSelfUpdateStore(
   if (!ExtractRowBoundSelfUpdateParts(store, &condition)) {
     return false;
   }
-  bool has_valid_rows_arg = false;
+  bool has_bound_value_arg = false;
   tir::PostOrderVisit(condition, [&](const ObjectRef& node) {
-    if (has_valid_rows_arg) {
+    if (has_bound_value_arg) {
       return;
     }
     if (const auto* var = node.as<VarNode>()) {
-      has_valid_rows_arg = IsValidRowsRuntimeArgExpr(GetRef<PrimExpr>(var));
+      has_bound_value_arg = IsBoundValueRuntimeArgExpr(GetRef<PrimExpr>(var));
       return;
     }
     if (const auto* call = node.as<CallNode>()) {
-      has_valid_rows_arg = IsValidRowsRuntimeArgExpr(GetRef<PrimExpr>(call));
+      has_bound_value_arg = IsBoundValueRuntimeArgExpr(GetRef<PrimExpr>(call));
     }
   });
-  return has_valid_rows_arg;
+  return has_bound_value_arg;
 }
 
 bool PlanTTKernelABI::MatchRowBoundMaskSelfUpdateStore(
@@ -2872,19 +2868,19 @@ bool PlanTTKernelABI::MatchRowBoundMaskSelfUpdateStore(
   }
 
   PrimExpr position;
-  PrimExpr valid_rows;
+  PrimExpr bound_value;
   if (const auto* lt = condition.as<LTNode>()) {
-    if (IsValidRowsRuntimeArgExpr(lt->b)) {
+    if (IsBoundValueRuntimeArgExpr(lt->b)) {
       position = lt->a;
-      valid_rows = StripValueCasts(lt->b);
+      bound_value = StripValueCasts(lt->b);
     }
   } else if (const auto* gt = condition.as<GTNode>()) {
-    if (IsValidRowsRuntimeArgExpr(gt->a)) {
+    if (IsBoundValueRuntimeArgExpr(gt->a)) {
       position = gt->b;
-      valid_rows = StripValueCasts(gt->a);
+      bound_value = StripValueCasts(gt->a);
     }
   }
-  if (!position.defined() || !valid_rows.defined()) {
+  if (!position.defined() || !bound_value.defined()) {
     return false;
   }
 
@@ -2903,7 +2899,7 @@ bool PlanTTKernelABI::MatchRowBoundMaskSelfUpdateStore(
   }
 
   match->dst = store->buffer;
-  match->valid_rows = valid_rows;
+  match->bound_value = bound_value;
   match->page_base = static_cast<int>(base_value.value());
   const auto order_it = stmt_order_index_by_node_.find(store);
   match->producer_order_index =
@@ -3264,19 +3260,20 @@ Stmt PlanTTKernelABI::VisitStmt_(const AllocateNode* op) {
 
 std::string PlanTTKernelABI::GetOrCreateIndexedPerWorkRuntimeArg(
     const std::string& arg_prefix,
-    const std::string& descriptor_kind,
     const std::string& subject_buffer,
     const ffi::Array<PrimExpr>& subject_index_exprs,
+    const std::string& value_source,
     const PrimExpr& value_expr,
     bool include_in_compute_segment) {
   ICHECK(!arg_prefix.empty())
       << "Blackhole indexed per-work runtime arg requires arg prefix";
-  ICHECK(!descriptor_kind.empty())
-      << "Blackhole indexed per-work runtime arg requires descriptor kind";
   ICHECK(!subject_buffer.empty())
       << "Blackhole indexed per-work runtime arg requires subject buffer";
-  ICHECK(value_expr.defined())
-      << "Blackhole indexed per-work runtime arg requires value_expr";
+  ICHECK(!value_source.empty())
+      << "Blackhole indexed per-work runtime arg requires value_source";
+  ICHECK(value_source != blackhole_runtime_arg_schema::kValueSourceValueExpr ||
+         value_expr.defined())
+      << "Blackhole value_expr per-work runtime arg requires value_expr";
   auto same_index_exprs = [](const ffi::Array<PrimExpr>& lhs,
                              const ffi::Array<PrimExpr>& rhs) {
     if (lhs.size() != rhs.size()) {
@@ -3306,9 +3303,9 @@ std::string PlanTTKernelABI::GetOrCreateIndexedPerWorkRuntimeArg(
         existing.arg_name.rfind(arg_prefix + "_", 0) == 0) {
       ++prefix_count;
     }
-    if (existing.descriptor_kind == descriptor_kind &&
-        existing.subject_buffer == subject_buffer &&
+    if (existing.subject_buffer == subject_buffer &&
         same_index_exprs(existing.subject_index_exprs, subject_index_exprs) &&
+        existing.value_source == value_source &&
         same_value_expr(existing.value_expr, value_expr)) {
       existing.include_in_compute_segment =
           existing.include_in_compute_segment || include_in_compute_segment;
@@ -3319,9 +3316,9 @@ std::string PlanTTKernelABI::GetOrCreateIndexedPerWorkRuntimeArg(
   arg.arg_name = prefix_count == 0
                      ? arg_prefix
                      : arg_prefix + "_" + std::to_string(prefix_count);
-  arg.descriptor_kind = descriptor_kind;
   arg.subject_buffer = subject_buffer;
   arg.subject_index_exprs = subject_index_exprs;
+  arg.value_source = value_source;
   arg.value_expr = value_expr;
   arg.include_in_compute_segment = include_in_compute_segment;
   indexed_per_work_runtime_args_.push_back(std::move(arg));
@@ -3330,18 +3327,19 @@ std::string PlanTTKernelABI::GetOrCreateIndexedPerWorkRuntimeArg(
 
 void PlanTTKernelABI::RecordIndexedPerWorkRuntimeArgSubjectAlias(
     const std::string& arg_name,
-    const std::string& descriptor_kind,
     const std::string& subject_buffer,
     const ffi::Array<PrimExpr>& subject_index_exprs,
+    const std::string& value_source,
     const PrimExpr& value_expr) {
   ICHECK(!arg_name.empty())
       << "Blackhole indexed per-work runtime arg alias requires arg name";
-  ICHECK(!descriptor_kind.empty())
-      << "Blackhole indexed per-work runtime arg alias requires descriptor kind";
   ICHECK(!subject_buffer.empty())
       << "Blackhole indexed per-work runtime arg alias requires subject buffer";
-  ICHECK(value_expr.defined())
-      << "Blackhole indexed per-work runtime arg alias requires value_expr";
+  ICHECK(!value_source.empty())
+      << "Blackhole indexed per-work runtime arg alias requires value_source";
+  ICHECK(value_source != blackhole_runtime_arg_schema::kValueSourceValueExpr ||
+         value_expr.defined())
+      << "Blackhole value_expr per-work runtime arg alias requires value_expr";
   auto same_index_exprs = [](const ffi::Array<PrimExpr>& lhs,
                              const ffi::Array<PrimExpr>& rhs) {
     if (lhs.size() != rhs.size()) {
@@ -3375,8 +3373,8 @@ void PlanTTKernelABI::RecordIndexedPerWorkRuntimeArgSubjectAlias(
     found_primary = true;
     include_in_compute_segment =
         include_in_compute_segment || existing.include_in_compute_segment;
-    ICHECK_EQ(existing.descriptor_kind, descriptor_kind)
-        << "Blackhole indexed per-work runtime arg alias descriptor mismatch for "
+    ICHECK_EQ(existing.value_source, value_source)
+        << "Blackhole indexed per-work runtime arg alias value_source mismatch for "
         << arg_name;
     ICHECK(same_value_expr(existing.value_expr, value_expr))
         << "Blackhole indexed per-work runtime arg alias value_expr mismatch for "
@@ -3391,9 +3389,9 @@ void PlanTTKernelABI::RecordIndexedPerWorkRuntimeArgSubjectAlias(
       << "primary arg named " << arg_name;
   IndexedPerWorkRuntimeArg arg;
   arg.arg_name = arg_name;
-  arg.descriptor_kind = descriptor_kind;
   arg.subject_buffer = subject_buffer;
   arg.subject_index_exprs = subject_index_exprs;
+  arg.value_source = value_source;
   arg.value_expr = value_expr;
   arg.include_in_compute_segment = include_in_compute_segment;
   indexed_per_work_runtime_args_.push_back(std::move(arg));
@@ -3604,9 +3602,9 @@ Stmt PlanTTKernelABI::VisitStmt_(const LetStmtNode* op) {
       table_load->buffer->dtype.is_int() && table_load->buffer->dtype.bits() == 32 &&
       GetStorageScope(table_load->buffer) == "global" &&
       body_uses_let_var_for_guarded_copy_predicate(op->body)) {
-    valid_rows_runtime_arg_vars_.insert(op->var.get());
+    bound_value_runtime_arg_vars_.insert(op->var.get());
     Stmt lowered = StmtExprMutator::VisitStmt_(op);
-    valid_rows_runtime_arg_vars_.erase(op->var.get());
+    bound_value_runtime_arg_vars_.erase(op->var.get());
     return lowered;
   }
   if (!select_compute_builtins_only_ && table_load != nullptr &&
@@ -3629,29 +3627,27 @@ Stmt PlanTTKernelABI::VisitStmt_(const LetStmtNode* op) {
     const std::vector<SubjectAccessCandidate> subject_accesses =
         collect_copy_load_subject_accesses_using_let_var(op->body);
     std::string arg_name = "a_tile_start_id";
-    std::string descriptor_kind;
     int64_t tile_start_scale = 1;
     PrimExpr runtime_value_expr = op->value;
     if (coefficient.has_value() && coefficient.value() == 1) {
-      if (!segment_row_start_table_buffer_name_.empty()) {
-        ICHECK_EQ(segment_row_start_table_buffer_name_, table_buffer)
-            << "Blackhole first segmented row slice admits one row-start "
-            << "table buffer per fused dataflow kernel";
+      if (!base_value_table_buffer_name_.empty()) {
+        ICHECK_EQ(base_value_table_buffer_name_, table_buffer)
+        << "Blackhole base-value per-work binding admits one table buffer "
+        << "per fused dataflow kernel";
       }
-      segment_row_start_table_buffer_name_ = table_buffer;
-      needs_segment_row_start_arg_ = true;
-      descriptor_kind = blackhole_runtime_arg_schema::kDescriptorRowStart;
+      base_value_table_buffer_name_ = table_buffer;
+      needs_base_value_arg_ = true;
       arg_name = GetOrCreateIndexedPerWorkRuntimeArg(
-          kBlackholePerWorkRowStartArg,
-          descriptor_kind,
-          subject_buffer, subject_index_exprs, op->value, false);
+          kBlackholePerWorkValueArgPrefix,
+          subject_buffer, subject_index_exprs,
+          blackhole_runtime_arg_schema::kValueSourceValueExpr,
+          op->value, false);
     } else if (coefficient.has_value() &&
                coefficient.value() > 0 &&
                coefficient.value() % kBlackholeTileRows == 0) {
       const std::string tile_start_arg_prefix =
           requires_compute_segment_ ? "indexed_tile_start_id"
                                     : "a_tile_start_id";
-      descriptor_kind = blackhole_runtime_arg_schema::kDescriptorTileStart;
       tile_start_scale = coefficient.value() / kBlackholeTileRows;
       if (tile_start_scale != 1) {
         Analyzer analyzer;
@@ -3660,22 +3656,24 @@ Stmt PlanTTKernelABI::VisitStmt_(const LetStmtNode* op) {
       }
       arg_name = GetOrCreateIndexedPerWorkRuntimeArg(
           tile_start_arg_prefix,
-          descriptor_kind,
-          subject_buffer, subject_index_exprs, runtime_value_expr, false);
+          subject_buffer, subject_index_exprs,
+          blackhole_runtime_arg_schema::kValueSourceValueExpr,
+          runtime_value_expr, false);
       runtime_arg_tile_start_scale_by_name_[arg_name] =
           coefficient.value() / kBlackholeTileRows;
       runtime_arg_tile_start_scale_by_var_[op->var.get()] =
           coefficient.value() / kBlackholeTileRows;
     }
-    if (!descriptor_kind.empty()) {
+    if (arg_name != "a_tile_start_id") {
       for (const SubjectAccessCandidate& alias_access : subject_accesses) {
         if (alias_access.buffer == subject_buffer &&
             same_index_exprs(alias_access.index_exprs, subject_index_exprs)) {
           continue;
         }
         RecordIndexedPerWorkRuntimeArgSubjectAlias(
-            arg_name, descriptor_kind, alias_access.buffer,
-            alias_access.index_exprs, runtime_value_expr);
+            arg_name, alias_access.buffer, alias_access.index_exprs,
+            blackhole_runtime_arg_schema::kValueSourceValueExpr,
+            runtime_value_expr);
       }
     }
     PrimExpr per_work_table_value =
@@ -3690,71 +3688,78 @@ Stmt PlanTTKernelABI::VisitStmt_(const LetStmtNode* op) {
     const std::string table_buffer = BufferIdentityName(table_load->buffer);
     const BufferLoadNode* subject_load = find_copy_load_using_let_var(op->body);
     ICHECK(subject_load != nullptr)
-        << "Blackhole ragged row bound requires a subject buffer load";
+        << "Blackhole bound-value per-work binding requires a subject buffer load";
     const std::string subject_buffer = BufferIdentityName(subject_load->buffer);
     ICHECK(!table_buffer.empty())
-        << "Blackhole ragged row bound requires named table buffer";
+        << "Blackhole bound-value per-work binding requires named table buffer";
     ICHECK(!subject_buffer.empty())
-        << "Blackhole ragged row bound requires named subject buffer";
+        << "Blackhole bound-value per-work binding requires named subject buffer";
     const ffi::Array<PrimExpr> subject_index_exprs =
         substitute_let_var_in_indices(subject_load->indices);
     const std::vector<SubjectAccessCandidate> subject_accesses =
         collect_copy_load_subject_accesses_using_let_var(op->body);
-    if (needs_segment_row_start_arg_) {
-      if (!segment_row_count_table_buffer_name_.empty()) {
-        ICHECK_EQ(segment_row_count_table_buffer_name_, table_buffer)
-            << "Blackhole first segmented row slice admits one row-count "
+    if (needs_base_value_arg_) {
+      if (!extent_value_for_base_table_buffer_name_.empty()) {
+        ICHECK_EQ(extent_value_for_base_table_buffer_name_, table_buffer)
+            << "Blackhole base/extent per-work bindings admit one extent "
             << "table buffer per fused dataflow kernel";
       }
-      segment_row_count_table_buffer_name_ = table_buffer;
-      needs_segment_row_count_arg_ = true;
+      extent_value_for_base_table_buffer_name_ = table_buffer;
+      needs_extent_value_for_base_arg_ = true;
       const std::string arg_name = GetOrCreateIndexedPerWorkRuntimeArg(
-          kBlackholePerWorkRowCountArg,
-          blackhole_runtime_arg_schema::kDescriptorRowCount,
-          subject_buffer, subject_index_exprs, op->value, false);
+          kBlackholePerWorkValueArgPrefix,
+          subject_buffer, subject_index_exprs,
+          blackhole_runtime_arg_schema::kValueSourceValueExpr,
+          op->value, false);
       for (const SubjectAccessCandidate& alias_access : subject_accesses) {
         if (alias_access.buffer == subject_buffer &&
             same_index_exprs(alias_access.index_exprs, subject_index_exprs)) {
           continue;
         }
         RecordIndexedPerWorkRuntimeArgSubjectAlias(
-            arg_name, blackhole_runtime_arg_schema::kDescriptorRowCount,
-            alias_access.buffer, alias_access.index_exprs, op->value);
+            arg_name, alias_access.buffer, alias_access.index_exprs,
+            blackhole_runtime_arg_schema::kValueSourceValueExpr,
+            op->value);
       }
-      PrimExpr per_work_segment_row_count =
+      PrimExpr per_work_extent_value_for_base =
           Call(op->var.dtype(), blackhole_runtime_arg_u32(),
                {StringImm(arg_name)});
       Stmt rewritten =
-          LetStmt(op->var, per_work_segment_row_count, op->body, op->span);
+          LetStmt(op->var, per_work_extent_value_for_base, op->body, op->span);
+      bound_value_runtime_arg_names_.insert(arg_name);
       return StmtExprMutator::VisitStmt_(rewritten.as<LetStmtNode>());
     }
-    if (!ragged_row_bound_table_buffer_name_.empty()) {
-      ICHECK_EQ(ragged_row_bound_table_buffer_name_, table_buffer)
-          << "Blackhole first ragged row-bound slice admits one row-count "
-          << "table buffer per fused dataflow kernel";
+    if (!bound_value_table_buffer_name_.empty()) {
+      ICHECK_EQ(bound_value_table_buffer_name_, table_buffer)
+          << "Blackhole bound-value per-work binding admits one table buffer "
+          << "per fused dataflow kernel";
     }
-    ragged_row_bound_table_buffer_name_ = table_buffer;
-    needs_ragged_row_bound_arg_ = true;
+    bound_value_table_buffer_name_ = table_buffer;
+    needs_bound_value_arg_ = true;
     const std::string arg_name = GetOrCreateIndexedPerWorkRuntimeArg(
-        kBlackholePerWorkRowCountArg,
-        blackhole_runtime_arg_schema::kDescriptorRowCount,
-        subject_buffer, subject_index_exprs, op->value, true);
+        kBlackholePerWorkValueArgPrefix,
+        subject_buffer, subject_index_exprs,
+        blackhole_runtime_arg_schema::kValueSourceValueExpr,
+        op->value, true);
     for (const SubjectAccessCandidate& alias_access : subject_accesses) {
       if (alias_access.buffer == subject_buffer &&
           same_index_exprs(alias_access.index_exprs, subject_index_exprs)) {
         continue;
       }
       RecordIndexedPerWorkRuntimeArgSubjectAlias(
-          arg_name, blackhole_runtime_arg_schema::kDescriptorRowCount,
-          alias_access.buffer, alias_access.index_exprs, op->value);
+          arg_name, alias_access.buffer, alias_access.index_exprs,
+          blackhole_runtime_arg_schema::kValueSourceValueExpr,
+          op->value);
     }
-    PrimExpr per_work_valid_rows =
+    PrimExpr per_work_bound_value =
         Call(op->var.dtype(), blackhole_runtime_arg_u32(),
              {StringImm(arg_name)});
-    Stmt rewritten = LetStmt(op->var, per_work_valid_rows, op->body, op->span);
-    valid_rows_runtime_arg_vars_.insert(op->var.get());
+    Stmt rewritten = LetStmt(op->var, per_work_bound_value, op->body, op->span);
+    bound_value_runtime_arg_vars_.insert(op->var.get());
+    bound_value_runtime_arg_names_.insert(arg_name);
     Stmt lowered = StmtExprMutator::VisitStmt_(rewritten.as<LetStmtNode>());
-    valid_rows_runtime_arg_vars_.erase(op->var.get());
+    bound_value_runtime_arg_vars_.erase(op->var.get());
+    bound_value_runtime_arg_names_.erase(arg_name);
     return lowered;
   }
 
@@ -4877,8 +4882,8 @@ Stmt PlanTTKernelABI::VisitStmt_(const ForNode* op) {
         }
       }
       const bool has_row_bound_transport =
-          needs_ragged_row_bound_arg_ || needs_segment_row_start_arg_ ||
-          needs_segment_row_count_arg_;
+          needs_bound_value_arg_ || needs_base_value_arg_ ||
+          needs_extent_value_for_base_arg_;
       if (dram_to_cb && cb_to_dram && !has_row_bound_transport) {
         saw_copy_op_ = true;
         std::vector<Var> loop_vars_to_zero = dram_to_cb->loop_vars;

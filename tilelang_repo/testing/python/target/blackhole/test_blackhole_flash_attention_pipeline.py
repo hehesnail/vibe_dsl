@@ -1246,7 +1246,7 @@ def test_flash_attention_executable_spec_drops_contract_family_and_reports_typed
 
     spec = _extract_blackhole_executable_spec(artifact)
     reasons = [str(reason) for reason in spec.get("direct_runtime_unsupported_reasons", [])]
-    assert not any("missing explicit per-work access descriptor" in reason for reason in reasons)
+    assert not any("missing explicit per-work access binding" in reason for reason in reasons)
     assert any(
         "thread-distributed cb_republish materialization" in reason
         or "multi-page exact CB-republish live-form" in reason
@@ -1257,17 +1257,17 @@ def test_flash_attention_executable_spec_drops_contract_family_and_reports_typed
     reader_kernel = _require_blackhole_kernel(spec["kernels"], kind="reader", core_type="brisc")
     writer_kernel = _require_blackhole_kernel(spec["kernels"], kind="writer", core_type="ncrisc")
     reader_per_work = {
-        (str(spec["descriptor_kind"]), str(spec["value_source"]))
+        (str(spec["arg_kind"]), str(spec["value_source"]))
         for spec in reader_kernel["per_work_arg_specs"]
     }
     writer_per_work = {
-        (str(spec["descriptor_kind"]), str(spec["value_source"]))
+        (str(spec["arg_kind"]), str(spec["value_source"]))
         for spec in writer_kernel["per_work_arg_specs"]
     }
-    assert ("tile_start", "logical_block_y") in reader_per_work
-    assert ("tile_start", "logical_block_x") in reader_per_work
-    assert ("k_tile_count", "compute_op_num_k_tiles") in reader_per_work
-    assert ("tile_start", "work_linear_id") in writer_per_work
+    assert ("a_tile_start_id", "logical_block_y") in reader_per_work
+    assert ("b_tile_start_id", "logical_block_x") in reader_per_work
+    assert ("a_tile_num_tiles", "compute_op_reduction_extent") in reader_per_work
+    assert ("output_tile_start_id", "work_linear_id") in writer_per_work
 
 
 def test_flash_attention_executable_spec_drops_contract_family():
@@ -1465,7 +1465,7 @@ def test_flash_attention_tt_program_keeps_typed_layout_specs_without_distributio
     }.issubset(layout_buffers)
 
 
-def test_flash_attention_segment_kernels_prefer_explicit_tile_descriptors_over_work_id():
+def test_flash_attention_segment_kernels_prefer_explicit_tile_bindings_over_work_id():
     can_run, msg = check_blackhole_codegen_requirements()
     if not can_run:
         pytest.skip(f"Blackhole requirements not met: {msg}")
@@ -2203,6 +2203,7 @@ def test_flash_attention_small_bf16_compute_source_publishes_output_via_typed_pa
     publish_match = re.search(
         rf"cb_reserve_back\({output_cb_id}, 1\);\s*"
         r"tile_regs_acquire\(\);\s*"
+        r"reconfig_data_format\((\d+), \1\);\s*"
         r"copy_tile_to_dst_init_short\((\d+)\);\s*"
         r"copy_tile\((\d+), 0, 0\);\s*"
         r"tile_regs_commit\(\);\s*"
@@ -2216,6 +2217,7 @@ def test_flash_attention_small_bf16_compute_source_publishes_output_via_typed_pa
     )
     assert publish_match is not None
     assert publish_match.group(1) == publish_match.group(2)
+    assert publish_match.group(2) == publish_match.group(3)
     source_cb_id = publish_match.group(2)
     assert f"cb_pop_front({source_cb_id}, 1);" in publish_match.group("source_lifetime")
     assert f"tilelang_cb_write_ptr_bytes_direct({output_cb_id})" not in compute_source
@@ -2460,6 +2462,7 @@ def test_flash_attention_seq64_bf16_republish_consumes_fresh_acc_s_live_cb():
         rf"cb_wait_front\((\d+), 1\);\s*"
         rf"cb_reserve_back\({acc_s_cast_cb}, 1\);\s*"
         rf"tile_regs_acquire\(\);\s*"
+        rf"reconfig_data_format\(\1, \1\);\s*"
         rf"copy_tile_to_dst_init_short\(\1\);\s*"
         rf"copy_tile\(\1, 0, 0\);",
         compute_source[max(0, first_cast_reserve_pos - 256) : first_cast_push_pos],

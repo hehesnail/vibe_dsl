@@ -704,13 +704,13 @@ def test_blackhole_module_direct_call_grid_indexed_copy_multicore_launch():
     assert str(sharded_l1["logical_index_mapping"]) == "work_packet_row_major"
     assert str(sharded_l1["core_local_address_mapping"]) == "l1_shard_linear"
     per_work_arg_specs = {
-        (spec["buffer"], spec["descriptor_kind"]): spec["value_source"]
+        (spec["buffer"], spec["arg_kind"]): spec["value_source"]
         for spec in executable_spec["per_work_arg_specs"]
     }
-    assert per_work_arg_specs[("A", "tile_start")] == "work_linear_id"
-    assert per_work_arg_specs[("B", "tile_start")] == "work_linear_id"
+    assert per_work_arg_specs[("A", "a_tile_start_id")] == "work_linear_id"
+    assert per_work_arg_specs[("B", "output_tile_start_id")] == "work_linear_id"
     kernel_per_work_arg_specs = {
-        (spec["buffer"], spec["descriptor_kind"]): spec["value_source"]
+        (spec["buffer"], spec["arg_kind"]): spec["value_source"]
         for spec in executable_spec["kernels"][0]["per_work_arg_specs"]
     }
     assert kernel_per_work_arg_specs == per_work_arg_specs
@@ -769,7 +769,7 @@ def test_blackhole_module_direct_call_block_indexed_copy_rejects_out_of_range_in
     with target:
         artifact = lower(kernel, target=target)
 
-    with pytest.raises(Exception, match="value_expr tile_start out of bounds"):
+    with pytest.raises(Exception, match="tile-start binding out of bounds"):
         artifact.codegen_mod["main"](a_torch, block_indices, b_output)
 
 
@@ -1047,11 +1047,11 @@ def test_blackhole_serialized_block_indexed_2d_copy_preserves_table_addressing()
     loader = tvm.get_global_func("ffi.Module.load_from_bytes.blackhole")
     loaded = loader(serialized)
     executable_spec = loaded.get_function_metadata("main")
-    descriptors = {
-        (str(spec.get("buffer", "")), str(spec["descriptor_kind"])): spec
+    bindings = {
+        str(spec["arg_identity"]): spec
         for spec in executable_spec["per_work_arg_specs"]
     }
-    a_tile_start = descriptors[("A", "tile_start")]
+    a_tile_start = bindings["a_tile_start_id"]
     assert str(a_tile_start["value_source"]) == "value_expr"
     assert "BlockIndices" in str(a_tile_start["value_expr"])
     assert "index_buffer" not in a_tile_start
@@ -2099,7 +2099,6 @@ def test_blackhole_module_direct_call_accepts_richer_copy_schema_with_explicit_p
                 {
                     "arg_kind": "b_tile_start_id",
                     "arg_identity": "b_tile_start_id",
-                    "descriptor_kind": "tile_start",
                     "value_source": "logical_block_x",
                 }
             )

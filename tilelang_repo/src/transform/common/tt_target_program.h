@@ -618,7 +618,6 @@ public:
   ffi::String arg_kind;
   ffi::String arg_identity;
   ffi::String buffer;
-  ffi::String descriptor_kind;
   ffi::String value_source;
   PrimExpr value_expr;
   int64_t constant_value = 0;
@@ -633,16 +632,16 @@ public:
 class TTPerWorkArgSpec : public ObjectRef {
 public:
   TVM_DLL TTPerWorkArgSpec(ffi::String arg_kind, ffi::String arg_identity,
-                           ffi::String buffer, ffi::String descriptor_kind,
-                           ffi::String value_source, int64_t constant_value);
+                           ffi::String buffer, ffi::String value_source,
+                           int64_t constant_value);
   TVM_DLL TTPerWorkArgSpec(ffi::String arg_kind, ffi::String arg_identity,
-                           ffi::String buffer, ffi::String descriptor_kind,
-                           ffi::String value_source, int64_t constant_value,
+                           ffi::String buffer, ffi::String value_source,
+                           int64_t constant_value,
                            ffi::String access_region,
                            int64_t access_region_index);
   TVM_DLL TTPerWorkArgSpec(ffi::String arg_kind, ffi::String arg_identity,
-                           ffi::String buffer, ffi::String descriptor_kind,
-                           ffi::String value_source, int64_t constant_value,
+                           ffi::String buffer, ffi::String value_source,
+                           int64_t constant_value,
                            ffi::String access_region,
                            int64_t access_region_index,
                            PrimExpr value_expr);
@@ -1106,7 +1105,7 @@ public:
   ffi::String identity;
   int64_t core_x = -1;
   int64_t core_y = -1;
-  bool requires_per_work_descriptor = false;
+  bool requires_per_work_binding = false;
 
   static void RegisterReflection();
   TVM_FFI_DECLARE_OBJECT_INFO_FINAL("tl.TTRuntimeArgSpec", TTRuntimeArgSpecNode,
@@ -1119,7 +1118,7 @@ public:
                            ffi::String dtype, ffi::String buffer,
                            ffi::String identity, int64_t core_x,
                            int64_t core_y,
-                           bool requires_per_work_descriptor = false);
+                           bool requires_per_work_binding = false);
   TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(TTRuntimeArgSpec, ObjectRef,
                                              TTRuntimeArgSpecNode);
 };

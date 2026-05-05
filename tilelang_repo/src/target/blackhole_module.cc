@@ -359,7 +359,7 @@ static void WriteKernelArgSpec(dmlc::Stream* stream, const KernelArgSpec& spec) 
   WriteUInt32(stream, spec.core_x);
   WriteUInt32(stream, spec.core_y);
   WriteBool(stream, spec.has_core_coord);
-  WriteBool(stream, spec.requires_per_work_descriptor);
+  WriteBool(stream, spec.requires_per_work_binding);
 }
 
 static KernelArgSpec ReadKernelArgSpec(dmlc::Stream* stream) {
@@ -372,8 +372,8 @@ static KernelArgSpec ReadKernelArgSpec(dmlc::Stream* stream) {
   spec.core_x = ReadUInt32(stream, "kernel_arg.core_x");
   spec.core_y = ReadUInt32(stream, "kernel_arg.core_y");
   spec.has_core_coord = ReadBool(stream, "kernel_arg.has_core_coord");
-  spec.requires_per_work_descriptor =
-      ReadBool(stream, "kernel_arg.requires_per_work_descriptor");
+  spec.requires_per_work_binding =
+      ReadBool(stream, "kernel_arg.requires_per_work_binding");
   return spec;
 }
 
@@ -418,7 +418,6 @@ static void WritePerWorkArgSpec(dmlc::Stream* stream, const PerWorkArgSpec& spec
   WriteString(stream, spec.arg_kind);
   WriteString(stream, spec.arg_identity);
   WriteString(stream, spec.buffer);
-  WriteString(stream, spec.descriptor_kind);
   WriteString(stream, spec.value_source);
   WriteString(stream, spec.value_expr_json);
   WriteUInt32(stream, spec.constant_value);
@@ -431,7 +430,6 @@ static PerWorkArgSpec ReadPerWorkArgSpec(dmlc::Stream* stream) {
   spec.arg_kind = ReadString(stream, "per_work_arg.arg_kind");
   spec.arg_identity = ReadString(stream, "per_work_arg.arg_identity");
   spec.buffer = ReadString(stream, "per_work_arg.buffer");
-  spec.descriptor_kind = ReadString(stream, "per_work_arg.descriptor_kind");
   spec.value_source = ReadString(stream, "per_work_arg.value_source");
   spec.value_expr_json = ReadString(stream, "per_work_arg.value_expr");
   spec.constant_value = ReadUInt32(stream, "per_work_arg.constant_value");
@@ -1552,37 +1550,58 @@ static void ValidateGemmComputeDirectRuntimeConstraints(const ExecutableSpec& sp
   }
 }
 
-static bool HasPerWorkDescriptorForBuffer(const ExecutableSpec& spec,
-                                          const std::string& buffer,
-                                          const std::string& descriptor_kind) {
-  return std::any_of(spec.per_work_arg_specs.begin(), spec.per_work_arg_specs.end(),
-                     [&](const PerWorkArgSpec& arg_spec) {
-                       return arg_spec.buffer == buffer &&
-                              arg_spec.descriptor_kind == descriptor_kind;
-                     });
+static const BufferMaterializationSpec* FindBufferMaterializationSpec(
+    const ExecutableSpec& spec,
+    const std::string& buffer_name);
+
+static bool IsGenericPerWorkValueArgKind(const std::string& arg_kind) {
+  const std::string prefix =
+      tl::blackhole_runtime_arg_schema::kPerWorkValueArgPrefix;
+  return arg_kind == prefix || arg_kind.rfind(prefix + "_", 0) == 0;
 }
 
-static bool HasValueExprTileStartDescriptorForBuffer(const ExecutableSpec& spec,
-                                                     const std::string& buffer) {
+static bool HasSubTilePageIndexedMaterialization(const ExecutableSpec& spec,
+                                                 const std::string& buffer) {
+  const BufferMaterializationSpec* materialization =
+      FindBufferMaterializationSpec(spec, buffer);
+  if (materialization == nullptr) {
+    return false;
+  }
+  return materialization->layout == "page_indexed" &&
+         materialization->memory_space == "dram" &&
+         materialization->transport_page_size_bytes > 0U &&
+         materialization->transport_page_size_bytes < 32U * 32U * 2U;
+}
+
+static int CountGenericValueExprPerWorkBindingsForBuffer(
+    const ExecutableSpec& spec,
+    const std::string& buffer) {
+  return static_cast<int>(std::count_if(
+      spec.per_work_arg_specs.begin(), spec.per_work_arg_specs.end(),
+      [&](const PerWorkArgSpec& arg_spec) {
+        return arg_spec.buffer == buffer &&
+               IsGenericPerWorkValueArgKind(arg_spec.arg_kind) &&
+               arg_spec.value_source ==
+                   tl::blackhole_runtime_arg_schema::kValueSourceValueExpr &&
+               !arg_spec.value_expr_json.empty();
+      }));
+}
+
+static bool HasValueExprPerWorkBindingForBuffer(const ExecutableSpec& spec,
+                                                const std::string& buffer) {
   return std::any_of(spec.per_work_arg_specs.begin(), spec.per_work_arg_specs.end(),
                      [&](const PerWorkArgSpec& arg_spec) {
                        return arg_spec.buffer == buffer &&
-                              arg_spec.descriptor_kind ==
-                                  tl::blackhole_runtime_arg_schema::kDescriptorTileStart &&
                               arg_spec.value_source ==
                                   tl::blackhole_runtime_arg_schema::kValueSourceValueExpr &&
                               !arg_spec.value_expr_json.empty();
                      });
 }
 
-static bool HasSegmentedRowRangeDescriptorForBuffer(const ExecutableSpec& spec,
-                                                    const std::string& buffer) {
-  return HasPerWorkDescriptorForBuffer(
-             spec, buffer,
-             tl::blackhole_runtime_arg_schema::kDescriptorRowStart) &&
-         HasPerWorkDescriptorForBuffer(
-             spec, buffer,
-             tl::blackhole_runtime_arg_schema::kDescriptorRowCount);
+static bool HasRangeValueExprPerWorkBindingsForBuffer(const ExecutableSpec& spec,
+                                                      const std::string& buffer) {
+  return HasSubTilePageIndexedMaterialization(spec, buffer) &&
+         CountGenericValueExprPerWorkBindingsForBuffer(spec, buffer) >= 2;
 }
 
 static void ValidateGemmInputShape(const ExecutableSpec& spec,
@@ -1595,7 +1614,7 @@ static void ValidateGemmInputShape(const ExecutableSpec& spec,
   const uint32_t logical_grid_z = std::max<uint32_t>(1, spec.core_plan.logical_grid_z);
 
   if (binding.name == gemm.a_buffer) {
-    if (HasSegmentedRowRangeDescriptorForBuffer(spec, binding.name)) {
+    if (HasRangeValueExprPerWorkBindingsForBuffer(spec, binding.name)) {
       ICHECK(!gemm.transpose_A)
           << "Blackhole segmented GEMM A direct path requires non-transposed A";
       const uint32_t expected_cols = gemm.K * logical_grid_z;
@@ -1617,7 +1636,7 @@ static void ValidateGemmInputShape(const ExecutableSpec& spec,
   }
 
   if (binding.name == gemm.b_buffer) {
-    if (HasValueExprTileStartDescriptorForBuffer(spec, binding.name)) {
+    if (HasValueExprPerWorkBindingForBuffer(spec, binding.name)) {
       const uint32_t expected_rows = gemm.transpose_B ? gemm.N
                                                       : gemm.K * logical_grid_z;
       const uint32_t expected_cols = gemm.transpose_B ? gemm.K * logical_grid_z
@@ -1649,7 +1668,7 @@ static void ValidateGemmOutputShape(const ExecutableSpec& spec,
   const auto gemm = GetPrimaryGemmCompute(spec);
   const uint32_t logical_grid_x = std::max<uint32_t>(1, spec.core_plan.logical_grid_x);
   const uint32_t logical_grid_y = std::max<uint32_t>(1, spec.core_plan.logical_grid_y);
-  if (HasSegmentedRowRangeDescriptorForBuffer(spec, gemm.a_buffer)) {
+  if (HasRangeValueExprPerWorkBindingsForBuffer(spec, gemm.a_buffer)) {
     ICHECK_EQ(logical_grid_y, 1U)
         << "Blackhole segmented GEMM direct output currently admits one logical Y tile";
     const uint32_t expected_rows = gemm.M * logical_grid_x;
@@ -1930,7 +1949,7 @@ static std::vector<uint8_t> BuildInputTransferData(const ExecutableSpec& spec,
     return raw;
   };
   if (gemm.enabled && gemm.kind == "gemm" && binding.name == gemm.a_buffer &&
-      HasSegmentedRowRangeDescriptorForBuffer(spec, binding.name)) {
+      HasRangeValueExprPerWorkBindingsForBuffer(spec, binding.name)) {
     return build_raw_transfer();
   }
 
@@ -1984,7 +2003,7 @@ static std::vector<uint8_t> BuildInputTransferData(const ExecutableSpec& spec,
   ValidateGemmInputShape(spec, binding, rows, cols);
 
   if (binding.name == gemm.b_buffer &&
-      HasValueExprTileStartDescriptorForBuffer(spec, binding.name)) {
+      HasValueExprPerWorkBindingForBuffer(spec, binding.name)) {
     return build_raw_transfer();
   }
 
@@ -3766,6 +3785,15 @@ static int64_t EvaluateDirectRuntimeValueExpr(
   return 0;
 }
 
+static bool IsTileStartRuntimeArgKind(const std::string& arg_kind) {
+  return arg_kind == "a_tile_start_id" || arg_kind == "b_tile_start_id" ||
+         arg_kind == "output_tile_start_id" ||
+         arg_kind.rfind("indexed_tile_start_id", 0) == 0 ||
+         arg_kind.rfind("a_tile_start_id_", 0) == 0 ||
+         arg_kind.rfind("b_tile_start_id_", 0) == 0 ||
+         arg_kind.rfind("output_tile_start_id_", 0) == 0;
+}
+
 static uint32_t EvaluatePerWorkValueExpr(
     const PerWorkArgSpec& spec,
     const DirectRuntimeWorkContext& context,
@@ -3783,23 +3811,21 @@ static uint32_t EvaluatePerWorkValueExpr(
       << "Blackhole direct runtime value_expr for " << spec.arg_identity
       << " overflowed uint32";
   const uint32_t u32_value = static_cast<uint32_t>(value);
-  if (spec.descriptor_kind ==
-          tl::blackhole_runtime_arg_schema::kDescriptorTileStart &&
-      !spec.buffer.empty()) {
+  if (IsTileStartRuntimeArgKind(spec.arg_kind) && !spec.buffer.empty()) {
     auto target_it = buffer_bindings.find(spec.buffer);
     ICHECK(target_it != buffer_bindings.end())
-        << "Blackhole direct runtime value_expr tile_start references missing "
+        << "Blackhole direct runtime tile-start binding references missing "
         << "target buffer " << spec.buffer << " for " << spec.arg_identity;
     const RuntimeBufferBinding& target = target_it->second;
     ICHECK_GT(target.transport_page_size_bytes, 0U)
-        << "Blackhole direct runtime value_expr tile_start requires transport page size "
+        << "Blackhole direct runtime tile-start binding requires transport page size "
         << "for target buffer " << spec.buffer;
     const uint64_t max_pages =
         static_cast<uint64_t>(target.size_bytes) /
         static_cast<uint64_t>(target.transport_page_size_bytes);
     ICHECK_LT(static_cast<uint64_t>(u32_value), max_pages)
-        << "Blackhole direct runtime value_expr tile_start out of bounds for "
-        << spec.arg_identity << ": tile_start=" << u32_value
+        << "Blackhole direct runtime tile-start binding out of bounds for "
+        << spec.arg_identity << ": value=" << u32_value
         << ", target_buffer=" << spec.buffer << ", max_pages=" << max_pages;
   }
   return u32_value;
@@ -3831,19 +3857,19 @@ static uint32_t EvaluatePerWorkArgSpec(const PerWorkArgSpec& spec,
     return context.bx * context.logical_grid_y + context.by;
   }
   if (spec.value_source ==
-      tl::blackhole_runtime_arg_schema::kValueSourceLogicalBlockZKTileStart) {
+      tl::blackhole_runtime_arg_schema::kValueSourceLogicalBlockZOffset) {
     ICHECK(context.has_gemm_compute_op)
         << "Blackhole direct runtime per_work_arg_spec requires GEMM compute_op for "
         << spec.arg_identity;
     return context.bz * context.num_k_tiles;
   }
-  if (spec.value_source == tl::blackhole_runtime_arg_schema::kValueSourceComputeNumKTiles) {
+  if (spec.value_source == tl::blackhole_runtime_arg_schema::kValueSourceComputeReductionExtent) {
     ICHECK(context.has_gemm_compute_op)
         << "Blackhole direct runtime per_work_arg_spec requires GEMM compute_op for "
         << spec.arg_identity;
     return context.num_k_tiles;
   }
-  if (spec.value_source == tl::blackhole_runtime_arg_schema::kValueSourceComputeLogicalNTiles) {
+  if (spec.value_source == tl::blackhole_runtime_arg_schema::kValueSourceComputeOutputXExtent) {
     ICHECK(context.has_gemm_compute_op)
         << "Blackhole direct runtime per_work_arg_spec requires GEMM compute_op for "
         << spec.arg_identity;
@@ -3901,7 +3927,7 @@ static bool TryAppendPerWorkRuntimeArg(const KernelSpec& kernel,
       const uint32_t companion_value =
           EvaluatePerWorkArgSpec(*specs[i], context, buffer_bindings);
       ICHECK_EQ(companion_value, value)
-          << "Blackhole direct runtime companion per-work descriptors for "
+          << "Blackhole direct runtime companion per-work bindings for "
           << arg_spec.identity << " disagree: first=" << value
           << ", companion=" << companion_value
           << ", companion_buffer=" << specs[i]->buffer;

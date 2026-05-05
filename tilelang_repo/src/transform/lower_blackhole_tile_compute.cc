@@ -1278,7 +1278,7 @@ Stmt PlanTTKernelABI::GenerateRowBoundMaskApplySequence(
       blackhole_cb_reserve_back(), {IntImm32(mask_cb_id), IntImm32(1)}));
   reader_stmts.push_back(MakeBlackholeCall(
       blackhole_row_bound_mask_to_cb(),
-      {IntImm32(mask_cb_id), match.valid_rows, IntImm32(match.page_base),
+      {IntImm32(mask_cb_id), match.bound_value, IntImm32(match.page_base),
        IntImm32(mask_page_bytes)}));
   reader_stmts.push_back(MakeBlackholeCall(
       blackhole_cb_push_back(), {IntImm32(mask_cb_id), IntImm32(1)}));

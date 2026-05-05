@@ -24,7 +24,7 @@
 | T7 Exact-CB / materialization primitives | Complete | Exact-CB materialization is admitted through typed live-form/materialization/consumer-binding records, including GEMM post-merge `pack_tile`, source-live `cb_republish`, and seq64 bf16 flash-attn exact-CB partial-combine direct runtime correctness. |
 | T7.5 Exact-CB liveness / allocation cutover | Complete | Covered exact-CB resident tiles use typed TTProgram/ExecutableSpec lifecycle, allocation, and release records; old loop-carried owner maps, materialization-pop fallback, and full-tile/slice ambiguity are fail-closed or deleted from the active path. |
 | T8 Irregular work domains / indexed access | Implementation / cleanup required | Grid-indexed, table-indexed, sparse, ragged, paged, segmented, and T9.1 segmented-A grouped GEMM surfaces execute through direct runtime. Indexed/ragged truth is owned by `AccessRegion` plus typed per-work bindings; public per-work schema no longer carries `index_table_*`, workload-shaped row names, or topk/selection fields. |
-| T9 Workload first paths | Implementation | T9.1 pre-grouped MoE/routed grouped GEMM and T9.2 paged GQA decode are admitted through ordinary TIR-derived indexed/ragged descriptors, typed materialization/lifecycle records, and bf16 direct-runtime correctness; T9.3-T9.6 remain queued. |
+| T9 Workload first paths | Implementation | T9.1 pre-grouped MoE/routed grouped GEMM and T9.3 paged MLA decode have bf16 direct-runtime correctness through ordinary TIR-derived indexed/ragged bindings plus typed materialization/lifecycle records. T9.2 paged GQA projection is admitted but the latest full runtime run hits the typed PACR simulator boundary; T9.4-T9.6 remain queued. |
 | T10 Distributed production variants | Queued | Mesh, CCL, NoC/multicast/global scheduling, distributed workload correctness, and production partial-K reduction protocol. |
 
 ## Active Boundary Notes
@@ -40,7 +40,7 @@
 - IR-first audit `2026-05-05`: do not add workload-shaped schema such as
   topk/selection/index-table side channels.  Current T8 cleanup moved sparse
   indexed truth back to `SpatialPlan`: same-subject indexed reads keep
-  distinct `AccessRegion.index_exprs`, and per-work descriptor binding selects
+  distinct `AccessRegion.index_exprs`, and per-work binding selects
   the matching region by structural IR expression.
 - Per-work runtime values that depend on a dynamic TIR expression use
   `value_source=value_expr`; the serialized TIR expression carries the
@@ -48,17 +48,18 @@
   `index_buffer`, `index_value_scale`, `index_table_shape`,
   `index_table_index_sources`, and `value_source=index_table` are not public
   TTProgram / ExecutableSpec / runtime schema.
-- Public descriptor kinds stay generic address/extent/page concepts:
-  `tile_start`, `tile_count`, `tile_stride`, `k_tile_start`, `k_tile_count`,
-  `row_start`, `row_count`, and `page_index`.  Tests now whitelist this set
-  and fail on new case-shaped descriptor/value-source schema.
+- Public per-work schema no longer carries binding-kind subroles such as
+  `row_start`, `row_count`, `page_index`, or legacy `descriptor_kind`.
+  Cross-stage records carry only `arg_kind`, `arg_identity`, `buffer`,
+  `value_source`, optional `value_expr`, and optional `AccessRegion` evidence;
+  leaf readers interpret those generic values locally.
 - Guarded T8 access evidence is `AccessRegion` owner truth: guarded regions
   carry concrete boolean `predicate_exprs`, and `ValidateSpatialPlan` rejects
   guarded regions without them.  This is a generic IR invariant, not a
   ragged/segmented/paged schema branch.
 - Direct runtime no longer uses `work_linear_id` or table-shape metadata as
   the evaluator for table-backed per-work values.  Old ABI branches that
-  rebuilt row-count / row-start descriptors from only a table-buffer name were
+  rebuilt row-count / row-start bindings from only a table-buffer name were
   removed.
 - TT lowering no longer keeps pass-local `IndexTableAddressing`,
   `index_buffer`, or `index_value_scale` helper state for per-work value
@@ -155,8 +156,8 @@ Every active implementation task uses this acceptance table.
 - Indexed block/page traversal beyond the admitted launch-axis table-backed,
   contiguous scaled-block, sparse multi-entry, and sparse+ragged cases.
 - Broader ragged token/page forms beyond the admitted one-dimensional
-  row-count, per-entry sparse row-bound, copy-shaped paged cache length, and
-  per-page row-bound predicate slices.
+  predicate-bound, per-entry sparse predicate-bound, copy-shaped paged cache
+  length, and per-page predicate-bound slices.
 - Broader segmented/grouped workload use beyond the admitted single- and
   two-range row-segment copy and T9.1 grouped-GEMM feed.
 - In every case, the derived evidence must drive source/runtime addressing.
@@ -166,6 +167,11 @@ Every active implementation task uses this acceptance table.
 
 Each checkpoint needs its own direct-runtime correctness proof:
 
+- T9.2 paged GQA decode:
+  keep page-table / cache-length binding projection on the generic
+  `value_expr` path and track the current full-runtime
+  `tensix_execute_pacr: intermediate_format=0 late_from_format=5` simulator
+  boundary separately from schema cleanup.
 - T9.3 paged MLA decode:
   bf16 paged latent / KV access through the admitted page-table and ragged
   bound surface.
@@ -204,28 +210,32 @@ Each checkpoint needs its own direct-runtime correctness proof:
   `segment_row_count`, or selection-plan fields.
 - Dynamic table-derived per-work values use `value_source=value_expr`;
   runtime discovers required input buffers from serialized TIR `BufferLoad`
-  nodes.  Descriptor kinds are generic `row_start`, `row_count`, and
-  `page_index`, not ragged/segmented/paged workload schema.
+  nodes.  Bound/base/page-axis values are ordinary `per_work_value*`
+  bindings, not row/page/tagged public schema.
 - The former pass-local `IndexTableAddressing` / `index_buffer` /
   `index_value_scale` helper path in TT lowering was deleted; there is no
   second table-addressing evaluator behind the public schema.  The remaining
-  compute-segment row-bound routing is a pass-local flag, not an
-  `per_work_row_count` name predicate.
-- Public per-work runtime arg identities for row/page descriptors are generic
-  `per_work_row_start`, `per_work_row_count`, and `per_work_page_index`;
-  workload-shaped identities such as valid-rows, segmented-row, or
-  ragged-page names are not schema.
+  compute-segment bound-value routing is a pass-local flag, not a runtime-arg
+  name predicate.
+- Public per-work runtime arg identities for dynamic base/bound/axis values
+  use generic `per_work_value`, `per_work_value_1`, ... identities.  Workload
+  or row/page shaped identities are not schema.
 - T6 emitted source symbols and markers no longer expose topk/selection
   protocol names.  The dedicated row-rank backend scan remains explicit
   cleanup debt until generic typed compute-region lowering replaces it.
 - `cmake --build build -j32` passed.
 - Focused structural/projection selector covering schema whitelist,
-  value-expression descriptors, indexed/ragged/segmented/paged projection,
-  grouped-GEMM descriptors, and paged GQA/MLA descriptor projection reported
-  `16 passed, 70 deselected`.
-- TT-Sim runtime selectors reported:
-  T6 row-rank selection `4 passed`, T8 indexed/ragged/segmented/paged copy
-  `15 passed, 32 deselected`, and T9.1 grouped GEMM bf16 `1 passed`.
+  value-expression bindings, indexed/ragged/segmented/paged projection,
+  grouped-GEMM bindings, and paged GQA/MLA binding projection reported
+  `18 passed`.
+- TT-Sim runtime selectors reported T8 indexed/ragged/segmented/paged copy
+  `12 passed`, the tile-start out-of-range rejection selector `1 passed`,
+  T9.3 paged MLA selectors `2 passed`, and extended flash
+  `3 passed, 3 skipped`.
+- The latest T9.2 paged GQA direct-runtime selector reached TT-Sim and failed
+  at the typed PACR simulator boundary
+  `tensix_execute_pacr: intermediate_format=0 late_from_format=5`; this is
+  tracked as remaining T9.2 runtime work, not as a row/page schema fallback.
 - `git diff --check` passed, and source audit found no public schema/source
   hits for removed `index_table*` constants, helpers, or value sources.
 
@@ -235,9 +245,10 @@ Each checkpoint needs its own direct-runtime correctness proof:
   cache page selection, cache-length loads drive guarded page-local row
   validity, and the attention update reuses the existing flash
   partial-combine sequence.
-- Full T9.2 bf16 direct runtime compares a two-page, non-contiguous,
-  ragged-length GQA decode tile against a host reference and reported
-  `1 passed`.
+- The current full T9.2 bf16 direct-runtime selector reaches the admitted
+  paged GQA source/spec path but hits the TT-Sim PACR capability boundary
+  `tensix_execute_pacr: intermediate_format=0 late_from_format=5` before host
+  comparison.
 - Larger flash shape coverage for `seq_len=128,256,512` reported
   `3 passed, 3 skipped`; the skips are the typed TT-Sim
   `tensix_execute_pacr: count=1` capability boundary, not an untyped backend

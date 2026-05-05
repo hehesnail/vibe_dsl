@@ -90,7 +90,7 @@ EXPECTED_UNIFIED_COPY_RUNTIME_ARG_KINDS = [
 ]
 
 
-def _assert_value_expr_descriptor(spec, *expected_buffer_names):
+def _assert_value_expr_binding(spec, *expected_buffer_names):
     assert str(spec["value_source"]) == "value_expr"
     value_expr = str(spec.get("value_expr", ""))
     assert value_expr
@@ -103,6 +103,14 @@ def _assert_value_expr_descriptor(spec, *expected_buffer_names):
         assert forbidden not in spec
     for buffer_name in expected_buffer_names:
         assert buffer_name in value_expr
+
+
+def _per_work_specs_by_identity(executable_spec, *, buffer=None):
+    return {
+        str(spec["arg_identity"]): spec
+        for spec in executable_spec["per_work_arg_specs"]
+        if buffer is None or str(spec.get("buffer", "")) == buffer
+    }
 
 
 def test_blackhole_leaf_readers_do_not_keep_legacy_defaults_or_slot_fallbacks():
@@ -178,6 +186,46 @@ def test_blackhole_leaf_readers_do_not_keep_legacy_defaults_or_slot_fallbacks():
         for snippet in snippets:
             if snippet in source:
                 offenders.append(f"{path.relative_to(REPO_ROOT)}: {snippet}")
+
+    assert offenders == []
+
+
+def test_blackhole_public_schema_files_do_not_define_case_shaped_workload_fields():
+    forbidden_terms = [
+        "index_table",
+        "selection_plan",
+        "selection_plans",
+        "TTSelectionPlan",
+        "topk",
+        "top_k",
+        "valid_rows",
+        "ragged_page",
+        "segment_row",
+        "KVLatent",
+        "KPe",
+        "MLA",
+        "paged_decode",
+        "cache_seq",
+        "descriptor_kind",
+        "row_start",
+        "row_count",
+        "page_index",
+        "per_work_row",
+        "per_work_page",
+    ]
+    public_schema_files = [
+        REPO_ROOT / "src" / "transform" / "common" / "blackhole_runtime_arg_schema.h",
+        REPO_ROOT / "src" / "transform" / "common" / "tt_target_program.h",
+        REPO_ROOT / "src" / "target" / "blackhole_module.h",
+        REPO_ROOT / "src" / "target" / "tt_program_projection.h",
+    ]
+
+    offenders = []
+    for path in public_schema_files:
+        source = path.read_text()
+        for term in forbidden_terms:
+            if term in source:
+                offenders.append(f"{path.relative_to(REPO_ROOT)}: {term}")
 
     assert offenders == []
 
@@ -1209,26 +1257,26 @@ def test_blackhole_grid_indexed_copy_build_rejects_top_level_per_work_payload_fa
         )
 
 
-def test_blackhole_grid_indexed_copy_per_work_specs_expose_typed_descriptors():
+def test_blackhole_grid_indexed_copy_per_work_specs_expose_typed_bindings():
     target = Target("blackhole")
     with target:
         artifact = lower(grid_indexed_staged_copy_kernel(grid_x=2, grid_y=2), target=target)
 
     executable_spec = _extract_blackhole_executable_spec(artifact)
-    descriptors = {
-        (str(spec.get("buffer", "")), str(spec["descriptor_kind"])): str(spec["value_source"])
+    bindings = {
+        (str(spec.get("buffer", "")), str(spec["arg_kind"])): str(spec["value_source"])
         for spec in executable_spec["per_work_arg_specs"]
     }
 
-    assert descriptors[("A", "tile_start")] == "work_linear_id"
-    assert descriptors[("A", "tile_count")] == "constant"
-    assert descriptors[("A", "tile_stride")] == "constant"
-    assert descriptors[("B", "tile_start")] == "work_linear_id"
-    assert descriptors[("B", "tile_count")] == "constant"
-    assert descriptors[("B", "tile_stride")] == "constant"
+    assert bindings[("A", "a_tile_start_id")] == "work_linear_id"
+    assert bindings[("A", "a_tile_num_tiles")] == "constant"
+    assert bindings[("A", "a_tile_stride")] == "constant"
+    assert bindings[("B", "output_tile_start_id")] == "work_linear_id"
+    assert bindings[("B", "output_tile_num_tiles")] == "constant"
+    assert bindings[("B", "output_tile_stride")] == "constant"
 
 
-def test_blackhole_block_indexed_copy_per_work_spec_uses_index_table_descriptor():
+def test_blackhole_block_indexed_copy_per_work_spec_uses_value_expr_binding():
     target = Target("blackhole")
     with target:
         artifact = lower(
@@ -1244,16 +1292,13 @@ def test_blackhole_block_indexed_copy_per_work_spec_uses_index_table_descriptor(
     assert "a_tile_start_id = get_arg_val<uint32_t>" in source
     assert "BlockIndices" not in source
 
-    descriptors = {
-        (str(spec.get("buffer", "")), str(spec["descriptor_kind"])): spec
-        for spec in executable_spec["per_work_arg_specs"]
-    }
+    bindings = _per_work_specs_by_identity(executable_spec)
 
-    a_tile_start = descriptors[("A", "tile_start")]
-    _assert_value_expr_descriptor(a_tile_start, "BlockIndices")
+    a_tile_start = bindings["a_tile_start_id"]
+    _assert_value_expr_binding(a_tile_start, "BlockIndices")
     assert str(a_tile_start["access_region"])
     assert int(a_tile_start["access_region_index"]) >= 0
-    assert descriptors[("B", "tile_start")]["value_source"] == "work_linear_id"
+    assert bindings["output_tile_start_id"]["value_source"] == "work_linear_id"
 
     materializations = {
         str(item["buffer"]): item
@@ -1284,13 +1329,10 @@ def test_blackhole_block_indexed_2d_copy_per_work_spec_carries_table_addressing(
     assert "a_tile_start_id = get_arg_val<uint32_t>" in source
     assert "BlockIndices" not in source
 
-    descriptors = {
-        (str(spec.get("buffer", "")), str(spec["descriptor_kind"])): spec
-        for spec in executable_spec["per_work_arg_specs"]
-    }
+    bindings = _per_work_specs_by_identity(executable_spec)
 
-    a_tile_start = descriptors[("A", "tile_start")]
-    _assert_value_expr_descriptor(a_tile_start, "BlockIndices")
+    a_tile_start = bindings["a_tile_start_id"]
+    _assert_value_expr_binding(a_tile_start, "BlockIndices")
     assert str(a_tile_start["access_region"])
     assert int(a_tile_start["access_region_index"]) >= 0
 
@@ -1303,7 +1345,7 @@ def test_blackhole_block_indexed_2d_copy_per_work_spec_carries_table_addressing(
     assert int(materializations["BlockIndices"]["transport_page_size"]) == 24
 
 
-def test_blackhole_block_indexed_2tile_copy_scales_index_table_descriptor():
+def test_blackhole_block_indexed_2tile_copy_scales_value_expr_binding():
     target = Target("blackhole")
     with target:
         artifact = lower(
@@ -1328,18 +1370,15 @@ def test_blackhole_block_indexed_2tile_copy_scales_index_table_descriptor():
         or "a_tile_start_id+1" in compact_source
     )
 
-    descriptors = {
-        (str(spec.get("buffer", "")), str(spec["descriptor_kind"])): spec
-        for spec in executable_spec["per_work_arg_specs"]
-    }
+    bindings = _per_work_specs_by_identity(executable_spec)
 
-    a_tile_start = descriptors[("A", "tile_start")]
-    _assert_value_expr_descriptor(a_tile_start, "BlockIndices")
+    a_tile_start = bindings["a_tile_start_id"]
+    _assert_value_expr_binding(a_tile_start, "BlockIndices")
     assert str(a_tile_start["access_region"])
     assert int(a_tile_start["access_region_index"]) >= 0
 
 
-def test_blackhole_sparse_2tile_copy_uses_two_index_table_tile_start_descriptors():
+def test_blackhole_sparse_2tile_copy_uses_two_value_expr_tile_start_bindings():
     target = Target("blackhole")
     with target:
         artifact = lower(
@@ -1363,15 +1402,15 @@ def test_blackhole_sparse_2tile_copy_uses_two_index_table_tile_start_descriptors
         spec
         for spec in executable_spec["per_work_arg_specs"]
         if str(spec.get("buffer", "")) == "A"
-        and str(spec["descriptor_kind"]) == "tile_start"
+        and str(spec["arg_kind"]).startswith("a_tile_start_id")
     ]
     by_identity = {str(spec["arg_identity"]): spec for spec in tile_start_specs}
 
     assert set(by_identity) >= {"a_tile_start_id", "a_tile_start_id_1"}
     first = by_identity["a_tile_start_id"]
     second = by_identity["a_tile_start_id_1"]
-    _assert_value_expr_descriptor(first, "BlockIndices")
-    _assert_value_expr_descriptor(second, "BlockIndices")
+    _assert_value_expr_binding(first, "BlockIndices")
+    _assert_value_expr_binding(second, "BlockIndices")
     assert str(first["access_region"])
     assert str(second["access_region"])
     assert str(first["access_region"]) != str(second["access_region"])
@@ -1396,28 +1435,23 @@ def test_blackhole_sparse_2tile_ragged_copy_uses_per_entry_valid_rows():
     source = str(kernel_spec["source_code"])
     assert "a_tile_start_id = get_arg_val<uint32_t>" in source
     assert "a_tile_start_id_1 = get_arg_val<uint32_t>" in source
-    assert "per_work_row_count = get_arg_val<uint32_t>" in source
-    assert "per_work_row_count_1 = get_arg_val<uint32_t>" in source
+    assert "per_work_value = get_arg_val<uint32_t>" in source
+    assert "per_work_value_1 = get_arg_val<uint32_t>" in source
     assert "BlockIndices" not in source
     assert "ValidRows" not in source
 
-    by_identity = {
-        str(spec["arg_identity"]): spec
-        for spec in executable_spec["per_work_arg_specs"]
-        if str(spec.get("buffer", "")) == "A"
-    }
-    for identity, index_buffer, constant_source, descriptor_kind in [
-        ("a_tile_start_id", "BlockIndices", "constant:0", "tile_start"),
-        ("a_tile_start_id_1", "BlockIndices", "constant:1", "tile_start"),
-        ("per_work_row_count", "ValidRows", "constant:0", "row_count"),
-        ("per_work_row_count_1", "ValidRows", "constant:1", "row_count"),
+    by_identity = _per_work_specs_by_identity(executable_spec, buffer="A")
+    for identity, index_buffer in [
+        ("a_tile_start_id", "BlockIndices"),
+        ("a_tile_start_id_1", "BlockIndices"),
+        ("per_work_value", "ValidRows"),
+        ("per_work_value_1", "ValidRows"),
     ]:
         spec = by_identity[identity]
-        assert str(spec["descriptor_kind"]) == descriptor_kind
-        _assert_value_expr_descriptor(spec, index_buffer)
+        _assert_value_expr_binding(spec, index_buffer)
 
 
-def test_blackhole_sparse_3tile_ragged_copy_scales_per_entry_descriptors():
+def test_blackhole_sparse_3tile_ragged_copy_scales_per_entry_bindings():
     target = Target("blackhole")
     with target:
         artifact = lower(
@@ -1437,9 +1471,9 @@ def test_blackhole_sparse_3tile_ragged_copy_scales_per_entry_descriptors():
         "a_tile_start_id",
         "a_tile_start_id_1",
         "a_tile_start_id_2",
-        "per_work_row_count",
-        "per_work_row_count_1",
-        "per_work_row_count_2",
+        "per_work_value",
+        "per_work_value_1",
+        "per_work_value_2",
     ]:
         assert f"{identity} = get_arg_val<uint32_t>" in source
     assert "BlockIndices" not in source
@@ -1451,28 +1485,23 @@ def test_blackhole_sparse_3tile_ragged_copy_scales_per_entry_descriptors():
         "a_tile_start_id",
         "a_tile_start_id_1",
         "a_tile_start_id_2",
-        "per_work_row_count",
-        "per_work_row_count_1",
-        "per_work_row_count_2",
+        "per_work_value",
+        "per_work_value_1",
+        "per_work_value_2",
     ]:
-        assert bool(runtime_args_by_identity[identity]["requires_per_work_descriptor"])
+        assert bool(runtime_args_by_identity[identity]["requires_per_work_binding"])
 
-    by_identity = {
-        str(spec["arg_identity"]): spec
-        for spec in executable_spec["per_work_arg_specs"]
-        if str(spec.get("buffer", "")) == "A"
-    }
-    for identity, index_buffer, constant_source, descriptor_kind in [
-        ("a_tile_start_id", "BlockIndices", "constant:0", "tile_start"),
-        ("a_tile_start_id_1", "BlockIndices", "constant:1", "tile_start"),
-        ("a_tile_start_id_2", "BlockIndices", "constant:2", "tile_start"),
-        ("per_work_row_count", "ValidRows", "constant:0", "row_count"),
-        ("per_work_row_count_1", "ValidRows", "constant:1", "row_count"),
-        ("per_work_row_count_2", "ValidRows", "constant:2", "row_count"),
+    by_identity = _per_work_specs_by_identity(executable_spec, buffer="A")
+    for identity, index_buffer in [
+        ("a_tile_start_id", "BlockIndices"),
+        ("a_tile_start_id_1", "BlockIndices"),
+        ("a_tile_start_id_2", "BlockIndices"),
+        ("per_work_value", "ValidRows"),
+        ("per_work_value_1", "ValidRows"),
+        ("per_work_value_2", "ValidRows"),
     ]:
         spec = by_identity[identity]
-        assert str(spec["descriptor_kind"]) == descriptor_kind
-        _assert_value_expr_descriptor(spec, index_buffer)
+        _assert_value_expr_binding(spec, index_buffer)
 
 
 def test_blackhole_per_work_runtime_arg_requirement_is_explicit_not_kind_suffix():
@@ -1493,26 +1522,26 @@ def test_blackhole_per_work_runtime_arg_requirement_is_explicit_not_kind_suffix(
             runtime_args = []
             for arg in segment.get("runtime_args", []):
                 mutated_arg = dict(arg)
-                if str(mutated_arg.get("identity", "")) == "per_work_row_count_1":
+                if str(mutated_arg.get("identity", "")) == "per_work_value_1":
                     mutated_arg["kind"] = "generic_per_work_u32"
-                    mutated_arg["requires_per_work_descriptor"] = True
+                    mutated_arg["requires_per_work_binding"] = True
                 runtime_args.append(mutated_arg)
             mutated["runtime_args"] = runtime_args
             mutated["per_work_arg_specs"] = [
                 dict(spec)
                 for spec in segment.get("per_work_arg_specs", [])
-                if str(spec.get("arg_identity", "")) != "per_work_row_count_1"
+                if str(spec.get("arg_identity", "")) != "per_work_value_1"
             ]
             mutated_segments.append(mutated)
         return mutated_segments
 
-    with pytest.raises(Exception, match="explicit per-work|per_work.*descriptor"):
+    with pytest.raises(Exception, match="explicit per-work|per_work.*binding"):
         _rebuild_codegen_module_with_body_and_segment_plan(
             artifact, segment_mutator=segment_mutator
         )
 
 
-def test_blackhole_ragged_row_copy_uses_valid_rows_index_table_descriptor():
+def test_blackhole_ragged_row_copy_uses_value_expr_bound_binding():
     target = Target("blackhole")
     with target:
         artifact = lower(
@@ -1525,21 +1554,17 @@ def test_blackhole_ragged_row_copy_uses_valid_rows_index_table_descriptor():
         executable_spec["kernels"], kind="fused_dataflow", core_type="brisc"
     )
     source = str(kernel_spec["source_code"])
-    assert "per_work_row_count = get_arg_val<uint32_t>" in source
+    assert "per_work_value = get_arg_val<uint32_t>" in source
     assert "RowCounts" not in source
     assert "dst_words[i] = 0u" in source
-    assert "__tl_page_row < static_cast<int32_t>(per_work_row_count)" in source
+    assert "__tl_page_row < static_cast<int32_t>(per_work_value)" in source
     assert "noc_async_read(" in source
     assert "noc_async_write(" in source
 
-    descriptors = {
-        (str(spec.get("buffer", "")), str(spec["descriptor_kind"])): spec
-        for spec in executable_spec["per_work_arg_specs"]
-    }
-    valid_rows = descriptors[("A", "row_count")]
-    _assert_value_expr_descriptor(valid_rows, "RowCounts")
-    assert str(valid_rows["access_region"])
-    assert int(valid_rows["access_region_index"]) >= 0
+    bound = _per_work_specs_by_identity(executable_spec, buffer="A")["per_work_value"]
+    _assert_value_expr_binding(bound, "RowCounts")
+    assert str(bound["access_region"])
+    assert int(bound["access_region_index"]) >= 0
 
     materializations = {
         str(item["buffer"]): item
@@ -1553,7 +1578,7 @@ def test_blackhole_ragged_row_copy_uses_valid_rows_index_table_descriptor():
     assert int(materializations["RowCounts"]["transport_page_size"]) == 12
 
 
-def test_blackhole_segmented_row_copy_uses_segment_index_table_descriptors():
+def test_blackhole_segmented_row_copy_uses_value_expr_segment_bindings():
     target = Target("blackhole")
     with target:
         artifact = lower(
@@ -1566,9 +1591,9 @@ def test_blackhole_segmented_row_copy_uses_segment_index_table_descriptors():
         executable_spec["kernels"], kind="fused_dataflow", core_type="brisc"
     )
     source = str(kernel_spec["source_code"])
-    assert "per_work_row_start = get_arg_val<uint32_t>" in source
-    assert "per_work_row_count = get_arg_val<uint32_t>" in source
-    assert "per_work_row_start / 32" not in source
+    assert "per_work_value = get_arg_val<uint32_t>" in source
+    assert "per_work_value_1 = get_arg_val<uint32_t>" in source
+    assert "per_work_value / 32" not in source
     assert "a_tile_start_id = get_arg_val<uint32_t>" not in source
     assert "a_tile_num_tiles = get_arg_val<uint32_t>" not in source
     assert "a_tile_stride = get_arg_val<uint32_t>" not in source
@@ -1576,22 +1601,19 @@ def test_blackhole_segmented_row_copy_uses_segment_index_table_descriptors():
     assert "SegmentCounts" not in source
     assert "dst_words[i] = 0u" in source
 
-    descriptors = {
-        (str(spec.get("buffer", "")), str(spec["descriptor_kind"])): spec
-        for spec in executable_spec["per_work_arg_specs"]
-    }
-    segment_start = descriptors[("A", "row_start")]
-    _assert_value_expr_descriptor(segment_start, "SegmentOffsets")
+    bindings = _per_work_specs_by_identity(executable_spec, buffer="A")
+    segment_start = bindings["per_work_value"]
+    _assert_value_expr_binding(segment_start, "SegmentOffsets")
     assert str(segment_start["access_region"])
     assert int(segment_start["access_region_index"]) >= 0
 
-    segment_count = descriptors[("A", "row_count")]
-    _assert_value_expr_descriptor(segment_count, "SegmentCounts")
+    segment_count = bindings["per_work_value_1"]
+    _assert_value_expr_binding(segment_count, "SegmentCounts")
     assert str(segment_count["access_region"])
     assert int(segment_count["access_region_index"]) >= 0
-    assert ("A", "tile_start") not in descriptors
-    assert ("A", "tile_count") not in descriptors
-    assert ("A", "tile_stride") not in descriptors
+    assert "a_tile_start_id" not in bindings
+    assert "a_tile_num_tiles" not in bindings
+    assert "a_tile_stride" not in bindings
 
     materializations = {
         str(item["buffer"]): item
@@ -1607,7 +1629,7 @@ def test_blackhole_segmented_row_copy_uses_segment_index_table_descriptors():
     assert int(materializations["SegmentCounts"]["transport_page_size"]) == 12
 
 
-def test_blackhole_two_segment_row_copy_uses_per_range_descriptors():
+def test_blackhole_two_segment_row_copy_uses_per_range_value_bindings():
     target = Target("blackhole")
     with target:
         artifact = lower(
@@ -1623,33 +1645,28 @@ def test_blackhole_two_segment_row_copy_uses_per_range_descriptors():
         executable_spec["kernels"], kind="fused_dataflow", core_type="brisc"
     )
     source = str(kernel_spec["source_code"])
-    assert "per_work_row_start = get_arg_val<uint32_t>" in source
-    assert "per_work_row_start_1 = get_arg_val<uint32_t>" in source
-    assert "per_work_row_count = get_arg_val<uint32_t>" in source
-    assert "per_work_row_count_1 = get_arg_val<uint32_t>" in source
-    assert "per_work_row_start / 32" not in source
-    assert "per_work_row_start_1 / 32" not in source
+    assert "per_work_value = get_arg_val<uint32_t>" in source
+    assert "per_work_value_1 = get_arg_val<uint32_t>" in source
+    assert "per_work_value_2 = get_arg_val<uint32_t>" in source
+    assert "per_work_value_3 = get_arg_val<uint32_t>" in source
+    assert "per_work_value / 32" not in source
+    assert "per_work_value_1 / 32" not in source
     assert "a_tile_start_id = get_arg_val<uint32_t>" not in source
     assert "SegmentOffsets" not in source
     assert "SegmentCounts" not in source
 
-    by_identity = {
-        str(spec["arg_identity"]): spec
-        for spec in executable_spec["per_work_arg_specs"]
-        if str(spec.get("buffer", "")) == "A"
-    }
-    for identity, index_buffer, constant_source, descriptor_kind in [
-        ("per_work_row_start", "SegmentOffsets", "constant:0", "row_start"),
-        ("per_work_row_start_1", "SegmentOffsets", "constant:1", "row_start"),
-        ("per_work_row_count", "SegmentCounts", "constant:0", "row_count"),
-        ("per_work_row_count_1", "SegmentCounts", "constant:1", "row_count"),
+    by_identity = _per_work_specs_by_identity(executable_spec, buffer="A")
+    for identity, index_buffer in [
+        ("per_work_value", "SegmentOffsets"),
+        ("per_work_value_1", "SegmentOffsets"),
+        ("per_work_value_2", "SegmentCounts"),
+        ("per_work_value_3", "SegmentCounts"),
     ]:
         spec = by_identity[identity]
-        assert str(spec["descriptor_kind"]) == descriptor_kind
-        _assert_value_expr_descriptor(spec, index_buffer)
+        _assert_value_expr_binding(spec, index_buffer)
 
 
-def test_blackhole_paged_cache_len_copy_uses_page_table_and_ragged_page_descriptors():
+def test_blackhole_paged_cache_len_copy_uses_page_table_and_bound_bindings():
     target = Target("blackhole")
     with target:
         artifact = lower(
@@ -1667,24 +1684,20 @@ def test_blackhole_paged_cache_len_copy_uses_page_table_and_ragged_page_descript
     )
     source = str(kernel_spec["source_code"])
     assert "a_tile_start_id = get_arg_val<uint32_t>" in source
-    assert "per_work_row_count = get_arg_val<uint32_t>" in source
-    assert "per_work_page_index = get_arg_val<uint32_t>" in source
+    assert "per_work_value = get_arg_val<uint32_t>" in source
+    assert "per_work_value_1 = get_arg_val<uint32_t>" in source
     assert "PageTable" not in source
     assert "CacheSeqLens" not in source
 
-    descriptors = {
-        (str(spec.get("buffer", "")), str(spec["descriptor_kind"])): spec
-        for spec in executable_spec["per_work_arg_specs"]
-    }
+    bindings = _per_work_specs_by_identity(executable_spec, buffer="A")
+    page_start = bindings["a_tile_start_id"]
+    _assert_value_expr_binding(page_start, "PageTable")
 
-    page_start = descriptors[("A", "tile_start")]
-    _assert_value_expr_descriptor(page_start, "PageTable")
+    bound_value = bindings["per_work_value"]
+    _assert_value_expr_binding(bound_value, "CacheSeqLens")
 
-    valid_rows = descriptors[("A", "row_count")]
-    _assert_value_expr_descriptor(valid_rows, "CacheSeqLens")
-
-    page_index = descriptors[("A", "page_index")]
-    assert str(page_index["value_source"]) == "logical_block_y"
+    axis_value = bindings["per_work_value_1"]
+    assert str(axis_value["value_source"]) == "logical_block_y"
 
 
 def test_blackhole_paged_valid_rows_copy_uses_per_page_row_bounds():
@@ -1705,21 +1718,18 @@ def test_blackhole_paged_valid_rows_copy_uses_per_page_row_bounds():
     )
     source = str(kernel_spec["source_code"])
     assert "a_tile_start_id = get_arg_val<uint32_t>" in source
-    assert "per_work_row_count = get_arg_val<uint32_t>" in source
-    assert "per_work_page_index = get_arg_val<uint32_t>" not in source
+    assert "per_work_value = get_arg_val<uint32_t>" in source
+    assert "per_work_value_1 = get_arg_val<uint32_t>" not in source
     assert "PageTable" not in source
     assert "PageValidRows" not in source
 
-    descriptors = {
-        (str(spec.get("buffer", "")), str(spec["descriptor_kind"])): spec
-        for spec in executable_spec["per_work_arg_specs"]
-    }
+    bindings = _per_work_specs_by_identity(executable_spec, buffer="A")
 
-    page_start = descriptors[("A", "tile_start")]
-    _assert_value_expr_descriptor(page_start, "PageTable")
+    page_start = bindings["a_tile_start_id"]
+    _assert_value_expr_binding(page_start, "PageTable")
 
-    valid_rows = descriptors[("A", "row_count")]
-    _assert_value_expr_descriptor(valid_rows, "PageValidRows")
+    bound_value = bindings["per_work_value"]
+    _assert_value_expr_binding(bound_value, "PageValidRows")
 
 
 def test_blackhole_grid_indexed_copy_rejects_per_work_arg_kind_fallback_without_identity():

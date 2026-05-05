@@ -1375,9 +1375,6 @@ void CodeGenBlackhole::EmitRuntimeArgLoads(const tvm::tir::PrimFunc &f) {
     if (auto v = spec.Get(::tvm::tl::blackhole_runtime_arg_schema::kBuffer)) {
       binding.buffer = Downcast<tvm::ffi::String>(v.value());
     }
-    if (auto v = spec.Get(::tvm::tl::blackhole_runtime_arg_schema::kDescriptorKind)) {
-      binding.descriptor_kind = Downcast<tvm::ffi::String>(v.value());
-    }
     if (auto v = spec.Get(::tvm::tl::blackhole_runtime_arg_schema::kValueSource)) {
       binding.value_source = Downcast<tvm::ffi::String>(v.value());
     }
@@ -1385,10 +1382,7 @@ void CodeGenBlackhole::EmitRuntimeArgLoads(const tvm::tir::PrimFunc &f) {
       binding.constant_value = Downcast<tvm::Integer>(v.value()).IntValue();
     }
     ICHECK(!binding.arg_identity.empty())
-        << "Blackhole codegen requires per-work descriptor arg_identity";
-    ICHECK(!binding.descriptor_kind.empty())
-        << "Blackhole codegen requires per-work descriptor_kind for "
-        << binding.arg_identity;
+        << "Blackhole codegen requires per-work binding arg_identity";
     ICHECK(!binding.value_source.empty())
         << "Blackhole codegen requires per-work value_source for " << binding.arg_identity;
     per_work_arg_bindings_by_identity_[binding.arg_identity] = binding;
@@ -1413,15 +1407,15 @@ void CodeGenBlackhole::EmitRuntimeArgLoads(const tvm::tir::PrimFunc &f) {
       }
       bool requires_explicit_per_work_binding = false;
       if (auto v = arg.Get(
-              ::tvm::tl::blackhole_runtime_arg_schema::kRequiresPerWorkDescriptor)) {
+              ::tvm::tl::blackhole_runtime_arg_schema::kRequiresPerWorkBinding)) {
         requires_explicit_per_work_binding = Downcast<tvm::Bool>(v.value());
       }
       if (per_work_arg_bindings_by_identity_.count(arg_identity) != 0U) {
         ICHECK(requires_explicit_per_work_binding)
             << "Blackhole codegen requires runtime arg '" << arg_kind
             << "' identity '" << arg_identity
-            << "' to declare requires_per_work_descriptor when a per-work "
-            << "descriptor binds that identity";
+            << "' to declare requires_per_work_binding when a per-work "
+            << "binding uses that identity";
       }
       if (!requires_explicit_per_work_binding) {
         continue;
@@ -2070,10 +2064,6 @@ void CodeGenBlackhole::BindThreadIndex(const tvm::tir::IterVar &iv) {
   const bool row_major_grid = linearization_ == "row_major" && logical_grid_x_ > 0;
   auto resolve_explicit_axis = [&](bool want_x) -> std::optional<std::string> {
     for (const auto& binding : per_work_arg_bindings_) {
-      if (binding.descriptor_kind !=
-          ::tvm::tl::blackhole_runtime_arg_schema::kDescriptorTileStart) {
-        continue;
-      }
       auto arg_var = runtime_arg_for_binding(binding);
       if (!arg_var.has_value()) {
         continue;
@@ -2094,7 +2084,7 @@ void CodeGenBlackhole::BindThreadIndex(const tvm::tir::IterVar &iv) {
           }
           return y_expr;
         }
-        return std::string("0 /* explicit_linear_work_descriptor_y */");
+        return std::string("0 /* explicit_linear_work_binding_y */");
       }
       if (binding.value_source ==
           ::tvm::tl::blackhole_runtime_arg_schema::kValueSourceLogicalBlockXYLinear) {
@@ -2112,7 +2102,7 @@ void CodeGenBlackhole::BindThreadIndex(const tvm::tir::IterVar &iv) {
           }
           return y_expr;
         }
-        return std::string("0 /* explicit_xy_work_descriptor_y */");
+        return std::string("0 /* explicit_xy_work_binding_y */");
       }
       if (binding.value_source ==
           ::tvm::tl::blackhole_runtime_arg_schema::kValueSourceLogicalBlockYXLinear) {
@@ -2125,7 +2115,7 @@ void CodeGenBlackhole::BindThreadIndex(const tvm::tir::IterVar &iv) {
         if (logical_grid_y_ > 0) {
           return "(" + arg_var.value() + " % " + std::to_string(logical_grid_y_) + ")";
         }
-        return std::string("0 /* explicit_yx_work_descriptor_y */");
+        return std::string("0 /* explicit_yx_work_binding_y */");
       }
       if (binding.value_source ==
           ::tvm::tl::blackhole_runtime_arg_schema::kValueSourceLogicalBlockX) {
@@ -2146,26 +2136,26 @@ void CodeGenBlackhole::BindThreadIndex(const tvm::tir::IterVar &iv) {
   };
   const auto explicit_block_x = resolve_explicit_axis(/*want_x=*/true);
   const auto explicit_block_y = resolve_explicit_axis(/*want_x=*/false);
-  const bool has_explicit_work_descriptor =
+  const bool has_explicit_work_binding =
       explicit_block_x.has_value() || explicit_block_y.has_value();
 
   // Map CUDA-style thread indices to Blackhole concepts
   // For staged single-core execution, block coordinates must come from the
   // strongest explicit work contract available. If the ABI already carries a
-  // buffer-specific tile descriptor, consume that descriptor directly.
+  // buffer-specific runtime binding, consume that descriptor directly.
   if (thread_tag == "blockIdx.x") {
     if (explicit_block_x.has_value()) {
       var_idmap_[iv->var.get()] = explicit_block_x.value();
-    } else if (has_explicit_work_descriptor) {
-      var_idmap_[iv->var.get()] = "0 /* explicit_work_descriptor_x */";
+    } else if (has_explicit_work_binding) {
+      var_idmap_[iv->var.get()] = "0 /* explicit_work_binding_x */";
     } else {
       var_idmap_[iv->var.get()] = "0 /* core_x */";
     }
   } else if (thread_tag == "blockIdx.y") {
     if (explicit_block_y.has_value()) {
       var_idmap_[iv->var.get()] = explicit_block_y.value();
-    } else if (has_explicit_work_descriptor) {
-      var_idmap_[iv->var.get()] = "0 /* explicit_work_descriptor_y */";
+    } else if (has_explicit_work_binding) {
+      var_idmap_[iv->var.get()] = "0 /* explicit_work_binding_y */";
     } else {
       var_idmap_[iv->var.get()] = "0 /* core_y */";
     }
@@ -3044,13 +3034,13 @@ void CodeGenBlackhole::PrintRowBoundMaskToCB(const tvm::tir::CallNode *op,
       << "tl.blackhole.row_bound_mask_to_cb currently admits one bf16 tiled page";
   need_dataflow_api_h_ = true;
   const int cb_id = ResolveCBId(op->args[0]);
-  os << "{ const uint32_t valid_rows = static_cast<uint32_t>(";
+  os << "{ const uint32_t bound_value = static_cast<uint32_t>(";
   PrintExpr(op->args[1], os);
   os << "); const uint32_t page_base = static_cast<uint32_t>(";
   PrintExpr(op->args[2], os);
   os << "); const uint32_t valid_cols = "
-        "(valid_rows <= page_base) ? 0u : "
-        "(((valid_rows - page_base) >= 32u) ? 32u : (valid_rows - page_base)); "
+        "(bound_value <= page_base) ? 0u : "
+        "(((bound_value - page_base) >= 32u) ? 32u : (bound_value - page_base)); "
         "volatile tt_l1_ptr uint16_t* dst_u16 = "
         "reinterpret_cast<volatile tt_l1_ptr uint16_t*>(get_write_ptr(" << cb_id << ")); "
         "volatile tt_l1_ptr uint32_t* dst_u32 = "
@@ -3086,12 +3076,18 @@ void CodeGenBlackhole::PrintRowBoundMaskToCB(const tvm::tir::CallNode *op,
 void CodeGenBlackhole::PrintMMInit(const tvm::tir::CallNode *op,
                                    std::ostream &os) {
   need_compute_api_h_ = true;
+  ICHECK(op->args.size() == 3U || op->args.size() == 4U)
+      << "tl.blackhole.mm_init expects 3 or 4 arguments";
   os << "mm_init(";
   PrintResolvedCBId(op->args[0], os);
   os << ", ";
   PrintResolvedCBId(op->args[1], os);
   os << ", ";
   PrintResolvedCBId(op->args[2], os);
+  if (op->args.size() == 4U) {
+    os << ", ";
+    PrintExpr(op->args[3], os);
+  }
   os << ")";
 }
 
@@ -3109,24 +3105,34 @@ void CodeGenBlackhole::PrintReconfigDataFormat(const tvm::tir::CallNode* op,
 void CodeGenBlackhole::PrintMMInitShort(const tvm::tir::CallNode* op,
                                         std::ostream& os) {
   need_compute_api_h_ = true;
-  ICHECK_EQ(op->args.size(), 2) << "tl.blackhole.mm_init_short expects 2 arguments";
+  ICHECK(op->args.size() == 2U || op->args.size() == 3U)
+      << "tl.blackhole.mm_init_short expects 2 or 3 arguments";
   os << "mm_init_short(";
   PrintResolvedCBId(op->args[0], os);
   os << ", ";
   PrintResolvedCBId(op->args[1], os);
+  if (op->args.size() == 3U) {
+    os << ", ";
+    PrintExpr(op->args[2], os);
+  }
   os << ")";
 }
 
 void CodeGenBlackhole::PrintMMInitShortWithDT(const tvm::tir::CallNode* op,
                                               std::ostream& os) {
   need_compute_api_h_ = true;
-  ICHECK_EQ(op->args.size(), 3) << "tl.blackhole.mm_init_short_with_dt expects 3 arguments";
+  ICHECK(op->args.size() == 3U || op->args.size() == 4U)
+      << "tl.blackhole.mm_init_short_with_dt expects 3 or 4 arguments";
   os << "mm_init_short_with_dt(";
   PrintResolvedCBId(op->args[0], os);
   os << ", ";
   PrintResolvedCBId(op->args[1], os);
   os << ", ";
   PrintResolvedCBId(op->args[2], os);
+  if (op->args.size() == 4U) {
+    os << ", ";
+    PrintExpr(op->args[3], os);
+  }
   os << ")";
 }
 

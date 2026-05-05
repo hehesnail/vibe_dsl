@@ -753,6 +753,7 @@ Stmt PlanTTKernelABI::GenerateMatmulSequenceForOutputRequirement(int out_req_ind
       << "Blackhole matmul lowering currently supports at most 16 output tiles per GEMM, but "
          "saw "
       << num_c_tiles << " for " << gemm_c_buffer_name_;
+  const int tt_metal_transpose_b = gemm_transpose_b_ ? 1 : 0;
 
   std::vector<Stmt> stmts;
   std::vector<Stmt> deferred_reacquire_stmts;
@@ -762,9 +763,12 @@ Stmt PlanTTKernelABI::GenerateMatmulSequenceForOutputRequirement(int out_req_ind
                                     {IntImm32(in0_id), IntImm32(in1_id)}));
   stmts.push_back(
       MakeBlackholeCall(blackhole_pack_reconfig_data_format(), {IntImm32(out_id)}));
-  stmts.push_back(MakeBlackholeCall(
-      blackhole_mm_init(),
-      {IntImm32(in0_id), IntImm32(in1_id), IntImm32(out_id)}));
+  std::vector<PrimExpr> mm_init_args = {
+      IntImm32(in0_id), IntImm32(in1_id), IntImm32(out_id)};
+  if (tt_metal_transpose_b != 0) {
+    mm_init_args.push_back(IntImm32(tt_metal_transpose_b));
+  }
+  stmts.push_back(MakeBlackholeCall(blackhole_mm_init(), mm_init_args));
 
   // 2. Acquire tile registers
   stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_acquire(), {}));
@@ -1145,6 +1149,7 @@ Stmt PlanTTKernelABI::GenerateMatmulSequenceWithPartialReload(int out_req_index,
       << "Blackhole matmul lowering currently supports at most 16 output tiles per GEMM, but "
          "saw "
       << num_c_tiles << " for " << gemm_c_buffer_name_;
+  const int tt_metal_transpose_b = gemm_transpose_b_ ? 1 : 0;
 
   std::vector<Stmt> stmts;
   std::vector<Stmt> deferred_reacquire_stmts;
@@ -1153,8 +1158,12 @@ Stmt PlanTTKernelABI::GenerateMatmulSequenceWithPartialReload(int out_req_index,
                                     {IntImm32(in0_id), IntImm32(in1_id)}));
   stmts.push_back(
       MakeBlackholeCall(blackhole_pack_reconfig_data_format(), {IntImm32(out_id)}));
-  stmts.push_back(MakeBlackholeCall(blackhole_mm_init(),
-                                    {IntImm32(in0_id), IntImm32(in1_id), IntImm32(out_id)}));
+  std::vector<PrimExpr> mm_init_args = {
+      IntImm32(in0_id), IntImm32(in1_id), IntImm32(out_id)};
+  if (tt_metal_transpose_b != 0) {
+    mm_init_args.push_back(IntImm32(tt_metal_transpose_b));
+  }
+  stmts.push_back(MakeBlackholeCall(blackhole_mm_init(), mm_init_args));
   stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_acquire(), {}));
   stmts.push_back(MakeBlackholeCall(blackhole_cb_wait_front(),
                                     {IntImm32(partials_cb_id), IntImm32(num_c_tiles)}));
@@ -1172,11 +1181,21 @@ Stmt PlanTTKernelABI::GenerateMatmulSequenceWithPartialReload(int out_req_index,
   stmts.push_back(MakeBlackholeCall(blackhole_cb_pop_front(),
                                     {IntImm32(partials_cb_id), IntImm32(num_c_tiles)}));
   if (ClearAccumReloadNeedsDataFormatReconfig()) {
+    std::vector<PrimExpr> mm_init_short_args = {
+        IntImm32(in0_id), IntImm32(in1_id), IntImm32(partials_cb_id)};
+    if (tt_metal_transpose_b != 0) {
+      mm_init_short_args.push_back(IntImm32(tt_metal_transpose_b));
+    }
     stmts.push_back(MakeBlackholeCall(blackhole_mm_init_short_with_dt(),
-                                      {IntImm32(in0_id), IntImm32(in1_id), IntImm32(partials_cb_id)}));
+                                      mm_init_short_args));
   } else {
-    stmts.push_back(
-        MakeBlackholeCall(blackhole_mm_init_short(), {IntImm32(in0_id), IntImm32(in1_id)}));
+    std::vector<PrimExpr> mm_init_short_args = {
+        IntImm32(in0_id), IntImm32(in1_id)};
+    if (tt_metal_transpose_b != 0) {
+      mm_init_short_args.push_back(IntImm32(tt_metal_transpose_b));
+    }
+    stmts.push_back(MakeBlackholeCall(blackhole_mm_init_short(),
+                                      mm_init_short_args));
   }
   stmts.push_back(MakeBlackholeCall(blackhole_cb_wait_front(),
                                     {IntImm32(in0_id), IntImm32(in0_event_tiles)}));

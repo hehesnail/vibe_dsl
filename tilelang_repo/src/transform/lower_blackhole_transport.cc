@@ -358,16 +358,10 @@ static std::pair<int64_t, int64_t> ResolveStagedCopySharedShape(
     const Array<Integer>& fallback_shape,
     std::pair<int64_t, int64_t> logical_matrix_shape,
     bool segmented_gemm,
-    bool transpose_b_reader,
     bool accumulator_like_src,
     int64_t gemm_m,
     int64_t gemm_n,
     int64_t gemm_k) {
-  if (transpose_b_reader) {
-    ICHECK_GT(gemm_k, 0);
-    ICHECK_GT(gemm_n, 0);
-    return {gemm_k, gemm_n};
-  }
   if (segmented_gemm && accumulator_like_src) {
     ICHECK_GT(gemm_m, 0);
     ICHECK_GT(gemm_n, 0);
@@ -1107,7 +1101,6 @@ PrimExpr PlanTTKernelABI::InferCopyTileIndex(const BufferStoreNode* op,
       (GetStorageScope(load->buffer).rfind("local", 0) == 0 ||
        runtime::StorageScope::Create(GetStorageScope(load->buffer)).rank ==
            runtime::StorageRank::kBlackholeAccumulator);
-  const bool transpose_b_reader = false;
   const Buffer& global_buffer =
       IsDramToDeviceCopyDirection(direction) ? load->buffer : op->buffer;
   const Array<PrimExpr>& global_indices =
@@ -1131,7 +1124,7 @@ PrimExpr PlanTTKernelABI::InferCopyTileIndex(const BufferStoreNode* op,
   int64_t shared_cols = 0;
   const auto logical_shared_shape = GetLogicalMatrixShape(shared_buffer);
   std::tie(shared_rows, shared_cols) = ResolveStagedCopySharedShape(
-      shared_buffer, shared_shape, logical_shared_shape, segmented_gemm, transpose_b_reader,
+      shared_buffer, shared_shape, logical_shared_shape, segmented_gemm,
       accumulator_like_src, gemm_m_, gemm_n_, gemm_k_);
   const bool use_page_transport =
       UseStagedCopyPageTransportForShape(shared_rows, shared_cols);
@@ -1203,10 +1196,6 @@ PrimExpr PlanTTKernelABI::InferStagedCopyBaseTileIndex(
       IsDramToDeviceCopyDirection(direction) ? load->buffer : op->buffer;
   const Array<PrimExpr>& global_indices =
       IsDramToDeviceCopyDirection(direction) ? load->indices : op->indices;
-  const bool is_gemm_b_input =
-      direction == CopyDirection::kDramToCB &&
-      ((gemm_b_buffer_.defined() && SameBufferIdentity(op->buffer, gemm_b_buffer_)) ||
-       (buffer_to_req_.count(op->buffer) && buffer_to_req_.at(op->buffer) == gemm_b_req_index_));
   const bool segmented_gemm = !gemm_a_buffer_name_.empty();
   const bool accumulator_like_src =
       direction == CopyDirection::kCBToDram &&
@@ -1215,7 +1204,6 @@ PrimExpr PlanTTKernelABI::InferStagedCopyBaseTileIndex(
            runtime::StorageRank::kBlackholeAccumulator);
 
   Analyzer analyzer;
-  const bool transpose_b_reader = gemm_transpose_b_ && is_gemm_b_input;
   const Buffer& shared_buffer =
       IsDramToDeviceCopyDirection(direction) ? op->buffer : load->buffer;
   const Array<Integer> global_shape = GetEncodedCurrentBufferShape(global_buffer);
@@ -1233,19 +1221,13 @@ PrimExpr PlanTTKernelABI::InferStagedCopyBaseTileIndex(
   int64_t shared_cols = 0;
   const auto logical_shared_shape = GetLogicalMatrixShape(shared_buffer);
   std::tie(shared_rows, shared_cols) = ResolveStagedCopySharedShape(
-      shared_buffer, shared_shape, logical_shared_shape, segmented_gemm, transpose_b_reader,
+      shared_buffer, shared_shape, logical_shared_shape, segmented_gemm,
       accumulator_like_src, gemm_m_, gemm_n_, gemm_k_);
-  const int64_t effective_global_rows =
-      transpose_b_reader ? global_info.global_cols : global_info.global_rows;
-  const int64_t effective_global_cols =
-      transpose_b_reader ? global_info.global_rows : global_info.global_cols;
   const StagedCopyTransportGeometry geometry = BuildStagedCopyTransportGeometry(
-      shared_buffer, shared_rows, shared_cols, effective_global_rows, effective_global_cols,
+      shared_buffer, shared_rows, shared_cols, global_info.global_rows, global_info.global_cols,
       UseStagedCopyPageTransportForShape(shared_rows, shared_cols));
-  const PrimExpr transport_row = transpose_b_reader ? global_info.base_col : global_info.base_row;
-  const PrimExpr transport_col = transpose_b_reader ? global_info.base_row : global_info.base_col;
   return NormalizeRuntimeTileStartScale(
-      LinearizeStagedCopyTransportIndex(&analyzer, transport_row, transport_col,
+      LinearizeStagedCopyTransportIndex(&analyzer, global_info.base_row, global_info.base_col,
                                         global_info.outer_slice_index, geometry));
 }
 
@@ -1767,7 +1749,8 @@ Stmt PlanTTKernelABI::GenerateCopySequence(const BufferStoreNode* op,
           SelectStagedCopyTransportAxes(global_indices, {});
       const std::vector<int64_t> host_axis_order =
           BuildStagedCopyHostAxisOrder(global_indices, global_shape, row_axis, col_axis);
-      const int accessor_slot = GetReadAccessorSlot(segment_kind, load->buffer, direction);
+      const int accessor_slot =
+          GetReadAccessorSlot(segment_kind, load->buffer, direction);
       stmts.push_back(MakeBlackholeCall(
           blackhole_cb_reserve_back(), {IntImm32(cb_id), IntImm32(1)}));
       stmts.push_back(MakeBlackholeCall(
@@ -1850,10 +1833,6 @@ Stmt PlanTTKernelABI::GenerateStagedCopyLoopSequence(
       (GetStorageScope(load->buffer).rfind("local", 0) == 0 ||
        runtime::StorageScope::Create(GetStorageScope(load->buffer)).rank ==
            runtime::StorageRank::kBlackholeAccumulator);
-  const bool transpose_b_reader =
-      direction == CopyDirection::kDramToCB && segmented_gemm && gemm_transpose_b_ &&
-      ((gemm_b_buffer_.defined() && SameBufferIdentity(op->buffer, gemm_b_buffer_)) ||
-       (buffer_to_req_.count(op->buffer) && buffer_to_req_.at(op->buffer) == gemm_b_req_index_));
 
   const Buffer& shared_buffer =
       IsDramToDeviceCopyDirection(direction) ? op->buffer : load->buffer;
@@ -1863,7 +1842,7 @@ Stmt PlanTTKernelABI::GenerateStagedCopyLoopSequence(
   const Array<Integer> shared_shape =
       GetEncodedCurrentStagedCopySharedShape(op, loop_vars_to_zero);
   std::tie(shared_rows, shared_cols) = ResolveStagedCopySharedShape(
-      shared_buffer, shared_shape, logical_shared_shape, segmented_gemm, transpose_b_reader,
+      shared_buffer, shared_shape, logical_shared_shape, segmented_gemm,
       accumulator_like_src, gemm_m_, gemm_n_, gemm_k_);
 
   const bool use_page_transport =
@@ -1883,13 +1862,8 @@ Stmt PlanTTKernelABI::GenerateStagedCopyLoopSequence(
       global_buffer, global_shape, row_axis, col_axis,
       "Blackhole staged copy currently expects static global buffer shape",
       "Blackhole staged copy requires rank-2 global shape metadata after FlattenBuffer");
-  int64_t effective_global_rows = global_rows;
-  if (transpose_b_reader) {
-    effective_global_rows = global_cols;
-    global_cols = global_rows;
-  }
   const StagedCopyTransportGeometry geometry = BuildStagedCopyTransportGeometry(
-      shared_buffer, shared_rows, shared_cols, effective_global_rows, global_cols,
+      shared_buffer, shared_rows, shared_cols, global_rows, global_cols,
       use_page_transport);
   if (geometry.use_page_transport) {
     ValidateStagedStickCopyGlobalWidthDivisible(geometry.global_cols, geometry.shared_cols);
@@ -1912,11 +1886,9 @@ Stmt PlanTTKernelABI::GenerateStagedCopyLoopSequence(
         "Blackhole staged copy requires rank-2 shape metadata after FlattenBuffer",
         [&](const PrimExpr& expr) { return ZeroThreadAndLoopVars(expr, loop_vars_to_zero); },
         &analyzer);
-    const PrimExpr transport_row =
-        transpose_b_reader ? row_page_info.base_col : row_page_info.base_row;
     PrimExpr slice_offset = row_page_info.outer_slice_index *
-                            IntImm32(static_cast<int>(effective_global_rows));
-    return analyzer.Simplify(slice_offset + transport_row);
+                            IntImm32(static_cast<int>(global_rows));
+    return analyzer.Simplify(slice_offset + row_page_info.base_row);
   };
   const PrimExpr row_page_base_index = make_row_page_base_index();
 
@@ -1944,25 +1916,25 @@ Stmt PlanTTKernelABI::GenerateStagedCopyLoopSequence(
   };
   auto make_full_tile_row_page_index = [&](int page_row) -> PrimExpr {
     ICHECK_EQ(geometry.global_cols, geometry.shared_cols)
-        << "Blackhole first ragged row-copy slice requires one row page per logical row";
+        << "Blackhole bound-value copy slice requires one row page per logical row";
     PrimExpr page_index = row_page_base_index;
     if (page_row != 0) {
       page_index = analyzer.Simplify(page_index + IntImm32(page_row));
     }
     return page_index;
   };
-  auto make_segment_row_page_index = [&](int page_row) -> PrimExpr {
-    PrimExpr segment_start = row_page_base_index;
+  auto make_base_value_page_index = [&](int page_row) -> PrimExpr {
+    PrimExpr base_value = row_page_base_index;
     if (page_row != 0) {
-      segment_start = analyzer.Simplify(segment_start + IntImm32(page_row));
+      base_value = analyzer.Simplify(base_value + IntImm32(page_row));
     }
-    return segment_start;
+    return base_value;
   };
-  const bool has_segmented_row_bound =
-      !segment_row_start_table_buffer_name_.empty() &&
-      !segment_row_count_table_buffer_name_.empty();
-  const bool has_ragged_row_bound =
-      !ragged_row_bound_table_buffer_name_.empty();
+  const bool has_base_and_extent_values =
+      !base_value_table_buffer_name_.empty() &&
+      !extent_value_for_base_table_buffer_name_.empty();
+  const bool has_bound_value =
+      !bound_value_table_buffer_name_.empty();
 
   if (IsDramToDeviceCopyDirection(direction)) {
     const bool materialize_to_local = direction == CopyDirection::kDramToLocal;
@@ -1982,9 +1954,10 @@ Stmt PlanTTKernelABI::GenerateStagedCopyLoopSequence(
     int cb_id = AllocateRequirementIndex(
         cb_producer_buffer, segmented_gemm ? CBType::kInput : CBType::kIntermediate);
     RecordStagedCopyBufferBinding(op, direction);
-    const int accessor_slot = GetReadAccessorSlot(segment_kind, load->buffer, direction);
-    const std::optional<PrimExpr> ragged_predicate = GetGuardedCopyPredicate(op);
-    auto make_ragged_row_predicate_for_page =
+    const int accessor_slot =
+        GetReadAccessorSlot(segment_kind, load->buffer, direction);
+    const std::optional<PrimExpr> row_bound_predicate = GetGuardedCopyPredicate(op);
+    auto make_row_bound_predicate_for_page =
         [&](const PrimExpr& predicate, const PrimExpr& row_expr,
             const PrimExpr& page_row) -> std::optional<PrimExpr> {
       if (std::optional<PrimExpr> simple =
@@ -2000,15 +1973,23 @@ Stmt PlanTTKernelABI::GenerateStagedCopyLoopSequence(
         row_candidates.push_back(local_row_from_tile);
       }
 
-      auto make_page_index_arg = []() {
+      std::string dynamic_value_arg_name;
+      auto make_dynamic_value_arg = [&]() {
+        if (dynamic_value_arg_name.empty()) {
+          dynamic_value_arg_name = GetOrCreateIndexedPerWorkRuntimeArg(
+              kBlackholePerWorkValueArgPrefix,
+              BufferIdentityName(load->buffer), load->indices,
+              blackhole_runtime_arg_schema::kValueSourceLogicalBlockY,
+              PrimExpr(), false);
+        }
         return Call(DataType::UInt(32), blackhole_runtime_arg_u32(),
-                    {StringImm(kBlackholePerWorkPageIndexArg)});
+                    {StringImm(dynamic_value_arg_name)});
       };
 
       struct RewriteResult {
         PrimExpr expr;
         bool used_local_row = false;
-        bool used_page_index = false;
+        bool used_dynamic_value = false;
         bool unsupported = false;
       };
 
@@ -2034,7 +2015,7 @@ Stmt PlanTTKernelABI::GenerateStagedCopyLoopSequence(
                 blackhole_runtime_arg_schema::kValueSourceLogicalBlockY) {
               return RewriteResult{current, false, false, true};
             }
-            return RewriteResult{make_page_index_arg(), false, true, false};
+            return RewriteResult{make_dynamic_value_arg(), false, true, false};
           }
           auto join_binary = [&](const PrimExpr& a, const PrimExpr& b,
                                  auto make_expr) -> RewriteResult {
@@ -2042,16 +2023,16 @@ Stmt PlanTTKernelABI::GenerateStagedCopyLoopSequence(
             RewriteResult rhs = rewrite(b);
             if (lhs.unsupported || rhs.unsupported) {
               return RewriteResult{current, lhs.used_local_row || rhs.used_local_row,
-                                   lhs.used_page_index || rhs.used_page_index, true};
+                                   lhs.used_dynamic_value || rhs.used_dynamic_value, true};
             }
-            if (!lhs.used_local_row && !lhs.used_page_index &&
-                !rhs.used_local_row && !rhs.used_page_index) {
+            if (!lhs.used_local_row && !lhs.used_dynamic_value &&
+                !rhs.used_local_row && !rhs.used_dynamic_value) {
               return RewriteResult{current, false, false, false};
             }
             return RewriteResult{
                 make_expr(lhs.expr, rhs.expr),
                 lhs.used_local_row || rhs.used_local_row,
-                lhs.used_page_index || rhs.used_page_index,
+                lhs.used_dynamic_value || rhs.used_dynamic_value,
                 false};
           };
           if (const auto* add = stripped.as<tir::AddNode>()) {
@@ -2106,9 +2087,9 @@ Stmt PlanTTKernelABI::GenerateStagedCopyLoopSequence(
                 rewrite_for_candidate(lt->b, local_row_expr, page_row);
             if (!lhs.unsupported && !rhs.unsupported &&
                 (lhs.used_local_row || rhs.used_local_row)) {
-              if (lhs.used_page_index || rhs.used_page_index) {
-                needs_ragged_page_index_arg_ = true;
-                ragged_page_index_value_source_ =
+              if (lhs.used_dynamic_value || rhs.used_dynamic_value) {
+                needs_dynamic_value_arg_ = true;
+                dynamic_value_source_ =
                     blackhole_runtime_arg_schema::kValueSourceLogicalBlockY;
               }
               return analyzer.Simplify(lhs.expr < rhs.expr);
@@ -2120,9 +2101,9 @@ Stmt PlanTTKernelABI::GenerateStagedCopyLoopSequence(
                 rewrite_for_candidate(le->b, local_row_expr, page_row);
             if (!lhs.unsupported && !rhs.unsupported &&
                 (lhs.used_local_row || rhs.used_local_row)) {
-              if (lhs.used_page_index || rhs.used_page_index) {
-                needs_ragged_page_index_arg_ = true;
-                ragged_page_index_value_source_ =
+              if (lhs.used_dynamic_value || rhs.used_dynamic_value) {
+                needs_dynamic_value_arg_ = true;
+                dynamic_value_source_ =
                     blackhole_runtime_arg_schema::kValueSourceLogicalBlockY;
               }
               return analyzer.Simplify(lhs.expr <= rhs.expr);
@@ -2133,22 +2114,22 @@ Stmt PlanTTKernelABI::GenerateStagedCopyLoopSequence(
       return std::nullopt;
     };
     const bool has_admitted_row_predicate =
-        ragged_predicate.has_value() &&
+        row_bound_predicate.has_value() &&
         !op->indices.empty() &&
-        make_ragged_row_predicate_for_page(
-            ragged_predicate.value(), op->indices[0], IntImm32(0)).has_value();
-    const bool can_materialize_segmented_tiled_rows =
-        !materialize_to_local && segmented_gemm && has_segmented_row_bound &&
+        make_row_bound_predicate_for_page(
+            row_bound_predicate.value(), op->indices[0], IntImm32(0)).has_value();
+    const bool can_materialize_base_value_tiled_rows =
+        !materialize_to_local && segmented_gemm && has_base_and_extent_values &&
         has_admitted_row_predicate && !geometry.use_page_transport &&
         geometry.shared_rows == kBlackholeTileRows &&
         geometry.shared_cols > kBlackholeTileCols &&
         geometry.shared_cols % kBlackholeTileCols == 0 &&
         geometry.global_cols == geometry.shared_cols &&
         geometry.global_cols % kBlackholeFaceCols == 0;
-    if (can_materialize_segmented_tiled_rows) {
+    if (can_materialize_base_value_tiled_rows) {
       const int total_subtiles = geometry.subtile_rows * geometry.subtile_cols;
       ICHECK_EQ(geometry.subtile_rows, 1)
-          << "Blackhole segmented tiled-row materialization currently admits "
+          << "Blackhole base-value tiled-row materialization currently admits "
              "one M tile per work item";
       ICHECK_GT(total_subtiles, 0);
       const int element_bytes = static_cast<int>(shared_buffer->dtype.bytes());
@@ -2159,7 +2140,7 @@ Stmt PlanTTKernelABI::GenerateStagedCopyLoopSequence(
       const int scratch_cb_id = next_requirement_index_++;
       CBRequirement scratch_req;
       scratch_req.name = BufferIdentityName(shared_buffer) +
-                         "_segment_row_scratch_" +
+                         "_base_value_scratch_" +
                          std::to_string(scratch_cb_id);
       scratch_req.type = CBType::kIntermediate;
       scratch_req.page_size = row_tile_page_bytes;
@@ -2170,20 +2151,20 @@ Stmt PlanTTKernelABI::GenerateStagedCopyLoopSequence(
       const std::string source_buffer_name = BufferIdentityName(load->buffer);
       const std::string cb_producer_name = BufferIdentityName(cb_producer_buffer);
       const std::string op_buffer_name = BufferIdentityName(op->buffer);
-      segment_row_subject_buffer_name_ = source_buffer_name;
-      segment_row_shared_buffer_names_.insert(cb_producer_name);
+      base_value_subject_buffer_name_ = source_buffer_name;
+      base_value_shared_buffer_names_.insert(cb_producer_name);
       if (!SameBufferIdentity(cb_producer_buffer, op->buffer)) {
-        segment_row_shared_buffer_names_.insert(op_buffer_name);
+        base_value_shared_buffer_names_.insert(op_buffer_name);
       }
       stmts.push_back(MakeBlackholeCall(
           blackhole_cb_reserve_back(),
           {IntImm32(cb_id), IntImm32(total_subtiles)}));
       for (int page_row = 0; page_row < shared_rows; ++page_row) {
         const std::optional<PrimExpr> maybe_row_predicate =
-            make_ragged_row_predicate_for_page(
-                ragged_predicate.value(), op->indices[0], IntImm32(page_row));
+            make_row_bound_predicate_for_page(
+                row_bound_predicate.value(), op->indices[0], IntImm32(page_row));
         ICHECK(maybe_row_predicate.has_value())
-            << "Blackhole segmented tiled-row reader lost row predicate";
+            << "Blackhole base-value tiled-row reader lost bound predicate";
         PrimExpr row_predicate = analyzer.Simplify(maybe_row_predicate.value());
         const int face_row = page_row / kBlackholeFaceRows;
         const int row_in_face = page_row % kBlackholeFaceRows;
@@ -2249,7 +2230,7 @@ Stmt PlanTTKernelABI::GenerateStagedCopyLoopSequence(
       return maybe_wrap_segment_stmt(SeqStmt::Flatten(stmts));
     }
     if (!materialize_to_local && !guarded_copy_feeds_tile_compute &&
-        (has_ragged_row_bound || has_segmented_row_bound) &&
+        (has_bound_value || has_base_and_extent_values) &&
         has_admitted_row_predicate &&
         !geometry.use_page_transport && geometry.shared_cols == kBlackholeTileCols &&
         geometry.global_cols == geometry.shared_cols) {
@@ -2257,24 +2238,24 @@ Stmt PlanTTKernelABI::GenerateStagedCopyLoopSequence(
       const std::string source_buffer_name = BufferIdentityName(load->buffer);
       const std::string cb_producer_name = BufferIdentityName(cb_producer_buffer);
       const std::string op_buffer_name = BufferIdentityName(op->buffer);
-      if (has_segmented_row_bound) {
-        segment_row_subject_buffer_name_ = source_buffer_name;
-        segment_row_shared_buffer_names_.insert(cb_producer_name);
+      if (has_base_and_extent_values) {
+        base_value_subject_buffer_name_ = source_buffer_name;
+        base_value_shared_buffer_names_.insert(cb_producer_name);
         if (!SameBufferIdentity(cb_producer_buffer, op->buffer)) {
-          segment_row_shared_buffer_names_.insert(op_buffer_name);
+          base_value_shared_buffer_names_.insert(op_buffer_name);
         }
       } else {
-        ragged_row_bound_subject_buffer_name_ = source_buffer_name;
-        ragged_row_bound_shared_buffer_names_.insert(cb_producer_name);
+        bound_value_subject_buffer_name_ = source_buffer_name;
+        bound_value_shared_buffer_names_.insert(cb_producer_name);
         if (!SameBufferIdentity(cb_producer_buffer, op->buffer)) {
-          ragged_row_bound_shared_buffer_names_.insert(op_buffer_name);
+          bound_value_shared_buffer_names_.insert(op_buffer_name);
         }
       }
       Var page_row_var("__tl_page_row", DataType::Int(32));
       PrimExpr page_row = page_row_var;
       const std::optional<PrimExpr> maybe_row_predicate =
-          make_ragged_row_predicate_for_page(
-              ragged_predicate.value(), op->indices[0], page_row);
+          make_row_bound_predicate_for_page(
+              row_bound_predicate.value(), op->indices[0], page_row);
       ICHECK(maybe_row_predicate.has_value())
           << "Blackhole row-bound reader lost row predicate";
       PrimExpr row_predicate = analyzer.Simplify(maybe_row_predicate.value());
@@ -2325,7 +2306,7 @@ Stmt PlanTTKernelABI::GenerateStagedCopyLoopSequence(
                                           IntImm32(page_row * geometry.l1_stick_stride)}));
         RegisterAccessor(segment_kind, load->buffer,
                          accessor_slot, 2, 0, 0, 2, geometry.page_bytes, host_axis_order,
-                         transpose_b_reader, "page_indexed");
+                         /*transpose_2d=*/false, "page_indexed");
       }
       stmts.push_back(MakeBlackholeCall(
           blackhole_noc_async_read_barrier(), {}));
@@ -2365,7 +2346,7 @@ Stmt PlanTTKernelABI::GenerateStagedCopyLoopSequence(
            IntImm32(accessor_slot)}));
       RegisterAccessor(segment_kind, load->buffer,
                        accessor_slot, 2, 0, 0, 2, geometry.tile_bytes, host_axis_order,
-                       transpose_b_reader);
+                       /*transpose_2d=*/false);
       stmts.push_back(MakeBlackholeCall(
           blackhole_cb_push_back(), {IntImm32(cb_id), IntImm32(1)}));
     }
@@ -2416,10 +2397,10 @@ Stmt PlanTTKernelABI::GenerateStagedCopyLoopSequence(
     const int accessor_slot = GetWriteAccessorSlot(segment_kind, op->buffer, direction);
     const std::string live_input_name = BufferIdentityName(load->buffer);
     const bool shared_buffer_has_row_bound =
-        (has_ragged_row_bound &&
-         ragged_row_bound_shared_buffer_names_.count(live_input_name) != 0U) ||
-        (has_segmented_row_bound &&
-         segment_row_shared_buffer_names_.count(live_input_name) != 0U);
+        (has_bound_value &&
+         bound_value_shared_buffer_names_.count(live_input_name) != 0U) ||
+        (has_base_and_extent_values &&
+         base_value_shared_buffer_names_.count(live_input_name) != 0U);
     if (shared_buffer_has_row_bound &&
         !geometry.use_page_transport && geometry.shared_cols == kBlackholeTileCols &&
         geometry.global_cols == geometry.shared_cols) {
@@ -2500,7 +2481,7 @@ Stmt PlanTTKernelABI::GenerateFusedStagedCopySequence(
       GetEncodedCurrentStagedCopySharedShape(dram_to_cb, loop_vars_to_zero);
   std::tie(shared_rows, shared_cols) = ResolveStagedCopySharedShape(
       shared_buffer, shared_shape, logical_shared_shape, /*segmented_gemm=*/false,
-      /*transpose_b_reader=*/false, /*accumulator_like_src=*/false, gemm_m_, gemm_n_, gemm_k_);
+      /*accumulator_like_src=*/false, gemm_m_, gemm_n_, gemm_k_);
   const bool use_page_transport =
       UseStagedCopyPageTransportForShape(shared_rows, shared_cols);
   const Array<Integer> global_shape = GetEncodedCurrentBufferShape(dram_load->buffer);

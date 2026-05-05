@@ -655,8 +655,6 @@ EncodePerWorkArgSpecs(const Array<TTPerWorkArgSpec> &per_work_arg_specs) {
     if (!spec->buffer.empty()) {
       item.Set(::tvm::tl::blackhole_runtime_arg_schema::kBuffer, spec->buffer);
     }
-    item.Set(::tvm::tl::blackhole_runtime_arg_schema::kDescriptorKind,
-             spec->descriptor_kind);
     item.Set(::tvm::tl::blackhole_runtime_arg_schema::kValueSource,
              spec->value_source);
     if (spec->value_expr.defined()) {
@@ -693,8 +691,8 @@ EncodeRuntimeArgSpecs(const Array<TTRuntimeArgSpec> &runtime_args) {
     if (!spec->identity.empty()) {
       item.Set("identity", spec->identity);
     }
-    if (spec->requires_per_work_descriptor) {
-      item.Set(blackhole_runtime_arg_schema::kRequiresPerWorkDescriptor,
+    if (spec->requires_per_work_binding) {
+      item.Set(blackhole_runtime_arg_schema::kRequiresPerWorkBinding,
                Bool(true));
     }
     if (spec->core_x >= 0) {

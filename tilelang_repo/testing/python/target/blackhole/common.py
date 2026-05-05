@@ -190,7 +190,6 @@ def tt_per_work_arg_specs_to_list(per_work_arg_specs):
         item = {
             "arg_kind": str(spec.arg_kind),
             "arg_identity": str(spec.arg_identity),
-            "descriptor_kind": str(spec.descriptor_kind),
             "value_source": str(spec.value_source),
         }
         if str(spec.buffer):
@@ -261,7 +260,6 @@ def make_tt_per_work_arg_specs(per_work_arg_specs):
                     str(item.get("arg_kind", "")),
                     str(item.get("arg_identity", "")),
                     str(item.get("buffer", "")),
-                    str(item.get("descriptor_kind", "")),
                     str(item.get("value_source", "")),
                     int(item.get("constant_value", 0)),
                     str(item.get("access_region", "")),
@@ -276,7 +274,6 @@ def make_tt_per_work_arg_specs(per_work_arg_specs):
                     str(item.get("arg_kind", "")),
                     str(item.get("arg_identity", "")),
                     str(item.get("buffer", "")),
-                    str(item.get("descriptor_kind", "")),
                     str(item.get("value_source", "")),
                     int(item.get("constant_value", 0)),
                     str(item.get("access_region", "")),
@@ -289,7 +286,6 @@ def make_tt_per_work_arg_specs(per_work_arg_specs):
                 str(item.get("arg_kind", "")),
                 str(item.get("arg_identity", "")),
                 str(item.get("buffer", "")),
-                str(item.get("descriptor_kind", "")),
                 str(item.get("value_source", "")),
                 int(item.get("constant_value", 0)),
             )
@@ -313,8 +309,8 @@ def tt_runtime_arg_specs_to_list(runtime_args):
             item["buffer"] = str(spec.buffer)
         if str(spec.identity):
             item["identity"] = str(spec.identity)
-        if bool(getattr(spec, "requires_per_work_descriptor", False)):
-            item["requires_per_work_descriptor"] = True
+        if bool(getattr(spec, "requires_per_work_binding", False)):
+            item["requires_per_work_binding"] = True
         if int(spec.core_x) >= 0:
             item["core_x"] = int(spec.core_x)
         if int(spec.core_y) >= 0:
@@ -414,7 +410,7 @@ def make_tt_runtime_arg_specs(runtime_args):
             str(item.get("identity", "")),
             int(item.get("core_x", -1)),
             int(item.get("core_y", -1)),
-            bool(item.get("requires_per_work_descriptor", False)),
+            bool(item.get("requires_per_work_binding", False)),
         )
         for item in tt_runtime_arg_specs_to_list(runtime_args)
     ]

@@ -76,7 +76,7 @@ The required evidence chain is:
 
 ```text
 TIR GroupOffsets/GroupSizes loads
-  -> row_start / row_count per-work descriptors for A
+  -> generic per-work value bindings for A base and bound values
   -> row-page A materialization with zero-fill
   -> compute-compatible A live form for matmul_tiles
   -> grouped GEMM direct runtime correctness
@@ -89,9 +89,8 @@ materialization records or fail closed with a typed reason.
 The admitted implementation materializes A from row-major DRAM pages into a
 compute-compatible tiled CB:
 
-- the reader consumes A `row_start` / `row_count` descriptor kinds through
-  runtime args; raw `GroupOffsets` / `GroupSizes` loads are not present in
-  source;
+- the reader consumes generic A per-work value runtime args derived from
+  `GroupOffsets` / `GroupSizes`; raw table loads are not present in source;
 - the A accessor is page-indexed over 64-byte bf16 row tiles, so non-32-row
   group offsets are row-addressed instead of tile-addressed;
 - each valid row tile is read into a scratch CB and copied into the nfaces
@@ -103,7 +102,7 @@ compute-compatible tiled CB:
 
 The scratch CB / `copy_cb_page` step is a data-movement implementation detail
 needed to satisfy Blackhole NOC alignment while preserving the typed
-descriptor contract.  It is not a workload-level side channel.
+binding contract.  It is not a workload-level side channel.
 
 ## T9.2 Paged GQA Decode
 
@@ -133,14 +132,14 @@ The required evidence chain is:
 
 ```text
 TIR PageTable / CacheSeqLens loads
-  -> per-page tile_start descriptors for K and V cache reads
-  -> row_count descriptors for the same guarded row copies
+  -> per-page tile-start ABI bindings for K and V cache reads
+  -> generic bound-value bindings for the same guarded row copies
   -> compute-compatible K/V live forms
   -> existing flash partial-combine compute/materialization path
   -> paged GQA direct runtime correctness
 ```
 
-The source may consume runtime args projected from these descriptors, but it
+The source may consume runtime args projected from these bindings, but it
 must not emit raw `PageTable` or `CacheSeqLens` reads to recover the page or
 ragged-bound semantics.  If the page-table/ragged evidence cannot feed the
 existing flash compute path, the backend must reject with a typed reason
@@ -149,17 +148,18 @@ before source/runtime guessing.
 The admitted implementation keeps the workload surface in that chain:
 
 - K cache and V cache page selection are ordinary TIR-derived per-work
-  descriptors with `value_source=value_expr`.  Page 0 and page 1 are separate
+  bindings with `value_source=value_expr`.  Page 0 and page 1 are separate
   static TIR statements that differ by their serialized value expression, not
   by a frontend decode op.
-- `CacheSeqLens[sequence]` lowers to row-count descriptors paired with the
-  page-local row predicate.  Source consumes the projected runtime args and
-  does not reload the page table or cache-length buffers.
+- `CacheSeqLens[sequence]` lowers to generic per-work value bindings paired
+  with the page-local row predicate.  Source
+  consumes the projected runtime args and does not reload the page table or
+  cache-length buffers.
 - Direct runtime materializes page-indexed K/V inputs from the executable
   materialization records.  Complete tile pages use tiled host transfer;
   row/stick-style page-indexed inputs remain raw row-major.  Indexed GEMM B
-  buffers that use explicit tile-start descriptors stay raw so the runtime
-  descriptor remains the owner of page selection.
+  buffers that use explicit tile-start bindings stay raw so the runtime
+  binding remains the owner of page selection.
 - The flash compute path reuses exact-CB partial combine.  Local intermediate
   stream CBs pop a stale front page before a later producer republishes to
   the same physical CB, and generated static pops are clamped to pages that
@@ -198,8 +198,8 @@ The required evidence chain is:
 
 ```text
 TIR PageTable / CacheSeqLens loads
-  -> per-page tile_start descriptors for latent-KV and K-PE reads
-  -> row_count descriptors for the guarded page copies
+  -> per-page tile-start ABI bindings for latent-KV and K-PE reads
+  -> generic bound-value bindings for the guarded page copies
   -> compute-compatible latent-KV and K-PE live forms
   -> two explicit score GEMMs into acc_s
   -> latent-KV retained until the value GEMM in the same page step
@@ -207,7 +207,7 @@ TIR PageTable / CacheSeqLens loads
   -> paged MLA direct runtime correctness
 ```
 
-The source may consume runtime args projected from these descriptors, but it
+The source may consume runtime args projected from these bindings, but it
 must not emit raw `PageTable` or `CacheSeqLens` reads to recover page or
 ragged-bound semantics.  The retained latent-KV input lifetime is part of the
 typed CB lifecycle contract; it must not be repaired by source-name matching
@@ -233,15 +233,14 @@ runtime correctness gate before broadening.
 
 Structure/source:
 
-- the grouped GEMM lowered executable contains A `row_start` and
-  `row_count` descriptor kinds derived from
-  `GroupOffsets[g]` and `GroupSizes[g]`;
+- the grouped GEMM lowered executable contains A generic value bindings
+  derived from `GroupOffsets[g]` and `GroupSizes[g]`;
 - source contains no raw `GroupOffsets` / `GroupSizes` loads;
 - source contains a real `matmul_tiles` compute path for the grouped GEMM;
-- the paged GQA executable contains value-expr K/V tile-start descriptors
-  and row-count descriptors for both static page steps;
+- the paged GQA executable contains value-expr K/V tile-start ABI bindings
+  and generic bound-value bindings for both static page steps;
 - the paged MLA executable contains value-expr latent-KV and K-PE
-  tile-start descriptors and row-count descriptors for both static page
+  tile-start ABI bindings and generic bound-value bindings for both static page
   steps;
 - source contains no raw `PageTable` / `CacheSeqLens` loads and no workload
   decode registry;

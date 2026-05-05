@@ -33,23 +33,15 @@ inline constexpr const char* kPerWorkArgSpecs = "per_work_arg_specs";
 inline constexpr const char* kArgKind = "arg_kind";
 inline constexpr const char* kArgIdentity = "arg_identity";
 inline constexpr const char* kBuffer = "buffer";
-inline constexpr const char* kRequiresPerWorkDescriptor =
-    "requires_per_work_descriptor";
-inline constexpr const char* kDescriptorKind = "descriptor_kind";
+inline constexpr const char* kRequiresPerWorkBinding =
+    "requires_per_work_binding";
 inline constexpr const char* kValueSource = "value_source";
 inline constexpr const char* kValueExpr = "value_expr";
 inline constexpr const char* kConstantValue = "constant_value";
 inline constexpr const char* kAccessRegion = "access_region";
 inline constexpr const char* kAccessRegionIndex = "access_region_index";
 
-inline constexpr const char* kDescriptorTileStart = "tile_start";
-inline constexpr const char* kDescriptorTileCount = "tile_count";
-inline constexpr const char* kDescriptorTileStride = "tile_stride";
-inline constexpr const char* kDescriptorKTileStart = "k_tile_start";
-inline constexpr const char* kDescriptorKTileCount = "k_tile_count";
-inline constexpr const char* kDescriptorRowStart = "row_start";
-inline constexpr const char* kDescriptorRowCount = "row_count";
-inline constexpr const char* kDescriptorPageIndex = "page_index";
+inline constexpr const char* kPerWorkValueArgPrefix = "per_work_value";
 
 inline constexpr const char* kValueSourceWorkLinearId = "work_linear_id";
 inline constexpr const char* kValueSourceLogicalBlockX = "logical_block_x";
@@ -59,10 +51,12 @@ inline constexpr const char* kValueSourceLogicalBlockXYLinear =
     "logical_block_xy_linear";
 inline constexpr const char* kValueSourceLogicalBlockYXLinear =
     "logical_block_yx_linear";
-inline constexpr const char* kValueSourceLogicalBlockZKTileStart =
-    "logical_block_z_k_tile_start";
-inline constexpr const char* kValueSourceComputeNumKTiles = "compute_op_num_k_tiles";
-inline constexpr const char* kValueSourceComputeLogicalNTiles = "compute_op_logical_n_tiles";
+inline constexpr const char* kValueSourceLogicalBlockZOffset =
+    "logical_block_z_offset";
+inline constexpr const char* kValueSourceComputeReductionExtent =
+    "compute_op_reduction_extent";
+inline constexpr const char* kValueSourceComputeOutputXExtent =
+    "compute_op_output_x_extent";
 inline constexpr const char* kValueSourceValueExpr = "value_expr";
 inline constexpr const char* kValueSourceConstant = "constant";
 
