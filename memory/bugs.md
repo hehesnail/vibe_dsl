@@ -2932,6 +2932,11 @@
     Tests must validate `AccessRegion` evidence through generic per-work
     fields (`arg_kind`, `value_source`, `access_region`) rather than
     `descriptor_kind`.
+  - Audit shared companion/schema headers as well as Blackhole leaf records.
+    Unused `selection_targets` / `selection_pairs` manifest keys and stale
+    `buffer_*_contracts` schema constants in `companion_base.h` were deleted
+    because unused header constants can still normalize a fake protocol in
+    future patches.
 - **验证**:
   - Focused structural/projection selectors covering indexed, ragged,
     segmented, paged, grouped-GEMM, and paged GQA/MLA binding projection
@@ -2940,6 +2945,9 @@
     no work-linear-id fallback, no descriptor constants, generic
     AccessRegion evidence, public schema field forbids, and no selection
     plan projection reported `6 passed`.
+  - Follow-up guard now also scans `companion_base.h`; focused selectors
+    covering stale contract/selection keys, generic value-expr schema, and
+    public schema field forbids reported `3 passed`.
   - TT-Sim direct-runtime copy selectors and T9.3 paged MLA selectors passed;
     T9.2 paged GQA remains at the typed PACR simulator boundary in the current
     run.

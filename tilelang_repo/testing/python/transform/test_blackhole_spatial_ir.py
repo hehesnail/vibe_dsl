@@ -1207,8 +1207,10 @@ def test_modern_cpp_audit_blackhole_resource_canonicalizer_has_no_var_name_fallb
 
 def test_blackhole_lowering_support_facts_have_no_contract_map_surface():
     hits = _source_tree_rg(
+        r"selection_targets|selection_pairs|"
         r"buffer_materialization_contracts|buffer_flow_contracts|"
         r"BuildBufferMaterializationContractMap|FindBufferMaterializationContract",
+        REPO_ROOT / "tilelang_repo/src/transform/common/companion_base.h",
         REPO_ROOT / "tilelang_repo/src/transform/common/blackhole_lowering_requirements.h",
         REPO_ROOT / "tilelang_repo/src/transform/common/blackhole_lowering_requirements.cc",
         REPO_ROOT / "tilelang_repo/src/transform/lower_blackhole_ops.h",

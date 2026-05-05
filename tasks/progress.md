@@ -242,6 +242,16 @@ Each checkpoint needs its own direct-runtime correctness proof:
   `descriptor_kind`, `row_start`, `row_count`, and `page_index` as acceptable
   per-work descriptor vocabulary.  The focused schema/projection guard
   selector now reports `6 passed`.
+- Follow-up side-channel audit removed unused `companion_base.h`
+  `selection_targets` / `selection_pairs` manifest keys and stale
+  `buffer_*_contracts` schema constants.  The guard now scans that header
+  with the Blackhole lowering-support files so these deleted side-channel
+  names cannot silently re-enter.
+- Remaining similar-looking code is classified separately: T6 still has the
+  documented dedicated row-rank backend scan emitter; `row_bound_mask_to_cb`
+  is an internal leaf builtin for row-bound mask materialization; and
+  `bound/base value table buffer` names are pass-local mechanics that must not
+  become public TTProgram / ExecutableSpec schema.
 
 2026-05-05 UTC T9.2 paged GQA decode checkpoint:
 
