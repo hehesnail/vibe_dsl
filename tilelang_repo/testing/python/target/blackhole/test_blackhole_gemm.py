@@ -276,7 +276,6 @@ def _rebuild_tt_cb_plan(plan):
         int(plan.consume_pages_per_event),
         int(plan.lifetime_begin),
         int(plan.lifetime_end),
-        list(plan.requirement_names),
         list(plan.requirement_indices),
     )
 

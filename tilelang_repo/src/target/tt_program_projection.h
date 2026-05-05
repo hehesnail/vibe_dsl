@@ -93,9 +93,6 @@ inline Array<Any> EncodeCBPlans(const Array<TTCBPlan> &cb_plans) {
     item.Set("consume_pages_per_event", Integer(cb->consume_pages_per_event));
     item.Set("lifetime_begin", Integer(cb->lifetime_begin));
     item.Set("lifetime_end", Integer(cb->lifetime_end));
-    if (!cb->requirement_names.empty()) {
-      item.Set("requirement_names", cb->requirement_names);
-    }
     if (!cb->requirement_indices.empty()) {
       item.Set("requirement_indices", cb->requirement_indices);
     }

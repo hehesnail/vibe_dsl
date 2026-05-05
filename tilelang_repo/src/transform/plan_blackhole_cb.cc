@@ -1614,7 +1614,6 @@ std::vector<CBConfig> PlanTTCBAlloc::AssignCBIds(
       }
       config.lifetime_end = std::max(config.lifetime_end, req.lifetime_end);
       config.requirement_indices.push_back(static_cast<int>(req_index));
-      config.requirement_names.push_back(req.name);
       reused = true;
       break;
     }
@@ -1635,7 +1634,6 @@ std::vector<CBConfig> PlanTTCBAlloc::AssignCBIds(
     config.lifetime_begin = req.lifetime_begin;
     config.lifetime_end = req.lifetime_end;
     config.requirement_indices.push_back(static_cast<int>(req_index));
-    config.requirement_names.push_back(req.name);
 
     // Assign CB ID based on type
     switch (req.type) {

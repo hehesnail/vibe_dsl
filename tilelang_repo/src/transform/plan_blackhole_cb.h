@@ -62,7 +62,6 @@ struct CBConfig {
   int lifetime_begin;      // First requirement slot covered by this memory object
   int lifetime_end;        // Last requirement slot covered by this memory object
   std::vector<int> requirement_indices;         // Requirement indices merged into this memory object
-  std::vector<std::string> requirement_names;  // Requirement names merged into this memory object
 
   CBConfig()
       : role("intermediate"),

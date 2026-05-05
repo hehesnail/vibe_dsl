@@ -945,7 +945,6 @@ void TTCBPlanNode::RegisterReflection() {
       .def_ro("consume_pages_per_event", &TTCBPlanNode::consume_pages_per_event)
       .def_ro("lifetime_begin", &TTCBPlanNode::lifetime_begin)
       .def_ro("lifetime_end", &TTCBPlanNode::lifetime_end)
-      .def_ro("requirement_names", &TTCBPlanNode::requirement_names)
       .def_ro("requirement_indices", &TTCBPlanNode::requirement_indices);
 }
 
@@ -955,7 +954,6 @@ TTCBPlan::TTCBPlan(ffi::String name, int64_t cb_id, ffi::String resource_class,
                    ffi::String flow_class, int64_t publish_pages_per_event,
                    int64_t consume_pages_per_event, int64_t lifetime_begin,
                    int64_t lifetime_end,
-                   ffi::Array<ffi::String> requirement_names,
                    ffi::Array<Integer> requirement_indices) {
   auto n = ffi::make_object<TTCBPlanNode>();
   n->name = std::move(name);
@@ -970,7 +968,6 @@ TTCBPlan::TTCBPlan(ffi::String name, int64_t cb_id, ffi::String resource_class,
   n->consume_pages_per_event = consume_pages_per_event;
   n->lifetime_begin = lifetime_begin;
   n->lifetime_end = lifetime_end;
-  n->requirement_names = std::move(requirement_names);
   n->requirement_indices = std::move(requirement_indices);
   data_ = std::move(n);
 }
@@ -2119,14 +2116,13 @@ TVM_FFI_STATIC_INIT_BLOCK() {
          int64_t initial_reserve_pages, ffi::String flow_class,
          int64_t publish_pages_per_event, int64_t consume_pages_per_event,
          int64_t lifetime_begin, int64_t lifetime_end,
-         ffi::Array<ffi::String> requirement_names,
          ffi::Array<Integer> requirement_indices) {
         return TTCBPlan(
             std::move(name), cb_id, std::move(resource_class), num_pages,
             page_size_bytes, std::move(data_format), initial_reserve_pages,
             std::move(flow_class), publish_pages_per_event,
             consume_pages_per_event, lifetime_begin, lifetime_end,
-            std::move(requirement_names), std::move(requirement_indices));
+            std::move(requirement_indices));
       });
   refl::GlobalDef().def(
       "tl.TTTransportPlan",

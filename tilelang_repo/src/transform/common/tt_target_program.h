@@ -723,7 +723,6 @@ public:
   int64_t consume_pages_per_event = 0;
   int64_t lifetime_begin = 0;
   int64_t lifetime_end = 0;
-  ffi::Array<ffi::String> requirement_names;
   ffi::Array<Integer> requirement_indices;
 
   static void RegisterReflection();
@@ -738,7 +737,6 @@ public:
                    ffi::String flow_class, int64_t publish_pages_per_event,
                    int64_t consume_pages_per_event, int64_t lifetime_begin,
                    int64_t lifetime_end,
-                   ffi::Array<ffi::String> requirement_names,
                    ffi::Array<Integer> requirement_indices);
   TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(TTCBPlan, ObjectRef, TTCBPlanNode);
 };

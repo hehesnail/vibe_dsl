@@ -2161,7 +2161,7 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   consistency, but must not become a fallback that hides missing accessor ABI.
   For CB-backed L1 resident views, source binding should come from the
   explicit `read_*_to_cb(source_var, ..., cb_id, ...)` builtin argument and
-  the typed CB requirement names.  Do not depend only on `buffer_map`, because
+  typed CB requirement indices.  Do not depend only on `buffer_map`, because
   after lowering / packing the source Var may remain explicit in the builtin
   body while `buffer_map` is no longer a complete identity table.
 - 2026-05-02 Blackhole tensor placement / reshard projection:
@@ -2677,3 +2677,13 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   If codegen needs a physical CB, resolve `cb_requirement_indices` through
   `ExecutableSpec.cb_configs[*].requirement_indices -> cb_id` and fail closed
   when the mapping is missing or ambiguous.
+- 2026-05-06 Blackhole CB name-surface cleanup:
+  Do not keep `requirement_names` as public/debug schema after requirement
+  indices exist.  A debug-looking name table tends to become a second protocol
+  the next codegen path consumes.  CB-backed local allocations should carry an
+  explicit TIR annotation for `tl.blackhole.cb_requirement_index`, and leaf
+  code should resolve that index through executable CB configs to a physical
+  `cb_id`.  Frontend compute config with target meaning should be represented
+  as explicit call annotations or typed fields; do not append op-specific
+  positional tail payload to a TIR call.  Delete unused `Map<String, Any>`
+  payload helpers instead of leaving them as attractive cross-stage bags.

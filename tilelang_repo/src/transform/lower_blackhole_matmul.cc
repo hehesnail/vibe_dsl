@@ -75,8 +75,90 @@ using tvm::IntImm;
 
 namespace {
 
+constexpr const char* kGemmDstFullSyncEn = "tl.gemm.dst_full_sync_en";
+constexpr const char* kGemmBfp8PackPrecise = "tl.gemm.bfp8_pack_precise";
+constexpr const char* kGemmDefineNames = "tl.gemm.define_names";
+constexpr const char* kGemmDefineValues = "tl.gemm.define_values";
+constexpr const char* kGemmNamedCompileArgNames = "tl.gemm.named_compile_arg_names";
+constexpr const char* kGemmNamedCompileArgValues = "tl.gemm.named_compile_arg_values";
 constexpr int kBlackholeTileRows = 32;
 constexpr int kBlackholeTileCols = 32;
+
+int64_t GetGemmAnnotationInt(const CallNode* op, const char* key, int64_t default_value) {
+  if (op == nullptr || !op->annotations.defined()) {
+    return default_value;
+  }
+  if (auto value = op->annotations.Get(ffi::String(key))) {
+    const auto expr = Downcast<PrimExpr>(value.value());
+    const auto* imm = expr.as<IntImmNode>();
+    ICHECK(imm != nullptr) << "GEMM annotation " << key << " must be an integer";
+    return imm->value;
+  }
+  return default_value;
+}
+
+std::vector<std::pair<std::string, std::string>> GetGemmStringPairsAnnotation(
+    const CallNode* op, const char* names_key, const char* values_key) {
+  if (op == nullptr || !op->annotations.defined()) {
+    return {};
+  }
+  auto names_any = op->annotations.Get(ffi::String(names_key));
+  auto values_any = op->annotations.Get(ffi::String(values_key));
+  if (!names_any && !values_any) {
+    return {};
+  }
+  ICHECK(names_any && values_any)
+      << "GEMM annotations " << names_key << " and " << values_key
+      << " must be provided together";
+  const auto names = Downcast<Array<PrimExpr>>(names_any.value());
+  const auto values = Downcast<Array<PrimExpr>>(values_any.value());
+  ICHECK_EQ(names.size(), values.size())
+      << "GEMM annotations " << names_key << " and " << values_key
+      << " must have matching lengths";
+  std::vector<std::pair<std::string, std::string>> pairs;
+  pairs.reserve(names.size());
+  for (size_t i = 0; i < names.size(); ++i) {
+    const auto* name = names[i].as<StringImmNode>();
+    const auto* value = values[i].as<StringImmNode>();
+    ICHECK(name != nullptr && value != nullptr)
+        << "GEMM annotations " << names_key << " and " << values_key
+        << " must contain string literals";
+    pairs.emplace_back(name->value, value->value);
+  }
+  return pairs;
+}
+
+std::vector<std::pair<std::string, uint32_t>> GetGemmIntegerPairsAnnotation(
+    const CallNode* op, const char* names_key, const char* values_key) {
+  if (op == nullptr || !op->annotations.defined()) {
+    return {};
+  }
+  auto names_any = op->annotations.Get(ffi::String(names_key));
+  auto values_any = op->annotations.Get(ffi::String(values_key));
+  if (!names_any && !values_any) {
+    return {};
+  }
+  ICHECK(names_any && values_any)
+      << "GEMM annotations " << names_key << " and " << values_key
+      << " must be provided together";
+  const auto names = Downcast<Array<PrimExpr>>(names_any.value());
+  const auto values = Downcast<Array<PrimExpr>>(values_any.value());
+  ICHECK_EQ(names.size(), values.size())
+      << "GEMM annotations " << names_key << " and " << values_key
+      << " must have matching lengths";
+  std::vector<std::pair<std::string, uint32_t>> pairs;
+  pairs.reserve(names.size());
+  for (size_t i = 0; i < names.size(); ++i) {
+    const auto* name = names[i].as<StringImmNode>();
+    const auto* value = values[i].as<IntImmNode>();
+    ICHECK(name != nullptr && value != nullptr)
+        << "GEMM annotations " << names_key << " and " << values_key
+        << " must contain string/integer pairs";
+    ICHECK_GE(value->value, 0) << "GEMM annotation " << values_key << " must be non-negative";
+    pairs.emplace_back(name->value, static_cast<uint32_t>(value->value));
+  }
+  return pairs;
+}
 
 Stmt MakeBlackholeCall(const Op& op, const std::vector<PrimExpr>& args) {
   return Evaluate(Call(DataType::Int(32), op, args));
@@ -232,11 +314,7 @@ void PlanTTKernelABI::ExtractGemmInfo(const CallNode* op) {
   // tl.tileop.gemm_py args layout (from gemm_op.py _gemm_impl):
   //   [0]=A_region, [1]=B_region, [2]=C_region,
   //   [3]=transA, [4]=transB, [5]=M, [6]=N, [7]=K, ...
-  // Optional Blackhole-only producer payload may continue after the existing
-  // core ABI without affecting GemmPy/Gemm lowering:
-  //   [19]=dst_full_sync_en, [20]=bfp8_pack_precise, [21]=define_count,
-  //   then StringImm name/value define pairs, then named_compile_arg_count,
-  //   then StringImm/IntImm named compile-arg pairs.
+  // Blackhole compute config is carried by explicit call annotations.
   const auto& args = op->args;
   ICHECK_GE(args.size(), 8U) << "tl.tileop.gemm_py expects at least 8 args";
 
@@ -261,54 +339,11 @@ void PlanTTKernelABI::ExtractGemmInfo(const CallNode* op) {
   if (const auto* imm = args[9].as<IntImmNode>()) gemm_clear_accum_ = imm->value != 0;
   if (const auto* imm = args[14].as<IntImmNode>()) gemm_k_pack_ = static_cast<int>(imm->value);
   if (const auto* imm = args[15].as<IntImmNode>()) gemm_wg_wait_ = static_cast<int>(imm->value);
-  gemm_dst_full_sync_en_ = false;
-  if (args.size() > 19) {
-    if (const auto* imm = args[19].as<IntImmNode>()) {
-      gemm_dst_full_sync_en_ = imm->value != 0;
-    }
-  }
-  gemm_bfp8_pack_precise_ = false;
-  if (args.size() > 20) {
-    if (const auto* imm = args[20].as<IntImmNode>()) {
-      gemm_bfp8_pack_precise_ = imm->value != 0;
-    }
-  }
-  gemm_defines_.clear();
-  int arg_index = 21;
-  int define_count = 0;
-  if (args.size() > arg_index) {
-    if (const auto* imm = args[arg_index].as<IntImmNode>()) {
-      define_count = static_cast<int>(imm->value);
-      ++arg_index;
-    }
-  }
-  for (int i = 0; i < define_count; ++i) {
-    ICHECK_LT(arg_index + 1, static_cast<int>(args.size()))
-        << "blackhole GEMM define payload is truncated";
-    const auto* name = args[arg_index].as<tir::StringImmNode>();
-    const auto* value = args[arg_index + 1].as<tir::StringImmNode>();
-    ICHECK(name && value) << "blackhole GEMM defines must be encoded as StringImm pairs";
-    gemm_defines_.emplace_back(name->value, value->value);
-    arg_index += 2;
-  }
-  gemm_named_compile_args_.clear();
-  int named_compile_arg_count = 0;
-  if (args.size() > arg_index) {
-    if (const auto* imm = args[arg_index].as<IntImmNode>()) {
-      named_compile_arg_count = static_cast<int>(imm->value);
-      ++arg_index;
-    }
-  }
-  for (int i = 0; i < named_compile_arg_count; ++i) {
-    ICHECK_LT(arg_index + 1, static_cast<int>(args.size()))
-        << "blackhole GEMM named compile arg payload is truncated";
-    const auto* name = args[arg_index].as<tir::StringImmNode>();
-    const auto* value = args[arg_index + 1].as<IntImmNode>();
-    ICHECK(name && value)
-        << "blackhole GEMM named compile args must be encoded as StringImm/IntImm pairs";
-    gemm_named_compile_args_.emplace_back(name->value, static_cast<uint32_t>(value->value));
-    arg_index += 2;
-  }
+  gemm_dst_full_sync_en_ = GetGemmAnnotationInt(op, kGemmDstFullSyncEn, 0) != 0;
+  gemm_bfp8_pack_precise_ = GetGemmAnnotationInt(op, kGemmBfp8PackPrecise, 0) != 0;
+  gemm_defines_ = GetGemmStringPairsAnnotation(op, kGemmDefineNames, kGemmDefineValues);
+  gemm_named_compile_args_ =
+      GetGemmIntegerPairsAnnotation(op, kGemmNamedCompileArgNames, kGemmNamedCompileArgValues);
   if (args.size() > 16 && IsBufferLikeExpr(args[16])) {
     tir::BufferRegion mbar_region = NormalizeToBufferRegion(args[16]);
     gemm_has_mbarrier_ = true;
@@ -1455,9 +1490,10 @@ Stmt PlanTTKernelABI::GenerateAccumulatingMatmulSequence(const CallNode* op,
        reuse_loop_carried_live_form_cb);
   if (preserve_out_local_state) {
     const std::string output_identity = BufferIdentityName(gemm_c_buffer_);
+    const int output_req_index = FindRequirementIndexForBuffer(gemm_c_buffer_);
     const bool reuse_seeded_source_live_cb =
         use_tiled_cb_live_form && !reuse_loop_carried_live_form_cb &&
-        seeded_cb_requirement_names_.count(output_identity) != 0U &&
+        output_req_index == gemm_c_req_index_ &&
         gemm_c_req_index_ >= 0 && IsSingleFullTileLogicalMatrix(gemm_c_buffer_) &&
         !IsActiveLoopCarriedBuffer(gemm_c_buffer_) &&
         (!use_live_reload || num_c_tiles == 1);

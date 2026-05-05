@@ -177,6 +177,19 @@ It may reject unsupported distribution kinds, but it must not recover source
 regions, page metadata, or core-local mapping from names, source text, or
 argument order.
 
+### CB / Leaf Identity Contract
+
+Projected CB records must carry the physical CB ID and any associated
+requirement indices needed to link back to TTProgram allocation and compute
+operand bindings.  They must not carry `requirement_names`, name-derived
+lookup tables, or other debug-only aliases as leaf-readable protocol.
+
+Leaf codegen may resolve a requirement index through
+`ExecutableSpec.cb_configs[*].requirement_indices -> cb_id`, or fail closed
+when that mapping is missing or ambiguous.  It must not recover a CB from a
+buffer suffix, data-format channel guess, CB config name, or runtime
+observation.
+
 The executable sharded fields intentionally mirror TT-Metal's split between
 memory-layout strategy and `ShardSpec` orientation:
 `height/width/block` are layout strategies, while `row_major/col_major`

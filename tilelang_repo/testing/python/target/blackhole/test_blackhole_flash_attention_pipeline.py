@@ -146,9 +146,7 @@ def _missing_allocates_for_buffers(func, buffer_names):
 
 
 def _cb_logical_names(cb_config):
-    names = [str(cb_config["name"])]
-    names.extend(str(name) for name in cb_config.get("requirement_names", []))
-    return names
+    return [str(cb_config["name"])]
 
 
 def _find_cb_id_by_logical_prefix(spec, prefix):

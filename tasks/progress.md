@@ -225,6 +225,31 @@ Each checkpoint needs its own direct-runtime correctness proof:
 
 ## Recent Verification
 
+2026-05-06 UTC IR-first CB/name/payload cleanup checkpoint:
+
+- Audited the same family as `page_value_arg_name`, `row_start`, `row_count`,
+  `page_index`, and index-table schema.  Additional active risks were
+  CB `requirement_names`, GEMM positional tail payload, and unused
+  `GetPayload*` Map helpers.
+- Removed public/debug `requirement_names` from `TTCBPlan`,
+  `ExecutableSpec.cb_configs`, `BlackholeModule` serialization, projection,
+  and target tests.  CB-backed `blackhole.acc` allocations now carry explicit
+  `tl.blackhole.cb_requirement_index`; codegen consumes requirement indices
+  and executable physical `cb_id`s only.
+- Moved Blackhole GEMM compute config from frontend positional tail args to
+  explicit TIR call annotations consumed by matmul lowering.  `defines` and
+  named compile args remain TT-Metal compile configuration, not a new
+  semantic side channel.
+- Deleted the unused `spatial_analysis` payload-map helper surface so future
+  passes cannot reuse it as a cross-stage semantic bag.
+- `cmake --build build -j32` passed.
+- Focused source/schema guards reported `5 passed`; TT-Sim structural/target
+  selectors covering GEMM config, typed operand bindings, copy attrs, and T6
+  CB operand links reported `9 passed`.
+- Direct-runtime correctness passed after the cleanup: GEMM richer compute
+  config `1 passed`; T6 topk fp32 single-work, fp32 multi-work, and bf16
+  values with int32 indices `3 passed`.
+
 2026-05-05 UTC compute-shaped per-work value-source cleanup checkpoint:
 
 - Removed public `TTPerWorkArgSpec.value_source` enums for

@@ -184,6 +184,15 @@ Represent the remaining TT-specific physical realization:
 - compile-time/runtime ABI schema
 - launch and execution ordering
 
+CB identity that crosses TTProgram boundaries is numeric requirement identity
+plus typed owner records.  `TTCBPlan` may carry `requirement_indices`, and
+compute operand bindings may point at those indices, but it must not expose
+parallel `requirement_names` or other debug-name tables as a downstream
+protocol.  If codegen needs to turn a CB-backed local allocation into a write
+pointer, the allocation must carry an explicit TIR annotation pointing at the
+CB requirement index; consumer code must not infer that permission from buffer
+names or `TTCBPlan.name`.
+
 Transport emitters do not own segment semantics.  They may ask the ABI /
 segment resolver which kernel segment a concrete read/write sequence belongs
 to, but they must not hard-code `fused_dataflow` as a recovery fallback when

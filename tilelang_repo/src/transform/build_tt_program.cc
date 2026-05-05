@@ -218,6 +218,50 @@ CollectBufferStorageInfo(const tir::PrimFunc &func) {
   return info_by_name;
 }
 
+std::unordered_map<int64_t, std::string>
+BuildCBRequirementTargetByIndex(const Array<TTCBPlan> &cb_plans) {
+  std::unordered_map<int64_t, std::string> target_by_index;
+  for (const TTCBPlan &cb_plan : cb_plans) {
+    const std::string target = str(cb_plan->name);
+    if (target.empty()) {
+      continue;
+    }
+    if (cb_plan->requirement_indices.empty()) {
+      if (cb_plan->cb_id >= 0) {
+        target_by_index.emplace(cb_plan->cb_id, target);
+      }
+      continue;
+    }
+    for (const Integer &index : cb_plan->requirement_indices) {
+      target_by_index.emplace(index->value, target);
+    }
+  }
+  return target_by_index;
+}
+
+std::vector<std::string> CBRequirementTargets(
+    const TTCBPlan &cb_plan,
+    const std::unordered_map<int64_t, std::string> &target_by_index) {
+  std::vector<std::string> targets;
+  if (cb_plan->requirement_indices.empty()) {
+    const std::string target = str(cb_plan->name);
+    if (!target.empty()) {
+      targets.push_back(target);
+    }
+    return targets;
+  }
+  for (const Integer &index : cb_plan->requirement_indices) {
+    auto it = target_by_index.find(index->value);
+    ICHECK(it != target_by_index.end())
+        << "TTProgram CB plan requires a target for requirement index "
+        << index->value;
+    if (!it->second.empty()) {
+      targets.push_back(it->second);
+    }
+  }
+  return targets;
+}
+
 std::unordered_map<std::string, std::string>
 CollectSourceBufferByMaterializedTarget(const tir::PrimFunc &func,
                                         const Array<TTCBPlan> &cb_plans) {
@@ -238,9 +282,10 @@ CollectSourceBufferByMaterializedTarget(const tir::PrimFunc &func,
   for (const auto &entry : func->buffer_map) {
     record_buffer_data(entry.second);
   }
+  const std::unordered_map<int64_t, std::string> cb_target_by_index =
+      BuildCBRequirementTargetByIndex(cb_plans);
   for (const TTCBPlan &cb_plan : cb_plans) {
-    for (const String &requirement_name : cb_plan->requirement_names) {
-      const std::string target = str(requirement_name);
+    for (const std::string &target : CBRequirementTargets(cb_plan, cb_target_by_index)) {
       if (!target.empty()) {
         cb_targets[cb_plan->cb_id].push_back(target);
       }
@@ -541,11 +586,7 @@ const char *CBFlowClassToString(CBFlowClass flow_class) {
 Array<TTCBPlan> BuildCBPlans(const std::vector<CBConfig> &configs) {
   Array<TTCBPlan> tt_cb_plans;
   for (const auto &config : configs) {
-    Array<String> requirement_names;
     Array<Integer> requirement_indices;
-    for (const auto &req_name : config.requirement_names) {
-      requirement_names.push_back(String(req_name));
-    }
     for (int req_index : config.requirement_indices) {
       requirement_indices.push_back(Integer(req_index));
     }
@@ -555,7 +596,7 @@ Array<TTCBPlan> BuildCBPlans(const std::vector<CBConfig> &configs) {
                  config.initial_reserve_pages,
                  String(CBFlowClassToString(config.flow_class)),
                  config.publish_pages_per_event, config.consume_pages_per_event,
-                 config.lifetime_begin, config.lifetime_end, requirement_names,
+                 config.lifetime_begin, config.lifetime_end,
                  requirement_indices));
   }
   return tt_cb_plans;
@@ -1446,10 +1487,11 @@ BuildBufferDistributionPlans(const SpatialPlan &spatial_plan,
       CollectPerWorkValueExprInputBuffers(slices);
   const std::unordered_set<std::string> accessor_backed_buffers =
       CollectAccessorBackedBuffers(slices);
+  const std::unordered_map<int64_t, std::string> cb_target_by_index =
+      BuildCBRequirementTargetByIndex(slices.cb_plans);
   std::unordered_map<std::string, int64_t> cb_page_size_by_buffer;
   for (const TTCBPlan &cb_plan : slices.cb_plans) {
-    for (const String &requirement_name : cb_plan->requirement_names) {
-      const std::string buffer_name = str(requirement_name);
+    for (const std::string &buffer_name : CBRequirementTargets(cb_plan, cb_target_by_index)) {
       int64_t &page_size = cb_page_size_by_buffer[buffer_name];
       page_size = std::max(page_size, cb_plan->page_size_bytes);
     }

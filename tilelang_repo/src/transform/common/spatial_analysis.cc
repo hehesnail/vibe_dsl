@@ -8,32 +8,6 @@
 namespace tvm {
 namespace tl {
 
-std::optional<int64_t> GetPayloadIndex(const Map<String, Any>& payload, const char* key) {
-  if (auto value = payload.Get(String(key))) {
-    return Downcast<Integer>(value.value())->value;
-  }
-  return std::nullopt;
-}
-
-std::optional<std::string> GetPayloadString(const Map<String, Any>& payload, const char* key) {
-  if (auto value = payload.Get(String(key))) {
-    return Downcast<String>(value.value());
-  }
-  return std::nullopt;
-}
-
-std::optional<std::vector<int64_t>> GetPayloadIndices(const Map<String, Any>& payload,
-                                                      const char* key) {
-  if (auto value = payload.Get(String(key))) {
-    std::vector<int64_t> result;
-    for (const Any& item : Downcast<Array<Any>>(value.value())) {
-      result.push_back(Downcast<Integer>(item)->value);
-    }
-    return result;
-  }
-  return std::nullopt;
-}
-
 Array<TIRAnchor> MakeAnchors(const std::string& kind, const std::string& value) {
   return Array<TIRAnchor>{TIRAnchor(String(kind), String(value))};
 }

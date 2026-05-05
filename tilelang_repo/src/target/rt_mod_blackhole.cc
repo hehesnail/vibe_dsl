@@ -281,11 +281,6 @@ static std::vector<CBConfig> ExtractCBConfig(const tir::PrimFunc& f) {
     if (auto data_format = cb_info.Get("data_format")) {
       config.data_format = Downcast<String>(data_format.value());
     }
-    if (auto requirement_names = cb_info.Get("requirement_names")) {
-      for (const auto& name : Downcast<ffi::Array<ffi::Any>>(requirement_names.value())) {
-        config.requirement_names.push_back(Downcast<String>(name));
-      }
-    }
     if (auto requirement_indices = cb_info.Get("requirement_indices")) {
       for (const auto& index : Downcast<ffi::Array<ffi::Any>>(requirement_indices.value())) {
         config.requirement_indices.push_back(Downcast<Integer>(index).IntValue());

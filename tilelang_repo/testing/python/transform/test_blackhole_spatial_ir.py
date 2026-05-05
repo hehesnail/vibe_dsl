@@ -1219,6 +1219,15 @@ def test_blackhole_lowering_support_facts_have_no_contract_map_surface():
     assert hits == []
 
 
+def test_spatial_analysis_does_not_keep_payload_map_helpers():
+    hits = _source_tree_rg(
+        r"GetPayload(Index|String|Indices)|Map<String, Any>.*payload|payload\.Get",
+        REPO_ROOT / "tilelang_repo/src/transform/common/spatial_analysis.h",
+        REPO_ROOT / "tilelang_repo/src/transform/common/spatial_analysis.cc",
+    )
+    assert hits == []
+
+
 def test_blackhole_compute_op_planning_has_no_map_seed_contract_surface():
     hits = _source_tree_rg(
         r"compute_op_seeds_|BuildGemmComputeOpSeed|"
@@ -1336,6 +1345,11 @@ def test_t6_value_index_scan_codegen_has_no_topk_named_protocol_surface():
         "_reduce_out",
         "find_cb_by_requirement_name",
         "cb_has_exact_requirement_name",
+        "cb_id_by_requirement_name_",
+        "cb_num_pages_by_requirement_name_",
+        "cb_publish_pages_by_requirement_name_",
+        "cb_initial_reserve_pages_by_requirement_name_",
+        'cb_info.Get("requirement_names")',
         "find_unique_output_cb_by_channel",
         "candidate_is_ordinal",
         "row-rank",
@@ -1346,6 +1360,83 @@ def test_t6_value_index_scan_codegen_has_no_topk_named_protocol_surface():
     ]:
         assert forbidden not in source
         assert forbidden not in header
+
+
+def test_blackhole_cb_allocation_consumers_do_not_use_requirement_names_as_protocol():
+    sources = {
+        "codegen": (
+            REPO_ROOT / "tilelang_repo/src/target/codegen_blackhole.cc"
+        ).read_text(),
+        "codegen_header": (
+            REPO_ROOT / "tilelang_repo/src/target/codegen_blackhole.h"
+        ).read_text(),
+        "build_tt_program": (
+            REPO_ROOT / "tilelang_repo/src/transform/build_tt_program.cc"
+        ).read_text(),
+        "lowering_header": (
+            REPO_ROOT / "tilelang_repo/src/transform/lower_blackhole_ops.h"
+        ).read_text(),
+        "lowering_matmul": (
+            REPO_ROOT / "tilelang_repo/src/transform/lower_blackhole_matmul.cc"
+        ).read_text(),
+    }
+    forbidden_by_file = {
+        "codegen": [
+            "requirement_name",
+            "requirement_names",
+        ],
+        "codegen_header": [
+            "requirement_name",
+            "requirement_names",
+        ],
+        "build_tt_program": [
+            "cb_plan->requirement_names",
+        ],
+        "lowering_header": [
+            "seeded_cb_requirement_names_",
+        ],
+        "lowering_matmul": [
+            "seeded_cb_requirement_names_",
+        ],
+    }
+    for label, forbidden_values in forbidden_by_file.items():
+        for forbidden in forbidden_values:
+            assert forbidden not in sources[label]
+
+
+def test_blackhole_gemm_compute_config_is_not_positional_tail_payload():
+    frontend = (REPO_ROOT / "tilelang_repo/tilelang/language/gemm_op.py").read_text()
+    lowering = (
+        REPO_ROOT / "tilelang_repo/src/transform/lower_blackhole_matmul.cc"
+    ).read_text()
+
+    for forbidden in [
+        "*extra_args",
+        "define_count",
+        "named_compile_arg_count",
+        "blackhole GEMM define payload",
+        "blackhole GEMM named compile arg payload",
+        "args.size() > 19",
+        "args.size() > 20",
+        "args[arg_index]",
+    ]:
+        assert forbidden not in frontend
+        assert forbidden not in lowering
+
+
+def test_blackhole_cb_plan_schema_does_not_project_requirement_names():
+    sources = [
+        REPO_ROOT / "tilelang_repo/src/transform/common/tt_target_program.h",
+        REPO_ROOT / "tilelang_repo/src/transform/common/tt_target_program.cc",
+        REPO_ROOT / "tilelang_repo/src/transform/plan_blackhole_cb.h",
+        REPO_ROOT / "tilelang_repo/src/transform/plan_blackhole_cb.cc",
+        REPO_ROOT / "tilelang_repo/src/transform/build_tt_program.cc",
+        REPO_ROOT / "tilelang_repo/src/target/tt_program_projection.h",
+        REPO_ROOT / "tilelang_repo/src/target/rt_mod_blackhole.cc",
+        REPO_ROOT / "tilelang_repo/src/target/blackhole_module.h",
+    ]
+    for source_path in sources:
+        assert "requirement_names" not in source_path.read_text()
 
 
 def test_exact_cb_release_source_does_not_keep_local_last_use_fallback():

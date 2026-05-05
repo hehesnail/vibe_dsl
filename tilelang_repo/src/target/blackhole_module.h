@@ -34,7 +34,6 @@ struct CBConfig {
   uint32_t publish_pages_per_event = 0;
   uint32_t consume_pages_per_event = 0;
   std::string data_format;
-  std::vector<std::string> requirement_names;
   std::vector<int64_t> requirement_indices;
 
   void Save(dmlc::JSONWriter* writer) const {
@@ -52,9 +51,6 @@ struct CBConfig {
     writer->WriteObjectKeyValue("consume_pages_per_event",
                                 static_cast<int64_t>(consume_pages_per_event));
     writer->WriteObjectKeyValue("data_format", data_format);
-    if (!requirement_names.empty()) {
-      writer->WriteObjectKeyValue("requirement_names", requirement_names);
-    }
     if (!requirement_indices.empty()) {
       writer->WriteObjectKeyValue("requirement_indices", requirement_indices);
     }

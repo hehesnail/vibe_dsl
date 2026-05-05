@@ -35,6 +35,7 @@
 #include <vector>
 
 #include "../layout/layout.h"
+#include "../transform/common/blackhole_ir_attrs.h"
 #include "../transform/common/blackhole_runtime_arg_schema.h"
 #include "../tir/builtin_blackhole.h"
 #include "tt_program_projection.h"
@@ -100,6 +101,17 @@ std::optional<std::string> BlackholeBuiltinName(const tvm::tir::CallNode* op) {
     return std::nullopt;
   }
   return op_name.substr(prefix.length());
+}
+
+std::optional<int> CBRequirementIndexAnnotation(const tvm::tir::AllocateNode* op) {
+  if (op == nullptr || !op->annotations.defined()) {
+    return std::nullopt;
+  }
+  if (auto value =
+          op->annotations.Get(tvm::ffi::String(blackhole_ir_attrs::kCBRequirementIndex))) {
+    return Downcast<tvm::Integer>(value.value()).IntValue();
+  }
+  return std::nullopt;
 }
 
 bool IsTRISCOnlyBlackholeBuiltin(const std::string& builtin_name) {
@@ -651,10 +663,8 @@ void CodeGenBlackhole::Init(bool output_ssa, bool emit_asserts,
   cb_num_pages_by_id_.clear();
   cb_data_format_by_id_.clear();
   cb_id_by_requirement_index_.clear();
-  cb_id_by_requirement_name_.clear();
-  cb_num_pages_by_requirement_name_.clear();
-  cb_publish_pages_by_requirement_name_.clear();
-  cb_initial_reserve_pages_by_requirement_name_.clear();
+  cb_num_pages_by_requirement_index_.clear();
+  cb_initial_reserve_pages_by_requirement_index_.clear();
   active_cb_allocation_reserved_pages_.clear();
   thread_idx_x_expr_.clear();
   logical_grid_x_ = 1;
@@ -1487,10 +1497,9 @@ void CodeGenBlackhole::LoadCBConfigMetadata(const tvm::tir::PrimFunc &f) {
   cb_page_size_by_id_.clear();
   cb_num_pages_by_id_.clear();
   cb_data_format_by_id_.clear();
-  cb_id_by_requirement_name_.clear();
-  cb_num_pages_by_requirement_name_.clear();
-  cb_publish_pages_by_requirement_name_.clear();
-  cb_initial_reserve_pages_by_requirement_name_.clear();
+  cb_id_by_requirement_index_.clear();
+  cb_num_pages_by_requirement_index_.clear();
+  cb_initial_reserve_pages_by_requirement_index_.clear();
   active_cb_allocation_reserved_pages_.clear();
   auto cb_configs = GetCBConfigsForCodegen(f);
   if (!cb_configs.empty()) {
@@ -1503,7 +1512,6 @@ void CodeGenBlackhole::LoadCBConfigMetadata(const tvm::tir::PrimFunc &f) {
       int cb_id = -1;
       int page_size = 0;
       int num_pages = 1;
-      int publish_pages_per_event = 0;
       int initial_reserve_pages = 0;
       if (auto v = cb_info.Get("cb_id")) {
         cb_id = Downcast<tvm::Integer>(v.value()).IntValue();
@@ -1513,9 +1521,6 @@ void CodeGenBlackhole::LoadCBConfigMetadata(const tvm::tir::PrimFunc &f) {
       }
       if (auto v = cb_info.Get("num_pages")) {
         num_pages = Downcast<tvm::Integer>(v.value()).IntValue();
-      }
-      if (auto v = cb_info.Get("publish_pages_per_event")) {
-        publish_pages_per_event = Downcast<tvm::Integer>(v.value()).IntValue();
       }
       if (auto v = cb_info.Get("initial_reserve_pages")) {
         initial_reserve_pages = Downcast<tvm::Integer>(v.value()).IntValue();
@@ -1530,21 +1535,9 @@ void CodeGenBlackhole::LoadCBConfigMetadata(const tvm::tir::PrimFunc &f) {
             const int requirement_index =
                 Downcast<tvm::Integer>(requirement_index_any).IntValue();
             cb_id_by_requirement_index_[requirement_index] = cb_id;
-          }
-        }
-        if (auto requirement_names = cb_info.Get("requirement_names")) {
-          for (const auto& requirement_name_any :
-               Downcast<tvm::ffi::Array<tvm::ffi::Any>>(requirement_names.value())) {
-            const std::string requirement_name =
-                Downcast<tvm::ffi::String>(requirement_name_any);
-            cb_id_by_requirement_name_[requirement_name] = cb_id;
-            cb_num_pages_by_requirement_name_[requirement_name] = std::max(1, num_pages);
-            if (publish_pages_per_event > 0) {
-              cb_publish_pages_by_requirement_name_[requirement_name] =
-                  std::max(1, publish_pages_per_event);
-            }
+            cb_num_pages_by_requirement_index_[requirement_index] = std::max(1, num_pages);
             if (initial_reserve_pages > 0) {
-              cb_initial_reserve_pages_by_requirement_name_[requirement_name] =
+              cb_initial_reserve_pages_by_requirement_index_[requirement_index] =
                   std::max(1, initial_reserve_pages);
             }
           }
@@ -1843,29 +1836,7 @@ DataType CodeGenBlackhole::ResolveHandleDataType(const tvm::tir::VarNode* var, c
   return maybe_dtype.value();
 }
 
-bool CodeGenBlackhole::TryPrintCBBackedHandleVar(const tvm::tir::VarNode* var,
-                                                 std::ostream& os) const {
-  if (var == nullptr || var_idmap_.count(var) != 0U) {
-    return false;
-  }
-  if (!var->type_annotation.as<PointerTypeNode>()) {
-    return false;
-  }
-  if (tvm::tir::GetPtrStorageScope(GetRef<tvm::tir::Var>(var)) != "blackhole.acc") {
-    return false;
-  }
-  auto cb_it = cb_id_by_requirement_name_.find(var->name_hint);
-  if (cb_it == cb_id_by_requirement_name_.end()) {
-    return false;
-  }
-  os << "tilelang_cb_write_ptr_bytes_direct(" << cb_it->second << ")";
-  return true;
-}
-
 void CodeGenBlackhole::VisitExpr_(const tvm::tir::VarNode* op, std::ostream& os) {
-  if (TryPrintCBBackedHandleVar(op, os)) {
-    return;
-  }
   if (auto it = var_idmap_.find(op); it != var_idmap_.end()) {
     os << it->second;
     return;
@@ -2124,10 +2095,9 @@ void CodeGenBlackhole::VisitStmt_(const tvm::tir::AllocateNode *op) {
       scope.rfind("blackhole.cb", 0) == 0;
   const bool compute_local_fragment_storage =
       scope == "blackhole.acc" && core_type_ == CoreType::kTRISC;
+  const std::optional<int> cb_requirement_index = CBRequirementIndexAnnotation(op);
   const bool cb_backed_accumulator =
-      compute_local_fragment_storage &&
-      cb_initial_reserve_pages_by_requirement_name_.find(op->buffer_var->name_hint) !=
-          cb_initial_reserve_pages_by_requirement_name_.end();
+      compute_local_fragment_storage && cb_requirement_index.has_value();
 
   if (runtime_managed_storage || (scope == "blackhole.acc" && !compute_local_fragment_storage)) {
     // Blackhole shared / CB allocations are runtime/device-managed
@@ -2143,10 +2113,14 @@ void CodeGenBlackhole::VisitStmt_(const tvm::tir::AllocateNode *op) {
   std::string vid = AllocVarID(op->buffer_var.get());
 
   if (cb_backed_accumulator) {
-    auto cb_it = cb_id_by_requirement_name_.find(op->buffer_var->name_hint);
+    const int requirement_index = *cb_requirement_index;
+    auto cb_it = cb_id_by_requirement_index_.find(requirement_index);
+    ICHECK(cb_it != cb_id_by_requirement_index_.end())
+        << "Blackhole codegen requires a physical CB id for requirement index "
+        << requirement_index;
     const int cb_id = cb_it->second;
-    const int num_pages = cb_num_pages_by_requirement_name_.count(op->buffer_var->name_hint)
-                              ? cb_num_pages_by_requirement_name_.at(op->buffer_var->name_hint)
+    const int num_pages = cb_num_pages_by_requirement_index_.count(requirement_index)
+                              ? cb_num_pages_by_requirement_index_.at(requirement_index)
                               : GetCBNumPages(cb_id);
     const int64_t dtype_bytes =
         std::max<int64_t>(1, (static_cast<int64_t>(op->dtype.bits()) *
@@ -2156,8 +2130,20 @@ void CodeGenBlackhole::VisitStmt_(const tvm::tir::AllocateNode *op) {
     const int page_size = GetCBPageSize(cb_id);
     const int allocation_pages = std::max<int>(
         1, static_cast<int>((allocation_bytes + page_size - 1) / page_size));
+    ICHECK_LE(allocation_pages, num_pages)
+        << "Blackhole CB-backed allocation for requirement index " << requirement_index
+        << " needs " << allocation_pages << " pages but CB " << cb_id << " has "
+        << num_pages;
+    auto reserve_it = cb_initial_reserve_pages_by_requirement_index_.find(requirement_index);
+    ICHECK(reserve_it != cb_initial_reserve_pages_by_requirement_index_.end())
+        << "Blackhole CB-backed allocation for requirement index " << requirement_index
+        << " requires initial reserve pages";
     const int initial_reserve_pages =
-        cb_initial_reserve_pages_by_requirement_name_.at(op->buffer_var->name_hint);
+        reserve_it->second;
+    ICHECK_LE(allocation_pages, initial_reserve_pages)
+        << "Blackhole CB-backed allocation for requirement index " << requirement_index
+        << " needs " << allocation_pages << " pages but only reserves "
+        << initial_reserve_pages;
 
     std::ostringstream dtype_os;
     PrintType(op->dtype, dtype_os);

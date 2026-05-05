@@ -593,7 +593,6 @@ def extract_blackhole_cb_configs(func):
             "lifetime_begin": int(cb_plan.lifetime_begin),
             "lifetime_end": int(cb_plan.lifetime_end),
             "data_format": str(cb_plan.data_format),
-            "requirement_names": [str(name) for name in cb_plan.requirement_names],
             "requirement_indices": [int(index) for index in cb_plan.requirement_indices],
         }
         configs.append(config)

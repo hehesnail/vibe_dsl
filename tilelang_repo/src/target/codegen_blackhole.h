@@ -256,7 +256,6 @@ class CodeGenBlackhole : public CodeGenCHost {
   std::optional<DataType> TryResolveHandleDataType(const tvm::tir::VarNode* var) const;
   DataType ResolveHandleDataType(const tvm::tir::VarNode* var, const char* op_name,
                                  const char* role) const;
-  bool TryPrintCBBackedHandleVar(const tvm::tir::VarNode* var, std::ostream& os) const;
 
  private:
   struct ActiveCBWritePtrBinding {
@@ -299,10 +298,8 @@ class CodeGenBlackhole : public CodeGenCHost {
   std::unordered_map<int, int> cb_num_pages_by_id_;
   std::unordered_map<int, std::string> cb_data_format_by_id_;
   std::unordered_map<int, int> cb_id_by_requirement_index_;
-  std::unordered_map<std::string, int> cb_id_by_requirement_name_;
-  std::unordered_map<std::string, int> cb_num_pages_by_requirement_name_;
-  std::unordered_map<std::string, int> cb_publish_pages_by_requirement_name_;
-  std::unordered_map<std::string, int> cb_initial_reserve_pages_by_requirement_name_;
+  std::unordered_map<int, int> cb_num_pages_by_requirement_index_;
+  std::unordered_map<int, int> cb_initial_reserve_pages_by_requirement_index_;
   std::unordered_map<int, std::vector<ActiveCBWritePtrBinding>> active_cb_write_ptr_bindings_;
   std::unordered_map<int, int> active_cb_allocation_reserved_pages_;
   std::unordered_map<std::string, LogicalTileLayoutBinding> logical_tile_layout_bindings_by_buffer_name_;

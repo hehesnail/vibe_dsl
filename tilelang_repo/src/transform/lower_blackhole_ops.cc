@@ -28,6 +28,7 @@
 #include "lower_blackhole_ops.h"
 
 #include "../op/utils.h"
+#include "common/blackhole_ir_attrs.h"
 #include "common/blackhole_lowering_requirements.h"
 #include "common/blackhole_utils.h"
 #include "common/blackhole_runtime_arg_schema.h"
@@ -1546,7 +1547,6 @@ PrimFunc PlanTTKernelABI::SelectComputeBuiltins(const PrimFunc& func) {
   broadcast_cols_source_buffers_.clear();
   selected_source_live_producer_buffers_.clear();
   selected_source_live_producer_order_by_buffer_identity_.clear();
-  seeded_cb_requirement_names_.clear();
   loop_carried_exact_cb_state_by_logical_value_.clear();
   tt_exact_cb_virtual_values_.clear();
   tt_exact_cb_use_events_.clear();
@@ -1895,7 +1895,6 @@ PrimFunc PlanTTKernelABI::Transform(const PrimFunc& func) {
   loop_carried_exact_cb_state_by_logical_value_.clear();
   selected_source_live_producer_buffers_.clear();
   selected_source_live_producer_order_by_buffer_identity_.clear();
-  seeded_cb_requirement_names_.clear();
   stmt_order_index_by_node_.clear();
   current_lowering_order_index_ = -1;
   segment_plan_.clear();
@@ -2334,7 +2333,7 @@ Array<TTCBPlan> PlanTTKernelABI::GetStagedCBPlans() const {
                                        String(CBFlowClassToString(req.flow_class)),
                                        req.publish_pages_per_event,
                                        req.consume_pages_per_event, lifetime_begin,
-                                       lifetime_end, Array<String>{}, Array<Integer>{}));
+                                       lifetime_end, Array<Integer>{}));
   }
   return staged_cb_plans;
 }
@@ -2377,7 +2376,6 @@ void PlanTTKernelABI::LoadSeededCBRequirements(const PrimFunc& func) {
     cb_requirements_.push_back(req);
     if (!req.name.empty()) {
       buffer_identity_to_req_index_[req.name] = req_index;
-      seeded_cb_requirement_names_.insert(req.name);
     }
   }
   next_requirement_index_ =
@@ -3304,7 +3302,26 @@ Stmt PlanTTKernelABI::VisitStmt_(const DeclBufferNode* op) {
 }
 
 Stmt PlanTTKernelABI::VisitStmt_(const AllocateNode* op) {
-  return StmtExprMutator::VisitStmt_(op);
+  Stmt body = VisitStmt(op->body);
+  if (!select_compute_builtins_only_ &&
+      tir::GetPtrStorageScope(op->buffer_var) == "blackhole.acc") {
+    auto req_it = buffer_data_to_req_index_.find(op->buffer_var.get());
+    if (req_it != buffer_data_to_req_index_.end()) {
+      const int requirement_index = req_it->second;
+      ICHECK_GE(requirement_index, 0);
+      ICHECK_LT(requirement_index, static_cast<int>(cb_requirements_.size()));
+      const CBRequirement& req = cb_requirements_.at(requirement_index);
+      if (req.initial_reserve_pages > 0) {
+        Map<String, Any> annotations = op->annotations;
+        annotations.Set(String(blackhole_ir_attrs::kCBRequirementIndex),
+                        Integer(requirement_index));
+        return Allocate(op->buffer_var, op->dtype, op->extents, op->condition,
+                        body, annotations);
+      }
+    }
+  }
+  return Allocate(op->buffer_var, op->dtype, op->extents, op->condition, body,
+                  op->annotations);
 }
 
 std::string PlanTTKernelABI::GetOrCreateIndexedPerWorkRuntimeArg(

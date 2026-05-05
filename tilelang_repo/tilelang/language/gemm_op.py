@@ -116,16 +116,18 @@ def _gemm_impl(
     mbar_arg = mbar if mbar is not None else tir.const(0, dtype="int32")
     sorted_defines = sorted((defines or {}).items())
     sorted_named_compile_args = sorted((named_compile_args or {}).items())
-    extra_args = [
-        tir.const(1 if dst_full_sync_en else 0, dtype="int32"),
-        tir.const(1 if bfp8_pack_precise else 0, dtype="int32"),
-        tir.const(len(sorted_defines), dtype="int32"),
-    ]
-    for name, value in sorted_defines:
-        extra_args.extend([tir.StringImm(name), tir.StringImm(value)])
-    extra_args.append(tir.const(len(sorted_named_compile_args), dtype="int32"))
-    for name, value in sorted_named_compile_args:
-        extra_args.extend([tir.StringImm(name), tir.const(value, dtype="int32")])
+    compute_config_annotations = {
+        "tl.gemm.dst_full_sync_en": 1 if dst_full_sync_en else 0,
+        "tl.gemm.bfp8_pack_precise": 1 if bfp8_pack_precise else 0,
+        "tl.gemm.define_names": [tir.StringImm(name) for name, _ in sorted_defines],
+        "tl.gemm.define_values": [tir.StringImm(value) for _, value in sorted_defines],
+        "tl.gemm.named_compile_arg_names": [
+            tir.StringImm(name) for name, _ in sorted_named_compile_args
+        ],
+        "tl.gemm.named_compile_arg_values": [
+            tir.const(value, dtype="int32") for _, value in sorted_named_compile_args
+        ],
+    }
     return tir.call_intrin(
         "handle",
         tir.op.Op.get(op_key),
@@ -148,7 +150,7 @@ def _gemm_impl(
         mbar_arg,
         C_coords[0],
         C_coords[1],
-        *extra_args,
+        annotations=compute_config_annotations,
     )
 
 

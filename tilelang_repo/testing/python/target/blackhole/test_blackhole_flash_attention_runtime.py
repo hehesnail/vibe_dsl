@@ -1588,7 +1588,7 @@ def test_blackhole_t9_paged_gqa_decode_projects_page_table_and_cache_len_binding
         int(config["cb_id"])
         for config in metadata["cb_configs"]
         if str(config["role"]) == "input"
-        and any("_guard_mask_" in str(name) for name in config["requirement_names"])
+        and "_guard_mask_" in str(config["name"])
     }
     assert guard_mask_cb_ids
     for mask_cb_id in guard_mask_cb_ids:
@@ -1613,11 +1613,10 @@ def test_blackhole_t9_paged_gqa_decode_projects_page_table_and_cache_len_binding
         config
         for config in metadata["cb_configs"]
         if str(config["role"]) == "input"
-        and any(str(name) in reader_input_names for name in config["requirement_names"])
+        and str(config["name"]) in reader_input_names
     ]
     assert {str(config["name"]) for config in reader_input_cbs} == reader_input_names
     for config in reader_input_cbs:
-        assert len(config["requirement_names"]) == 1
         cb_id = int(config["cb_id"])
         assert f"cb_pop_front({cb_id}," not in serial_loop_body
         assert f"cb_pop_front({cb_id}, 1);" in after_serial_loop
@@ -1698,7 +1697,7 @@ def test_blackhole_t9_paged_mla_decode_projects_latent_and_pe_page_bindings():
         config
         for config in metadata["cb_configs"]
         if str(config["role"]) == "input"
-        and any(str(name) in reader_input_names for name in config["requirement_names"])
+        and str(config["name"]) in reader_input_names
     ]
     assert {str(config["name"]) for config in reader_input_configs} == reader_input_names
 

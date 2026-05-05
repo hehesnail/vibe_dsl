@@ -1082,7 +1082,6 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
       loop_carried_exact_cb_state_by_logical_value_;
   std::unordered_set<std::string> selected_source_live_producer_buffers_;
   std::unordered_map<std::string, int> selected_source_live_producer_order_by_buffer_identity_;
-  std::unordered_set<std::string> seeded_cb_requirement_names_;
   std::vector<SpatialMaterializationBoundaryRef> spatial_materialization_boundaries_;
   std::unordered_map<int64_t, size_t> spatial_materialization_boundary_position_by_index_;
   std::unordered_map<std::string, SpatialLiveValueRef> spatial_live_value_by_subject_;

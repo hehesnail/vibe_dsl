@@ -918,7 +918,7 @@ def test_blackhole_copy_pass_attrs():
     assert int(cb_plans[0].lifetime_begin) == 0
     assert int(cb_plans[0].lifetime_end) >= int(cb_plans[0].lifetime_begin)
     assert not hasattr(cb_plans[0], "payload")
-    assert [str(name) for name in cb_plans[0].requirement_names] == [str(cb_plans[0].name)]
+    assert [int(index) for index in cb_plans[0].requirement_indices] == [0]
     assert int(cb_plans[0].cb_id) == 16
 
     fused_dataflow = require_tt_kernel(tt_program, kind="fused_dataflow", core_type="brisc")
