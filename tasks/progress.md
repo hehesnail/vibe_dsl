@@ -70,6 +70,10 @@
   the evaluator for table-backed per-work values.  Old ABI branches that
   rebuilt row-count / row-start bindings from only a table-buffer name were
   removed.
+- Remote synchronization endpoints are explicit executable segment records:
+  `logical_core_noc_x/y` runtime args bind ABI values, but leaf extraction
+  must consume `remote_core_descriptors` and must not reconstruct endpoint
+  objects from the arg pair.
 - TT lowering no longer keeps pass-local `IndexTableAddressing`,
   `index_buffer`, or `index_value_scale` helper state for per-work value
   binding.  Runtime-arg dedup uses structural `value_expr` equality plus
@@ -265,6 +269,27 @@ Each checkpoint needs its own direct-runtime correctness proof:
   metadata/projection checks.  A minimal grouped-GEMM TT-Sim direct-runtime
   probe reached enqueue and timed out after `180s`, so direct GEMM correctness
   was not used as completion evidence for this cleanup checkpoint.
+
+2026-05-06 UTC remote-core descriptor owner-truth checkpoint:
+
+- `TTProgram -> ExecutableSpec` segment projection now materializes
+  `remote_core_descriptors` from typed logical-core NOC ABI records, checking
+  x/y pairing, identity, coordinate consistency, and duplicate components
+  before leaf extraction.
+- `rt_mod_blackhole.cc` no longer derives `KernelSpec.remote_core_descriptors`
+  from `logical_core_noc_x/y` runtime args.  It only reads the explicit
+  executable segment field; `BlackholeModule` validation rejects logical-core
+  runtime args when the descriptor record is missing.
+- The source guard now scans the effective `rt_mod_blackhole.cc` entry for
+  the removed extraction fallbacks; the earlier duplicate dict-key guard bug
+  was fixed so these snippets cannot be masked by a later entry for the same
+  file.
+- `cmake --build tilelang_repo/build -j32` passed.
+- Focused structural selectors covering the source guard, missing-descriptor
+  rejection, unpaired logical-core NOC rejection, and descriptor materialized
+  projection reported `4 passed`.
+- The worker semaphore producer/consumer direct-runtime selector reported
+  `1 passed`, proving the explicit descriptor still drives TT-Sim execution.
 
 2026-05-05 UTC IR-first per-work schema cleanup checkpoint:
 

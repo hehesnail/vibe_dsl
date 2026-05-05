@@ -2545,6 +2545,15 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   projection.  Keep `block_index_source_by_var_` as pass-local analysis until
   all per-work specs are built; do not erase it as if it were only an
   active-stack map before `StoreAccessorDescriptors`.
+- 2026-05-06 Blackhole remote core descriptor owner truth:
+  `logical_core_noc_x/y` runtime args are ABI value bindings, not the owner of
+  the remote endpoint object.  Materialize `remote_core_descriptors` during
+  `TTProgram -> ExecutableSpec` segment projection from typed ABI records, and
+  make leaf/runtime extraction consume that explicit field.  A missing
+  descriptor with logical-core NOC runtime args must fail closed instead of
+  being reconstructed in `rt_mod_blackhole.cc`.  When adding source guards,
+  avoid duplicate Python dict keys for the same file; a later key silently
+  masks earlier forbidden snippets.
 - 2026-05-05 Blackhole guard-mask leaf naming:
   Guard mask materialization can be a Blackhole leaf builtin only if it stays
   generic: `guard_mask_to_cb(cb_id, bound_value, base_value, page_bytes)`.

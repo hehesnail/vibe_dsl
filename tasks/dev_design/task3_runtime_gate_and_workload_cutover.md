@@ -83,6 +83,7 @@ Required:
 - per-work arg specs
 - accessors
 - semaphore bindings
+- remote core descriptors for synchronization endpoints
 - typed compute operation records
 
 Leaf readers must require these fields.
@@ -100,6 +101,13 @@ may evaluate that expression against the logical work context, typed compute
 records, and any explicitly referenced input buffers, but they must not add
 workload-shaped `value_source` enums such as compute extent, row/page, table,
 or selection-specific sources.
+
+Remote synchronization endpoints have the same rule.  A pair of
+`logical_core_noc_x/y` runtime args may bind the ABI values consumed by a
+leaf builtin, but the endpoint object must already be projected as a
+`remote_core_descriptors` segment/kernel record.  Leaf readers may validate
+that the runtime args agree with that object; they must not reconstruct the
+descriptor from the arg pair when the explicit record is missing.
 
 ### Buffer Identity
 

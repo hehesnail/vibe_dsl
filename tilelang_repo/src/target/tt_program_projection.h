@@ -13,9 +13,11 @@
 #include "../transform/common/blackhole_runtime_arg_schema.h"
 #include "../transform/common/companion_base.h"
 #include "../transform/common/tt_target_program.h"
+#include <algorithm>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
+#include <vector>
 
 namespace tvm {
 namespace tl {
@@ -793,6 +795,98 @@ inline Array<Any> EncodeSemaphoreBindingSpecs(
   return encoded;
 }
 
+struct RemoteCoreDescriptorProjectionState {
+  bool has_x = false;
+  bool has_y = false;
+  int64_t core_x = -1;
+  int64_t core_y = -1;
+};
+
+inline bool IsLogicalCoreNocRuntimeArgKind(const ffi::String &kind) {
+  return kind == "logical_core_noc_x" || kind == "logical_core_noc_y";
+}
+
+inline void IngestLogicalCoreNocRuntimeArg(
+    const TTRuntimeArgSpec &spec,
+    std::unordered_map<std::string, RemoteCoreDescriptorProjectionState>
+        *states) {
+  if (!IsLogicalCoreNocRuntimeArgKind(spec->kind)) {
+    return;
+  }
+  const std::string kind = static_cast<std::string>(spec->kind);
+  const std::string identity = static_cast<std::string>(spec->identity);
+  ICHECK(!identity.empty())
+      << "Blackhole remote core descriptor projection requires identity for "
+         "runtime arg "
+      << spec->name << " kind=" << kind;
+  ICHECK_GE(spec->core_x, 0)
+      << "Blackhole remote core descriptor projection requires core_x for "
+         "runtime arg "
+      << spec->name << " kind=" << kind;
+  ICHECK_GE(spec->core_y, 0)
+      << "Blackhole remote core descriptor projection requires core_y for "
+         "runtime arg "
+      << spec->name << " kind=" << kind;
+
+  RemoteCoreDescriptorProjectionState &state = (*states)[identity];
+  if (state.core_x >= 0) {
+    ICHECK_EQ(state.core_x, spec->core_x)
+        << "Blackhole remote core descriptor " << identity
+        << " must use one logical core";
+    ICHECK_EQ(state.core_y, spec->core_y)
+        << "Blackhole remote core descriptor " << identity
+        << " must use one logical core";
+  } else {
+    state.core_x = spec->core_x;
+    state.core_y = spec->core_y;
+  }
+
+  if (kind == "logical_core_noc_x") {
+    ICHECK(!state.has_x)
+        << "Blackhole remote core descriptor " << identity
+        << " cannot define logical_core_noc_x more than once";
+    state.has_x = true;
+  } else {
+    ICHECK(!state.has_y)
+        << "Blackhole remote core descriptor " << identity
+        << " cannot define logical_core_noc_y more than once";
+    state.has_y = true;
+  }
+}
+
+inline Array<Any> EncodeRemoteCoreDescriptorsFromRuntimeArgs(
+    const Array<TTRuntimeArgSpec> &runtime_args,
+    const Array<TTRuntimeArgSpec> &common_runtime_args) {
+  std::unordered_map<std::string, RemoteCoreDescriptorProjectionState> states;
+  for (const TTRuntimeArgSpec &spec : runtime_args) {
+    IngestLogicalCoreNocRuntimeArg(spec, &states);
+  }
+  for (const TTRuntimeArgSpec &spec : common_runtime_args) {
+    IngestLogicalCoreNocRuntimeArg(spec, &states);
+  }
+
+  std::vector<std::string> identities;
+  identities.reserve(states.size());
+  for (const auto &entry : states) {
+    identities.push_back(entry.first);
+  }
+  std::sort(identities.begin(), identities.end());
+
+  Array<Any> encoded;
+  for (const std::string &identity : identities) {
+    const RemoteCoreDescriptorProjectionState &state = states.at(identity);
+    ICHECK(state.has_x && state.has_y)
+        << "Blackhole remote core descriptor " << identity
+        << " must define both logical_core_noc_x and logical_core_noc_y";
+    Map<String, Any> item;
+    item.Set("identity", String(identity));
+    item.Set("core_x", Integer(state.core_x));
+    item.Set("core_y", Integer(state.core_y));
+    encoded.push_back(item);
+  }
+  return encoded;
+}
+
 inline Array<Any>
 EncodeLiveFormPlans(const Array<TTLiveFormPlan> &live_form_plans) {
   Array<Any> encoded;
@@ -1011,6 +1105,12 @@ inline Array<Any> EncodeSegmentPlan(const TTProgram &program) {
     if (!abi->common_runtime_args.empty()) {
       segment.Set("common_runtime_args",
                   EncodeRuntimeArgSpecs(abi->common_runtime_args));
+    }
+    Array<Any> remote_core_descriptors =
+        EncodeRemoteCoreDescriptorsFromRuntimeArgs(abi->runtime_args,
+                                                   abi->common_runtime_args);
+    if (!remote_core_descriptors.empty()) {
+      segment.Set("remote_core_descriptors", remote_core_descriptors);
     }
     if (!abi->compile_time_arg_specs.empty()) {
       segment.Set("compile_time_arg_specs",

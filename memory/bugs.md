@@ -3020,6 +3020,31 @@
     timed out after `180s`; treat that as remaining runtime/simulator work,
     not as permission to restore name recovery.
 
+### Remote core descriptors were still leaf-recovered from logical_core_noc args
+
+- **症状**:
+  - An executable segment with `logical_core_noc_x/y` runtime args but no
+    `remote_core_descriptors` field still built successfully.
+  - The guard intended to forbid this did not fire because
+    `test_blackhole_copy_pipeline.py` had duplicate dict keys for
+    `rt_mod_blackhole.cc`; the later key masked the forbidden snippets.
+- **根因**:
+  - `rt_mod_blackhole.cc` rebuilt `KernelSpec.remote_core_descriptors` from
+    the runtime arg pair during executable extraction and again during kernel
+    materialization fallback.  That made the descriptor object a leaf-time
+    reconstruction instead of explicit `ExecutableSpec` truth.
+- **修法**:
+  - Project `remote_core_descriptors` into executable segment records from
+    typed ABI runtime args, with pair/identity/coordinate validation.
+  - Make `rt_mod_blackhole.cc` parse only the explicit
+    `remote_core_descriptors` field and let `BlackholeModule` validation fail
+    when logical-core NOC args lack that descriptor.
+- **验证**:
+  - Source guard plus missing-descriptor, unpaired-arg, and descriptor
+    materialization selectors report `4 passed`.
+  - Worker semaphore producer/consumer direct-runtime selector reports
+    `1 passed`.
+
 ### Leaf-time segment recovery duplicated or lost segment body statements
 
 - **症状**:

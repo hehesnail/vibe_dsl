@@ -125,17 +125,6 @@ def test_blackhole_leaf_readers_do_not_keep_legacy_defaults_or_slot_fallbacks():
             "kValueGemmNumKTiles",
             "kValueGemmLogicalNTiles",
         ],
-        TARGET_SRC_DIR / "rt_mod_blackhole.cc": [
-            'config.name = "default_cb"',
-            "binding.host_buffer = binding.buffer",
-            'accessor_info.Get("slot")',
-            'accessor_info.Set("slot"',
-            "block_m_tiles == 0",
-            'segment.kind.empty() ? ffi::String("fused_dataflow")',
-            'segment.core_type.empty() ? ffi::String("brisc")',
-            "kValueKind",
-            "compatibility value_kind",
-        ],
         TARGET_SRC_DIR / "blackhole_module.h": [
             'WriteObjectKeyValue("slot"',
             'default_kernel_kind = "fused_dataflow"',
@@ -181,6 +170,17 @@ def test_blackhole_leaf_readers_do_not_keep_legacy_defaults_or_slot_fallbacks():
             legacy_value_kind_spec,
         ],
         REPO_ROOT / "src" / "target" / "rt_mod_blackhole.cc": [
+            'config.name = "default_cb"',
+            "binding.host_buffer = binding.buffer",
+            'accessor_info.Get("slot")',
+            'accessor_info.Set("slot"',
+            "block_m_tiles == 0",
+            'segment.kind.empty() ? ffi::String("fused_dataflow")',
+            'segment.core_type.empty() ? ffi::String("brisc")',
+            "ExtractRemoteCoreDescriptors(info.runtime_args)",
+            "ExtractRemoteCoreDescriptors(kernel.runtime_args)",
+            "kValueKind",
+            "compatibility value_kind",
             'register_buffer(buffer_name, "page_indexed", "dram")',
             '"value_expr_buffer_load"',
             "SpecHasRuntimeArgKind",
@@ -570,6 +570,23 @@ def _rebuild_codegen_module_without_copy_runtime_args(artifact):
         return rebuild_tt_program(tt_program, abi_plans=rebuilt_abi_plans)
 
     return _rebuild_codegen_module_with_tt_program(artifact, tt_program_mutator=mutate)
+
+
+def _rebuild_codegen_module_with_executable_mutator(artifact, executable_mutator):
+    rewritten = {}
+    for gvar, func in artifact.device_mod.functions.items():
+        if func.attrs and "tl.blackhole_executable" in func.attrs:
+            executable = {
+                str(key): value for key, value in func.attrs["tl.blackhole_executable"].items()
+            }
+            func = func.with_attr("tl.blackhole_executable", executable_mutator(executable))
+        rewritten[gvar] = func
+    device_mod = tvm.IRModule(rewritten, global_infos=artifact.device_mod.global_infos)
+    build_mod = merge_ir_modules(artifact.host_mod, device_mod)
+    target = Target("blackhole")
+    return tvm.ffi.get_global_func("target.build.tilelang_blackhole_without_host")(
+        build_mod, target
+    )
 
 
 def _rebuild_codegen_module_with_semaphore_plan(artifact, semaphore_plan):
@@ -2527,6 +2544,53 @@ def test_blackhole_copy_build_rejects_unpaired_logical_core_noc_runtime_arg():
         match="logical_core_noc_x.*logical_core_noc_y|synchronization core descriptor",
     ):
         _rebuild_codegen_module_with_runtime_args(artifact, runtime_args_mutator(base_runtime_args))
+
+
+def test_blackhole_copy_build_rejects_logical_core_noc_without_remote_descriptor():
+    kernel = grid_indexed_staged_copy_kernel(grid_x=2, grid_y=1)
+    target = Target("blackhole")
+
+    with target:
+        artifact = lower(kernel, target=target)
+
+    device_funcs = {str(gvar): func for gvar, func in artifact.device_mod.functions.items()}
+    device_main = device_funcs['I.GlobalVar("main_kernel")']
+    consumer_core = extract_blackhole_core_plan(device_main)["physical_cores"][1]
+    base_runtime_args = list(extract_blackhole_runtime_args(device_main))
+    runtime_args = base_runtime_args + [
+        {
+            "name": "remote_noc_x",
+            "kind": "logical_core_noc_x",
+            "identity": "remote_consumer_core",
+            "dtype": "uint32",
+            "core_x": int(consumer_core["core_x"]),
+            "core_y": int(consumer_core["core_y"]),
+        },
+        {
+            "name": "remote_noc_y",
+            "kind": "logical_core_noc_y",
+            "identity": "remote_consumer_core",
+            "dtype": "uint32",
+            "core_x": int(consumer_core["core_x"]),
+            "core_y": int(consumer_core["core_y"]),
+        },
+    ]
+
+    def executable_mutator(executable):
+        segments = []
+        for segment in executable["segment_plan"]:
+            mutated = {str(key): value for key, value in segment.items()}
+            mutated["runtime_args"] = runtime_args
+            mutated.pop("remote_core_descriptors", None)
+            segments.append(mutated)
+        executable["segment_plan"] = segments
+        return executable
+
+    with pytest.raises(
+        tvm.error.InternalError,
+        match="remote_core_descriptors|remote core descriptor",
+    ):
+        _rebuild_codegen_module_with_executable_mutator(artifact, executable_mutator)
 
 
 def test_blackhole_copy_remote_core_descriptor_is_materialized():
