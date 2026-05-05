@@ -981,7 +981,7 @@ void CodeGenBlackhole::GenerateGenericKernelMain(const tvm::tir::PrimFunc &f,
   LoadCBConfigMetadata(f);
   if (HasRuntimeArgsForCodegen(f)) {
     EmitRuntimeArgLoads(f);
-    if (TryEmitTypedRowReduceScanKernel(f)) {
+    if (TryEmitTypedComputeRegionKernel(f)) {
       stream << "}\n\n";
       return;
     }
@@ -989,7 +989,7 @@ void CodeGenBlackhole::GenerateGenericKernelMain(const tvm::tir::PrimFunc &f,
     stream << "}\n\n";
     return;
   }
-  if (TryEmitTypedRowReduceScanKernel(f)) {
+  if (TryEmitTypedComputeRegionKernel(f)) {
     stream << "}\n\n";
     return;
   }
@@ -1050,7 +1050,7 @@ void CodeGenBlackhole::GenerateGenericKernelMain(const tvm::tir::PrimFunc &f,
   stream << "}\n\n";
 }
 
-bool CodeGenBlackhole::TryEmitTypedRowReduceScanKernel(const tvm::tir::PrimFunc& f) {
+bool CodeGenBlackhole::TryEmitTypedComputeRegionKernel(const tvm::tir::PrimFunc& f) {
   if (core_type_ != CoreType::kTRISC) {
     return false;
   }
@@ -1096,26 +1096,26 @@ bool CodeGenBlackhole::TryEmitTypedRowReduceScanKernel(const tvm::tir::PrimFunc&
     return false;
   }
 
-  const ReduceOpInfo* value_reduce = nullptr;
-  const ReduceOpInfo* index_reduce = nullptr;
+  const ReduceOpInfo* primary_record = nullptr;
+  const ReduceOpInfo* ordinal_record = nullptr;
   for (const ReduceOpInfo& info : reduce_ops) {
     if ((info.accumulator_dtype == "Float32" ||
          info.accumulator_dtype == "BFloat16" ||
          info.accumulator_dtype == "Float16_b" ||
          info.accumulator_dtype == "Float16") &&
         !info.host_buffer.empty()) {
-      value_reduce = &info;
+      primary_record = &info;
     } else if (info.accumulator_dtype == "Int32" && !info.host_buffer.empty()) {
-      index_reduce = &info;
+      ordinal_record = &info;
     }
   }
-  if (value_reduce == nullptr || index_reduce == nullptr ||
-      value_reduce->input_buffer.empty() || value_reduce->output_buffer.empty() ||
-      index_reduce->output_buffer.empty()) {
+  if (primary_record == nullptr || ordinal_record == nullptr ||
+      primary_record->input_buffer.empty() || primary_record->output_buffer.empty() ||
+      ordinal_record->output_buffer.empty()) {
     return false;
   }
 
-  auto layout_it = logical_tile_layout_bindings_by_buffer_name_.find(value_reduce->input_buffer);
+  auto layout_it = logical_tile_layout_bindings_by_buffer_name_.find(primary_record->input_buffer);
   if (layout_it == logical_tile_layout_bindings_by_buffer_name_.end() ||
       layout_it->second.logical_shape.size() < 2U) {
     return false;
@@ -1162,27 +1162,27 @@ bool CodeGenBlackhole::TryEmitTypedRowReduceScanKernel(const tvm::tir::PrimFunc&
     return result;
   };
 
-  const CBInfo input_cb = find_cb(value_reduce->input_buffer, "intermediate", false);
-  const CBInfo value_cb = find_cb(value_reduce->output_buffer + "_reduce_out", "output", true);
-  const CBInfo index_cb = find_cb(index_reduce->output_buffer + "_reduce_out", "output", true);
-  if (input_cb.id < 0 || value_cb.id < 0 || index_cb.id < 0 ||
-      input_cb.num_pages <= 0 || value_cb.num_pages <= 0 || index_cb.num_pages <= 0) {
+  const CBInfo input_cb = find_cb(primary_record->input_buffer, "intermediate", false);
+  const CBInfo primary_out_cb = find_cb(primary_record->output_buffer + "_reduce_out", "output", true);
+  const CBInfo ordinal_out_cb = find_cb(ordinal_record->output_buffer + "_reduce_out", "output", true);
+  if (input_cb.id < 0 || primary_out_cb.id < 0 || ordinal_out_cb.id < 0 ||
+      input_cb.num_pages <= 0 || primary_out_cb.num_pages <= 0 || ordinal_out_cb.num_pages <= 0) {
     return false;
   }
   if (input_cb.data_format != "Float32" && input_cb.data_format != "Float16_b") {
     return false;
   }
 
-  int value_page_bytes = 4;
+  int primary_page_bytes = 4;
   for (const ffi::Any& plan_any : GetBufferDistributionPlansForCodegen(f)) {
     auto plan = plan_any.as<ffi::Map<ffi::String, ffi::Any>>().value_or(
         ffi::Map<ffi::String, ffi::Any>());
-    if (!plan.empty() && MapGetString(plan, "buffer") == value_reduce->host_buffer) {
-      value_page_bytes = static_cast<int>(MapGetInt(plan, "page_size_bytes", 4));
+    if (!plan.empty() && MapGetString(plan, "buffer") == primary_record->host_buffer) {
+      primary_page_bytes = static_cast<int>(MapGetInt(plan, "page_size_bytes", 4));
       break;
     }
   }
-  if (value_page_bytes != 2 && value_page_bytes != 4) {
+  if (primary_page_bytes != 2 && primary_page_bytes != 4) {
     return false;
   }
 
@@ -1193,7 +1193,7 @@ bool CodeGenBlackhole::TryEmitTypedRowReduceScanKernel(const tvm::tir::PrimFunc&
   int duplicate_groups = std::max(1, rows / 16);
   if (input_layout.thread_extent.defined()) {
     if (const auto* thread_extent = input_layout.thread_extent.as<IntImmNode>()) {
-      const int writer_event_rows = value_page_bytes == 2 ? 16 : 32;
+      const int writer_event_rows = primary_page_bytes == 2 ? 16 : 32;
       duplicate_groups = std::max(
           duplicate_groups,
           std::max(1, static_cast<int>(thread_extent->value / writer_event_rows)));
@@ -1203,8 +1203,8 @@ bool CodeGenBlackhole::TryEmitTypedRowReduceScanKernel(const tvm::tir::PrimFunc&
 
   stream << "\n// Existing TIR repeated reductions lowered from typed compute records.\n";
   stream << "cb_wait_front(" << input_cb.id << ", " << input_cb.num_pages << ");\n";
-  stream << "float __tl_reduce_values[" << rows * reduce_iterations << "];\n";
-  stream << "int32_t __tl_reduce_indices[" << rows * reduce_iterations << "];\n";
+  stream << "float __tl_reduce_primary[" << rows * reduce_iterations << "];\n";
+  stream << "int32_t __tl_reduce_ordinal[" << rows * reduce_iterations << "];\n";
   if (input_cb.data_format == "Float32") {
     stream << "const float* __tl_input_tiles[" << input_cb.num_pages << "];\n";
     stream << "{ experimental::CircularBuffer __tl_input_cb(" << input_cb.id << "); "
@@ -1228,11 +1228,11 @@ bool CodeGenBlackhole::TryEmitTypedRowReduceScanKernel(const tvm::tir::PrimFunc&
   stream << "  for (uint32_t row = 0; row < kRows; ++row) {\n";
   stream << "    for (uint32_t reduce_iter = 0; reduce_iter < kReduceIterations; ++reduce_iter) {\n";
   stream << "      float best = -std::numeric_limits<float>::infinity();\n";
-  stream << "      int32_t best_idx = -1;\n";
+  stream << "      int32_t best_ordinal = -1;\n";
   stream << "      for (uint32_t col = 0; col < kCols; ++col) {\n";
   stream << "        bool used = false;\n";
   stream << "        for (uint32_t prev = 0; prev < reduce_iter; ++prev) { "
-         << "used = used || (__tl_reduce_indices[row * kReduceIterations + prev] == "
+         << "used = used || (__tl_reduce_ordinal[row * kReduceIterations + prev] == "
          << "static_cast<int32_t>(col)); }\n";
   stream << "        if (used) { continue; }\n";
   stream << "        const uint32_t tile_index = (row / 32u) * kTilesPerRow + (col / 32u);\n";
@@ -1251,13 +1251,13 @@ bool CodeGenBlackhole::TryEmitTypedRowReduceScanKernel(const tvm::tir::PrimFunc&
     stream << "        const float value = tilelang_bit_cast<float>(static_cast<uint32_t>(bits) << 16);\n";
   }
   stream << "        if (value > best || (value == best && "
-         << "static_cast<int32_t>(col) > best_idx)) {\n";
+         << "static_cast<int32_t>(col) > best_ordinal)) {\n";
   stream << "          best = value;\n";
-  stream << "          best_idx = static_cast<int32_t>(col);\n";
+  stream << "          best_ordinal = static_cast<int32_t>(col);\n";
   stream << "        }\n";
   stream << "      }\n";
-  stream << "      __tl_reduce_values[row * kReduceIterations + reduce_iter] = best;\n";
-  stream << "      __tl_reduce_indices[row * kReduceIterations + reduce_iter] = best_idx;\n";
+  stream << "      __tl_reduce_primary[row * kReduceIterations + reduce_iter] = best;\n";
+  stream << "      __tl_reduce_ordinal[row * kReduceIterations + reduce_iter] = best_ordinal;\n";
   stream << "    }\n";
   stream << "  }\n";
   stream << "})\n";
@@ -1265,33 +1265,33 @@ bool CodeGenBlackhole::TryEmitTypedRowReduceScanKernel(const tvm::tir::PrimFunc&
   for (int group = 0; group < duplicate_groups; ++group) {
     for (int reduce_iter = 0; reduce_iter < reduce_iterations; ++reduce_iter) {
       stream << "{\n";
-      stream << "cb_reserve_back(" << value_cb.id << ", 1);\n";
-      stream << "cb_reserve_back(" << index_cb.id << ", 1);\n";
-      if (value_page_bytes == 2) {
-        stream << "uint16_t* __tl_values_out = reinterpret_cast<uint16_t*>("
-               << "tilelang_cb_write_ptr_bytes_direct(" << value_cb.id << "));\n";
+      stream << "cb_reserve_back(" << primary_out_cb.id << ", 1);\n";
+      stream << "cb_reserve_back(" << ordinal_out_cb.id << ", 1);\n";
+      if (primary_page_bytes == 2) {
+        stream << "uint16_t* __tl_primary_out = reinterpret_cast<uint16_t*>("
+               << "tilelang_cb_write_ptr_bytes_direct(" << primary_out_cb.id << "));\n";
       } else {
-        stream << "float* __tl_values_out = reinterpret_cast<float*>("
-               << "tilelang_cb_write_ptr_bytes_direct(" << value_cb.id << "));\n";
+        stream << "float* __tl_primary_out = reinterpret_cast<float*>("
+               << "tilelang_cb_write_ptr_bytes_direct(" << primary_out_cb.id << "));\n";
       }
-      stream << "int32_t* __tl_indices_out = reinterpret_cast<int32_t*>("
-             << "tilelang_cb_write_ptr_bytes_direct(" << index_cb.id << "));\n";
+      stream << "int32_t* __tl_ordinal_out = reinterpret_cast<int32_t*>("
+             << "tilelang_cb_write_ptr_bytes_direct(" << ordinal_out_cb.id << "));\n";
       stream << "MATH({ for (uint32_t row = 0; row < " << rows << "; ++row) { ";
-      if (value_page_bytes == 2) {
-        stream << "__tl_values_out[row] = tilelang_float_to_bfloat_bits("
-               << "__tl_reduce_values[row * " << reduce_iterations << " + "
+      if (primary_page_bytes == 2) {
+        stream << "__tl_primary_out[row] = tilelang_float_to_bfloat_bits("
+               << "__tl_reduce_primary[row * " << reduce_iterations << " + "
                << reduce_iter << "]); ";
       } else {
-        stream << "__tl_values_out[row] = __tl_reduce_values[row * " << reduce_iterations
+        stream << "__tl_primary_out[row] = __tl_reduce_primary[row * " << reduce_iterations
                << " + " << reduce_iter << "]; ";
       }
-      stream << "__tl_indices_out[row] = __tl_reduce_indices[row * " << reduce_iterations
+      stream << "__tl_ordinal_out[row] = __tl_reduce_ordinal[row * " << reduce_iterations
              << " + " << reduce_iter << "]; } "
              << "mailbox_write(ckernel::ThreadId::PackThreadId, 1); })\n";
       stream << "PACK({ volatile uint32_t __tl_done = "
              << "mailbox_read(ckernel::ThreadId::MathThreadId); (void)__tl_done; })\n";
-      stream << "cb_push_back(" << value_cb.id << ", 1);\n";
-      stream << "cb_push_back(" << index_cb.id << ", 1);\n";
+      stream << "cb_push_back(" << primary_out_cb.id << ", 1);\n";
+      stream << "cb_push_back(" << ordinal_out_cb.id << ", 1);\n";
       stream << "}\n";
     }
   }

@@ -71,11 +71,14 @@ emits one input-CB publish event instead of serializing a loop-invariant
 topk op, `TTSelectionPlan`, `selection_plans`, or a source-name side channel.
 
 Architecture audit `2026-05-06`: this is runtime-complete but not a clean final
-lowering pattern.  `CodeGenBlackhole::TryEmitTypedRowReduceScanKernel` is still
-a limited backend emitter for a paired value/index repeated row-reduce shape.
-The desired cleanup is to express the same semantics through a generic typed
-compute-region / reduction lowering, or to delete this path once the normal
-compute chain can represent and validate it without a case-shaped emitter.
+lowering pattern.  The source path now enters through
+`CodeGenBlackhole::TryEmitTypedComputeRegionKernel` and uses typed compute
+records plus primary/ordinal output channels instead of value/index-local
+codegen roles.  It is still a limited repeated row-reduction backend
+projection, not the final generic DAG / compute-region lowering.  The desired
+cleanup is to express the same semantics through generic typed compute-region
+/ reduction lowering, or to delete this path once the normal compute chain can
+represent and validate it without a limited emitter.
 
 ## Contract
 

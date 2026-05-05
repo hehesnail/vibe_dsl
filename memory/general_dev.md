@@ -2638,3 +2638,11 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   stores skipped on data-movement cores must not force a loop-invariant CB
   publish under `threadIdx.x`.  Serializing the same publish overproduces CB
   pages and can turn into a TT-Sim enqueue hang.
+- 2026-05-06 T6 codegen cleanup:
+  Renaming a workload path away from `topk` is not enough if local codegen
+  roles still say `value_reduce`, `index_reduce`, or separate value/index CBs.
+  For the remaining limited repeated-reduction source path, use typed compute
+  records plus neutral primary/ordinal output channels, and keep a source
+  guard that rejects both the old entry name and the old local roles.  This is
+  still only a cleanup step until generic typed compute-region / reduction
+  lowering owns the behavior.
