@@ -2671,7 +2671,6 @@ static uint32_t ChooseBufferMaterializationPageSize(const ExecutableSpec& spec,
       record_page_size(distribution.page_size_bytes, "buffer_distribution");
     }
   }
-  bool value_expr_references_buffer = false;
   for (const auto& kernel : spec.kernels) {
     for (const auto& accessor : kernel.accessors) {
       if (accessor.buffer != buffer_name) {
@@ -2686,18 +2685,6 @@ static uint32_t ChooseBufferMaterializationPageSize(const ExecutableSpec& spec,
       record_page_size(compile_time_arg_spec.transport_page_size_bytes,
                        "compile_time_arg_spec");
     }
-    for (const auto& per_work_arg_spec : kernel.per_work_arg_specs) {
-      if (per_work_arg_spec.value_source !=
-              ::tvm::tl::blackhole_runtime_arg_schema::kValueSourceValueExpr ||
-          !CollectValueExprBufferNames(per_work_arg_spec.value_expr_json)
-               .count(buffer_name)) {
-        continue;
-      }
-      value_expr_references_buffer = true;
-    }
-  }
-  if (value_expr_references_buffer && inferred_page_size == 0) {
-    record_page_size(sizeof(int32_t), "value_expr_buffer_load");
   }
   if (inferred_page_size != 0) {
     return inferred_page_size;
@@ -3781,7 +3768,13 @@ static void PopulateBufferMaterializationSpecs(
       }
       for (const std::string& buffer_name :
            CollectValueExprBufferNames(per_work_arg_spec.value_expr_json)) {
-        register_buffer(buffer_name, "page_indexed", "dram");
+        const BufferDistributionSpec* distribution =
+            FindBufferDistributionSpec(*spec, buffer_name);
+        ICHECK(distribution != nullptr)
+            << "Blackhole value_expr input buffer " << buffer_name
+            << " requires explicit buffer_distribution_plan";
+        register_buffer(buffer_name, distribution->layout,
+                        NormalizeMemorySpace(distribution->memory_space));
       }
     }
   }

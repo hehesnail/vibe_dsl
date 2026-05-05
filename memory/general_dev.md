@@ -2543,3 +2543,16 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   ExecutableSpec, or leaf reader schema.  Internal matcher names should also
   use guard/base-page language so future work does not treat this as a
   ragged/paged side protocol.
+- 2026-05-05 Blackhole value-expr input materialization:
+  `value_expr` is allowed to reveal which formal input buffers direct runtime
+  needs for host-side expression evaluation, but runtime must not invent the
+  layout, memory space, or page size for those buffers.  Derive the owner
+  truth in `TTBufferDistributionPlan` from explicit
+  `TTPerWorkArgSpec.value_expr` `BufferLoad` structure.  Only host-side table
+  buffers that are not already backed by TT accessor device access should be
+  promoted this way; real device-accessed buffers keep their accessor-driven
+  distribution.  Project the result through
+  `ExecutableSpec.buffer_distribution_plans`, and make the leaf/runtime fail
+  closed if a referenced value-expr buffer has no distribution plan.  Do not
+  restore hardcoded fallbacks such as `value_expr_buffer_load` or
+  `page_indexed/dram` in `rt_mod_blackhole.cc`.

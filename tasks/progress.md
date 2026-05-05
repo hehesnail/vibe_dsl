@@ -300,6 +300,38 @@ Each checkpoint needs its own direct-runtime correctness proof:
   projection, guard-mask flash projection, paged-valid-rows runtime, and
   sparse-ragged runtime reported `5 passed`.
 
+2026-05-05 UTC value-expr materialization owner-truth checkpoint:
+
+- Removed runtime-side value-expr buffer materialization inference from the
+  leaf reader.  `PopulateBufferMaterializationSpecs` no longer hardcodes
+  `page_indexed/dram`, and page-size selection no longer has a
+  `value_expr_buffer_load` fallback.
+- `TTBufferDistributionPlan` now owns value-expr input-buffer layout for the
+  generic host-side table case: buffers reached by
+  `TTPerWorkArgSpec.value_expr` `BufferLoad` nodes, and not already backed by
+  TT accessor device access, are marked page-indexed in
+  `buffer_distribution_plans` before executable projection.  Runtime
+  materialization consumes that explicit plan and fails closed if a referenced
+  value-expr buffer has no distribution record.
+- The public guard scans `rt_mod_blackhole.cc` for the removed fallback
+  strings, and the block-indexed projection test now asserts
+  `buffer_distribution_plans["BlockIndices"].layout == "page_indexed"` so
+  owner truth is tested before runtime materialization.
+- `cmake --build build -j32` passed.
+- Focused TT-Sim selector covering the source guard, block-indexed and 2D
+  table value-expr projection, sparse/ragged/segmented/paged value-expr
+  projection, and sparse-ragged plus paged-valid-rows direct runtime reported
+  `9 passed`.
+- Remaining similar schema-risk surfaces from the audit: codegen still has
+  `runtime_arg_vars_by_kind_` recovery for `k_tile_start_id` /
+  `num_k_tiles`, direct-runtime exact-CB gates still query
+  `SpecHasRuntimeArgKind("num_k_tiles")`, direct runtime still classifies
+  tile-start bounds through `IsTileStartRuntimeArgKind`, and segment
+  extraction in `rt_mod_blackhole.cc` still consumes
+  `blackhole.segment_kind` / neighbor inference.  These are cleanup targets;
+  pass-local `BlackholeLoweringSupportFacts` remain separate derived analysis
+  and are not being treated as a public schema surface.
+
 2026-05-05 UTC T9.2 paged GQA decode checkpoint:
 
 - The paged GQA frontend remains ordinary Tile TIR: page-table loads drive K/V

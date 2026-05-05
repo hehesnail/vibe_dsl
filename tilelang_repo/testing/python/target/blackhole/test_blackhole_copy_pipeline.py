@@ -178,6 +178,10 @@ def test_blackhole_leaf_readers_do_not_keep_legacy_defaults_or_slot_fallbacks():
         / "test_blackhole_flash_attention_pipeline.py": [
             legacy_value_kind_spec,
         ],
+        REPO_ROOT / "src" / "target" / "rt_mod_blackhole.cc": [
+            'register_buffer(buffer_name, "page_indexed", "dram")',
+            '"value_expr_buffer_load"',
+        ],
     }
 
     offenders = []
@@ -1302,6 +1306,13 @@ def test_blackhole_block_indexed_copy_per_work_spec_uses_value_expr_binding():
     assert str(a_tile_start["access_region"])
     assert int(a_tile_start["access_region_index"]) >= 0
     assert bindings["output_tile_start_id"]["value_source"] == "work_linear_id"
+
+    distributions = {
+        str(item["buffer"]): item
+        for item in executable_spec["buffer_distribution_plans"]
+    }
+    assert str(distributions["BlockIndices"]["layout"]) == "page_indexed"
+    assert int(distributions["BlockIndices"]["page_size_bytes"]) == 12
 
     materializations = {
         str(item["buffer"]): item
