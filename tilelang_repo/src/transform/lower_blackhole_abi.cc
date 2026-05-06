@@ -167,27 +167,32 @@ static TTComputeOperandBindingPlan BuildGemmComputeOperandBindingPlan(
     const std::unordered_map<std::string, std::string> &host_buffer_by_operand,
     const char *role) {
   std::string buffer;
-  DataType dtype;
+  DataType tensor_dtype;
+  DataType cb_dtype;
   bool transpose = false;
   const std::string role_string(role);
   if (role_string == "a") {
     buffer = fact.a_buffer;
-    dtype = fact.a_dtype;
+    tensor_dtype = fact.a_dtype;
+    cb_dtype = fact.a_dtype;
     transpose = fact.transpose_a;
   } else if (role_string == "b") {
     buffer = fact.b_buffer;
-    dtype = fact.b_dtype;
+    tensor_dtype = fact.b_dtype;
+    cb_dtype = fact.b_dtype;
     transpose = fact.transpose_b;
   } else {
     buffer = fact.c_buffer;
-    dtype = fact.c_dtype;
+    tensor_dtype = fact.c_dtype;
+    cb_dtype = fact.c_cb_dtype;
   }
   const String host_buffer =
       ResolveComputeOperandHostBuffer(host_buffer_by_operand, buffer);
-  const String data_format = String(DataTypeToDataFormatForBlackhole(dtype));
+  const String tensor_data_format = String(DataTypeToDataFormatForBlackhole(tensor_dtype));
+  const String cb_data_format = String(DataTypeToDataFormatForBlackhole(cb_dtype));
 
   return TTComputeOperandBindingPlan(
-      String(role), String(buffer), host_buffer, data_format, data_format,
+      String(role), String(buffer), host_buffer, tensor_data_format, cb_data_format,
       String(transpose ? "transpose" : "identity"));
 }
 

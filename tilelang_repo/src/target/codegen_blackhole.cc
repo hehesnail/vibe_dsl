@@ -27,7 +27,6 @@
 #include <tvm/arith/analyzer.h>
 
 #include <algorithm>
-#include <cstdlib>
 #include <optional>
 #include <sstream>
 #include <string>
@@ -52,6 +51,91 @@ namespace {
 bool IsBufferAddressRuntimeArgKind(const std::string& kind) {
   return kind == "input_buffer_addr32" || kind == "input_buffer_addr" ||
          kind == "output_buffer_addr32" || kind == "output_buffer_addr";
+}
+
+std::optional<int64_t> TryEvalStaticInt(PrimExpr expr) {
+  arith::Analyzer analyzer;
+  expr = analyzer.Simplify(expr);
+  if (const auto* imm = expr.as<IntImmNode>()) {
+    return imm->value;
+  }
+  return std::nullopt;
+}
+
+std::optional<bool> TryEvalStaticBool(PrimExpr expr) {
+  arith::Analyzer analyzer;
+  expr = analyzer.Simplify(expr);
+  if (tir::is_zero(expr)) {
+    return false;
+  }
+  if (tir::is_one(expr)) {
+    return true;
+  }
+  if (const auto* imm = expr.as<IntImmNode>()) {
+    return imm->value != 0;
+  }
+  if (const auto* not_op = expr.as<tir::NotNode>()) {
+    if (std::optional<bool> value = TryEvalStaticBool(not_op->a)) {
+      return !value.value();
+    }
+    return std::nullopt;
+  }
+  if (const auto* and_op = expr.as<tir::AndNode>()) {
+    std::optional<bool> lhs = TryEvalStaticBool(and_op->a);
+    if (lhs && !lhs.value()) {
+      return false;
+    }
+    std::optional<bool> rhs = TryEvalStaticBool(and_op->b);
+    if (rhs && !rhs.value()) {
+      return false;
+    }
+    if (lhs && rhs) {
+      return lhs.value() && rhs.value();
+    }
+    return std::nullopt;
+  }
+  if (const auto* or_op = expr.as<tir::OrNode>()) {
+    std::optional<bool> lhs = TryEvalStaticBool(or_op->a);
+    if (lhs && lhs.value()) {
+      return true;
+    }
+    std::optional<bool> rhs = TryEvalStaticBool(or_op->b);
+    if (rhs && rhs.value()) {
+      return true;
+    }
+    if (lhs && rhs) {
+      return lhs.value() || rhs.value();
+    }
+    return std::nullopt;
+  }
+  auto compare_ints = [](const PrimExpr& lhs_expr, const PrimExpr& rhs_expr,
+                         auto&& predicate) -> std::optional<bool> {
+    std::optional<int64_t> lhs = TryEvalStaticInt(lhs_expr);
+    std::optional<int64_t> rhs = TryEvalStaticInt(rhs_expr);
+    if (!lhs || !rhs) {
+      return std::nullopt;
+    }
+    return predicate(lhs.value(), rhs.value());
+  };
+  if (const auto* eq = expr.as<tir::EQNode>()) {
+    return compare_ints(eq->a, eq->b, [](int64_t lhs, int64_t rhs) { return lhs == rhs; });
+  }
+  if (const auto* ne = expr.as<tir::NENode>()) {
+    return compare_ints(ne->a, ne->b, [](int64_t lhs, int64_t rhs) { return lhs != rhs; });
+  }
+  if (const auto* lt = expr.as<tir::LTNode>()) {
+    return compare_ints(lt->a, lt->b, [](int64_t lhs, int64_t rhs) { return lhs < rhs; });
+  }
+  if (const auto* le = expr.as<tir::LENode>()) {
+    return compare_ints(le->a, le->b, [](int64_t lhs, int64_t rhs) { return lhs <= rhs; });
+  }
+  if (const auto* gt = expr.as<tir::GTNode>()) {
+    return compare_ints(gt->a, gt->b, [](int64_t lhs, int64_t rhs) { return lhs > rhs; });
+  }
+  if (const auto* ge = expr.as<tir::GENode>()) {
+    return compare_ints(ge->a, ge->b, [](int64_t lhs, int64_t rhs) { return lhs >= rhs; });
+  }
+  return std::nullopt;
 }
 
 std::string RequireStringImm(const tvm::PrimExpr& expr, const char* op_name,
@@ -264,6 +348,241 @@ bool StmtUsesVar(const tvm::tir::Stmt& stmt, const tvm::tir::VarNode* target) {
   return target != nullptr && stmt.defined() && Visitor(target).Check(stmt);
 }
 
+bool ExprUsesVar(const tvm::PrimExpr& expr, const tvm::tir::VarNode* target) {
+  bool found = false;
+  tvm::tir::PostOrderVisit(expr, [&](const ObjectRef& node) {
+    if (found) {
+      return;
+    }
+    if (const auto* var = node.as<tvm::tir::VarNode>()) {
+      found = SameCodegenStorageVar(var, target);
+    }
+  });
+  return found;
+}
+
+bool IsNoOpStmt(const tvm::tir::Stmt& stmt) {
+  if (!stmt.defined()) {
+    return true;
+  }
+  if (const auto* seq = stmt.as<tvm::tir::SeqStmtNode>()) {
+    return std::all_of(seq->seq.begin(), seq->seq.end(), [](const tvm::tir::Stmt& child) {
+      return IsNoOpStmt(child);
+    });
+  }
+  if (const auto* eval = stmt.as<tvm::tir::EvaluateNode>()) {
+    return tir::is_zero(eval->value);
+  }
+  if (const auto* if_then_else = stmt.as<tvm::tir::IfThenElseNode>()) {
+    return IsNoOpStmt(if_then_else->then_case) &&
+           (!if_then_else->else_case.defined() ||
+            IsNoOpStmt(if_then_else->else_case.value()));
+  }
+  if (const auto* let = stmt.as<tvm::tir::LetStmtNode>()) {
+    return IsNoOpStmt(let->body);
+  }
+  if (const auto* attr = stmt.as<tvm::tir::AttrStmtNode>()) {
+    return IsNoOpStmt(attr->body);
+  }
+  if (const auto* decl = stmt.as<tvm::tir::DeclBufferNode>()) {
+    return IsNoOpStmt(decl->body);
+  }
+  if (const auto* alloc = stmt.as<tvm::tir::AllocateNode>()) {
+    return IsNoOpStmt(alloc->body);
+  }
+  return false;
+}
+
+bool IsCBPopFrontOnlyStmt(const tvm::tir::Stmt& stmt) {
+  if (const auto* eval = stmt.as<tvm::tir::EvaluateNode>()) {
+    const auto* call = eval->value.as<tvm::tir::CallNode>();
+    auto builtin_name = BlackholeBuiltinName(call);
+    return builtin_name.has_value() && builtin_name.value() == "cb_pop_front";
+  }
+  if (const auto* seq = stmt.as<tvm::tir::SeqStmtNode>()) {
+    return std::all_of(seq->seq.begin(), seq->seq.end(), [](const tvm::tir::Stmt& child) {
+      return IsCBPopFrontOnlyStmt(child);
+    });
+  }
+  return false;
+}
+
+bool IsThreadSurvivorPopGuard(const tvm::tir::IfThenElseNode* op,
+                              const tvm::tir::VarNode* thread_var,
+                              const tvm::PrimExpr& thread_extent) {
+  (void)thread_extent;
+  return op != nullptr && !op->else_case.defined() && IsCBPopFrontOnlyStmt(op->then_case) &&
+         ExprUsesVar(op->condition, thread_var);
+}
+
+bool ThreadUsesOnlySurvivorPopGuards(const tvm::tir::Stmt& stmt,
+                                     const tvm::tir::VarNode* thread_var,
+                                     const tvm::PrimExpr& thread_extent) {
+  class Visitor final : public tvm::tir::StmtExprVisitor {
+   public:
+    Visitor(const tvm::tir::VarNode* thread_var, tvm::PrimExpr thread_extent)
+        : thread_var_(thread_var), thread_extent_(std::move(thread_extent)) {}
+
+    bool Check(const tvm::tir::Stmt& stmt) {
+      VisitStmt(stmt);
+      return !has_disallowed_use_;
+    }
+
+   private:
+    void VisitStmt(const tvm::tir::Stmt& stmt) final {
+      if (has_disallowed_use_) {
+        return;
+      }
+      tvm::tir::StmtExprVisitor::VisitStmt(stmt);
+    }
+
+    void VisitExpr(const tvm::PrimExpr& expr) final {
+      if (has_disallowed_use_) {
+        return;
+      }
+      tvm::tir::StmtExprVisitor::VisitExpr(expr);
+    }
+
+    void VisitStmt_(const tvm::tir::IfThenElseNode* op) final {
+      if (IsNoOpStmt(op->then_case) &&
+          (!op->else_case.defined() || IsNoOpStmt(op->else_case.value()))) {
+        return;
+      }
+      if (IsThreadSurvivorPopGuard(op, thread_var_, thread_extent_)) {
+        return;
+      }
+      tvm::tir::StmtExprVisitor::VisitStmt_(op);
+    }
+
+    void VisitExpr_(const tvm::tir::VarNode* op) final {
+      if (SameCodegenStorageVar(op, thread_var_)) {
+        has_disallowed_use_ = true;
+      }
+    }
+
+    const tvm::tir::VarNode* thread_var_;
+    tvm::PrimExpr thread_extent_;
+    bool has_disallowed_use_{false};
+  };
+
+  return thread_var != nullptr && stmt.defined() &&
+         Visitor(thread_var, thread_extent).Check(stmt);
+}
+
+tvm::tir::Stmt UnwrapThreadSurvivorPopGuards(const tvm::tir::Stmt& stmt,
+                                             const tvm::tir::VarNode* thread_var,
+                                             const tvm::PrimExpr& thread_extent) {
+  class Rewriter final : public tvm::tir::StmtExprMutator {
+   public:
+    Rewriter(const tvm::tir::VarNode* thread_var, tvm::PrimExpr thread_extent)
+        : thread_var_(thread_var), thread_extent_(std::move(thread_extent)) {}
+
+    tvm::tir::Stmt Rewrite(const tvm::tir::Stmt& stmt) { return VisitStmt(stmt); }
+
+   private:
+    tvm::tir::Stmt VisitStmt_(const tvm::tir::IfThenElseNode* op) final {
+      if (IsThreadSurvivorPopGuard(op, thread_var_, thread_extent_)) {
+        return VisitStmt(op->then_case);
+      }
+      return tvm::tir::StmtExprMutator::VisitStmt_(op);
+    }
+
+    const tvm::tir::VarNode* thread_var_;
+    tvm::PrimExpr thread_extent_;
+  };
+
+  return Rewriter(thread_var, thread_extent).Rewrite(stmt);
+}
+
+std::optional<const tvm::tir::VarNode*> FragmentFillDataVar(const tvm::tir::CallNode* call) {
+  auto builtin_name = BlackholeBuiltinName(call);
+  if (!builtin_name.has_value() || builtin_name.value() != "fill_fragment" ||
+      call->args.empty()) {
+    return std::nullopt;
+  }
+  return AsHandleVar(call->args[0]);
+}
+
+std::unordered_set<const tvm::tir::VarNode*> CollectDeadFragmentFillDataVars(
+    const tvm::tir::Stmt& stmt) {
+  class Visitor final : public tvm::tir::StmtExprVisitor {
+   public:
+    std::unordered_set<const tvm::tir::VarNode*> Collect(const tvm::tir::Stmt& stmt) {
+      VisitStmt(stmt);
+      std::unordered_set<const tvm::tir::VarNode*> dead;
+      for (const tvm::tir::VarNode* var : fill_data_vars_) {
+        if (live_data_vars_.count(var) == 0U) {
+          dead.insert(var);
+        }
+      }
+      return dead;
+    }
+
+   private:
+    void MarkLive(const tvm::tir::VarNode* var) {
+      if (var != nullptr && fill_data_vars_.count(var) != 0U) {
+        live_data_vars_.insert(var);
+      }
+    }
+
+    void VisitStmt_(const tvm::tir::AllocateNode* op) final {
+      VisitExpr(op->condition);
+      VisitStmt(op->body);
+    }
+
+    void VisitStmt_(const tvm::tir::AttrStmtNode* op) final {
+      VisitExpr(op->value);
+      VisitStmt(op->body);
+    }
+
+    void VisitStmt_(const tvm::tir::DeclBufferNode* op) final { VisitStmt(op->body); }
+
+    void VisitStmt_(const tvm::tir::BufferStoreNode* op) final {
+      VisitExpr(op->value);
+      for (const tvm::PrimExpr& index : op->indices) {
+        VisitExpr(index);
+      }
+    }
+
+    void VisitExpr_(const tvm::tir::BufferLoadNode* op) final {
+      if (op->buffer.defined()) {
+        MarkLive(op->buffer->data.get());
+      }
+      tvm::tir::StmtExprVisitor::VisitExpr_(op);
+    }
+
+    void VisitExpr_(const tvm::tir::CallNode* op) final {
+      auto builtin_name = BlackholeBuiltinName(op);
+      if (builtin_name.has_value()) {
+        if (builtin_name.value() == "fill_fragment") {
+          if (std::optional<const tvm::tir::VarNode*> data = FragmentFillDataVar(op)) {
+            fill_data_vars_.insert(data.value());
+          }
+          for (size_t i = 1; i < op->args.size(); ++i) {
+            VisitExpr(op->args[i]);
+          }
+          return;
+        }
+        if (builtin_name.value() == "pack_fill_fragment_to_tiled_cb") {
+          for (size_t i = 1; i < op->args.size(); ++i) {
+            VisitExpr(op->args[i]);
+          }
+          return;
+        }
+      }
+      tvm::tir::StmtExprVisitor::VisitExpr_(op);
+    }
+
+    void VisitExpr_(const tvm::tir::VarNode* op) final { MarkLive(op); }
+
+    std::unordered_set<const tvm::tir::VarNode*> fill_data_vars_;
+    std::unordered_set<const tvm::tir::VarNode*> live_data_vars_;
+  };
+
+  return stmt.defined() ? Visitor().Collect(stmt)
+                        : std::unordered_set<const tvm::tir::VarNode*>();
+}
+
 bool StmtUsesVarInEmittedBody(const tvm::tir::Stmt& stmt,
                               const tvm::tir::VarNode* target,
                               CodeGenBlackhole::CoreType core_type) {
@@ -457,6 +776,9 @@ std::vector<ThreadEmissionPiece> BuildThreadEmissionPieces(const tvm::tir::Stmt&
   auto add_piece = [](std::vector<ThreadEmissionPiece>* pieces, const tvm::tir::Stmt& piece,
                       bool uses_thread_var) {
     if (!piece.defined()) {
+      return;
+    }
+    if (IsNoOpStmt(piece)) {
       return;
     }
     if (const auto* seq = piece.as<tvm::tir::SeqStmtNode>()) {
@@ -700,8 +1022,7 @@ CodeGenBlackhole::CodeGenBlackhole()
     : headers_emitted_(false),
       core_type_(CoreType::kBRISC),
       need_dataflow_api_h_(false),
-      need_compute_api_h_(false),
-      emit_debug_waypoints_(false) {}
+      need_compute_api_h_(false) {}
 
 void CodeGenBlackhole::Init(bool output_ssa, bool emit_asserts,
                             bool emit_fwd_func_decl, std::string target_str,
@@ -714,7 +1035,6 @@ void CodeGenBlackhole::Init(bool output_ssa, bool emit_asserts,
   core_type_ = CoreType::kBRISC;
   need_dataflow_api_h_ = false;
   need_compute_api_h_ = false;
-  emit_debug_waypoints_ = std::getenv("TILELANG_BLACKHOLE_DEBUG_WAYPOINTS") != nullptr;
   buffer_runtime_arg_map_.clear();
   buffer_runtime_arg_map_by_name_.clear();
   runtime_arg_vars_by_identity_.clear();
@@ -728,6 +1048,7 @@ void CodeGenBlackhole::Init(bool output_ssa, bool emit_asserts,
   cb_num_pages_by_requirement_index_.clear();
   cb_initial_reserve_pages_by_requirement_index_.clear();
   active_cb_allocation_reserved_pages_.clear();
+  dead_fragment_fill_data_vars_.clear();
   active_scalar_reduction_.reset();
   scalar_reduction_counter_ = 0;
   tile_regs_scope_active_ = false;
@@ -1064,6 +1385,7 @@ void CodeGenBlackhole::GenerateGenericKernelMain(const tvm::tir::PrimFunc &f,
     stream << "}\n\n";
     return;
   }
+  dead_fragment_fill_data_vars_ = CollectDeadFragmentFillDataVars(f->body);
   this->VisitStmt(f->body);
   stream << "}\n\n";
 }
@@ -2025,13 +2347,6 @@ std::string CodeGenBlackhole::GetCBTailVar(int cb_id) const {
   return "cb_tail_" + std::to_string(cb_id);
 }
 
-void CodeGenBlackhole::MaybeEmitMathWaypoint(std::ostream& os, const char* code) {
-  if (!emit_debug_waypoints_ || core_type_ != CoreType::kTRISC || code == nullptr) {
-    return;
-  }
-  os << "; MATH({ WAYPOINT(\"" << code << "\"); })";
-}
-
 void CodeGenBlackhole::RegisterActiveCBWritePtrBinding(int cb_id, const std::string& var_name,
                                                        const std::string& type_name) {
   auto& bindings = active_cb_write_ptr_bindings_[cb_id];
@@ -2127,10 +2442,12 @@ void CodeGenBlackhole::VisitStmt_(const tvm::tir::EvaluateNode *op) {
     if (HandleBlackholeBuiltin(call, os)) {
       bool is_cb_reserve_back = call->op.same_as(tir::builtin::blackhole_cb_reserve_back());
       bool is_cb_push_back = call->op.same_as(tir::builtin::blackhole_cb_push_back());
-      if (!is_cb_reserve_back && !is_cb_push_back) {
+      bool is_cb_pop_front = call->op.same_as(tir::builtin::blackhole_cb_pop_front());
+      if (!is_cb_reserve_back && !is_cb_push_back && !is_cb_pop_front) {
         if (const auto* builtin = call->op.as<OpNode>()) {
           is_cb_reserve_back = builtin->name == "tl.blackhole.cb_reserve_back";
           is_cb_push_back = builtin->name == "tl.blackhole.cb_push_back";
+          is_cb_pop_front = builtin->name == "tl.blackhole.cb_pop_front";
         }
       }
       if (is_cb_reserve_back) {
@@ -2145,16 +2462,16 @@ void CodeGenBlackhole::VisitStmt_(const tvm::tir::EvaluateNode *op) {
       // This is a Blackhole builtin - print it as a statement
       PrintIndent();
       stream << os.str() << ";\n";
-      if (is_cb_reserve_back) {
-        (void)ResolveCBId(call->args[0]);
-      } else if (is_cb_push_back) {
+      if (is_cb_push_back) {
         const int cb_id = ResolveCBId(call->args[0]);
         const auto* pages = call->args[1].as<IntImmNode>();
         auto reserved_it = active_cb_allocation_reserved_pages_.find(cb_id);
-        if (pages != nullptr && reserved_it != active_cb_allocation_reserved_pages_.end()) {
-          reserved_it->second = std::max<int64_t>(0, reserved_it->second - pages->value);
-          if (reserved_it->second == 0) {
-            active_cb_allocation_reserved_pages_.erase(reserved_it);
+        if (pages != nullptr && pages->value > 0) {
+          if (reserved_it != active_cb_allocation_reserved_pages_.end()) {
+            reserved_it->second = std::max<int64_t>(0, reserved_it->second - pages->value);
+            if (reserved_it->second == 0) {
+              active_cb_allocation_reserved_pages_.erase(reserved_it);
+            }
           }
         }
       }
@@ -2211,6 +2528,27 @@ void CodeGenBlackhole::VisitStmt_(const tvm::tir::ForNode *op) {
 
   PrintIndent();
   stream << "}\n";
+}
+
+void CodeGenBlackhole::VisitStmt_(const tvm::tir::IfThenElseNode *op) {
+  if (IsNoOpStmt(op->then_case) &&
+      (!op->else_case.defined() || IsNoOpStmt(op->else_case.value()))) {
+    return;
+  }
+  arith::Analyzer analyzer;
+  PrimExpr condition = analyzer.Simplify(op->condition);
+  std::optional<bool> static_condition = TryEvalStaticBool(condition);
+  if (static_condition && !static_condition.value()) {
+    if (op->else_case.defined()) {
+      this->PrintStmt(op->else_case.value());
+    }
+    return;
+  }
+  if (static_condition && static_condition.value()) {
+    this->PrintStmt(op->then_case);
+    return;
+  }
+  tvm::codegen::CodeGenC::VisitStmt_(op);
 }
 
 void CodeGenBlackhole::VisitStmt_(const tvm::tir::AllocateNode *op) {
@@ -2656,6 +2994,16 @@ void CodeGenBlackhole::VisitStmt_(const tvm::tir::AttrStmtNode *op) {
         }
         if (!thread_var_used || tir::is_one(op->value)) {
           emit_with_thread_binding("0", partition_body);
+          restore_nested_thread_vars();
+          restore_thread_var();
+          return;
+        } else if (ThreadUsesOnlySurvivorPopGuards(partition_body, iv->var.get(), op->value)) {
+          arith::Analyzer analyzer;
+          const PrimExpr survivor_index =
+              analyzer.Simplify(op->value - IntImm(iv->var.dtype(), 1));
+          const tvm::tir::Stmt survivor_body =
+              UnwrapThreadSurvivorPopGuards(partition_body, iv->var.get(), op->value);
+          emit_with_thread_binding(PrintExpr(survivor_index), survivor_body);
           restore_nested_thread_vars();
           restore_thread_var();
           return;
@@ -4057,6 +4405,12 @@ void CodeGenBlackhole::PrintFillFragment(const tvm::tir::CallNode* op,
                                          std::ostream& os) {
   const auto* dst_var = AsHandleVar(op->args[0]);
   ICHECK(dst_var) << "tl.blackhole.fill_fragment expects a direct destination handle var";
+  for (const tvm::tir::VarNode* dead_var : dead_fragment_fill_data_vars_) {
+    if (SameCodegenStorageVar(dst_var, dead_var)) {
+      os << "(void)0";
+      return;
+    }
+  }
   const DataType dst_dtype =
       ResolveHandleDataType(dst_var, "tl.blackhole.fill_fragment", "destination");
 
@@ -4070,7 +4424,6 @@ void CodeGenBlackhole::PrintFillFragment(const tvm::tir::CallNode* op,
   os << "; const " << dtype_os.str() << " value = static_cast<" << dtype_os.str() << ">(";
   PrintExpr(op->args[2], os);
   os << "); tilelang_fill_fragment(dst, num_elements, value); })";
-  MaybeEmitMathWaypoint(os, "FILL");
 }
 
 void CodeGenBlackhole::PrintAddFragment(const tvm::tir::CallNode* op,
@@ -4121,7 +4474,6 @@ void CodeGenBlackhole::PrintAddFragmentFromCBFront(const tvm::tir::CallNode* op,
   os << "); const uint32_t num_elements = ";
   PrintExpr(op->args[2], os);
   os << "; tilelang_add_fragment(dst, src, num_elements); }) }";
-  MaybeEmitMathWaypoint(os, "AFCB");
 }
 
 void CodeGenBlackhole::PrintPackUntilizeSlice(const tvm::tir::CallNode* op,
@@ -4527,16 +4879,17 @@ void CodeGenBlackhole::PrintPackFillFragmentToTiledCB(const tvm::tir::CallNode* 
     ICHECK(false) << "tl.blackhole.pack_fill_fragment_to_tiled_cb currently admits bf16 or "
                      "float32 publication";
   }
-  MaybeEmitMathWaypoint(os, "FILL");
   os << "{ (void)(";
   PrintExpr(op->args[2], os);
   os << "); (void)(";
   PrintExpr(op->args[4], os);
   os << "); const uint32_t num_tiles = (static_cast<uint32_t>(";
   PrintExpr(op->args[3], os);
-  os << ") + 1023u) / 1024u; fill_tile_init(); "
-        "for (uint32_t tile = 0; tile < num_tiles; ++tile) { "
-        "tile_regs_acquire(); fill_tile(0, static_cast<float>(";
+  os << ") + 1023u) / 1024u; ";
+  os << "fill_tile_init(); ";
+  os << "for (uint32_t tile = 0; tile < num_tiles; ++tile) { "
+        "tile_regs_acquire(); ";
+  os << "fill_tile(0, static_cast<float>(";
   PrintExpr(op->args[5], os);
   os << ")); tile_regs_commit(); tile_regs_wait(); ";
   PrintPackReconfigDataFormatForCB(cb_id, os);
@@ -4761,7 +5114,6 @@ void CodeGenBlackhole::PrintCastFragmentSlice(const tvm::tir::CallNode* op,
     os << "; for (uint32_t i = 0; i < num_elements; ++i) { "
        << "dst_bits[dst_offset + i] = " << cast_bits_helper
        << "(src[src_offset + i]); } })";
-    MaybeEmitMathWaypoint(os, "CAST");
     return;
   }
 
@@ -4778,7 +5130,6 @@ void CodeGenBlackhole::PrintCastFragmentSlice(const tvm::tir::CallNode* op,
   os << "; const uint32_t num_elements = ";
   PrintExpr(op->args[4], os);
   os << "; tilelang_cast_fragment_slice(dst, src, dst_offset, src_offset, num_elements); })";
-  MaybeEmitMathWaypoint(os, "CAST");
 }
 
 void CodeGenBlackhole::PrintKernelAttributes() {

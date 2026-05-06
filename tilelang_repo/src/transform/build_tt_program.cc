@@ -2473,6 +2473,7 @@ tvm::transform::Pass PlanTTTransport() {
       tir::PrimFunc planned = planner.Transform(func.value());
       TTProgramSlices slices =
           GetOrCreateTTProgramSlices(planned, gvar, spatial_plan);
+      slices.kernels = planner.RewriteKernelBodies(slices.kernels);
       slices.cb_plans = BuildCBPlans(planner.GetCBConfigs());
       slices.materialization_plans = RemapMaterializationCBRequirementIndices(
           slices.materialization_plans, slices.cb_plans);

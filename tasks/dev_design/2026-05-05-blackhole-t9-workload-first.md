@@ -50,14 +50,12 @@ compare against a host reference.  A checkpoint is admitted only when:
   explicit `Q_nope @ KV_latent^T` plus `Q_pe @ K_pe^T` score accumulation,
   with the accumulator kept on a compute-local live-form CB until the final
   output publish.
-- T9.2 paged GQA keeps source/spec admission and page-addressed QK/AV micro
-  runtime coverage, but the full online-softmax runtime path currently stops
-  at the typed TT-Sim `t_tile_mmio_wr32` leaf-chain boundary.
+- T9.2 paged GQA has source/spec admission, page-addressed QK/AV micro
+  runtime coverage, and full online-softmax bf16 direct-runtime correctness.
 - T9.3 full paged MLA decode keeps source/spec admission through generic
   page-table/ragged `value_expr` bindings, explicit score GEMMs, retained
-  latent-KV lifetime, and the existing flash partial-combine path.  Its full
-  online-softmax direct runtime shares the same typed `t_tile_mmio_wr32`
-  simulator boundary as T9.2.
+  latent-KV lifetime, and the existing flash partial-combine path, and now
+  has full online-softmax bf16 direct-runtime correctness.
 - T9.4 sparse/ragged attention, T9.5 recurrence/scan, and T9.6 multi-block
   flash decode are queued.
 
@@ -287,11 +285,11 @@ Runtime:
   constants and host materialization are covered independently from the full
   GQA tile.
 - full GEMM/online-softmax flash paths that contain GEMM plus
-  `reduce_tile` and `exp2_tile` / `recip_tile` are currently expected to expose
-  the typed TT-Sim `t_tile_mmio_wr32` direct-runtime unsupported reason rather
-  than falling through to process-level simulator fatal.
+  `reduce_tile` and `exp2_tile` / `recip_tile` must run as positive bf16
+  direct-runtime correctness gates for the admitted T9.2/T9.3 shapes.
 - a non-softmax MLA score-only slice remains a positive direct-runtime gate so
-  the T9.3 additive GEMM chain is not hidden behind the simulator boundary.
+  the T9.3 additive GEMM chain is covered independently from the full
+  online-softmax decode.
 
 Unsupported diagnostics:
 

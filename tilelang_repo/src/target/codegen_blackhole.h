@@ -79,6 +79,7 @@ class CodeGenBlackhole : public CodeGenCHost {
 
   // Keep renamed C loop symbols visible to Blackhole builtin argument emission.
   void VisitStmt_(const tvm::tir::ForNode *op) override;
+  void VisitStmt_(const tvm::tir::IfThenElseNode *op) override;
 
   // Skip C-array allocation for CB-backed shared buffers.
   void VisitStmt_(const tvm::tir::AllocateNode *op) override;
@@ -250,7 +251,6 @@ class CodeGenBlackhole : public CodeGenCHost {
                                        const std::string& type_name);
   void UnregisterActiveCBWritePtrBinding(int cb_id, const std::string& var_name);
   void EmitActiveCBWritePtrRefreshes(int cb_id);
-  void MaybeEmitMathWaypoint(std::ostream& os, const char* code);
   void LoadLogicalTileLayouts(const tvm::tir::PrimFunc& f);
   const LogicalTileLayoutBinding* FindLogicalTileLayoutBinding(const tvm::tir::VarNode* var) const;
   bool LogicalTileLayoutRequiresGenericBridge(const LogicalTileLayoutBinding& binding) const;
@@ -297,8 +297,6 @@ class CodeGenBlackhole : public CodeGenCHost {
   bool need_tt_metal_h_{false};
   bool need_dataflow_api_h_{false};
   bool need_compute_api_h_{false};
-  bool emit_debug_waypoints_{false};
-
   // Whether to emit kernel entry point wrapper
   bool emit_kernel_wrapper_{true};
 
@@ -320,6 +318,7 @@ class CodeGenBlackhole : public CodeGenCHost {
   std::unordered_map<int, std::vector<ActiveCBWritePtrBinding>> active_cb_write_ptr_bindings_;
   std::unordered_map<int, int> active_cb_allocation_reserved_pages_;
   std::unordered_map<std::string, LogicalTileLayoutBinding> logical_tile_layout_bindings_by_buffer_name_;
+  std::unordered_set<const tvm::tir::VarNode*> dead_fragment_fill_data_vars_;
   std::optional<ScalarReductionContext> active_scalar_reduction_;
   int scalar_reduction_counter_{0};
   bool tile_regs_scope_active_{false};

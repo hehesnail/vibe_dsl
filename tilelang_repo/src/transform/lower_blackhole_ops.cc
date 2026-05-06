@@ -1681,6 +1681,166 @@ static Stmt PruneDeadBlackholeAccFragmentFillsAndDefinitions(const Stmt& body) {
                                 std::move(live_blackhole_acc_data_vars))(body);
 }
 
+static std::optional<const VarNode*> FragmentFillDataVarFromCall(const CallNode* call) {
+  if (call == nullptr || !call->op->IsInstance<OpNode>()) {
+    return std::nullopt;
+  }
+  const Op call_op = Downcast<Op>(call->op);
+  if (call_op->name == "tl.blackhole.fill_fragment" && call->args.size() >= 3U &&
+      IsFragmentFillValue(call->args[2])) {
+    if (const auto* data = call->args[0].as<VarNode>()) {
+      return data;
+    }
+  }
+  if (IsBlackholeTileComputeFillTile(call) && call->args.size() >= 4U &&
+      IsBufferLikeExpr(call->args[1]) && IsFragmentFillValue(call->args[2])) {
+    BufferRegion region = NormalizeToBufferRegion(call->args[1]);
+    if (region.defined() && region->buffer.defined()) {
+      return region->buffer->data.get();
+    }
+  }
+  return std::nullopt;
+}
+
+static std::unordered_set<const VarNode*> CollectFragmentFillDataVars(const Stmt& body) {
+  std::unordered_set<const VarNode*> vars;
+  tir::PostOrderVisit(body, [&](const ObjectRef& node) {
+    if (const auto* call = node.as<CallNode>()) {
+      if (std::optional<const VarNode*> data = FragmentFillDataVarFromCall(call)) {
+        vars.insert(data.value());
+      }
+    }
+  });
+  return vars;
+}
+
+class LiveFragmentFillUseCollector final : public tir::StmtExprVisitor {
+ public:
+  explicit LiveFragmentFillUseCollector(std::unordered_set<const VarNode*> tracked_data_vars)
+      : tracked_data_vars_(std::move(tracked_data_vars)) {}
+
+  std::unordered_set<const VarNode*> Collect(const Stmt& stmt) {
+    VisitStmt(stmt);
+    return live_data_vars_;
+  }
+
+ private:
+  void MarkIfTracked(const VarNode* var) {
+    if (var != nullptr && tracked_data_vars_.count(var) != 0U) {
+      live_data_vars_.insert(var);
+    }
+  }
+
+  void VisitStmt_(const AllocateNode* op) final {
+    VisitExpr(op->condition);
+    VisitStmt(op->body);
+  }
+
+  void VisitStmt_(const AttrStmtNode* op) final {
+    VisitExpr(op->value);
+    VisitStmt(op->body);
+  }
+
+  void VisitStmt_(const DeclBufferNode* op) final { VisitStmt(op->body); }
+
+  void VisitStmt_(const BufferStoreNode* op) final {
+    VisitExpr(op->value);
+    for (const PrimExpr& index : op->indices) {
+      VisitExpr(index);
+    }
+  }
+
+  void VisitExpr_(const BufferLoadNode* op) final {
+    if (op->buffer.defined()) {
+      MarkIfTracked(op->buffer->data.get());
+    }
+    tir::StmtExprVisitor::VisitExpr_(op);
+  }
+
+  void VisitExpr_(const VarNode* op) final { MarkIfTracked(op); }
+
+  void VisitExpr_(const CallNode* op) final {
+    if (op->op->IsInstance<OpNode>()) {
+      const Op call_op = Downcast<Op>(op->op);
+      if (call_op->name == "tl.blackhole.fill_fragment" && !op->args.empty()) {
+        for (size_t i = 1; i < op->args.size(); ++i) {
+          VisitExpr(op->args[i]);
+        }
+        return;
+      }
+      if (call_op->name == "tl.blackhole.pack_fill_fragment_to_tiled_cb" &&
+          !op->args.empty()) {
+        for (size_t i = 1; i < op->args.size(); ++i) {
+          VisitExpr(op->args[i]);
+        }
+        return;
+      }
+      if (IsBlackholeTileComputeFillTile(op) && op->args.size() >= 2U) {
+        VisitExpr(op->args[0]);
+        for (size_t i = 2; i < op->args.size(); ++i) {
+          VisitExpr(op->args[i]);
+        }
+        return;
+      }
+    }
+    tir::StmtExprVisitor::VisitExpr_(op);
+  }
+
+  std::unordered_set<const VarNode*> tracked_data_vars_;
+  std::unordered_set<const VarNode*> live_data_vars_;
+};
+
+class DeadFragmentFillPruner final : public tir::StmtExprMutator {
+ public:
+  DeadFragmentFillPruner(std::unordered_set<const VarNode*> tracked_data_vars,
+                         std::unordered_set<const VarNode*> live_data_vars)
+      : tracked_data_vars_(std::move(tracked_data_vars)),
+        live_data_vars_(std::move(live_data_vars)) {}
+
+ private:
+  bool IsDeadFill(const CallNode* call) const {
+    std::optional<const VarNode*> data = FragmentFillDataVarFromCall(call);
+    return data.has_value() && tracked_data_vars_.count(data.value()) != 0U &&
+           live_data_vars_.count(data.value()) == 0U;
+  }
+
+  Stmt VisitStmt_(const SeqStmtNode* op) final {
+    Array<Stmt> rewritten;
+    for (const Stmt& child : op->seq) {
+      Stmt lowered = VisitStmt(child);
+      if (!IsNoOpStmt(lowered)) {
+        rewritten.push_back(lowered);
+      }
+    }
+    if (rewritten.empty()) {
+      return Evaluate(IntImm32(0));
+    }
+    return SeqStmt::Flatten(rewritten);
+  }
+
+  Stmt VisitStmt_(const EvaluateNode* op) final {
+    if (const auto* call = op->value.as<CallNode>()) {
+      if (IsDeadFill(call)) {
+        return Evaluate(IntImm32(0));
+      }
+    }
+    return tir::StmtExprMutator::VisitStmt_(op);
+  }
+
+  std::unordered_set<const VarNode*> tracked_data_vars_;
+  std::unordered_set<const VarNode*> live_data_vars_;
+};
+
+static Stmt PruneDeadFragmentFillsAfterExactCBPublication(const Stmt& body) {
+  std::unordered_set<const VarNode*> tracked_data_vars = CollectFragmentFillDataVars(body);
+  if (tracked_data_vars.empty()) {
+    return body;
+  }
+  std::unordered_set<const VarNode*> live_data_vars =
+      LiveFragmentFillUseCollector(tracked_data_vars).Collect(body);
+  return DeadFragmentFillPruner(std::move(tracked_data_vars), std::move(live_data_vars))(body);
+}
+
 PlanTTKernelABI::PlanTTKernelABI() : next_requirement_index_(0) {}
 
 PrimFunc PlanTTKernelABI::SelectComputeBuiltins(const PrimFunc& func) {
@@ -2138,6 +2298,7 @@ PrimFunc PlanTTKernelABI::Transform(const PrimFunc& func) {
   compute_op_signatures_.clear();
   gemm_compute_op_fact_index_by_signature_.clear();
   gemm_compute_op_facts_.clear();
+  gemm_current_compute_op_fact_index_ = -1;
   tt_compute_op_plans_.clear();
   tile_compute_dag_lowering_decisions_.clear();
   tile_compute_dag_lowering_decision_consumed_.clear();
@@ -2331,6 +2492,7 @@ PrimFunc PlanTTKernelABI::Transform(const PrimFunc& func) {
   final_body = RewrapMissingBlackholeAccDefinitions(
       func->body, final_body, logical_tile_layout_specs_by_buffer_);
   final_body = PruneDeadBlackholeAccFragmentFillsAndDefinitions(final_body);
+  final_body = PruneDeadFragmentFillsAfterExactCBPublication(final_body);
   new_func.CopyOnWrite()->body = final_body;
   StoreAccessorDescriptors(new_func);
   RejectUnsupportedComputeOps(unresolved_unsupported_ops);

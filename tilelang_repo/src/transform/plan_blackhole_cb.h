@@ -32,6 +32,7 @@
 #define TVM_TL_PLAN_BLACKHOLE_CB_H_
 
 #include "blackhole_cb_common.h"
+#include "common/tt_target_program.h"
 
 #include <tvm/tir/function.h>
 #include <tvm/tir/stmt.h>
@@ -99,6 +100,10 @@ class PlanTTCBAlloc : public tvm::tir::StmtExprMutator {
   /*! \brief Get CB configurations (after Transform) */
   std::vector<CBConfig> GetCBConfigs() const { return cb_configs_; }
 
+  /*! \brief Rewrite staged TTKernel bodies with the final physical CB allocation. */
+  tvm::ffi::Array<TTKernel> RewriteKernelBodies(
+      const tvm::ffi::Array<TTKernel>& kernels) const;
+
   /*! \brief Blackhole CB constraints */
   static constexpr int kMaxL1Size = 1572864;   // 1.5MB = 1,572,864 bytes
   static constexpr int kMaxCBCount = 64;       // CB 0-63
@@ -130,9 +135,15 @@ class PlanTTCBAlloc : public tvm::tir::StmtExprMutator {
 
   /*! \brief Rewrite requirement_index placeholders in IR body to final cb_id values */
   tvm::tir::Stmt RewriteCBIdsInIR(const tvm::tir::Stmt& body,
-                                  const std::unordered_map<int, int>& cb_id_by_requirement_index);
+                                  const std::unordered_map<int, int>& cb_id_by_requirement_index)
+      const;
+
+  /*! \brief Apply allocation-time queue rewrites to a standalone kernel body. */
+  tvm::tir::Stmt RewriteBodyWithFinalCBAllocation(const tvm::tir::Stmt& body) const;
 
   std::vector<CBConfig> cb_configs_;
+  std::vector<CBRequirement> planned_requirements_;
+  std::unordered_map<int, int> cb_id_by_requirement_index_;
   int max_l1_size_ = kMaxL1Size;
   int max_cb_count_ = kMaxCBCount;
 };

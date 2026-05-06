@@ -30,6 +30,7 @@
 
 #include <algorithm>
 #include <numeric>
+#include <unordered_set>
 #include <vector>
 
 #include "../tir/builtin_blackhole.h"
@@ -658,14 +659,6 @@ bool PlanTTKernelABI::BorrowedExactInputHasNoFutureUseAt(
   if (!value.borrowed_live || !value.buffer.defined() || value.cb_id < 0) {
     return false;
   }
-  if (select_compute_builtins_only_ && value.num_tiles > 1 &&
-      active_loop_carried_buffer_identity_stack_.empty()) {
-    return false;
-  }
-  if (!value.live_identity.empty() &&
-      BufferIdentityHasWriteAtOrder(value.live_identity, current_order_index)) {
-    return true;
-  }
   int upper_bound_order_index = -1;
   if (!active_serial_loop_order_ranges_.empty()) {
     const auto& loop_range = active_serial_loop_order_ranges_.back();
@@ -705,14 +698,76 @@ bool PlanTTKernelABI::BorrowedExactInputHasNoFutureUseAt(
     }
   }
   const FutureBufferUses future_uses =
-      !value.live_identity.empty()
-          ? ClassifyFutureBufferIdentityReadsBeforeNextWriteUntilOrder(
-                value.live_identity, current_order_index, upper_bound_order_index)
-          : ClassifyFutureLiveCBReadsBeforeNextWriteUntilOrder(
-                value.buffer, current_order_index, upper_bound_order_index);
+      ClassifyFutureExactCBLiveAliasReadsBeforeNextWriteUntilOrder(
+          value, current_order_index, upper_bound_order_index);
   return !future_uses.has_compute_consume &&
          !future_uses.has_transport_consume &&
          !future_uses.has_reference;
+}
+
+PlanTTKernelABI::FutureBufferUses
+PlanTTKernelABI::ClassifyFutureExactCBLiveAliasReadsBeforeNextWriteUntilOrder(
+    const ExactTiledCBValue& value,
+    int current_order_index,
+    int upper_bound_order_index) const {
+  FutureBufferUses uses;
+  if (value.cb_id < 0) {
+    return uses;
+  }
+
+  std::vector<std::string> identities;
+  auto add_identity = [&](const std::string& identity) {
+    if (identity.empty()) {
+      return;
+    }
+    if (std::find(identities.begin(), identities.end(), identity) == identities.end()) {
+      identities.push_back(identity);
+    }
+  };
+  add_identity(value.live_identity);
+  if (value.buffer.defined()) {
+    for (const std::string& identity : CollectBufferFlowIdentities(value.buffer)) {
+      add_identity(identity);
+    }
+  }
+  const int producer_order_index = ResolveBorrowedExactInputProducerOrder(value);
+  auto add_live_aliases_from_map = [&](const std::unordered_map<std::string, int>& cb_by_identity,
+                                       const std::unordered_map<std::string, int>& order_by_identity) {
+    for (const auto& [identity, cb_id] : cb_by_identity) {
+      if (cb_id == value.cb_id) {
+        auto order_it = order_by_identity.find(identity);
+        if (producer_order_index >= 0 &&
+            (order_it == order_by_identity.end() ||
+             order_it->second != producer_order_index)) {
+          continue;
+        }
+        add_identity(identity);
+      }
+    }
+  };
+  add_live_aliases_from_map(exact_output_live_form_cb_by_buffer_identity_,
+                            exact_output_live_form_order_by_buffer_identity_);
+  add_live_aliases_from_map(buffer_live_form_cb_by_buffer_identity_,
+                            buffer_live_form_order_by_buffer_identity_);
+
+  for (const std::string& identity : identities) {
+    if (BufferIdentityHasWriteAtOrder(identity, current_order_index)) {
+      continue;
+    }
+    const FutureBufferUses identity_uses =
+        ClassifyFutureBufferIdentityReadsBeforeNextWriteUntilOrder(
+            identity, current_order_index, upper_bound_order_index);
+    uses.has_compute_consume =
+        uses.has_compute_consume || identity_uses.has_compute_consume;
+    uses.has_transport_consume =
+        uses.has_transport_consume || identity_uses.has_transport_consume;
+    uses.has_reference = uses.has_reference || identity_uses.has_reference;
+  }
+  if (identities.empty() && value.buffer.defined()) {
+    uses = ClassifyFutureLiveCBReadsBeforeNextWriteUntilOrder(
+        value.buffer, current_order_index, upper_bound_order_index);
+  }
+  return uses;
 }
 
 int PlanTTKernelABI::ResolveBorrowedExactInputProducerOrder(
@@ -975,6 +1030,14 @@ Stmt PlanTTKernelABI::ReleaseExactInputAfterUse(
       RecordExactCBUseAndReleaseEvent(value, current_order_index,
                                       release_policy);
   if (!release_event) {
+    const FutureBufferUses future_alias_uses =
+        ClassifyFutureExactCBLiveAliasReadsBeforeNextWriteUntilOrder(
+            value, current_order_index, /*upper_bound_order_index=*/-1);
+    if (future_alias_uses.has_compute_consume ||
+        future_alias_uses.has_transport_consume ||
+        future_alias_uses.has_reference) {
+      return Stmt();
+    }
     if (!value.borrowed_live ||
         release_policy == ExactCBReleasePolicy::kAlways) {
       return MakeBlackholeCall(
@@ -1216,6 +1279,66 @@ void PlanTTKernelABI::MarkExactCBValuesOverlap(std::initializer_list<int> cb_ids
         MarkRequirementLifetimeOverlap(valid_ids[i], valid_ids[j]);
       }
     }
+  }
+}
+
+void PlanTTKernelABI::MarkFutureLiveExactCBRequirementsOverlapWith(
+    int output_cb_id, int output_page_count, int current_order_index) {
+  if (output_cb_id < 0) {
+    return;
+  }
+  std::unordered_set<int> live_cb_ids;
+  int self_live_pages = 0;
+  auto consider_live_identity = [&](const std::string& identity, int cb_id) {
+    if (identity.empty() || cb_id < 0) {
+      return;
+    }
+    const bool writes_at_current_order =
+        BufferIdentityHasWriteAtOrder(identity, current_order_index);
+    const bool consumed_at_current_order =
+        BufferIdentityHasComputeConsumeAtOrder(identity, current_order_index);
+    if (writes_at_current_order && !consumed_at_current_order) {
+      return;
+    }
+    if (cb_id != output_cb_id) {
+      live_cb_ids.insert(cb_id);
+      return;
+    }
+    const FutureBufferUses future_uses =
+        ClassifyFutureBufferIdentityReadsBeforeNextWriteUntilOrder(
+            identity, current_order_index, /*upper_bound_order_index=*/-1);
+    if (consumed_at_current_order ||
+        future_uses.has_compute_consume ||
+        future_uses.has_transport_consume ||
+        future_uses.has_reference) {
+      int live_pages = 0;
+      auto value_it = exact_output_live_form_value_by_buffer_identity_.find(identity);
+      if (value_it != exact_output_live_form_value_by_buffer_identity_.end()) {
+        live_pages = value_it->second.num_tiles;
+      }
+      if (live_pages <= 0 && cb_id < static_cast<int>(cb_requirements_.size())) {
+        live_pages = std::max(cb_requirements_[cb_id].consume_pages_per_event,
+                              cb_requirements_[cb_id].publish_pages_per_event);
+      }
+      self_live_pages = std::max(self_live_pages, std::max(1, live_pages));
+    }
+  };
+  for (const auto& [identity, cb_id] : exact_output_live_form_cb_by_buffer_identity_) {
+    consider_live_identity(identity, cb_id);
+  }
+  for (const auto& [identity, cb_id] : buffer_live_form_cb_by_buffer_identity_) {
+    consider_live_identity(identity, cb_id);
+  }
+  for (int live_cb_id : live_cb_ids) {
+    MarkRequirementLifetimeOverlap(live_cb_id, output_cb_id);
+  }
+  if (self_live_pages > 0 && output_cb_id < static_cast<int>(cb_requirements_.size())) {
+    auto& req = cb_requirements_[output_cb_id];
+    const int output_pages = std::max(1, output_page_count);
+    req.num_pages = std::max(req.num_pages, self_live_pages + output_pages);
+    req.flow_class = CBFlowClass::kRepublish;
+    req.publish_pages_per_event = std::max(req.publish_pages_per_event, output_pages);
+    req.consume_pages_per_event = std::max(req.consume_pages_per_event, self_live_pages);
   }
 }
 

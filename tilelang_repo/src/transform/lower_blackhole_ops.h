@@ -94,6 +94,7 @@ struct GemmComputeOpFact {
   tvm::DataType a_dtype;
   tvm::DataType b_dtype;
   tvm::DataType c_dtype;
+  tvm::DataType c_cb_dtype;
 };
 
 struct TileComputeDAGLoweringDecision {
@@ -678,6 +679,10 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   bool BorrowedExactInputHasNoFutureUseAt(
       const ExactTiledCBValue& value,
       int current_order_index) const;
+  FutureBufferUses ClassifyFutureExactCBLiveAliasReadsBeforeNextWriteUntilOrder(
+      const ExactTiledCBValue& value,
+      int current_order_index,
+      int upper_bound_order_index) const;
   int ResolveBorrowedExactInputProducerOrder(
       const ExactTiledCBValue& value) const;
   tvm::ffi::Optional<TTExactCBReleaseEvent> RecordExactCBUseAndReleaseEvent(
@@ -724,6 +729,9 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   void RecordExactOutputLiveForm(const tvm::tir::Buffer& dst,
                                  const ExactTiledCBValue& cb_value);
   void MarkExactCBValuesOverlap(std::initializer_list<int> cb_ids);
+  void MarkFutureLiveExactCBRequirementsOverlapWith(int output_cb_id,
+                                                    int output_page_count,
+                                                    int current_order_index);
   tvm::tir::Stmt PublishLocalBufferToExactTiledCB(const tvm::tir::Buffer& src,
                                                   const ExactTiledCBValue& cb_value);
   tvm::tir::Stmt MaterializeExactTiledCBToLocalBuffer(const tvm::tir::Buffer& dst,
@@ -881,6 +889,8 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
       int upper_bound_order_index) const;
   bool BufferIdentityHasWriteAtOrder(const std::string& buffer_identity,
                                      int order_index) const;
+  bool BufferIdentityHasComputeConsumeAtOrder(const std::string& buffer_identity,
+                                              int order_index) const;
   bool HasFutureExactLiveFormTileComputeConsume(
       const tvm::tir::Buffer& buffer,
       int current_order_index) const;
@@ -1029,6 +1039,7 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   std::unordered_set<std::string> compute_op_signatures_;
   std::unordered_map<std::string, int> gemm_compute_op_fact_index_by_signature_;
   std::vector<GemmComputeOpFact> gemm_compute_op_facts_;
+  int gemm_current_compute_op_fact_index_ = -1;
   std::vector<std::unordered_set<std::string>> gemm_compute_op_known_buffers_;
   std::unordered_map<std::string, tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any>>
       logical_tile_layout_specs_by_buffer_;
@@ -1050,6 +1061,7 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   tvm::DataType gemm_a_dtype_;
   tvm::DataType gemm_b_dtype_;
   tvm::DataType gemm_c_dtype_;
+  tvm::DataType gemm_c_cb_dtype_;
   tvm::ffi::Array<tvm::Integer> copy_input_shape_;
   tvm::ffi::Array<tvm::Integer> copy_output_shape_;
   tvm::ffi::Array<tvm::Integer> copy_intermediate_shape_;

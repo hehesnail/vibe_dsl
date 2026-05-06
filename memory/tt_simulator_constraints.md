@@ -233,12 +233,12 @@
    同一 `tensix_execute_pacr: count=1` fatal；seq64 accumulator-only
    loop-carried exact-CB direct runtime 仍是正例，因此 gate 必须按 typed
    input-CB backedge release 收窄。
-   2026-05-06 另确认：T7 seq64 flash-attn exact-CB partial-combine、T9.2
-   paged GQA full decode、T9.3 full paged MLA decode 的 GEMM/online-softmax
-   leaf chain 当前命中 `UnimplementedFunctionality: t_tile_mmio_wr32`。
-   该边界应按 executable compute leaf records 暴露为 typed direct-runtime
-   unsupported reason；T9.1 grouped GEMM、T9.3 dual-score GEMM slice、small
-   bf16 flash 正例仍应继续真跑。
+   2026-05-06 修正：T7 seq64 flash-attn exact-CB partial-combine、T9.2
+   paged GQA full decode、T9.3 full paged MLA decode 之前被归到
+   `t_tile_mmio_wr32` simulator boundary 是误分类。实际问题是 codegen
+   no-op thread guard 造成 tile compute 被 128 次串行化，以及 accumulating
+   GEMM reload 读取了旧 `acc_o` live alias。修复后这些 admitted bf16 paths
+   都应作为 direct-runtime correctness 正例继续真跑。
 4. 当 direct runtime 首次命中这三类 taxonomy 时，
    应先把它和 target contract 回归分开判断。
 

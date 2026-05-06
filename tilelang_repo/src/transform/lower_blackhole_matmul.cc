@@ -275,7 +275,7 @@ static GemmComputeOpFact BuildGemmComputeOpFact(
     const std::vector<std::pair<std::string, uint32_t>>& named_compile_args,
     const std::string& mbarrier_buffer, const std::string& mbarrier_scope,
     const std::vector<std::string>& mbarrier_index_exprs, DataType a_dtype, DataType b_dtype,
-    DataType c_dtype) {
+    DataType c_dtype, DataType c_cb_dtype) {
   GemmComputeOpFact fact;
   fact.a_buffer = a_buffer;
   fact.b_buffer = b_buffer;
@@ -299,6 +299,7 @@ static GemmComputeOpFact BuildGemmComputeOpFact(
   fact.a_dtype = a_dtype;
   fact.b_dtype = b_dtype;
   fact.c_dtype = c_dtype;
+  fact.c_cb_dtype = c_cb_dtype;
   return fact;
 }
 
@@ -350,6 +351,7 @@ void PlanTTKernelABI::ExtractGemmInfo(const CallNode* op) {
   gemm_a_dtype_ = a_region->buffer->dtype;
   gemm_b_dtype_ = b_region->buffer->dtype;
   gemm_c_dtype_ = physical_c_buffer->dtype;
+  gemm_c_cb_dtype_ = gemm_c_dtype_;
   if (const auto* imm = args[3].as<IntImmNode>()) gemm_transpose_a_ = imm->value != 0;
   if (const auto* imm = args[4].as<IntImmNode>()) gemm_transpose_b_ = imm->value != 0;
   if (const auto* imm = args[8].as<IntImmNode>()) gemm_policy_type_ = static_cast<int>(imm->value);
@@ -388,15 +390,25 @@ void PlanTTKernelABI::ExtractGemmInfo(const CallNode* op) {
       gemm_wg_wait_, gemm_dst_full_sync_en_, gemm_bfp8_pack_precise_, gemm_defines_,
       gemm_named_compile_args_, gemm_mbarrier_buffer_name_, gemm_mbarrier_scope_,
       gemm_mbarrier_index_exprs_);
+  auto fact_index_it = gemm_compute_op_fact_index_by_signature_.find(signature);
   if (compute_op_signatures_.insert(signature).second) {
-    gemm_compute_op_fact_index_by_signature_[signature] =
+    gemm_current_compute_op_fact_index_ =
         static_cast<int>(gemm_compute_op_facts_.size());
+    gemm_compute_op_fact_index_by_signature_[signature] =
+        gemm_current_compute_op_fact_index_;
     gemm_compute_op_facts_.push_back(BuildGemmComputeOpFact(
         gemm_a_buffer_name_, gemm_b_buffer_name_, gemm_c_buffer_name_, gemm_m_, gemm_n_, gemm_k_,
         gemm_transpose_a_, gemm_transpose_b_, gemm_policy_type_, gemm_clear_accum_, gemm_k_pack_,
         gemm_wg_wait_, gemm_dst_full_sync_en_, gemm_bfp8_pack_precise_, gemm_defines_,
         gemm_named_compile_args_, gemm_mbarrier_buffer_name_, gemm_mbarrier_scope_,
-        gemm_mbarrier_index_exprs_, gemm_a_dtype_, gemm_b_dtype_, gemm_c_dtype_));
+        gemm_mbarrier_index_exprs_, gemm_a_dtype_, gemm_b_dtype_, gemm_c_dtype_,
+        gemm_c_cb_dtype_));
+  } else {
+    fact_index_it = gemm_compute_op_fact_index_by_signature_.find(signature);
+    gemm_current_compute_op_fact_index_ =
+        fact_index_it == gemm_compute_op_fact_index_by_signature_.end()
+            ? -1
+            : fact_index_it->second;
   }
 
   // Register GEMM requirements.  The final cb_id is a planner decision and must
@@ -405,7 +417,7 @@ void PlanTTKernelABI::ExtractGemmInfo(const CallNode* op) {
       << "Blackhole GEMM currently requires matching A/B tensor dtypes";
   const int ab_tile_bytes = kBlackholeTileRows * kBlackholeTileCols * gemm_a_dtype_.bytes();
   const int c_tile_bytes = kBlackholeTileRows * kBlackholeTileCols * gemm_c_dtype_.bytes();
-  const DataType gemm_c_cb_dtype = gemm_c_dtype_;
+  const DataType gemm_c_cb_dtype = gemm_c_cb_dtype_;
   const int c_cb_tile_bytes =
       kBlackholeTileRows * kBlackholeTileCols * gemm_c_cb_dtype.bytes();
   const int num_m_tiles = CeilDivToInt(gemm_m_, kBlackholeTileRows);
@@ -685,6 +697,33 @@ Stmt PlanTTKernelABI::LowerMatmulCallWithFlowAnalysis(
       preserve_out_local_state = true;
       output_requires_separate_compute_live_form = false;
     }
+    const bool compute_only_tiled_cb_output =
+        !publish_transport_out && GetStorageScope(out_buffer) == "blackhole.acc" &&
+        (future_uses.has_compute_consume || future_exact_live_form_compute_consume ||
+         planned_output_cb_compute_consume || planned_output_tile_compute_consume ||
+         loop_carried_output || post_merge_cast != nullptr);
+    if (compute_only_tiled_cb_output && gemm_c_req_index_ >= 0 &&
+        gemm_c_req_index_ < static_cast<int>(cb_requirements_.size())) {
+      const DataType storage_dtype = ExactTiledCBStorageDType(gemm_c_dtype_);
+      if (storage_dtype != gemm_c_cb_dtype_) {
+        gemm_c_cb_dtype_ = storage_dtype;
+        const int num_c_tiles =
+            CeilDivToInt(gemm_m_, kBlackholeTileRows) *
+            CeilDivToInt(gemm_n_, kBlackholeTileCols);
+        CBRequirement& c_req = cb_requirements_.at(gemm_c_req_index_);
+        SetRequirementPageLayout(
+            gemm_c_req_index_,
+            kBlackholeTileRows * kBlackholeTileCols * gemm_c_cb_dtype_.bytes(),
+            std::max(c_req.num_pages, num_c_tiles));
+        c_req.data_format = DataTypeToDataFormat(gemm_c_cb_dtype_);
+        if (gemm_current_compute_op_fact_index_ >= 0 &&
+            gemm_current_compute_op_fact_index_ <
+                static_cast<int>(gemm_compute_op_facts_.size())) {
+          gemm_compute_op_facts_[gemm_current_compute_op_fact_index_].c_cb_dtype =
+              gemm_c_cb_dtype_;
+        }
+      }
+    }
   }
 
   const bool can_publish_post_merge_cast =
@@ -810,10 +849,10 @@ Stmt PlanTTKernelABI::GenerateMatmulSequence(const CallNode* op,
                          live_form_name, GetStorageScope(gemm_c_buffer_));
     matmul_out_req_index = AllocateRequirementIndex(live_form_buffer, CBType::kIntermediate);
     const int live_form_tile_bytes =
-        kBlackholeTileRows * kBlackholeTileCols * gemm_c_dtype_.bytes();
+        kBlackholeTileRows * kBlackholeTileCols * gemm_c_cb_dtype_.bytes();
     SetRequirementPageLayout(matmul_out_req_index, live_form_tile_bytes, num_c_tiles);
     CBRequirement& live_form_req = cb_requirements_.at(matmul_out_req_index);
-    live_form_req.data_format = DataTypeToDataFormat(gemm_c_dtype_);
+    live_form_req.data_format = DataTypeToDataFormat(gemm_c_cb_dtype_);
     live_form_req.flow_class = CBFlowClass::kStream;
     live_form_req.publish_pages_per_event =
         std::max(live_form_req.publish_pages_per_event, num_c_tiles);
@@ -1016,7 +1055,7 @@ Buffer PlanTTKernelABI::CreateFragmentMergeReloadBuffer(const Buffer& buffer) {
 }
 
 bool PlanTTKernelABI::ClearAccumReloadNeedsDataFormatReconfig() const {
-  return gemm_c_dtype_ != gemm_b_dtype_;
+  return gemm_c_cb_dtype_ != gemm_b_dtype_;
 }
 
 Stmt PlanTTKernelABI::GenerateAddFragmentSequence(const Buffer& dst,
@@ -1552,7 +1591,7 @@ Stmt PlanTTKernelABI::GenerateAccumulatingMatmulSequence(const CallNode* op,
   const int num_m_tiles = CeilDivToInt(gemm_m_, kBlackholeTileRows);
   const int num_n_tiles = CeilDivToInt(gemm_n_, kBlackholeTileCols);
   const int num_c_tiles = num_m_tiles * num_n_tiles;
-  const int c_tile_bytes = kBlackholeTileRows * kBlackholeTileCols * gemm_c_dtype_.bytes();
+  const int c_tile_bytes = kBlackholeTileRows * kBlackholeTileCols * gemm_c_cb_dtype_.bytes();
   Buffer logical_gemm_c_buffer;
   if (IsBufferLikeExpr(op->args[2])) {
     logical_gemm_c_buffer = NormalizeToBufferRegion(op->args[2])->buffer;
@@ -1562,7 +1601,7 @@ Stmt PlanTTKernelABI::GenerateAccumulatingMatmulSequence(const CallNode* op,
   const int scratch_req_index = AllocateRequirementIndex(scratch_buffer, CBType::kIntermediate);
   SetRequirementPageLayout(scratch_req_index, c_tile_bytes, num_c_tiles);
   auto& scratch_req = cb_requirements_.at(scratch_req_index);
-  scratch_req.data_format = DataTypeToDataFormat(gemm_c_dtype_);
+  scratch_req.data_format = DataTypeToDataFormat(gemm_c_cb_dtype_);
   scratch_req.flow_class = CBFlowClass::kStream;
   scratch_req.publish_pages_per_event =
       std::max(scratch_req.publish_pages_per_event, num_c_tiles);
@@ -1610,9 +1649,9 @@ Stmt PlanTTKernelABI::GenerateAccumulatingMatmulSequence(const CallNode* op,
   };
   const bool use_live_reload =
       !merge_with_zero_reload &&
-      (try_create_separate_compute_live_form(&live_reload_value) ||
-       TryCreateLiveExactTiledCBValue(gemm_c_buffer_, &live_reload_value) ||
-       TryCreateExactOutputLiveTiledCBValue(gemm_c_buffer_, &live_reload_value));
+      (TryCreateExactOutputLiveTiledCBValue(gemm_c_buffer_, &live_reload_value) ||
+       try_create_separate_compute_live_form(&live_reload_value) ||
+       TryCreateLiveExactTiledCBValue(gemm_c_buffer_, &live_reload_value));
 
   Buffer reload_buffer;
   int reload_req_index = -1;
@@ -1621,7 +1660,7 @@ Stmt PlanTTKernelABI::GenerateAccumulatingMatmulSequence(const CallNode* op,
     reload_req_index = AllocateRequirementIndex(reload_buffer, CBType::kIntermediate);
     SetRequirementPageLayout(reload_req_index, c_tile_bytes, num_c_tiles);
     auto& reload_req = cb_requirements_.at(reload_req_index);
-    reload_req.data_format = DataTypeToDataFormat(gemm_c_dtype_);
+    reload_req.data_format = DataTypeToDataFormat(gemm_c_cb_dtype_);
     reload_req.flow_class = CBFlowClass::kStream;
     reload_req.publish_pages_per_event =
         std::max(reload_req.publish_pages_per_event, num_c_tiles);
@@ -1718,7 +1757,7 @@ Stmt PlanTTKernelABI::GenerateAccumulatingMatmulSequence(const CallNode* op,
                            GetStorageScope(gemm_c_buffer_));
       live_form_req_index = AllocateRequirementIndex(live_form_buffer, CBType::kIntermediate);
     }
-    const DataType live_form_storage_dtype = gemm_c_dtype_;
+    const DataType live_form_storage_dtype = gemm_c_cb_dtype_;
     const int live_form_tile_bytes =
         kBlackholeTileRows * kBlackholeTileCols * live_form_storage_dtype.bytes();
     SetRequirementPageLayout(live_form_req_index, live_form_tile_bytes, num_c_tiles);
@@ -1799,7 +1838,7 @@ Stmt PlanTTKernelABI::GenerateAccumulatingMatmulSequence(const CallNode* op,
       direct_out_req_index = AllocateRequirementIndex(live_form_buffer, CBType::kIntermediate);
       SetRequirementPageLayout(direct_out_req_index, c_tile_bytes, num_c_tiles);
       CBRequirement& live_form_req = cb_requirements_.at(direct_out_req_index);
-      live_form_req.data_format = DataTypeToDataFormat(gemm_c_dtype_);
+      live_form_req.data_format = DataTypeToDataFormat(gemm_c_cb_dtype_);
       live_form_req.flow_class = CBFlowClass::kStream;
       live_form_req.publish_pages_per_event =
           std::max(live_form_req.publish_pages_per_event, num_c_tiles);

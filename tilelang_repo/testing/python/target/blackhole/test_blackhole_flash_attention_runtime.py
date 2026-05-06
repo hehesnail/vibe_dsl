@@ -29,11 +29,6 @@ LOOP_CARRIED_EXACT_CB_PACR_REASON = (
     "loop-carried exact-CB backedge direct runtime is gated: TT-Sim reports "
     "tensix_execute_pacr: count=1 for the admitted compute-side pack path"
 )
-GEMM_ONLINE_SOFTMAX_TT_SIM_MMIO_REASON = (
-    "GEMM/online-softmax flash-attention direct runtime is gated: "
-    "TT-Sim reports t_tile_mmio_wr32 for the current compute leaf chain"
-)
-
 
 def _load_flash_attention_module_with_dtype(module_path, dtype_expr=BLACKHOLE_FLASH_ATTENTION_DTYPE_EXPR):
     source = Path(module_path).read_text()
@@ -640,13 +635,83 @@ def _extract_c_for_loop_body(source, header):
     raise AssertionError(f"missing C loop close brace after: {header}")
 
 
+def _split_optional_c_for_loop_body(source, header):
+    if header not in source:
+        return "", source
+    return _extract_c_for_loop_body(source, header)
+
+
+def _assert_compute_cb_reserves_fit_visible_capacity(metadata, compute_source):
+    cb_capacity = {
+        int(config["cb_id"]): int(config["num_pages"])
+        for config in metadata["cb_configs"]
+    }
+    visible_front_pages = {}
+    over_reserve_sites = []
+    for event in re.finditer(
+        r"\bcb_(reserve_back|push_back|pop_front)\((\d+),\s*(\d+)\);",
+        compute_source,
+    ):
+        kind, cb_id_text, pages_text = event.groups()
+        cb_id = int(cb_id_text)
+        pages = int(pages_text)
+        if kind == "reserve_back":
+            front_pages = visible_front_pages.get(cb_id, 0)
+            capacity = cb_capacity.get(cb_id)
+            if capacity is not None and front_pages + pages > capacity:
+                line = compute_source.count("\n", 0, event.start()) + 1
+                over_reserve_sites.append(
+                    f"line {line}: cb{cb_id} front={front_pages} "
+                    f"reserve={pages} capacity={capacity}"
+                )
+        elif kind == "push_back":
+            visible_front_pages[cb_id] = visible_front_pages.get(cb_id, 0) + pages
+        elif kind == "pop_front":
+            visible_front_pages[cb_id] = max(0, visible_front_pages.get(cb_id, 0) - pages)
+
+    assert over_reserve_sites == []
+
+
+def _assert_compute_cb_waits_only_visible_pages(metadata, compute_source):
+    input_cbs = {
+        int(config["cb_id"])
+        for config in metadata["cb_configs"]
+        if str(config["role"]) == "input"
+    }
+    visible_front_pages = {}
+    under_wait_sites = []
+    for event in re.finditer(
+        r"\bcb_(wait_front|push_back|pop_front)\((\d+),\s*(\d+)\);",
+        compute_source,
+    ):
+        kind, cb_id_text, pages_text = event.groups()
+        cb_id = int(cb_id_text)
+        pages = int(pages_text)
+        if kind == "wait_front":
+            if cb_id not in input_cbs and visible_front_pages.get(cb_id, 0) < pages:
+                line = compute_source.count("\n", 0, event.start()) + 1
+                under_wait_sites.append(
+                    f"line {line}: cb{cb_id} front={visible_front_pages.get(cb_id, 0)} "
+                    f"wait={pages}"
+                )
+        elif kind == "push_back":
+            visible_front_pages[cb_id] = visible_front_pages.get(cb_id, 0) + pages
+        elif kind == "pop_front":
+            visible_front_pages[cb_id] = max(0, visible_front_pages.get(cb_id, 0) - pages)
+
+    assert under_wait_sites == []
+
+
 def _assert_t7_seq64_mha_exact_cb_partial_combine_contract(metadata):
     reasons = [str(reason) for reason in metadata.get("direct_runtime_unsupported_reasons", [])]
-    assert reasons == [GEMM_ONLINE_SOFTMAX_TT_SIM_MMIO_REASON]
+    assert reasons == []
     assert not any(MULTI_PAGE_EXACT_CB_REPUBLISH_REASON in reason for reason in reasons)
     assert not any(MULTI_BLOCK_EXACT_CB_REPUBLISH_REASON in reason for reason in reasons)
 
     cb_by_name = {str(config["name"]): config for config in metadata["cb_configs"]}
+    acc_s_cb = cb_by_name["acc_s"]
+    assert str(acc_s_cb["data_format"]) == "Float16_b"
+    assert int(acc_s_cb["page_size"]) == 2048
     for cb_name in ("K_shared", "V_shared", "acc_s_cast"):
         cb = cb_by_name[cb_name]
         assert int(cb["num_pages"]) == 2
@@ -687,13 +752,18 @@ def _assert_t7_seq64_mha_exact_cb_partial_combine_contract(metadata):
     q_cb = int(cb_by_name["Q_shared"]["cb_id"])
     k_cb = int(cb_by_name["K_shared"]["cb_id"])
     v_cb = int(cb_by_name["V_shared"]["cb_id"])
+    acc_o_cb = int(cb_by_name["acc_o"]["cb_id"])
     assert f"matmul_tiles({q_cb}, {k_cb}, 0, 0, 0);" in compute_source
     assert f"matmul_tiles({q_cb}, {k_cb}, 0, 1, 0);" in compute_source
     assert re.search(rf"matmul_tiles\(\d+, {v_cb}, 0, 0, 0\);", compute_source)
     assert re.search(rf"matmul_tiles\(\d+, {v_cb}, 0, 1, 0\);", compute_source)
-    serial_loop_body, after_serial_loop = _extract_c_for_loop_body(
+    assert f"add_tiles_init({acc_o_cb}, " not in compute_source
+    serial_loop_body, after_serial_loop = _split_optional_c_for_loop_body(
         compute_source, "for (int32_t tx = 0; tx < 128; ++tx)"
     )
+    assert "matmul_tiles(" not in serial_loop_body
+    assert "reduce_tile<" not in serial_loop_body
+    assert "pack_tile(" not in serial_loop_body
     for cb_id, pop_pages in ((q_cb, 1), (k_cb, 2), (v_cb, 2)):
         assert f"cb_pop_front({cb_id}," not in serial_loop_body
         assert f"cb_pop_front({cb_id}, {pop_pages});" in after_serial_loop
@@ -718,12 +788,8 @@ def _assert_t7_seq64_mha_exact_cb_partial_combine_contract(metadata):
         assert re.search(rf"cb_reserve_back\({cb_id},\s*\d+\);", compute_source)
         assert re.search(rf"cb_push_back\({cb_id},\s*\d+\);", compute_source)
     assert any(f"cb_pop_front({cb_id}, 1);" in compute_source for cb_id in merge_cb_ids)
-
-
-def _skip_gemm_online_softmax_ttsim_mmio_direct_runtime(metadata):
-    reasons = [str(reason) for reason in metadata.get("direct_runtime_unsupported_reasons", [])]
-    assert reasons == [GEMM_ONLINE_SOFTMAX_TT_SIM_MMIO_REASON]
-    pytest.skip(GEMM_ONLINE_SOFTMAX_TT_SIM_MMIO_REASON)
+    _assert_compute_cb_reserves_fit_visible_capacity(metadata, compute_source)
+    _assert_compute_cb_waits_only_visible_pages(metadata, compute_source)
 
 
 def test_blackhole_flash_attention_runtime_gate_is_queryable():
@@ -829,6 +895,112 @@ def test_blackhole_flash_attention_small_bf16_compute_source_uses_non_mailbox_pu
     ]
     assert pack_cb_ids
     assert max(pack_cb_ids) <= 31
+
+
+def test_blackhole_flash_attention_small_bf16_exact_cb_reuse_releases_before_reserve():
+    kernel = blackhole_mha_example.flashattn.jit_impl.get_tir(
+        1,
+        1,
+        32,
+        32,
+        False,
+        block_M=32,
+        block_N=32,
+        num_stages=1,
+        threads=128,
+    )
+    _, metadata = _lower_blackhole_flash_attention_metadata(kernel)
+
+    compute_kernel = next(
+        kernel
+        for kernel in metadata["kernels"]
+        if str(kernel["kind"]) == "compute" and str(kernel["core_type"]) == "trisc"
+    )
+    compute_source = str(compute_kernel["source_code"])
+    _assert_compute_cb_reserves_fit_visible_capacity(metadata, compute_source)
+
+
+def test_blackhole_flash_attention_small_bf16_exact_cb_reuse_waits_only_live_pages():
+    kernel = blackhole_mha_example.flashattn.jit_impl.get_tir(
+        1,
+        1,
+        32,
+        32,
+        False,
+        block_M=32,
+        block_N=32,
+        num_stages=1,
+        threads=128,
+    )
+    _, metadata = _lower_blackhole_flash_attention_metadata(kernel)
+
+    compute_kernel = next(
+        kernel
+        for kernel in metadata["kernels"]
+        if str(kernel["kind"]) == "compute" and str(kernel["core_type"]) == "trisc"
+    )
+    compute_source = str(compute_kernel["source_code"])
+    _assert_compute_cb_waits_only_visible_pages(metadata, compute_source)
+
+
+def test_blackhole_flash_attention_small_bf16_prunes_dead_constant_fragment_fills():
+    kernel = blackhole_mha_example.flashattn.jit_impl.get_tir(
+        1,
+        1,
+        32,
+        32,
+        False,
+        block_M=32,
+        block_N=32,
+        num_stages=1,
+        threads=128,
+    )
+    _, metadata = _lower_blackhole_flash_attention_metadata(kernel)
+
+    compute_kernel = next(
+        kernel
+        for kernel in metadata["kernels"]
+        if str(kernel["kind"]) == "compute" and str(kernel["core_type"]) == "trisc"
+    )
+    compute_source = str(compute_kernel["source_code"])
+    dead_fill_vars = []
+    for fill in re.finditer(
+        r"tilelang_fill_fragment\(dst,\s*[^;]+;\s*\}\);",
+        compute_source,
+    ):
+        prefix = compute_source[max(0, fill.start() - 180) : fill.start()]
+        dst_match = re.search(r"reinterpret_cast<[^>]+>\((\w+)\)", prefix)
+        if dst_match is None:
+            continue
+        dst_var = dst_match.group(1)
+        if not re.search(rf"\b{re.escape(dst_var)}\b", compute_source[fill.end() :]):
+            dead_fill_vars.append(dst_var)
+
+    assert dead_fill_vars == []
+
+
+def test_blackhole_flash_attention_small_bf16_compute_leafs_are_not_thread_serialized():
+    kernel = blackhole_mha_example.flashattn.jit_impl.get_tir(
+        1,
+        1,
+        32,
+        32,
+        False,
+        block_M=32,
+        block_N=32,
+        num_stages=1,
+        threads=128,
+    )
+    _, metadata = _lower_blackhole_flash_attention_metadata(kernel)
+
+    compute_kernel = next(
+        kernel
+        for kernel in metadata["kernels"]
+        if str(kernel["kind"]) == "compute" and str(kernel["core_type"]) == "trisc"
+    )
+    compute_source = str(compute_kernel["source_code"])
+
+    assert "for (int32_t tx = 0; tx < 128; ++tx)" not in compute_source
 
 
 def test_blackhole_flash_attention_first_row_reduction_consumes_matmul_live_form():
@@ -1378,7 +1550,6 @@ def test_blackhole_t7_seq64_mha_bf16_exact_cb_partial_combine_direct_runtime():
     )
     artifact, metadata = _lower_blackhole_flash_attention_metadata(kernel)
     _assert_t7_seq64_mha_exact_cb_partial_combine_contract(metadata)
-    _skip_gemm_online_softmax_ttsim_mmio_direct_runtime(metadata)
     artifact.codegen_mod["main"](q, k, v, out)
 
     ref = blackhole_mha_example.ref_program(q, k, v, is_causal=is_causal).to(dtype=out.dtype)
@@ -1541,7 +1712,7 @@ def test_blackhole_t9_paged_gqa_decode_projects_page_table_and_cache_len_binding
     _, metadata = _lower_blackhole_flash_attention_metadata(kernel)
 
     reasons = [str(reason) for reason in metadata.get("direct_runtime_unsupported_reasons", [])]
-    assert reasons == [GEMM_ONLINE_SOFTMAX_TT_SIM_MMIO_REASON]
+    assert reasons == []
     assert list(metadata["tvm_arg_names"]) == [
         "Q",
         "KCache",
@@ -1616,7 +1787,7 @@ def test_blackhole_t9_paged_gqa_decode_projects_page_table_and_cache_len_binding
         assert reduce_src_cb == guard_out_cb
         assert f"cb_pop_front({guard_out_cb}, 1);" not in mask_apply.group("body")
 
-    serial_loop_body, after_serial_loop = _extract_c_for_loop_body(
+    serial_loop_body, after_serial_loop = _split_optional_c_for_loop_body(
         compute_source, "for (int32_t tx = 0; tx < 128; ++tx)"
     )
     reader_input_names = {"Q_shared", "K0_shared", "V0_shared", "K1_shared", "V1_shared"}
@@ -1659,7 +1830,7 @@ def test_blackhole_t9_paged_mla_decode_projects_latent_and_pe_page_bindings():
     _, metadata = _lower_blackhole_flash_attention_metadata(kernel)
 
     reasons = [str(reason) for reason in metadata.get("direct_runtime_unsupported_reasons", [])]
-    assert reasons == [GEMM_ONLINE_SOFTMAX_TT_SIM_MMIO_REASON]
+    assert reasons == []
     assert list(metadata["tvm_arg_names"]) == [
         "QNope",
         "QPe",
@@ -2064,7 +2235,7 @@ def test_blackhole_t9_paged_gqa_decode_bf16_direct_runtime():
         dim=dim,
     )
     artifact, metadata = _lower_blackhole_flash_attention_metadata(kernel)
-    _skip_gemm_online_softmax_ttsim_mmio_direct_runtime(metadata)
+    assert [str(reason) for reason in metadata.get("direct_runtime_unsupported_reasons", [])] == []
 
     artifact.codegen_mod["main"](q, k_cache, v_cache, page_table, cache_seq_lens, out)
 
@@ -2213,7 +2384,7 @@ def test_blackhole_t9_paged_mla_decode_bf16_direct_runtime():
         dpe=dpe,
     )
     artifact, metadata = _lower_blackhole_flash_attention_metadata(kernel)
-    _skip_gemm_online_softmax_ttsim_mmio_direct_runtime(metadata)
+    assert [str(reason) for reason in metadata.get("direct_runtime_unsupported_reasons", [])] == []
 
     artifact.codegen_mod["main"](q_nope, q_pe, kv_latent, k_pe, page_table, cache_seq_lens, out)
 

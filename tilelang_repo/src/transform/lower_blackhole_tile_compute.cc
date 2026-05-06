@@ -1050,6 +1050,12 @@ Stmt PlanTTKernelABI::GenerateRowReductionSequence(const RowReductionMatch& matc
                                     {IntImm32(src_in.cb_id), IntImm32(src_in.cb_id),
                                      IntImm32(scaler.cb_id)}));
   stmts.push_back(scaler_publish);
+  MarkFutureLiveExactCBRequirementsOverlapWith(reduced.cb_id, reduced.num_tiles,
+                                               current_lowering_order_index_);
+  if (out.cb_id != reduced.cb_id) {
+    MarkFutureLiveExactCBRequirementsOverlapWith(out.cb_id, out.num_tiles,
+                                                 current_lowering_order_index_);
+  }
   if (accumulate_existing) {
     MarkExactCBValuesOverlap({src_in.cb_id, dst_in.cb_id, scaler.cb_id, reduced.cb_id,
                               out.cb_id});
@@ -1290,6 +1296,8 @@ Stmt PlanTTKernelABI::GenerateGuardMaskApplySequence(
                          SeqStmt::Flatten(reader_stmts));
 
   std::vector<Stmt> compute_stmts;
+  MarkFutureLiveExactCBRequirementsOverlapWith(out.cb_id, out.num_tiles,
+                                               current_lowering_order_index_);
   MarkExactCBValuesOverlap({lhs_in.cb_id, mask_in.cb_id, out.cb_id});
   ExactTileComputeEmitter emit(&compute_stmts);
   emit.BinaryOpInitCommon(lhs_in.cb_id, mask_in.cb_id, out.cb_id);
@@ -1460,6 +1468,8 @@ Stmt PlanTTKernelABI::GenerateBinaryMaxTileSequence(const Buffer& dst, const Buf
   if (Stmt publish_rhs = PublishExactInputToTiledCB(rhs, &rhs_in); publish_rhs.defined()) {
     stmts.push_back(publish_rhs);
   }
+  MarkFutureLiveExactCBRequirementsOverlapWith(out.cb_id, out.num_tiles,
+                                               current_lowering_order_index_);
   MarkExactCBValuesOverlap({lhs_in.cb_id, rhs_in.cb_id, out.cb_id});
   ExactTileComputeEmitter emit(&stmts);
   emit.UnaryOpInitCommon(lhs_in.cb_id, out.cb_id);
@@ -1553,6 +1563,8 @@ Stmt PlanTTKernelABI::GenerateBinaryTileSequence(const Buffer& dst,
   if (Stmt publish_rhs = PublishExactInputToTiledCB(rhs, &rhs_in); publish_rhs.defined()) {
     stmts.push_back(publish_rhs);
   }
+  MarkFutureLiveExactCBRequirementsOverlapWith(out.cb_id, out.num_tiles,
+                                               current_lowering_order_index_);
   MarkExactCBValuesOverlap({lhs_in.cb_id, rhs_in.cb_id, out.cb_id});
   ExactTileComputeEmitter emit(&stmts);
   emit.BinaryOpInitCommon(lhs_in.cb_id, rhs_in.cb_id, out.cb_id);
@@ -1641,6 +1653,8 @@ Stmt PlanTTKernelABI::GenerateBroadcastColsBinaryTileSequence(
                            {{"lhs", dst, "identity"},
                             {"rhs", rhs, "broadcast"},
                             {"output", dst, "identity"}});
+  MarkFutureLiveExactCBRequirementsOverlapWith(out.cb_id, out.num_tiles,
+                                               current_lowering_order_index_);
   MarkExactCBValuesOverlap({lhs_in.cb_id, rhs_in.cb_id, out.cb_id});
   ExactTileComputeEmitter emit(&stmts);
   emit.BinaryOpInitCommon(lhs_in.cb_id, rhs_in.cb_id, out.cb_id);
@@ -1722,6 +1736,8 @@ Stmt PlanTTKernelABI::GenerateUnaryTileSequence(
       publish_input.defined()) {
     stmts.push_back(publish_input);
   }
+  MarkFutureLiveExactCBRequirementsOverlapWith(out.cb_id, out.num_tiles,
+                                               current_lowering_order_index_);
   MarkExactCBValuesOverlap({input_cb.cb_id, out.cb_id});
   ExactTileComputeEmitter emit(&stmts);
   emit.UnaryOpInitCommon(input_cb.cb_id, out.cb_id);

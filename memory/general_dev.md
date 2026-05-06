@@ -1595,10 +1595,11 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   skipped because the reader already pushed the page, but the compute consumer
   still owns the pop when the value is not borrowed from another compute
   consumer.
-- Multi-block flash-attn direct runtime must stay gated until the online-softmax
-  source-live-form and event lifetime contract is admitted. Compile/source/spec
-  stability is independent from direct-runtime correctness; do not reopen the
-  runtime path by bypassing the unsupported-reason gate.
+- Larger loop-carried / multi-block flash-attn direct runtime must stay gated
+  until the relevant exact-CB backedge and multi-block event-lifetime contract
+  is admitted.  Compile/source/spec stability is independent from
+  direct-runtime correctness; do not reopen a gated path by bypassing the typed
+  unsupported reason.
 - 文档收口时，
   `tasks/progress.md`
   是唯一当前状态 /
@@ -2727,3 +2728,14 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   For serial-loop retained GEMM inputs, track retained regions by structural
   buffer-region keys and rewrite waits/matmul tile offsets to absolute retained
   depth before the final pop, instead of relying on one buffer-level pop count.
+- 2026-05-06 T7/T9 online-softmax runtime closure:
+  Empty/no-op `threadIdx.x` guards must not keep the thread variable live in
+  codegen.  If the guarded body lowers to no emitted source, drop the wrapper;
+  otherwise tile compute can be serialized 128 times and turn a correctness
+  bug into an apparent simulator hang.
+  For accumulating GEMM reload, `ExactOutputLiveForm` is the latest producer
+  truth and must be considered before older buffer-live aliases.  After
+  `acc_o *= scores_scale`, the final merge must consume the scaled exact-CB
+  output, not the previous `acc_o` CB.  T7 seq64 MHA, T9.2 full paged GQA, and
+  T9.3 full paged MLA are positive bf16 runtime correctness gates, not
+  `t_tile_mmio_wr32` simulator skips.

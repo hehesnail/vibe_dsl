@@ -2083,6 +2083,24 @@ bool PlanTTKernelABI::BufferIdentityHasWriteAtOrder(
   return false;
 }
 
+bool PlanTTKernelABI::BufferIdentityHasComputeConsumeAtOrder(
+    const std::string& buffer_identity, int order_index) const {
+  if (buffer_identity.empty() || order_index < 0) {
+    return false;
+  }
+  auto it = buffer_flow_facts_.find(buffer_identity);
+  if (it == buffer_flow_facts_.end()) {
+    return false;
+  }
+  for (const BlackholeBufferFlowEvent& event : it->second.events) {
+    if (event.order_index == order_index &&
+        event.kind == BlackholeBufferFlowEventKind::kComputeConsume) {
+      return true;
+    }
+  }
+  return false;
+}
+
 bool PlanTTKernelABI::HasFutureExactLiveFormTileComputeConsume(
     const Buffer& buffer, int current_order_index) const {
   bool has_seeded_tile_compute_input = false;
