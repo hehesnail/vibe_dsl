@@ -2017,15 +2017,16 @@
     publication event 的粒度；CB event 粒度错了会表现为 runtime hang，
     不是数值错误。
 
-#### standalone fill/typecast publish 和 Int32 row-max reduce 的 TT-Sim / LLK 边界要 typed gate
+#### compute-only terminal publish 和 Int32 row-max reduce 的 TT-Sim / LLK 边界要 typed gate
 
 - **症状**:
   - standalone `reduce_tile` bf16 direct runtime 曾命中
     `UnimplementedFunctionality: tensix_execute_pacr: count=1`；后续确认这是
     Blackhole lowering 初始化 PACK/UNPACK 格式状态不足导致的 emitted-sequence
     bug，不是 bf16 row reduce 整体不支持。
-  - standalone compute-only `fill_tile` / `typecast_tile` publish 也会命中
-    同类 TT-Sim pack/publish capability boundary 或输出不可靠。
+  - compute-only terminal publish 也会命中同类 TT-Sim pack/publish
+    capability boundary 或输出不可靠；`fill_tile` / `typecast_tile` 是当前
+    已知 witness，不是 gate owner。
   - T6 existing-TIR value/index selection 继续执行到 index 侧时，
     `T.reduce_max(expand_max_idx, max_idx, dim=1)` 会以
     `Int32 reduce_tile<MAX, REDUCE_ROW>` 形式进入 TT-Sim，并命中
@@ -2065,7 +2066,7 @@
     使用，segment extraction 在父节点已判定 segment 时继承上下文，保留
     writer final barrier/pop。
   - 保留 typed leaf records，并在 `ExecutableSpec` direct-runtime reasons
-    中对 standalone fill/typecast publish 和 standalone `Int32` row max
+    中对 compute-only terminal publish 和 standalone `Int32` row max
     `reduce_tile` fail closed。不把 bf16 standalone reduce 或 GEMM/flash-attn
     内已经 admitted 的 compute chain 全局 gate 掉。
   - T6 正向修复从现有 TIR 的 value/index dataflow lowering 到 backend

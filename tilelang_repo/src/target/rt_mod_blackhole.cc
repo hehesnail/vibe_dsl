@@ -2812,24 +2812,6 @@ static void EnforceExactLiveFormMultiPageRepublishGate(ExecutableSpec* spec) {
   }
 }
 
-static void EnforceMultiBlockExactCBRepublishGate(ExecutableSpec* spec) {
-  ICHECK(spec != nullptr);
-  if (!SpecHasThreadDistributedCastRepublishPlan(*spec) ||
-      !SpecHasEnabledGemmComputeOp(*spec)) {
-    return;
-  }
-  for (const CBConfig& cb : spec->cb_configs) {
-    if (cb.role == "input" && cb.flow_class == "republish" && cb.num_pages > 1) {
-      AppendDirectRuntimeUnsupportedReason(
-          spec,
-          "multi-block exact CB-republish flash-attention direct runtime correctness is not "
-          "admitted; compile/source/spec lowering is supported, but runtime execution needs "
-          "the multi-block online-softmax live-form contract to be admitted separately");
-      return;
-    }
-  }
-}
-
 static std::unordered_set<std::string> CollectValueExprBufferNames(
     const std::string& value_expr_json) {
   std::unordered_set<std::string> names;
@@ -2958,6 +2940,25 @@ static std::unordered_set<std::string> CollectRuntimeBoundBufferNames(
   return names;
 }
 
+static std::unordered_set<std::string> CollectRuntimeInputBufferNames(
+    const ExecutableSpec& spec) {
+  std::unordered_set<std::string> names;
+  auto record_args = [&](const std::vector<KernelArgSpec>& args) {
+    for (const auto& arg : args) {
+      if (IsInputBufferArgKind(arg.kind) && !arg.buffer.empty()) {
+        names.insert(arg.buffer);
+      }
+    }
+  };
+  record_args(spec.runtime_args);
+  record_args(spec.common_runtime_args);
+  for (const auto& kernel : spec.kernels) {
+    record_args(kernel.runtime_args);
+    record_args(kernel.common_runtime_args);
+  }
+  return names;
+}
+
 static std::unordered_set<std::string> CollectRuntimeOutputBufferNames(
     const ExecutableSpec& spec) {
   std::unordered_set<std::string> names;
@@ -2982,65 +2983,49 @@ static bool IsComputeOutputBindingRole(const std::string& role) {
          role == "result";
 }
 
-static std::unordered_set<std::string> CollectComputeInputBufferNames(
-    const ExecutableSpec& spec) {
-  std::unordered_set<std::string> names;
-  for (const KernelSpec& kernel : spec.kernels) {
-    for (const KernelComputeOpSpec& compute_op : kernel.compute_ops) {
-      if (!compute_op.enabled) {
-        continue;
-      }
-      for (const auto& binding : compute_op.operand_bindings) {
-        if (!binding.buffer.empty() && !IsComputeOutputBindingRole(binding.role)) {
-          names.insert(binding.buffer);
-        }
-      }
+static bool ProducesRuntimeOutput(const KernelComputeOpSpec& compute_op,
+                                  const std::unordered_set<std::string>& runtime_outputs) {
+  for (const auto& binding : compute_op.operand_bindings) {
+    if (!IsComputeOutputBindingRole(binding.role)) {
+      continue;
+    }
+    if (!binding.host_buffer.empty() &&
+        runtime_outputs.count(binding.host_buffer) != 0U) {
+      return true;
+    }
+    if (!binding.buffer.empty() && runtime_outputs.count(binding.buffer) != 0U) {
+      return true;
     }
   }
-  return names;
+  return false;
 }
 
-static void EnforceStandalonePacrLeafSimulatorGate(ExecutableSpec* spec) {
+static void EnforceComputeOnlyTerminalPublishPacrSimulatorGate(
+    ExecutableSpec* spec) {
   ICHECK(spec != nullptr);
-  bool has_fill_typecast_publish = false;
-  bool has_gemm = false;
+  if (!CollectRuntimeInputBufferNames(*spec).empty()) {
+    return;
+  }
   const std::unordered_set<std::string> runtime_outputs =
       CollectRuntimeOutputBufferNames(*spec);
-  const std::unordered_set<std::string> compute_inputs =
-      CollectComputeInputBufferNames(*spec);
+  if (runtime_outputs.empty()) {
+    return;
+  }
   for (const KernelSpec& kernel : spec->kernels) {
+    if (kernel.kind != "compute" || kernel.core_type != "trisc") {
+      continue;
+    }
     for (const KernelComputeOpSpec& compute_op : kernel.compute_ops) {
-      if (!compute_op.enabled) {
+      if (!compute_op.enabled ||
+          !ProducesRuntimeOutput(compute_op, runtime_outputs)) {
         continue;
       }
-      has_gemm = has_gemm || compute_op.kind == "gemm";
-      bool produces_runtime_output = false;
-      bool produces_terminal_compute_value = false;
-      for (const auto& binding : compute_op.operand_bindings) {
-        if (!IsComputeOutputBindingRole(binding.role) || binding.buffer.empty()) {
-          continue;
-        }
-        if (runtime_outputs.count(binding.buffer) != 0U) {
-          produces_runtime_output = true;
-        }
-        if (compute_inputs.count(binding.buffer) == 0U) {
-          produces_terminal_compute_value = true;
-        }
-      }
-      const bool terminal_leaf_publish =
-          produces_runtime_output || produces_terminal_compute_value;
-      has_fill_typecast_publish =
-          has_fill_typecast_publish ||
-          ((compute_op.operation_name == "fill_tile" ||
-            compute_op.operation_name == "typecast_tile") &&
-           terminal_leaf_publish);
+      AppendDirectRuntimeUnsupportedReason(
+          spec,
+          "compute-only terminal publish direct runtime is gated: TT-Sim reports "
+          "tensix_execute_pacr: count=1 for the current pack publish path");
+      return;
     }
-  }
-  if (has_fill_typecast_publish && !has_gemm) {
-    AppendDirectRuntimeUnsupportedReason(
-        spec,
-        "standalone fill/typecast publish direct runtime is gated: TT-Sim reports "
-        "tensix_execute_pacr unsupported for compute-only pack publish");
   }
 }
 
@@ -3881,7 +3866,7 @@ ffi::Module BuildTileLangBlackhole(IRModule mod, Target target) {
     EnforceExactLiveFormMultiPageRepublishGate(&spec_it->second);
     EnforceExplicitBufferRoleSchemaGate(&spec_it->second);
     EnforcePhysicalCBQueueSourceGate(&spec_it->second);
-    EnforceStandalonePacrLeafSimulatorGate(&spec_it->second);
+    EnforceComputeOnlyTerminalPublishPacrSimulatorGate(&spec_it->second);
     EnforceLoopCarriedExactCBPacrSimulatorGate(&spec_it->second);
   }
   for (const auto& kv : host_to_device) {
@@ -3996,7 +3981,7 @@ ffi::Module BuildTileLangBlackholeWithoutHost(IRModule mod, Target target) {
     EnforceExactLiveFormMultiPageRepublishGate(&spec_it->second);
     EnforceExplicitBufferRoleSchemaGate(&spec_it->second);
     EnforcePhysicalCBQueueSourceGate(&spec_it->second);
-    EnforceStandalonePacrLeafSimulatorGate(&spec_it->second);
+    EnforceComputeOnlyTerminalPublishPacrSimulatorGate(&spec_it->second);
     EnforceLoopCarriedExactCBPacrSimulatorGate(&spec_it->second);
   }
   for (const auto& kv : host_to_device) {

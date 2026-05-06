@@ -69,6 +69,10 @@
   checks.  The current executable source gate replays constant physical CB
   queue events and derives cross-kernel producers from projected non-compute
   kernel pushes until `KernelSpec` carries structured queue events directly.
+- Current simulator gates must also be typed by `ExecutableSpec` facts.  The
+  old T7/T9 `t_tile_mmio_wr32` classifier is gone; remaining PACR gates are
+  limited to proven simulator capability boundaries such as compute-only
+  terminal publish and loop-carried input exact-CB backedge publish.
 
 ## Next Work Queue
 
@@ -149,6 +153,10 @@ Current verified baseline:
   `test_blackhole_typed_tile_cb_queue_verifier.py` reported `7 passed`,
   covering duplicate CB-requirement ownership, exact-CB data-format mismatch,
   invalid release reasons, and invalid constant physical queue events.
+- Leaf simulator-gate cleanup: the unused multi-block exact-CB republish
+  runtime gate was deleted, and the old standalone fill/typecast PACR branch
+  was replaced by a generic compute-only terminal-publish simulator gate.
+  The focused typecast-publish selector reported `1 passed, 1 skipped`.
 - T7/T9 current runtime baseline: focused TT-Sim runtime selectors reported
   `10 passed`, covering T3 sharded elementwise/reduce mix, T7 seq64 MHA
   exact-CB partial combine, T9 page-addressed QK page1, T9 page-addressed AV

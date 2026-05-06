@@ -2752,3 +2752,10 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   still bound `wait_front` / `pop_front` by the physical CB capacity.  Raw
   `TTKernel.body` can contain pre-final requirement-index forms and should not
   be treated as the final physical queue trace.
+- 2026-05-07 Blackhole simulator-gate cleanup:
+  After a generic verifier lands, delete stale workload or operation-name
+  gates instead of leaving them as "extra safety".  If a simulator boundary is
+  still real, restate it over `ExecutableSpec` facts.  The old standalone
+  fill/typecast PACR gate became a compute-only terminal-publish gate keyed by
+  runtime input/output buffers and compute operand host-buffer binding; the
+  unused multi-block exact-CB republish gate was deleted.

@@ -17,8 +17,8 @@ from .test_blackhole_copy_pipeline import _extract_blackhole_executable_spec
 
 M = 32
 N = 32
-STANDALONE_FILL_TYPECAST_SIM_REASON = (
-    "standalone fill/typecast publish direct runtime is gated"
+COMPUTE_ONLY_TERMINAL_PUBLISH_SIM_REASON = (
+    "compute-only terminal publish direct runtime is gated"
 )
 
 
@@ -169,7 +169,7 @@ def test_blackhole_standalone_leaf_compute_projects_typed_runtime_contracts(
     assert "multi_compute_contracts" not in executable_spec
     reasons = _direct_runtime_unsupported_reasons(artifact)
     if case_name == "typecast_publish":
-        assert any(STANDALONE_FILL_TYPECAST_SIM_REASON in reason for reason in reasons)
+        assert any(COMPUTE_ONLY_TERMINAL_PUBLISH_SIM_REASON in reason for reason in reasons)
     else:
         assert not reasons, case_name
     assert expected_ops <= set(_compute_operation_names(executable_spec))
