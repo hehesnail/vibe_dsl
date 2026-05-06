@@ -2700,3 +2700,13 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   queue, and verification baseline only.  Active design docs should carry the
   durable contract plus concise current boundary; detailed checkpoint history
   belongs in git history or memory, not duplicated as rolling progress logs.
+- 2026-05-06 T6 typed row-reduction source cleanup:
+  The admitted existing-TIR value/index path should not be represented as a
+  frontend `topk` op or selection plan, but executable codegen also cannot
+  blindly serialize the GPU-style scalar `threadIdx.x` region: doing so
+  overproduces CB pages and can hang the writer.  The current T6 source path
+  deletes `TryEmitTypedComputeRegionKernel` and lowers the repeated row
+  reductions from executable compute records, logical tile layout, buffer
+  distribution, and `cb_configs.requirement_indices -> cb_id`.  Keep the path
+  codegen-local and typed-record driven; do not restore raw formal
+  host-buffer argument loads for executable kernels with no runtime args.

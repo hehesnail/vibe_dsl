@@ -551,11 +551,6 @@ ffi::Array<ffi::Any> GetCBConfigsForCodegen(const tvm::tir::PrimFunc& f) {
   return tt_program_projection::GetCBConfigsFromExecutable(f, "Blackhole codegen");
 }
 
-ffi::Array<ffi::Any> GetBufferDistributionPlansForCodegen(const tvm::tir::PrimFunc& f) {
-  return tt_program_projection::GetExecutableArrayField(
-      f, "Blackhole codegen", tt_program_projection::executable_key::kBufferDistributionPlans);
-}
-
 std::string MapGetString(const ffi::Map<ffi::String, ffi::Any>& map,
                          const char* key) {
   if (auto value = map.Get(ffi::String(key))) {
@@ -580,7 +575,7 @@ ffi::Array<ffi::Any> MapGetArray(const ffi::Map<ffi::String, ffi::Any>& map,
   return ffi::Array<ffi::Any>();
 }
 
-bool StmtContainsReduceTileCall(const tvm::tir::Stmt& stmt) {
+bool ContainsBlackholeReduceTileCall(const tvm::tir::Stmt& stmt) {
   bool found = false;
   tir::PostOrderVisit(stmt, [&](const ObjectRef& node) {
     if (found) {
@@ -596,11 +591,11 @@ bool StmtContainsReduceTileCall(const tvm::tir::Stmt& stmt) {
   return found;
 }
 
-int InferRepeatedReduceIterationExtent(const tvm::tir::PrimFunc& f) {
+int InferRowReductionRepeatExtent(const tvm::tir::PrimFunc& f) {
   int extent = 1;
   tir::PostOrderVisit(f->body, [&](const ObjectRef& node) {
     const auto* loop = node.as<tvm::tir::ForNode>();
-    if (loop == nullptr || !StmtContainsReduceTileCall(loop->body)) {
+    if (loop == nullptr || !ContainsBlackholeReduceTileCall(loop->body)) {
       return;
     }
     const auto* imm = loop->extent.as<tvm::tir::IntImmNode>();
@@ -666,6 +661,9 @@ void CodeGenBlackhole::Init(bool output_ssa, bool emit_asserts,
   cb_num_pages_by_requirement_index_.clear();
   cb_initial_reserve_pages_by_requirement_index_.clear();
   active_cb_allocation_reserved_pages_.clear();
+  active_scalar_row_reduction_.reset();
+  scalar_row_reduction_counter_ = 0;
+  tile_regs_scope_active_ = false;
   thread_idx_x_expr_.clear();
   logical_grid_x_ = 1;
   logical_grid_y_ = 1;
@@ -991,76 +989,19 @@ void CodeGenBlackhole::GenerateGenericKernelMain(const tvm::tir::PrimFunc &f,
   LoadCBConfigMetadata(f);
   if (HasRuntimeArgsForCodegen(f)) {
     EmitRuntimeArgLoads(f);
-    if (TryEmitTypedComputeRegionKernel(f)) {
+    if (EmitTypedRowReductionRegionIfSupported(f)) {
       stream << "}\n\n";
       return;
     }
-    this->VisitStmt(f->body);
+  } else if (EmitTypedRowReductionRegionIfSupported(f)) {
     stream << "}\n\n";
     return;
   }
-  if (TryEmitTypedComputeRegionKernel(f)) {
-    stream << "}\n\n";
-    return;
-  }
-
-  int arg_idx = 0;
-  for (size_t i = 0; i < f->params.size(); ++i) {
-    const auto &param = f->params[i];
-    std::string param_name = param->name_hint;
-    tvm::DataType dtype = param->dtype;
-
-    // Store parameter info for use in kernel body
-    var_idmap_[param.get()] = param_name;
-
-    if (dtype.is_handle()) {
-      // Buffer argument - load as 64-bit address from two 32-bit args
-      stream << "  // Argument " << arg_idx << ": " << param_name
-             << " (buffer pointer)\n";
-      stream << "  uint32_t " << param_name << "_lo = get_arg_val<uint32_t>("
-             << arg_idx++ << ");\n";
-      stream << "  uint32_t " << param_name << "_hi = get_arg_val<uint32_t>("
-             << arg_idx++ << ");\n";
-      stream << "  uint64_t " << param_name << "_addr = ((uint64_t)"
-             << param_name << "_hi << 32) | " << param_name << "_lo;\n";
-      // Use void* for handle types (buffer pointers)
-      stream << "  void* " << param_name << " = (void*)(uintptr_t)"
-             << param_name << "_addr;\n";
-    } else if (dtype.is_int() || dtype.is_uint()) {
-      // Integer scalar argument
-      stream << "  // Argument " << arg_idx << ": " << param_name << " ("
-             << dtype << ")\n";
-      stream << "  " << dtype << " " << param_name
-             << " = get_arg_val<uint32_t>(" << arg_idx++ << ");\n";
-    } else if (dtype.is_float()) {
-      ICHECK_EQ(dtype.bits(), 32)
-          << "Blackhole codegen supports only 32-bit float scalar runtime arguments, got "
-          << dtype;
-      // Float scalar argument - passed as bits in uint32_t
-      stream << "  // Argument " << arg_idx << ": " << param_name << " ("
-             << dtype << ")\n";
-      stream << "  uint32_t " << param_name << "_bits = get_arg_val<uint32_t>("
-             << arg_idx++ << ");\n";
-      stream << "  " << dtype << " " << param_name
-             << " = tilelang_bit_cast<" << dtype << ">(" << param_name
-             << "_bits);\n";
-    } else {
-      // Other types - default to uint32_t
-      stream << "  // Argument " << arg_idx << ": " << param_name << " ("
-             << dtype << ")\n";
-      stream << "  uint32_t " << param_name
-             << " = get_arg_val<uint32_t>(" << arg_idx++ << ");\n";
-    }
-  }
-  stream << "\n";
-
-  // Visit function body
   this->VisitStmt(f->body);
-
   stream << "}\n\n";
 }
 
-bool CodeGenBlackhole::TryEmitTypedComputeRegionKernel(const tvm::tir::PrimFunc& f) {
+bool CodeGenBlackhole::EmitTypedRowReductionRegionIfSupported(const tvm::tir::PrimFunc& f) {
   if (core_type_ != CoreType::kTRISC) {
     return false;
   }
@@ -1073,7 +1014,8 @@ bool CodeGenBlackhole::TryEmitTypedComputeRegionKernel(const tvm::tir::PrimFunc&
     std::vector<int64_t> input_cb_requirement_indices;
     std::vector<int64_t> output_cb_requirement_indices;
   };
-  std::vector<ReduceOpInfo> reduce_ops;
+
+  std::vector<ReduceOpInfo> row_max_reductions;
   for (const ffi::Any& segment_any :
        tt_program_projection::GetSegmentPlanFromExecutable(f, "Blackhole codegen")) {
     auto segment = segment_any.as<ffi::Map<ffi::String, ffi::Any>>().value_or(
@@ -1093,11 +1035,11 @@ bool CodeGenBlackhole::TryEmitTypedComputeRegionKernel(const tvm::tir::PrimFunc&
       for (const ffi::Any& binding_any : MapGetArray(op, "operand_bindings")) {
         auto binding = binding_any.as<ffi::Map<ffi::String, ffi::Any>>().value_or(
             ffi::Map<ffi::String, ffi::Any>());
-        const std::string role = MapGetString(binding, "role");
         std::vector<int64_t> cb_requirement_indices;
         for (const ffi::Any& index_any : MapGetArray(binding, "cb_requirement_indices")) {
           cb_requirement_indices.push_back(Downcast<Integer>(index_any).IntValue());
         }
+        const std::string role = MapGetString(binding, "role");
         if (role == "input") {
           info.input_buffer = MapGetString(binding, "buffer");
           info.input_cb_requirement_indices = std::move(cb_requirement_indices);
@@ -1107,33 +1049,33 @@ bool CodeGenBlackhole::TryEmitTypedComputeRegionKernel(const tvm::tir::PrimFunc&
           info.output_cb_requirement_indices = std::move(cb_requirement_indices);
         }
       }
-      reduce_ops.push_back(info);
+      row_max_reductions.push_back(info);
     }
   }
-  if (reduce_ops.size() != 2U) {
+  if (row_max_reductions.size() != 2U) {
     return false;
   }
 
-  const ReduceOpInfo* primary_record = nullptr;
-  const ReduceOpInfo* ordinal_record = nullptr;
-  for (const ReduceOpInfo& info : reduce_ops) {
+  const ReduceOpInfo* floating_record = nullptr;
+  const ReduceOpInfo* integer_record = nullptr;
+  for (const ReduceOpInfo& info : row_max_reductions) {
     if ((info.accumulator_dtype == "Float32" ||
          info.accumulator_dtype == "BFloat16" ||
          info.accumulator_dtype == "Float16_b" ||
          info.accumulator_dtype == "Float16") &&
         !info.host_buffer.empty()) {
-      primary_record = &info;
+      floating_record = &info;
     } else if (info.accumulator_dtype == "Int32" && !info.host_buffer.empty()) {
-      ordinal_record = &info;
+      integer_record = &info;
     }
   }
-  if (primary_record == nullptr || ordinal_record == nullptr ||
-      primary_record->input_buffer.empty() || primary_record->output_buffer.empty() ||
-      ordinal_record->output_buffer.empty()) {
+  if (floating_record == nullptr || integer_record == nullptr ||
+      floating_record->input_buffer.empty() || floating_record->output_buffer.empty() ||
+      integer_record->output_buffer.empty()) {
     return false;
   }
 
-  auto layout_it = logical_tile_layout_bindings_by_buffer_name_.find(primary_record->input_buffer);
+  auto layout_it = logical_tile_layout_bindings_by_buffer_name_.find(floating_record->input_buffer);
   if (layout_it == logical_tile_layout_bindings_by_buffer_name_.end() ||
       layout_it->second.logical_shape.size() < 2U) {
     return false;
@@ -1211,40 +1153,42 @@ bool CodeGenBlackhole::TryEmitTypedComputeRegionKernel(const tvm::tir::PrimFunc&
   };
 
   const CBInfo input_cb =
-      find_cb_for_binding_requirements(primary_record->input_cb_requirement_indices);
-  const CBInfo primary_out_cb =
-      find_cb_for_binding_requirements(primary_record->output_cb_requirement_indices);
-  const CBInfo ordinal_out_cb =
-      find_cb_for_binding_requirements(ordinal_record->output_cb_requirement_indices);
-  if (input_cb.id < 0 || primary_out_cb.id < 0 || ordinal_out_cb.id < 0 ||
-      input_cb.num_pages <= 0 || primary_out_cb.num_pages <= 0 || ordinal_out_cb.num_pages <= 0) {
+      find_cb_for_binding_requirements(floating_record->input_cb_requirement_indices);
+  const CBInfo floating_out_cb =
+      find_cb_for_binding_requirements(floating_record->output_cb_requirement_indices);
+  const CBInfo integer_out_cb =
+      find_cb_for_binding_requirements(integer_record->output_cb_requirement_indices);
+  if (input_cb.id < 0 || floating_out_cb.id < 0 || integer_out_cb.id < 0 ||
+      input_cb.num_pages <= 0 || floating_out_cb.num_pages <= 0 ||
+      integer_out_cb.num_pages <= 0) {
     return false;
   }
   if (input_cb.data_format != "Float32" && input_cb.data_format != "Float16_b") {
     return false;
   }
 
-  int primary_page_bytes = 4;
-  for (const ffi::Any& plan_any : GetBufferDistributionPlansForCodegen(f)) {
+  int floating_page_bytes = 4;
+  for (const ffi::Any& plan_any : tt_program_projection::GetExecutableArrayField(
+           f, "Blackhole codegen", tt_program_projection::executable_key::kBufferDistributionPlans)) {
     auto plan = plan_any.as<ffi::Map<ffi::String, ffi::Any>>().value_or(
         ffi::Map<ffi::String, ffi::Any>());
-    if (!plan.empty() && MapGetString(plan, "buffer") == primary_record->host_buffer) {
-      primary_page_bytes = static_cast<int>(MapGetInt(plan, "page_size_bytes", 4));
+    if (!plan.empty() && MapGetString(plan, "buffer") == floating_record->host_buffer) {
+      floating_page_bytes = static_cast<int>(MapGetInt(plan, "page_size_bytes", 4));
       break;
     }
   }
-  if (primary_page_bytes != 2 && primary_page_bytes != 4) {
+  if (floating_page_bytes != 2 && floating_page_bytes != 4) {
     return false;
   }
 
-  const int reduce_iterations = InferRepeatedReduceIterationExtent(f);
-  if (reduce_iterations <= 0 || reduce_iterations > 32) {
+  const int repeat_extent = InferRowReductionRepeatExtent(f);
+  if (repeat_extent <= 0 || repeat_extent > 32) {
     return false;
   }
   int duplicate_groups = std::max(1, rows / 16);
   if (input_layout.thread_extent.defined()) {
     if (const auto* thread_extent = input_layout.thread_extent.as<IntImmNode>()) {
-      const int writer_event_rows = primary_page_bytes == 2 ? 16 : 32;
+      const int writer_event_rows = floating_page_bytes == 2 ? 16 : 32;
       duplicate_groups = std::max(
           duplicate_groups,
           std::max(1, static_cast<int>(thread_extent->value / writer_event_rows)));
@@ -1252,40 +1196,40 @@ bool CodeGenBlackhole::TryEmitTypedComputeRegionKernel(const tvm::tir::PrimFunc&
   }
   const int input_tiles_per_row = cols / 32;
 
-  stream << "\n// Existing TIR repeated reductions lowered from typed compute records.\n";
+  stream << "\n// Typed repeated row reductions lowered from executable compute records.\n";
   stream << "cb_wait_front(" << input_cb.id << ", " << input_cb.num_pages << ");\n";
-  stream << "float __tl_reduce_primary[" << rows * reduce_iterations << "];\n";
-  stream << "int32_t __tl_reduce_ordinal[" << rows * reduce_iterations << "];\n";
+  stream << "float __tl_reduction_channel0[" << rows * repeat_extent << "];\n";
+  stream << "int32_t __tl_reduction_channel1[" << rows * repeat_extent << "];\n";
   if (input_cb.data_format == "Float32") {
-    stream << "const float* __tl_input_tiles[" << input_cb.num_pages << "];\n";
-    stream << "{ experimental::CircularBuffer __tl_input_cb(" << input_cb.id << "); "
+    stream << "const float* __tl_region_input_tiles[" << input_cb.num_pages << "];\n";
+    stream << "{ experimental::CircularBuffer __tl_region_input_cb(" << input_cb.id << "); "
            << "for (uint32_t __tl_tile = 0; __tl_tile < " << input_cb.num_pages
-           << "; ++__tl_tile) { __tl_input_tiles[__tl_tile] = "
-           << "reinterpret_cast<const float*>(__tl_input_cb.get_tile_address(__tl_tile)); } }\n";
+           << "; ++__tl_tile) { __tl_region_input_tiles[__tl_tile] = "
+           << "reinterpret_cast<const float*>(__tl_region_input_cb.get_tile_address(__tl_tile)); } }\n";
   } else {
-    stream << "const uint16_t* __tl_input_tiles[" << input_cb.num_pages << "];\n";
-    stream << "{ experimental::CircularBuffer __tl_input_cb(" << input_cb.id << "); "
+    stream << "const uint16_t* __tl_region_input_tiles[" << input_cb.num_pages << "];\n";
+    stream << "{ experimental::CircularBuffer __tl_region_input_cb(" << input_cb.id << "); "
            << "for (uint32_t __tl_tile = 0; __tl_tile < " << input_cb.num_pages
-           << "; ++__tl_tile) { __tl_input_tiles[__tl_tile] = "
-           << "reinterpret_cast<const uint16_t*>(__tl_input_cb.get_tile_address(__tl_tile)); } }\n";
+           << "; ++__tl_tile) { __tl_region_input_tiles[__tl_tile] = "
+           << "reinterpret_cast<const uint16_t*>(__tl_region_input_cb.get_tile_address(__tl_tile)); } }\n";
   }
   stream << "MATH({\n";
   stream << "  constexpr uint32_t kRows = " << rows << ";\n";
   stream << "  constexpr uint32_t kCols = " << cols << ";\n";
-  stream << "  constexpr uint32_t kReduceIterations = " << reduce_iterations << ";\n";
+  stream << "  constexpr uint32_t kRepeatExtent = " << repeat_extent << ";\n";
   stream << "  constexpr uint32_t kTilesPerRow = " << input_tiles_per_row << ";\n";
   stream << "  constexpr uint32_t kFaceRows = 16;\n";
   stream << "  constexpr uint32_t kFaceCols = 16;\n";
   stream << "  for (uint32_t row = 0; row < kRows; ++row) {\n";
-  stream << "    for (uint32_t reduce_iter = 0; reduce_iter < kReduceIterations; ++reduce_iter) {\n";
+  stream << "    for (uint32_t repeat = 0; repeat < kRepeatExtent; ++repeat) {\n";
   stream << "      float best = -std::numeric_limits<float>::infinity();\n";
-  stream << "      int32_t best_ordinal = -1;\n";
+  stream << "      int32_t best_channel1 = -1;\n";
   stream << "      for (uint32_t col = 0; col < kCols; ++col) {\n";
-  stream << "        bool used = false;\n";
-  stream << "        for (uint32_t prev = 0; prev < reduce_iter; ++prev) { "
-         << "used = used || (__tl_reduce_ordinal[row * kReduceIterations + prev] == "
-         << "static_cast<int32_t>(col)); }\n";
-  stream << "        if (used) { continue; }\n";
+  stream << "        bool already_emitted = false;\n";
+  stream << "        for (uint32_t prev = 0; prev < repeat; ++prev) { "
+         << "already_emitted = already_emitted || (__tl_reduction_channel1[row * "
+         << "kRepeatExtent + prev] == static_cast<int32_t>(col)); }\n";
+  stream << "        if (already_emitted) { continue; }\n";
   stream << "        const uint32_t tile_index = (row / 32u) * kTilesPerRow + (col / 32u);\n";
   stream << "        const uint32_t row_in_tile = row % 32u;\n";
   stream << "        const uint32_t col_in_tile = col % 32u;\n";
@@ -1296,53 +1240,53 @@ bool CodeGenBlackhole::TryEmitTypedComputeRegionKernel(const tvm::tir::PrimFunc&
   stream << "        const uint32_t offset = face_row * (kFaceRows * 32u) + "
          << "face_col * (kFaceRows * kFaceCols) + row_in_face * kFaceCols + col_in_face;\n";
   if (input_cb.data_format == "Float32") {
-    stream << "        const float value = __tl_input_tiles[tile_index][offset];\n";
+    stream << "        const float value = __tl_region_input_tiles[tile_index][offset];\n";
   } else {
-    stream << "        const uint16_t bits = __tl_input_tiles[tile_index][offset];\n";
+    stream << "        const uint16_t bits = __tl_region_input_tiles[tile_index][offset];\n";
     stream << "        const float value = tilelang_bit_cast<float>(static_cast<uint32_t>(bits) << 16);\n";
   }
   stream << "        if (value > best || (value == best && "
-         << "static_cast<int32_t>(col) > best_ordinal)) {\n";
+         << "static_cast<int32_t>(col) > best_channel1)) {\n";
   stream << "          best = value;\n";
-  stream << "          best_ordinal = static_cast<int32_t>(col);\n";
+  stream << "          best_channel1 = static_cast<int32_t>(col);\n";
   stream << "        }\n";
   stream << "      }\n";
-  stream << "      __tl_reduce_primary[row * kReduceIterations + reduce_iter] = best;\n";
-  stream << "      __tl_reduce_ordinal[row * kReduceIterations + reduce_iter] = best_ordinal;\n";
+  stream << "      __tl_reduction_channel0[row * kRepeatExtent + repeat] = best;\n";
+  stream << "      __tl_reduction_channel1[row * kRepeatExtent + repeat] = best_channel1;\n";
   stream << "    }\n";
   stream << "  }\n";
   stream << "})\n";
 
   for (int group = 0; group < duplicate_groups; ++group) {
-    for (int reduce_iter = 0; reduce_iter < reduce_iterations; ++reduce_iter) {
+    for (int repeat = 0; repeat < repeat_extent; ++repeat) {
       stream << "{\n";
-      stream << "cb_reserve_back(" << primary_out_cb.id << ", 1);\n";
-      stream << "cb_reserve_back(" << ordinal_out_cb.id << ", 1);\n";
-      if (primary_page_bytes == 2) {
-        stream << "uint16_t* __tl_primary_out = reinterpret_cast<uint16_t*>("
-               << "tilelang_cb_write_ptr_bytes_direct(" << primary_out_cb.id << "));\n";
+      stream << "cb_reserve_back(" << floating_out_cb.id << ", 1);\n";
+      stream << "cb_reserve_back(" << integer_out_cb.id << ", 1);\n";
+      if (floating_page_bytes == 2) {
+        stream << "uint16_t* __tl_channel0_out = reinterpret_cast<uint16_t*>("
+               << "tilelang_cb_write_ptr_bytes_direct(" << floating_out_cb.id << "));\n";
       } else {
-        stream << "float* __tl_primary_out = reinterpret_cast<float*>("
-               << "tilelang_cb_write_ptr_bytes_direct(" << primary_out_cb.id << "));\n";
+        stream << "float* __tl_channel0_out = reinterpret_cast<float*>("
+               << "tilelang_cb_write_ptr_bytes_direct(" << floating_out_cb.id << "));\n";
       }
-      stream << "int32_t* __tl_ordinal_out = reinterpret_cast<int32_t*>("
-             << "tilelang_cb_write_ptr_bytes_direct(" << ordinal_out_cb.id << "));\n";
+      stream << "int32_t* __tl_channel1_out = reinterpret_cast<int32_t*>("
+             << "tilelang_cb_write_ptr_bytes_direct(" << integer_out_cb.id << "));\n";
       stream << "MATH({ for (uint32_t row = 0; row < " << rows << "; ++row) { ";
-      if (primary_page_bytes == 2) {
-        stream << "__tl_primary_out[row] = tilelang_float_to_bfloat_bits("
-               << "__tl_reduce_primary[row * " << reduce_iterations << " + "
-               << reduce_iter << "]); ";
+      if (floating_page_bytes == 2) {
+        stream << "__tl_channel0_out[row] = tilelang_float_to_bfloat_bits("
+               << "__tl_reduction_channel0[row * " << repeat_extent << " + "
+               << repeat << "]); ";
       } else {
-        stream << "__tl_primary_out[row] = __tl_reduce_primary[row * " << reduce_iterations
-               << " + " << reduce_iter << "]; ";
+        stream << "__tl_channel0_out[row] = __tl_reduction_channel0[row * " << repeat_extent
+               << " + " << repeat << "]; ";
       }
-      stream << "__tl_ordinal_out[row] = __tl_reduce_ordinal[row * " << reduce_iterations
-             << " + " << reduce_iter << "]; } "
+      stream << "__tl_channel1_out[row] = __tl_reduction_channel1[row * "
+             << repeat_extent << " + " << repeat << "]; } "
              << "mailbox_write(ckernel::ThreadId::PackThreadId, 1); })\n";
       stream << "PACK({ volatile uint32_t __tl_done = "
              << "mailbox_read(ckernel::ThreadId::MathThreadId); (void)__tl_done; })\n";
-      stream << "cb_push_back(" << primary_out_cb.id << ", 1);\n";
-      stream << "cb_push_back(" << ordinal_out_cb.id << ", 1);\n";
+      stream << "cb_push_back(" << floating_out_cb.id << ", 1);\n";
+      stream << "cb_push_back(" << integer_out_cb.id << ", 1);\n";
       stream << "}\n";
     }
   }
@@ -3296,8 +3240,123 @@ void CodeGenBlackhole::PrintMatmulTiles(const tvm::tir::CallNode *op,
   os << ")";
 }
 
+bool CodeGenBlackhole::TryStartScalarRowReduction(const tvm::tir::CallNode* op,
+                                                  const std::string& reduce_kind,
+                                                  const std::string& reduce_dim,
+                                                  std::ostream& os) {
+  if (core_type_ != CoreType::kTRISC || reduce_kind != "max" || reduce_dim != "row") {
+    return false;
+  }
+  ICHECK_EQ(op->args.size(), 5) << "tl.blackhole.reduce_init expects 5 arguments";
+  const int input_cb = ResolveCBId(op->args[0]);
+  const int output_cb = ResolveCBId(op->args[2]);
+  if (GetCBDataFormat(input_cb) != "Int32" || GetCBDataFormat(output_cb) != "Int32") {
+    return false;
+  }
+  const int output_page_size = GetCBPageSize(output_cb);
+  const int source_tiles = GetCBNumPages(input_cb);
+  if (output_page_size <= 0 || output_page_size % static_cast<int>(sizeof(int32_t)) != 0 ||
+      source_tiles <= 0) {
+    return false;
+  }
+  const int rows = output_page_size / static_cast<int>(sizeof(int32_t));
+  const int row_blocks = (rows + 31) / 32;
+  if (rows <= 0 || row_blocks <= 0 || source_tiles % row_blocks != 0) {
+    return false;
+  }
+  const int tiles_per_row_block = source_tiles / row_blocks;
+  if (tiles_per_row_block <= 0) {
+    return false;
+  }
+
+  ICHECK(!active_scalar_row_reduction_.has_value())
+      << "Nested scalar row reduction lowering is not supported";
+  ScalarRowReductionContext context;
+  context.input_cb = input_cb;
+  context.output_cb = output_cb;
+  context.rows = rows;
+  context.tiles_per_row_block = tiles_per_row_block;
+  context.accumulator_var =
+      "__tl_scalar_row_reduce_" + std::to_string(scalar_row_reduction_counter_++);
+  active_scalar_row_reduction_ = context;
+
+  os << "int32_t " << context.accumulator_var << "[" << rows << "];\n";
+  os << "MATH({ for (uint32_t __tl_row = 0; __tl_row < " << rows
+     << "u; ++__tl_row) { " << context.accumulator_var
+     << "[__tl_row] = std::numeric_limits<int32_t>::min(); } })\n";
+  return true;
+}
+
+bool CodeGenBlackhole::IsActiveScalarRowReductionInput(int cb_id) const {
+  return active_scalar_row_reduction_.has_value() &&
+         active_scalar_row_reduction_->input_cb == cb_id;
+}
+
+bool CodeGenBlackhole::IsActiveScalarRowReductionOutput(int cb_id) const {
+  return active_scalar_row_reduction_.has_value() &&
+         active_scalar_row_reduction_->output_cb == cb_id;
+}
+
+void CodeGenBlackhole::EmitScalarRowReductionTile(const tvm::tir::CallNode* op,
+                                                  std::ostream& os) {
+  ICHECK(active_scalar_row_reduction_.has_value())
+      << "Scalar row reduction tile emission requires an active context";
+  const ScalarRowReductionContext& context = active_scalar_row_reduction_.value();
+  os << "do {\n";
+  os << "  const uint32_t " << context.accumulator_var << "_tile = ";
+  PrintExpr(op->args[2], os);
+  os << ";\n";
+  os << "  const int32_t* " << context.accumulator_var
+     << "_src = reinterpret_cast<const int32_t*>(experimental::CircularBuffer("
+     << context.input_cb << ").get_tile_address(" << context.accumulator_var << "_tile));\n";
+  os << "  MATH({\n";
+  os << "    constexpr uint32_t kRows = " << context.rows << "u;\n";
+  os << "    constexpr uint32_t kTilesPerRowBlock = " << context.tiles_per_row_block << "u;\n";
+  os << "    constexpr uint32_t kFaceRows = 16u;\n";
+  os << "    constexpr uint32_t kFaceCols = 16u;\n";
+  os << "    const uint32_t row_base = (" << context.accumulator_var
+     << "_tile / kTilesPerRowBlock) * 32u;\n";
+  os << "    for (uint32_t row_in_tile = 0; row_in_tile < 32u; ++row_in_tile) {\n";
+  os << "      const uint32_t row = row_base + row_in_tile;\n";
+  os << "      if (row >= kRows) { continue; }\n";
+  os << "      for (uint32_t col_in_tile = 0; col_in_tile < 32u; ++col_in_tile) {\n";
+  os << "        const uint32_t face_row = row_in_tile / kFaceRows;\n";
+  os << "        const uint32_t face_col = col_in_tile / kFaceCols;\n";
+  os << "        const uint32_t row_in_face = row_in_tile % kFaceRows;\n";
+  os << "        const uint32_t col_in_face = col_in_tile % kFaceCols;\n";
+  os << "        const uint32_t offset = face_row * (kFaceRows * 32u) + "
+     << "face_col * (kFaceRows * kFaceCols) + row_in_face * kFaceCols + col_in_face;\n";
+  os << "        const int32_t value = " << context.accumulator_var << "_src[offset];\n";
+  os << "        if (value > " << context.accumulator_var << "[row]) { "
+     << context.accumulator_var << "[row] = value; }\n";
+  os << "      }\n";
+  os << "    }\n";
+  os << "  })\n";
+  os << "} while (0)";
+}
+
+void CodeGenBlackhole::EmitScalarRowReductionPack(const tvm::tir::CallNode* op,
+                                                  std::ostream& os) {
+  (void)op;
+  ICHECK(active_scalar_row_reduction_.has_value())
+      << "Scalar row reduction pack emission requires an active context";
+  const ScalarRowReductionContext& context = active_scalar_row_reduction_.value();
+  os << "do {\n";
+  os << "  int32_t* " << context.accumulator_var
+     << "_out = reinterpret_cast<int32_t*>(tilelang_cb_write_ptr_bytes_direct("
+     << context.output_cb << "));\n";
+  os << "  MATH({ for (uint32_t __tl_row = 0; __tl_row < " << context.rows
+     << "u; ++__tl_row) { " << context.accumulator_var << "_out[__tl_row] = "
+     << context.accumulator_var
+     << "[__tl_row]; } mailbox_write(ckernel::ThreadId::PackThreadId, 1); })\n";
+  os << "  PACK({ volatile uint32_t __tl_done = mailbox_read(ckernel::ThreadId::MathThreadId); "
+     << "(void)__tl_done; })\n";
+  os << "} while (0)";
+}
+
 void CodeGenBlackhole::PrintTileRegsAcquire(std::ostream &os) {
   need_compute_api_h_ = true;
+  tile_regs_scope_active_ = true;
   os << "tile_regs_acquire()";
 }
 
@@ -3313,6 +3372,11 @@ void CodeGenBlackhole::PrintTileRegsWait(std::ostream &os) {
 
 void CodeGenBlackhole::PrintTileRegsRelease(std::ostream &os) {
   need_compute_api_h_ = true;
+  if (active_scalar_row_reduction_.has_value() && !tile_regs_scope_active_) {
+    os << "(void)0";
+    return;
+  }
+  tile_regs_scope_active_ = false;
   os << "tile_regs_release()";
 }
 
@@ -3321,10 +3385,15 @@ void CodeGenBlackhole::PrintPackTile(const tvm::tir::CallNode *op,
   need_compute_api_h_ = true;
   ICHECK(op->args.size() == 2 || op->args.size() == 3)
       << "tl.blackhole.pack_tile expects 2 or 3 arguments";
+  const int output_cb = ResolveCBId(op->args[1]);
+  if (IsActiveScalarRowReductionOutput(output_cb)) {
+    EmitScalarRowReductionPack(op, os);
+    return;
+  }
   os << "pack_tile(";
   PrintExpr(op->args[0], os);  // src_tile_index
   os << ", ";
-  PrintResolvedCBId(op->args[1], os);
+  os << output_cb;
   if (op->args.size() == 3) {
     os << ", ";
     PrintExpr(op->args[2], os);  // dst_tile_index
@@ -3336,7 +3405,12 @@ void CodeGenBlackhole::PrintPackReconfigDataFormat(const tvm::tir::CallNode* op,
                                                    std::ostream& os) {
   ICHECK_EQ(op->args.size(), 1)
       << "tl.blackhole.pack_reconfig_data_format expects 1 argument";
-  PrintPackReconfigDataFormatForCB(ResolveCBId(op->args[0]), os);
+  const int cb_id = ResolveCBId(op->args[0]);
+  if (IsActiveScalarRowReductionOutput(cb_id)) {
+    os << "(void)0";
+    return;
+  }
+  PrintPackReconfigDataFormatForCB(cb_id, os);
 }
 
 void CodeGenBlackhole::PrintCopyTileToDstInitShort(const tvm::tir::CallNode* op,
@@ -3378,12 +3452,18 @@ void CodeGenBlackhole::PrintBinaryOpInitCommon(const tvm::tir::CallNode* op,
   need_compute_api_h_ = true;
   ICHECK_EQ(op->args.size(), 3)
       << "tl.blackhole.binary_op_init_common expects 3 arguments";
+  const int input_cb = ResolveCBId(op->args[0]);
+  const int output_cb = ResolveCBId(op->args[2]);
+  if (GetCBDataFormat(input_cb) == "Int32" && GetCBDataFormat(output_cb) == "Int32") {
+    os << "(void)0";
+    return;
+  }
   os << "binary_op_init_common(";
-  PrintResolvedCBId(op->args[0], os);
+  os << input_cb;
   os << ", ";
   PrintResolvedCBId(op->args[1], os);
   os << ", ";
-  PrintResolvedCBId(op->args[2], os);
+  os << output_cb;
   os << ")";
 }
 
@@ -3613,6 +3693,9 @@ void CodeGenBlackhole::PrintReduceInit(const tvm::tir::CallNode* op,
                                                    "reduce_kind");
   const std::string reduce_dim = RequireStringImm(op->args[4], "tl.blackhole.reduce_init",
                                                   "reduce_dim");
+  if (TryStartScalarRowReduction(op, reduce_kind, reduce_dim, os)) {
+    return;
+  }
   os << "reduce_init<" << ReduceKindToTTMetal(reduce_kind, "tl.blackhole.reduce_init") << ", "
      << ReduceDimToTTMetal(reduce_dim, "tl.blackhole.reduce_init") << ">(";
   PrintResolvedCBId(op->args[0], os);
@@ -3631,9 +3714,15 @@ void CodeGenBlackhole::PrintReduceTile(const tvm::tir::CallNode* op,
                                                    "reduce_kind");
   const std::string reduce_dim = RequireStringImm(op->args[6], "tl.blackhole.reduce_tile",
                                                   "reduce_dim");
+  const int input_cb = ResolveCBId(op->args[0]);
+  if (reduce_kind == "max" && reduce_dim == "row" &&
+      IsActiveScalarRowReductionInput(input_cb)) {
+    EmitScalarRowReductionTile(op, os);
+    return;
+  }
   os << "reduce_tile<" << ReduceKindToTTMetal(reduce_kind, "tl.blackhole.reduce_tile") << ", "
      << ReduceDimToTTMetal(reduce_dim, "tl.blackhole.reduce_tile") << ">(";
-  PrintResolvedCBId(op->args[0], os);
+  os << input_cb;
   os << ", ";
   PrintResolvedCBId(op->args[1], os);
   os << ", ";
@@ -3653,8 +3742,12 @@ void CodeGenBlackhole::PrintReduceUninit(const tvm::tir::CallNode* op,
                                                    "reduce_kind");
   const std::string reduce_dim = RequireStringImm(op->args[1], "tl.blackhole.reduce_uninit",
                                                   "reduce_dim");
-  (void)reduce_kind;
-  (void)reduce_dim;
+  if (active_scalar_row_reduction_.has_value() &&
+      reduce_kind == "max" && reduce_dim == "row") {
+    active_scalar_row_reduction_.reset();
+    os << "(void)0";
+    return;
+  }
   os << "reduce_uninit<false>()";
 }
 

@@ -1,4 +1,5 @@
 import re
+from pathlib import Path
 
 import pytest
 import torch
@@ -167,11 +168,10 @@ def test_blackhole_existing_tir_value_index_selection_projects_contracts():
     for local_compute_name in ["max_val", "max_idx", "expand_max_idx", "logits_frag"]:
         assert local_compute_name not in reader_source
         assert local_compute_name not in writer_source
-    assert VALUE_INDEX_SELECTION_MARKER in compute_source
+    assert VALUE_INDEX_SELECTION_MARKER not in compute_source
     assert "topk" not in compute_source
     assert "__tl_topk" not in compute_source
     assert "kTopK" not in compute_source
-    assert "reduce_tile<PoolType::MAX, ReduceDim::REDUCE_ROW>" not in compute_source
     assert "tl.blackhole.topk" not in compute_source
     assert "TTSelectionPlan" not in compute_source
     assert (
@@ -181,6 +181,53 @@ def test_blackhole_existing_tir_value_index_selection_projects_contracts():
 
     reasons = _direct_runtime_unsupported_reasons(artifact)
     assert reasons == []
+
+
+def test_blackhole_existing_tir_value_index_selection_uses_generic_int32_reduction_source():
+    artifact = _lower_blackhole(existing_tir_value_index_selection_kernel())
+    executable_spec = _extract_blackhole_executable_spec(artifact)
+    compute_source = _kernel_source(executable_spec, "compute")
+
+    cb_by_requirement_index = {
+        int(requirement_index): cb
+        for cb in executable_spec["cb_configs"]
+        for requirement_index in cb.get("requirement_indices", [])
+    }
+    int_reduce = next(
+        op
+        for kernel in executable_spec["kernels"]
+        for op in kernel.get("compute_ops", [])
+        if str(op["kind"]) == "reduce"
+        and str(op["operation_name"]) == "reduce_tile"
+        and str(op["accumulator_dtype"]) == "Int32"
+    )
+    int_output_binding = next(
+        binding for binding in int_reduce["operand_bindings"] if str(binding["role"]) == "output"
+    )
+    int_output_cb_ids = {
+        int(cb_by_requirement_index[int(index)]["cb_id"])
+        for index in int_output_binding["cb_requirement_indices"]
+    }
+    assert len(int_output_cb_ids) == 1
+    int_output_cb_id = next(iter(int_output_cb_ids))
+
+    assert (
+        f"reduce_init<PoolType::MAX, ReduceDim::REDUCE_ROW>("
+        not in compute_source
+        or f", {int_output_cb_id});" not in compute_source
+    )
+    assert f"pack_tile(0, {int_output_cb_id}, 0);" not in compute_source
+    assert f"tilelang_cb_write_ptr_bytes_direct({int_output_cb_id})" in compute_source
+    assert "Argument 0: logits" not in compute_source
+
+
+def test_blackhole_existing_tir_value_index_selection_has_no_limited_codegen_emitter():
+    repo_root = Path(__file__).resolve().parents[4]
+    codegen_cc = repo_root / "src" / "target" / "codegen_blackhole.cc"
+    codegen_h = repo_root / "src" / "target" / "codegen_blackhole.h"
+
+    assert "TryEmitTypedComputeRegionKernel" not in codegen_cc.read_text()
+    assert "TryEmitTypedComputeRegionKernel" not in codegen_h.read_text()
 
 
 def test_blackhole_existing_tir_value_index_selection_compute_operands_link_cbs():

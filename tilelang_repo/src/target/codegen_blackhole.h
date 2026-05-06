@@ -24,9 +24,11 @@
 #ifndef TL_TARGET_SOURCE_CODEGEN_BLACKHOLE_H_
 #define TL_TARGET_SOURCE_CODEGEN_BLACKHOLE_H_
 
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
+#include <vector>
 
 #include "codegen_c_host.h"
 
@@ -57,7 +59,6 @@ class CodeGenBlackhole : public CodeGenCHost {
   // Generate generic kernel_main entry point (IR-driven, no hardcoded paths)
   void GenerateGenericKernelMain(const tvm::tir::PrimFunc &f,
                                  const std::string &func_name);
-  bool TryEmitTypedComputeRegionKernel(const tvm::tir::PrimFunc &f);
 
   // Override visitor to handle TT-Metal builtin calls
   void VisitExpr_(const tvm::tir::CallNode *op,
@@ -270,6 +271,22 @@ class CodeGenBlackhole : public CodeGenCHost {
     uint32_t constant_value{0};
   };
 
+  struct ScalarRowReductionContext {
+    int input_cb{-1};
+    int output_cb{-1};
+    int rows{0};
+    int tiles_per_row_block{0};
+    std::string accumulator_var;
+  };
+
+  bool EmitTypedRowReductionRegionIfSupported(const tvm::tir::PrimFunc& f);
+  bool TryStartScalarRowReduction(const tvm::tir::CallNode* op, const std::string& reduce_kind,
+                                  const std::string& reduce_dim, std::ostream& os);
+  bool IsActiveScalarRowReductionInput(int cb_id) const;
+  bool IsActiveScalarRowReductionOutput(int cb_id) const;
+  void EmitScalarRowReductionTile(const tvm::tir::CallNode* op, std::ostream& os);
+  void EmitScalarRowReductionPack(const tvm::tir::CallNode* op, std::ostream& os);
+
   // Per-instance header emission flag (replaces static variable)
   bool headers_emitted_{false};
 
@@ -303,6 +320,9 @@ class CodeGenBlackhole : public CodeGenCHost {
   std::unordered_map<int, std::vector<ActiveCBWritePtrBinding>> active_cb_write_ptr_bindings_;
   std::unordered_map<int, int> active_cb_allocation_reserved_pages_;
   std::unordered_map<std::string, LogicalTileLayoutBinding> logical_tile_layout_bindings_by_buffer_name_;
+  std::optional<ScalarRowReductionContext> active_scalar_row_reduction_;
+  int scalar_row_reduction_counter_{0};
+  bool tile_regs_scope_active_{false};
   std::string thread_idx_x_expr_;
   int logical_grid_x_{1};
   int logical_grid_y_{1};

@@ -57,8 +57,8 @@ PACK/UNPACK format state correctly.
 
 ## Current Status
 
-T6 is runtime-complete for the admitted existing-TIR row-wise value/index
-selection shape, but still has one architecture cleanup item.
+T6 is complete for the admitted existing-TIR row-wise value/index selection
+shape.
 
 The admitted implementation consumes typed value reduce and typed `int32`
 index reduce records, materializes the input through reader CBs, and publishes
@@ -70,13 +70,14 @@ core-type / storage-scope rule.  CB operands resolve through executable
 outputs are not recovered from `<buffer>_reduce_out` suffixes, requirement
 names, output data formats, or local value/index roles.
 
-The remaining cleanup is replacing the limited
-`CodeGenBlackhole::TryEmitTypedComputeRegionKernel` repeated row-reduction
-source path with generic typed compute-region / reduction lowering, or
-deleting that path once the normal compute chain can represent and validate the
-same semantics.  This cleanup must preserve the existing runtime gates without
-adding a frontend topk op, `TTSelectionPlan`, `selection_plans`, or a
-source-name side channel.
+The old limited
+`CodeGenBlackhole::TryEmitTypedComputeRegionKernel`
+source path is deleted.  The current source path lowers the admitted repeated
+row-reduction compute region from executable compute records, typed CB
+requirement mappings, logical tile layout, and buffer distribution records.
+It does not add a frontend topk op, `TTSelectionPlan`, `selection_plans`, or a
+source-name side channel, and executable compute kernels no longer fall back to
+loading raw formal host-buffer pointers when runtime args are absent.
 
 ## Contract
 
@@ -132,6 +133,9 @@ value/index correctness.
   indices.
 - Compute consumes the input through the typed reader CB materialization; it
   does not read raw host argument pointers.
+- Repeated row-reduction source emission is a codegen-local lowering over
+  executable compute records and physical CB IDs.  It is not a public
+  selection plan or a new frontend operator.
 - Compute operand bindings carry explicit `cb_requirement_indices`.  For
   exact-CB values, final TTProgram attachment points non-output operands at
   the boundary exact-CB allocation that the reader or prior producer actually

@@ -21,7 +21,7 @@
 | T3 Tensor/value sharding and explicit reshard | Complete | `T.MemoryConfig`, placement intents, tensor memory-config plans, op sharding contracts, placement resolution, and first `interleaved_to_sharded` conversion are typed and projected. |
 | T4 External accessor / runtime ABI | Complete | External `interleaved_accessor_cta` and `sharded_accessor_cta` records cover interleaved DRAM, page-addressed interleaved DRAM, and static sharded L1. |
 | T5 Sharded GEMM / layout variants | Complete | Static external sharded-L1 GEMM is correct for single-core, 2x2, 110-core many-core, all-bf16, and current K-sharded partial-sum paths. |
-| T6 `topk` | Runtime complete / architecture cleanup pending | Existing TIR value/index selection runs through direct runtime for fp32 and bf16 values with exact `int32` indices.  The remaining work is replacing the limited typed compute-region repeated-reduction source path with generic typed compute-region / reduction lowering. |
+| T6 `topk` | Complete | Existing TIR value/index selection runs through direct runtime for fp32 and bf16 values with exact `int32` indices.  The old limited typed compute-region emitter is deleted; codegen consumes executable compute records and CB requirement mappings without topk/selection schema or raw host-pointer fallback. |
 | T7 Exact-CB / materialization primitives | Complete | Exact-CB materialization, publication, consumer binding, GEMM post-merge materialization, and seq64 bf16 flash-attn exact-CB partial combine are typed and executable. |
 | T7.5 Exact-CB liveness / allocation cutover | Complete | Covered exact-CB resident tiles use typed lifecycle, allocation, release events, and fail-closed loop-carried/full-tile gates. |
 | T8 Irregular work domains / indexed access | Runtime surface admitted / cleanup pending | Indexed, sparse, ragged, paged, segmented, and T9.1 grouped-GEMM feed paths execute through generic `AccessRegion` + `value_expr` bindings.  Remaining work is broader shape coverage and continued removal of consumption-side recovery. |
@@ -65,17 +65,6 @@
   schema or per-case lowering branches.
 
 ## Next Work Queue
-
-### P0: T6 Generic Compute-Region / Reduction Lowering
-
-- Replace the remaining limited `TryEmitTypedComputeRegionKernel` repeated
-  row-reduction source path with generic typed compute-region / reduction
-  lowering.
-- Preserve the current admitted surface: fp32 and bf16 values, exact `int32`
-  indices, row-wise existing-TIR shape, no frontend topk op, no selection
-  plan, no source-name recovery.
-- Keep direct-runtime correctness green for the current T6 fp32 single-work,
-  fp32 multi-work, and bf16 value/index selectors.
 
 ### P1: T8 Cleanup And Runtime Breadth
 
@@ -141,8 +130,11 @@ Current verified baseline:
   transport reported `8 passed`; direct-runtime selectors covered stick copy,
   missing-page-metadata typed reject, and T9 page-addressed QK/AV flash micro
   paths.
-- T6 runtime baseline: fp32 single-work, fp32 multi-work, and bf16 values with
-  exact `int32` indices pass through direct runtime.
+- T6 completion baseline: `cmake --build build -j32` passed; focused source /
+  schema selectors covering typed compute records, CB operand links, deleted
+  limited emitter, and raw-pointer absence reported `4 passed`; direct-runtime
+  TT-Sim gates pass for fp32 single-work, fp32 multi-work, and bf16 values
+  with exact `int32` indices.
 - T7.5 baseline: seq64 bf16 flash-attn exact-CB direct runtime remains the
   positive correctness gate; seq128/256/512 source/spec admission skips only
   at the typed TT-Sim PACR boundary.

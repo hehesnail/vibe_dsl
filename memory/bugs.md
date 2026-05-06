@@ -3142,6 +3142,36 @@
   - TT-Sim T6 direct runtime passed for fp32 single-work, fp32 multi-work, and
     bf16 values with exact int32 indices after the fix.
 
+### T6 scalarized compute-region body overproduced CB events after deleting the old emitter
+
+- **症状**:
+  - After deleting the old whole-kernel repeated-reduction emitter and letting
+    the normal compute body source-render directly, T6 structural source tests
+    passed but direct runtime hung during enqueue.
+  - The emitted TRISC source serialized the `threadIdx.x` region as a C loop
+    and published output CB pages inside that loop.
+- **根因**:
+  - The authored Tile TIR describes a row-wise region with reductions and
+    scalar update loops, but leaf source emission cannot treat that
+    GPU-style thread loop as an ordinary sequential loop with CB publication
+    side effects.  It multiplies producer events beyond the writer's typed
+    consume protocol and eventually stalls on CB/event availability.
+  - The same experiment also exposed an old no-runtime-arg fallback in
+    `GenerateGenericKernelMain` that loaded formal host-buffer pointers into
+    executable compute kernels even when the body did not use them.
+- **修法**:
+  - Keep the T6 row-reduction source path as a typed executable
+    compute-region lowering over compute records, logical tile layout, buffer
+    distribution, and physical CB IDs, rather than raw scalar-body emission.
+  - Delete the raw formal-argument fallback for executable kernels with no
+    runtime args; executable source should consume projected runtime args and
+    CB/accessor records, not original host pointer params.
+- **验证**:
+  - `cmake --build build -j32` passed.
+  - Focused T6 source/schema selectors reported `4 passed`.
+  - TT-Sim direct runtime passed for fp32 single-work, fp32 multi-work, and
+    bf16 values with exact int32 indices.
+
 ## 3. 环境问题速查
 
 | 问题 | 解决 |
