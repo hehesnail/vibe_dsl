@@ -207,6 +207,31 @@
   - T9 page-addressed QK/AV page1, T9.2 full paged GQA, T9.3 dual-score MLA,
     T9.3 full paged MLA, and T9.1 grouped GEMM direct-runtime selectors passed.
 
+### Physical CB queue replay must model cross-kernel producers
+
+- **症状**:
+  - A first executable source gate that replayed compute-kernel CB events from
+    an empty queue rejected valid T3 sharded elementwise/reduce runtime cases:
+    `physical CB queue wait_front exceeds visible pages in main_kernel_compute`.
+- **根因**:
+  - Some compute-visible CBs are not `role=input` but are still produced by a
+    non-compute kernel before the compute kernel runs.  T3 reader materializes
+    resident/intermediate CBs and the compute kernel legitimately starts with
+    `wait_front` on them.  Replaying only the compute kernel without importing
+    projected reader `cb_push_back` evidence treats those pages as missing.
+- **修法**:
+  - Derive externally produced CB IDs from projected non-compute
+    `cb_push_back` events and allow compute `wait_front` / `pop_front` on
+    those CBs while still checking the requested page count against physical
+    CB capacity.
+  - Keep exact-CB producer/release/storage checks in `ValidateTTProgram`; the
+    source extractor remains a temporary executable queue-event source until
+    `KernelSpec` carries structured physical queue events.
+- **验证**:
+  - Focused typed verifier tests reported `7 passed`.
+  - T3 sharded elementwise/reduce mix plus T7/T9 direct-runtime selectors
+    reported `10 passed`.
+
 ### T3 staged-copy reshard hardening exposed multi-record ABI and executable validation gaps
 
 - **症状**:

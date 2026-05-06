@@ -38,6 +38,7 @@
 #include <functional>
 #include <memory>
 #include <limits>
+#include <regex>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -3082,6 +3083,110 @@ static void EnforceLoopCarriedExactCBPacrSimulatorGate(ExecutableSpec* spec) {
       "tensix_execute_pacr: count=1 for the admitted compute-side pack path");
 }
 
+struct SourceCBQueueState {
+  int64_t visible_front_pages = 0;
+  int64_t reserved_back_pages = 0;
+};
+
+static void EnforcePhysicalCBQueueSourceGate(ExecutableSpec* spec) {
+  ICHECK(spec != nullptr);
+  std::unordered_map<uint32_t, const CBConfig*> cb_by_id;
+  for (const CBConfig& cb : spec->cb_configs) {
+    cb_by_id.emplace(cb.cb_id, &cb);
+  }
+  const std::regex cb_event_re(
+      R"(\bcb_(reserve_back|push_back|wait_front|pop_front)\(\s*(?:\(uint32_t\)\s*)?(\d+)\s*,\s*(?:\(uint32_t\)\s*)?(\d+)\s*\);)");
+  std::unordered_set<uint32_t> externally_produced_cb_ids;
+  for (const KernelSpec& kernel : spec->kernels) {
+    if (kernel.kind == "compute" && kernel.core_type == "trisc") {
+      continue;
+    }
+    for (std::sregex_iterator it(kernel.source_code.begin(), kernel.source_code.end(),
+                                 cb_event_re),
+         end;
+         it != end; ++it) {
+      const std::smatch& match = *it;
+      if (match[1].str() == "push_back") {
+        externally_produced_cb_ids.insert(static_cast<uint32_t>(std::stoul(match[2].str())));
+      }
+    }
+  }
+  for (const KernelSpec& kernel : spec->kernels) {
+    if (kernel.kind != "compute" || kernel.core_type != "trisc") {
+      continue;
+    }
+    std::unordered_map<uint32_t, SourceCBQueueState> state_by_cb_id;
+    for (std::sregex_iterator it(kernel.source_code.begin(),
+                                 kernel.source_code.end(), cb_event_re),
+         end;
+         it != end; ++it) {
+      const std::smatch& match = *it;
+      const std::string kind = match[1].str();
+      const uint32_t cb_id = static_cast<uint32_t>(std::stoul(match[2].str()));
+      const int64_t pages = std::stoll(match[3].str());
+      ICHECK_GT(pages, 0)
+          << "physical CB queue source verifier requires positive pages in "
+          << kernel.name;
+      auto cb_it = cb_by_id.find(cb_id);
+      if (cb_it == cb_by_id.end()) {
+        continue;
+      }
+      const CBConfig& cb = *cb_it->second;
+      SourceCBQueueState& state = state_by_cb_id[cb_id];
+      if (kind == "reserve_back") {
+        ICHECK_LE(state.visible_front_pages + state.reserved_back_pages + pages,
+                  static_cast<int64_t>(cb.num_pages))
+            << "physical CB queue reserve exceeds capacity in " << kernel.name
+            << " for CB " << cb_id << ": front="
+            << state.visible_front_pages << " reserved="
+            << state.reserved_back_pages << " reserve=" << pages
+            << " capacity=" << cb.num_pages;
+        state.reserved_back_pages += pages;
+      } else if (kind == "push_back") {
+        ICHECK_GE(state.reserved_back_pages, pages)
+            << "physical CB queue push without matching reserve in "
+            << kernel.name << " for CB " << cb_id << ": reserved="
+            << state.reserved_back_pages << " push=" << pages;
+        state.reserved_back_pages -= pages;
+        state.visible_front_pages += pages;
+        ICHECK_LE(state.visible_front_pages, static_cast<int64_t>(cb.num_pages))
+            << "physical CB queue visible front exceeds capacity in "
+            << kernel.name << " for CB " << cb_id;
+      } else if (kind == "wait_front") {
+        const bool has_external_producer =
+            cb.role == "input" || externally_produced_cb_ids.count(cb_id);
+        if (state.visible_front_pages < pages && has_external_producer) {
+          ICHECK_LE(pages, static_cast<int64_t>(cb.num_pages))
+              << "physical CB queue wait_front exceeds externally produced "
+              << "capacity in " << kernel.name << " for CB " << cb_id
+              << ": wait=" << pages << " capacity=" << cb.num_pages;
+        } else if (!has_external_producer) {
+          ICHECK_GE(state.visible_front_pages, pages)
+              << "physical CB queue wait_front exceeds visible pages in "
+              << kernel.name << " for CB " << cb_id << ": front="
+              << state.visible_front_pages << " wait=" << pages;
+        }
+      } else if (kind == "pop_front") {
+        const bool has_external_producer =
+            cb.role == "input" || externally_produced_cb_ids.count(cb_id);
+        if (state.visible_front_pages < pages && has_external_producer) {
+          ICHECK_LE(pages, static_cast<int64_t>(cb.num_pages))
+              << "physical CB queue pop_front exceeds externally produced "
+              << "capacity in " << kernel.name << " for CB " << cb_id
+              << ": pop=" << pages << " capacity=" << cb.num_pages;
+        } else if (!has_external_producer) {
+          ICHECK_GE(state.visible_front_pages, pages)
+              << "physical CB queue pop_front exceeds visible pages in "
+              << kernel.name << " for CB " << cb_id << ": front="
+              << state.visible_front_pages << " pop=" << pages;
+        }
+        state.visible_front_pages =
+            std::max<int64_t>(0, state.visible_front_pages - pages);
+      }
+    }
+  }
+}
+
 static const BufferDistributionSpec* FindBufferDistributionSpec(
     const ExecutableSpec& spec, const std::string& buffer_name) {
   auto it = std::find_if(
@@ -3775,6 +3880,7 @@ ffi::Module BuildTileLangBlackhole(IRModule mod, Target target) {
     EnforceTypedDstCbAccumulationGate(&spec_it->second);
     EnforceExactLiveFormMultiPageRepublishGate(&spec_it->second);
     EnforceExplicitBufferRoleSchemaGate(&spec_it->second);
+    EnforcePhysicalCBQueueSourceGate(&spec_it->second);
     EnforceStandalonePacrLeafSimulatorGate(&spec_it->second);
     EnforceLoopCarriedExactCBPacrSimulatorGate(&spec_it->second);
   }
@@ -3889,6 +3995,7 @@ ffi::Module BuildTileLangBlackholeWithoutHost(IRModule mod, Target target) {
     EnforceTypedDstCbAccumulationGate(&spec_it->second);
     EnforceExactLiveFormMultiPageRepublishGate(&spec_it->second);
     EnforceExplicitBufferRoleSchemaGate(&spec_it->second);
+    EnforcePhysicalCBQueueSourceGate(&spec_it->second);
     EnforceStandalonePacrLeafSimulatorGate(&spec_it->second);
     EnforceLoopCarriedExactCBPacrSimulatorGate(&spec_it->second);
   }

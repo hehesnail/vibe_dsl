@@ -7,6 +7,7 @@
 #include <tvm/ir/transform.h>
 #include <tvm/target/target.h>
 
+#include <algorithm>
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -1112,6 +1113,12 @@ void ValidateCBPlan(const TTCBPlan &cb_plan) {
       << "TTCBPlan requires lifetime_end >= lifetime_begin";
 }
 
+bool IsAllowedExactCBReleaseReason(const ffi::String &reason) {
+  const std::string value = str(reason);
+  return value == "last_use" || value == "loop_backedge_transfer" ||
+         value == "materialization_split" || value == "typed_reject_boundary";
+}
+
 void ValidateAccessor(const TTAccessorSpec &accessor) {
   ICHECK(!accessor->buffer.empty()) << "TTABIPlan accessor requires buffer";
   ICHECK_GT(accessor->compile_time_arg_count, 0)
@@ -1582,6 +1589,40 @@ void ValidateExactCBLifecycleRecords(
         << interval->virtual_value;
   }
 
+  for (const TTExactCBUseEvent &event : program->exact_cb_use_events) {
+    auto selected_interval_it =
+        interval_by_virtual_value_index.find(event->virtual_value_index);
+    ICHECK(selected_interval_it != interval_by_virtual_value_index.end())
+        << "TTExactCBUseEvent requires matching TTExactCBLiveInterval";
+    ICHECK_LE(selected_interval_it->second.begin_point, event->program_point)
+        << "TTExactCBUseEvent must not use a virtual value before its "
+           "producer interval begins";
+    const TTExactCBVirtualValue &selected_value =
+        program->exact_cb_virtual_values[static_cast<size_t>(
+            event->virtual_value_index)];
+    int64_t latest_begin = selected_interval_it->second.begin_point;
+    std::string latest_value = str(selected_value->name);
+    for (const auto &entry : interval_by_virtual_value_index) {
+      const int64_t candidate_index = entry.first;
+      const ExactCBIntervalRange &candidate_interval = entry.second;
+      const TTExactCBVirtualValue &candidate_value =
+          program->exact_cb_virtual_values[static_cast<size_t>(
+              candidate_index)];
+      if (candidate_value->logical_value != selected_value->logical_value ||
+          candidate_interval.begin_point > event->program_point ||
+          candidate_interval.begin_point < latest_begin) {
+        continue;
+      }
+      latest_begin = candidate_interval.begin_point;
+      latest_value = str(candidate_value->name);
+    }
+    ICHECK_EQ(selected_interval_it->second.begin_point, latest_begin)
+        << "TTExactCBUseEvent must bind the latest exact-CB producer for "
+        << selected_value->logical_value << "; selected "
+        << selected_value->name << " but latest visible value is "
+        << latest_value;
+  }
+
   std::unordered_map<std::string, int64_t> allocation_index_by_name;
   std::unordered_map<int64_t, int64_t> allocation_virtual_value_index;
   for (int64_t index = 0;
@@ -1605,6 +1646,9 @@ void ValidateExactCBLifecycleRecords(
         << "TTExactCBAllocation cb_plan_index out of bounds";
     const TTCBPlan &cb =
         program->cb_plans[static_cast<size_t>(allocation->cb_plan_index)];
+    const TTExactCBVirtualValue &virtual_value =
+        program->exact_cb_virtual_values[static_cast<size_t>(
+            allocation->virtual_value_index)];
     ICHECK_EQ(allocation->cb_plan, cb->name)
         << "TTExactCBAllocation cb_plan must match indexed TTCBPlan";
     ICHECK(cb_plan_index_by_name.count(str(allocation->cb_plan)))
@@ -1612,6 +1656,14 @@ void ValidateExactCBLifecycleRecords(
         << allocation->cb_plan;
     ICHECK_EQ(allocation->physical_cb_id, cb->cb_id)
         << "TTExactCBAllocation physical_cb_id must match TTCBPlan cb_id";
+    ICHECK_EQ(cb->data_format, virtual_value->data_format)
+        << "exact-CB allocation data_format must match virtual value for "
+        << allocation->name << ": cb=" << cb->data_format
+        << " virtual=" << virtual_value->data_format;
+    ICHECK_EQ(cb->page_size_bytes, virtual_value->page_size_bytes)
+        << "exact-CB allocation page_size_bytes must match virtual value for "
+        << allocation->name << ": cb=" << cb->page_size_bytes
+        << " virtual=" << virtual_value->page_size_bytes;
     ICHECK_GT(allocation->page_count, 0)
         << "TTExactCBAllocation requires positive page_count";
     ICHECK_LE(allocation->page_count, cb->num_pages)
@@ -1620,6 +1672,9 @@ void ValidateExactCBLifecycleRecords(
         << "TTExactCBAllocation requires release_program_point";
     ICHECK(!allocation->release_reason.empty())
         << "TTExactCBAllocation requires release_reason";
+    ICHECK(IsAllowedExactCBReleaseReason(allocation->release_reason))
+        << "exact-CB release reason is not admitted: "
+        << allocation->release_reason;
     auto use_it =
         last_use_by_virtual_value_index.find(allocation->virtual_value_index);
     if (use_it != last_use_by_virtual_value_index.end()) {
@@ -1695,6 +1750,8 @@ void ValidateExactCBLifecycleRecords(
     ICHECK_LE(event->page_count, allocation->page_count)
         << "TTExactCBReleaseEvent page_count must fit allocation";
     ICHECK(!event->reason.empty()) << "TTExactCBReleaseEvent requires reason";
+    ICHECK(IsAllowedExactCBReleaseReason(event->reason))
+        << "exact-CB release reason is not admitted: " << event->reason;
     const int64_t virtual_value_index =
         allocation_virtual_value_index.at(event->allocation_index);
     auto use_it = last_use_by_virtual_value_index.find(virtual_value_index);
@@ -1852,9 +1909,18 @@ void CheckTTProgram(
     }
   }
   std::unordered_set<int64_t> cb_requirement_indices;
+  std::unordered_map<int64_t, std::string> cb_requirement_owner_by_index;
   for (const TTCBPlan &cb_plan : program->cb_plans) {
     for (const Integer &index : cb_plan->requirement_indices) {
-      cb_requirement_indices.insert(index.IntValue());
+      const int64_t requirement_index = index.IntValue();
+      cb_requirement_indices.insert(requirement_index);
+      auto owner_it = cb_requirement_owner_by_index.find(requirement_index);
+      ICHECK(owner_it == cb_requirement_owner_by_index.end())
+          << "CB requirement index " << requirement_index
+          << " is owned by multiple TTCBPlan records: "
+          << owner_it->second << " and " << cb_plan->name;
+      cb_requirement_owner_by_index.emplace(requirement_index,
+                                            str(cb_plan->name));
     }
   }
   for (int64_t compute_op_index = 0;

@@ -7,7 +7,7 @@
 
 ## Status
 
-- Date: `2026-05-06`
+- Date: `2026-05-07`
 - Active lane: `T9 Workload first paths`
 - Main chain:
   `Normalized Tile TIR -> SpatialPlan -> TTProgram -> ExecutableSpec`
@@ -23,7 +23,7 @@
 | T5 Sharded GEMM / layout variants | Complete | Static external sharded-L1 GEMM is correct for single-core, 2x2, 110-core many-core, all-bf16, and current K-sharded partial-sum paths. |
 | T6 `topk` | Complete | Existing TIR value/index selection runs through direct runtime for fp32 and bf16 values with exact `int32` indices.  The old limited typed compute-region emitter is deleted; codegen consumes executable reduction records through a `reduce_dim`-parameterized channel lowering and CB requirement mappings without topk/selection schema or raw host-pointer fallback. |
 | T7 Exact-CB / materialization primitives | Complete | Exact-CB materialization, publication, consumer binding, GEMM post-merge materialization, and seq64 bf16 flash-attn exact-CB partial combine pass `BlackholeModule` TT-Sim correctness. |
-| T7.5 Exact-CB liveness / allocation cutover | Complete | Covered exact-CB resident tiles use typed lifecycle, allocation, release events, and fail-closed loop-carried/full-tile gates. |
+| T7.5 Exact-CB liveness / allocation cutover | Complete | Covered exact-CB resident tiles use typed lifecycle, allocation, release events, latest-producer validation, storage-format validation, and fail-closed loop-carried/full-tile gates. |
 | T8 Irregular work domains / indexed access | Runtime surface admitted / cleanup pending | Indexed, sparse, ragged, paged, segmented, and T9.1 grouped-GEMM feed paths execute through generic `AccessRegion` + `value_expr` bindings.  Remaining work is broader shape coverage and continued removal of consumption-side recovery. |
 | T9 Workload first paths | In progress | T9.1 pre-grouped MoE/routed GEMM, T9.2 full paged GQA decode, T9.3 dual-score MLA GEMM, and T9.3 full paged MLA decode have bf16 direct-runtime correctness.  T9.4-T9.6 are queued. |
 | T10 Distributed production variants | Queued | Mesh placement, CCL, NoC/multicast/global scheduling, distributed workload correctness, and production partial-K reduction remain future TT target-realization work. |
@@ -63,6 +63,12 @@
 - Any future fuse-like behavior must be expressed as a generic pass over IR
   constraints and typed records.  Do not add workload-specific fused-op
   schema or per-case lowering branches.
+- Exact-CB and physical CB queue correctness are admission checks, not
+  workload skips.  `ValidateTTProgram` owns latest exact-CB producer,
+  release-reason, storage-format, page-size, and unique CB-requirement-owner
+  checks.  The current executable source gate replays constant physical CB
+  queue events and derives cross-kernel producers from projected non-compute
+  kernel pushes until `KernelSpec` carries structured queue events directly.
 
 ## Next Work Queue
 
@@ -139,12 +145,16 @@ Current verified baseline:
   limited emitter, row-specific codegen guard, and raw-pointer absence
   reported `4 passed`; direct-runtime TT-Sim gates pass for fp32 single-work,
   fp32 multi-work, and bf16 values with exact `int32` indices.
-- T7/T9 current baseline: `cmake --build build -j32` passed; focused TT-Sim
-  runtime selectors passed for T7 seq64 MHA exact-CB partial combine, T9
-  page-addressed QK page1, T9 page-addressed AV page1, T9.2 full paged GQA
-  decode, T9.3 dual-score MLA GEMM, T9.3 full paged MLA decode, and T9.1
-  grouped GEMM.  Extended seq still carries the narrower loop-carried
-  exact-CB PACR typed simulator reason.
+- Typed tile-CB verifier baseline: `cmake --build build -j32` passed;
+  `test_blackhole_typed_tile_cb_queue_verifier.py` reported `7 passed`,
+  covering duplicate CB-requirement ownership, exact-CB data-format mismatch,
+  invalid release reasons, and invalid constant physical queue events.
+- T7/T9 current runtime baseline: focused TT-Sim runtime selectors reported
+  `10 passed`, covering T3 sharded elementwise/reduce mix, T7 seq64 MHA
+  exact-CB partial combine, T9 page-addressed QK page1, T9 page-addressed AV
+  page1, T9.2 full paged GQA decode, T9.3 dual-score MLA GEMM, T9.3 full
+  paged MLA decode, and T9.1 grouped GEMM.  Extended seq still carries the
+  narrower loop-carried exact-CB PACR typed simulator reason.
 
 Detailed historical checkpoint logs belong in git history and `memory/`, not
 in this file.
