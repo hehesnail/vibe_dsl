@@ -49,23 +49,23 @@ and dataflow.  It must not rely on buffer names, output argument positions,
 source text, or a new Blackhole-only pseudo operator.
 
 The active runtime question is therefore a value/index lowering question, not
-a frontend topk-op question.  Flash attention already proves that floating row
-`reduce_tile` can be admitted inside the existing Blackhole direct path when it
-is part of the GEMM/softmax compute chain, and standalone bf16 row reduce is
+a frontend topk-op question.  Flash attention already proves that floating
+`reduce_tile` can be admitted inside the existing Blackhole direct path when
+it is part of the GEMM/softmax compute chain, and standalone bf16 reduction is
 also admissible once the emitted scaler fill/pack sequence initializes
 PACK/UNPACK format state correctly.
 
 ## Current Status
 
-T6 is complete for the admitted existing-TIR row-wise value/index selection
+T6 is complete for the admitted existing-TIR axis-1 value/index selection
 shape.
 
-The admitted implementation consumes typed value reduce and typed `int32`
-index reduce records, materializes the input through reader CBs, and publishes
-value/index output CB pages consumed by the normal writer path.  Data-movement
-source skips residual compute-local `blackhole.acc` stores by the generic
-core-type / storage-scope rule.  CB operands resolve through executable
-`cb_configs` and explicit
+The admitted implementation consumes typed value reduction and typed `int32`
+coordinate reduction records, materializes the input through reader CBs, and
+publishes value/index output CB pages consumed by the normal writer path.
+Data-movement source skips residual compute-local `blackhole.acc` stores by
+the generic core-type / storage-scope rule.  CB operands resolve through
+executable `cb_configs` and explicit
 `TTComputeOperandBindingPlan.cb_requirement_indices`; paired value/index
 outputs are not recovered from `<buffer>_reduce_out` suffixes, requirement
 names, output data formats, or local value/index roles.
@@ -73,11 +73,15 @@ names, output data formats, or local value/index roles.
 The old limited
 `CodeGenBlackhole::TryEmitTypedComputeRegionKernel`
 source path is deleted.  The current source path lowers the admitted repeated
-row-reduction compute region from executable compute records, typed CB
-requirement mappings, logical tile layout, and buffer distribution records.
-It does not add a frontend topk op, `TTSelectionPlan`, `selection_plans`, or a
-source-name side channel, and executable compute kernels no longer fall back to
-loading raw formal host-buffer pointers when runtime args are absent.
+reduction region from executable compute records, typed CB requirement
+mappings, logical tile layout, buffer distribution records, and the
+`reduce_kind` / `reduce_dim` carried by the current TIR builtins.  The codegen
+representation is dimension-parameterized and channel-vector based; row is
+only the admitted case's current `reduce_dim`, not a public abstraction or
+case-specific schema.  It does not add a frontend topk op, `TTSelectionPlan`,
+`selection_plans`, or a source-name side channel, and executable compute
+kernels no longer fall back to loading raw formal host-buffer pointers when
+runtime args are absent.
 
 ## Contract
 
@@ -110,7 +114,7 @@ T6 validation must cover:
 
 - projection tests proving value and index outputs are represented in typed
   IR/source/spec records;
-- direct-runtime correctness for standalone row-wise fp32 `topk` values with
+- direct-runtime correctness for standalone axis-1 fp32 `topk` values with
   exact `int32` indices, using a multi-work shape such as `M=320`, `N=128`,
   `k=6`, `axis=1`, and `blk_m=64`, with non-tie input data unless deterministic
   tie behavior is explicitly represented;
@@ -128,12 +132,14 @@ value/index correctness.
 
 ## Current Implementation Notes
 
-- The admitted positive subset is row-wise value/index selection from the
+- The admitted positive subset is axis-1 value/index selection from the
   existing Tile TIR structure, with fp32 or bf16 values and exact `int32`
-  indices.
+  indices.  The codegen abstraction remains a generic reduction region:
+  `reduce_dim` chooses the logical output/reduction coordinates, and output
+  channels are typed projections of the reduction result.
 - Compute consumes the input through the typed reader CB materialization; it
   does not read raw host argument pointers.
-- Repeated row-reduction source emission is a codegen-local lowering over
+- Repeated reduction-region source emission is a codegen-local lowering over
   executable compute records and physical CB IDs.  It is not a public
   selection plan or a new frontend operator.
 - Compute operand bindings carry explicit `cb_requirement_indices`.  For

@@ -2649,11 +2649,11 @@ cd <当前 checkout 或 worktree>/tilelang_repo
 - 2026-05-06 T6 codegen cleanup:
   Renaming a workload path away from `topk` is not enough if local codegen
   roles still say `value_reduce`, `index_reduce`, or separate value/index CBs.
-  For the remaining limited repeated-reduction source path, use typed compute
-  records plus neutral primary/ordinal output channels, and keep a source
-  guard that rejects both the old entry name and the old local roles.  This is
-  still only a cleanup step until generic typed compute-region / reduction
-  lowering owns the behavior.
+  The durable local abstraction is a typed reduction region: derive
+  `reduce_kind` / `reduce_dim` from the current TIR builtins, consume
+  executable compute records and CB requirement mappings, and represent
+  outputs as typed reduction channels.  Do not name the codegen abstraction
+  after row-wise behavior or a value/index pair.
 - 2026-05-06 Blackhole output-CB identity:
   Do not recover a writer/compute output CB by appending source-generation
   suffixes such as `_reduce_out` to an output buffer name.  That couples
@@ -2700,13 +2700,21 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   queue, and verification baseline only.  Active design docs should carry the
   durable contract plus concise current boundary; detailed checkpoint history
   belongs in git history or memory, not duplicated as rolling progress logs.
-- 2026-05-06 T6 typed row-reduction source cleanup:
+- 2026-05-06 T6 typed reduction-region source cleanup:
   The admitted existing-TIR value/index path should not be represented as a
   frontend `topk` op or selection plan, but executable codegen also cannot
   blindly serialize the GPU-style scalar `threadIdx.x` region: doing so
   overproduces CB pages and can hang the writer.  The current T6 source path
-  deletes `TryEmitTypedComputeRegionKernel` and lowers the repeated row
-  reductions from executable compute records, logical tile layout, buffer
-  distribution, and `cb_configs.requirement_indices -> cb_id`.  Keep the path
-  codegen-local and typed-record driven; do not restore raw formal
-  host-buffer argument loads for executable kernels with no runtime args.
+  deletes `TryEmitTypedComputeRegionKernel` and lowers repeated reductions
+  from executable compute records, logical tile layout, buffer distribution,
+  `reduce_dim`, and `cb_configs.requirement_indices -> cb_id`.  Keep the path
+  codegen-local and typed-record driven; row is only a current `reduce_dim`
+  value, not the abstraction.  Do not restore raw formal host-buffer argument
+  loads for executable kernels with no runtime args.
+- 2026-05-06 T6 reduction-region local lifetime:
+  If repeated max lowering needs coordinate history, first reuse an existing
+  `Int32` coordinate output channel as the history storage.  Allocating an
+  extra TRISC local history array for a region that already publishes a
+  coordinate channel increased local state and triggered TT-Sim
+  `t_tile_mmio_wr32`.  A separate internal history buffer is only justified
+  when no coordinate projection channel exists.

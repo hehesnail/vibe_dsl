@@ -3122,8 +3122,8 @@
     the BRISC reader published the boundary `logits_frag` requirement on
     physical CB 21.
 - **根因**:
-  - The first implementation treated the row-reduction source staging CB as
-    the compute operand boundary.  That made compute wait on a CB that no
+  - The first implementation treated the reduction source staging CB as the
+    compute operand boundary.  That made compute wait on a CB that no
     producer published.  The internal staging CB is real lifecycle state, but
     it is not the operand edge between reader and compute.
 - **修法**:
@@ -3151,8 +3151,8 @@
   - The emitted TRISC source serialized the `threadIdx.x` region as a C loop
     and published output CB pages inside that loop.
 - **根因**:
-  - The authored Tile TIR describes a row-wise region with reductions and
-    scalar update loops, but leaf source emission cannot treat that
+  - The authored Tile TIR describes an axis-1 reduction region with reductions
+    and scalar update loops, but leaf source emission cannot treat that
     GPU-style thread loop as an ordinary sequential loop with CB publication
     side effects.  It multiplies producer events beyond the writer's typed
     consume protocol and eventually stalls on CB/event availability.
@@ -3160,7 +3160,7 @@
     `GenerateGenericKernelMain` that loaded formal host-buffer pointers into
     executable compute kernels even when the body did not use them.
 - **修法**:
-  - Keep the T6 row-reduction source path as a typed executable
+  - Keep the T6 reduction-region source path as a typed executable
     compute-region lowering over compute records, logical tile layout, buffer
     distribution, and physical CB IDs, rather than raw scalar-body emission.
   - Delete the raw formal-argument fallback for executable kernels with no
@@ -3169,6 +3169,31 @@
 - **验证**:
   - `cmake --build build -j32` passed.
   - Focused T6 source/schema selectors reported `4 passed`.
+  - TT-Sim direct runtime passed for fp32 single-work, fp32 multi-work, and
+    bf16 values with exact int32 indices.
+
+### T6 reduction-region refactor added duplicate coordinate history and hit TT-Sim tile MMIO
+
+- **症状**:
+  - After renaming the T6 source path to a generic reduction region and adding
+    channel-vector lowering, fp32 single-work direct runtime aborted with
+    `UnimplementedFunctionality: t_tile_mmio_wr32`.
+  - The previous row-shaped emitter had passed the same runtime selector.
+- **根因**:
+  - The first generic refactor added a separate coordinate-history array while
+    the admitted T6 region already had an `Int32` coordinate output channel.
+    That extra TRISC local state changed the generated kernel resource shape
+    enough to hit a simulator tile-MMIO boundary.
+  - Semantically the history is not a new channel: it is the same coordinate
+    projection needed by repeated max suppression.
+- **修法**:
+  - Keep the region abstraction generic, but reuse the first `Int32`
+    coordinate projection channel as repeat-history storage.
+  - Only allocate a separate internal history array when a repeated reduction
+    region has no coordinate projection channel.
+- **验证**:
+  - `cmake --build build -j32` passed.
+  - Focused T6 structure/source selectors reported `4 passed`.
   - TT-Sim direct runtime passed for fp32 single-work, fp32 multi-work, and
     bf16 values with exact int32 indices.
 

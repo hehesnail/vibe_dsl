@@ -225,9 +225,27 @@ def test_blackhole_existing_tir_value_index_selection_has_no_limited_codegen_emi
     repo_root = Path(__file__).resolve().parents[4]
     codegen_cc = repo_root / "src" / "target" / "codegen_blackhole.cc"
     codegen_h = repo_root / "src" / "target" / "codegen_blackhole.h"
+    codegen_source = codegen_cc.read_text()
+    codegen_header = codegen_h.read_text()
 
-    assert "TryEmitTypedComputeRegionKernel" not in codegen_cc.read_text()
-    assert "TryEmitTypedComputeRegionKernel" not in codegen_h.read_text()
+    assert "TryEmitTypedComputeRegionKernel" not in codegen_source
+    assert "TryEmitTypedComputeRegionKernel" not in codegen_header
+    for forbidden in [
+        "row_max_reductions.size() != 2U",
+        "RowReduction",
+        "row_reduction",
+        "row_max_reductions",
+        "InferRowReduction",
+        "floating_record",
+        "integer_record",
+        "__tl_reduction_channel0",
+        "__tl_reduction_channel1",
+        "__tl_channel0_out",
+        "__tl_channel1_out",
+        "best_channel1",
+    ]:
+        assert forbidden not in codegen_source
+        assert forbidden not in codegen_header
 
 
 def test_blackhole_existing_tir_value_index_selection_compute_operands_link_cbs():
