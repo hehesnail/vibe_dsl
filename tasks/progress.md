@@ -66,9 +66,9 @@
 - Exact-CB and physical CB queue correctness are admission checks, not
   workload skips.  `ValidateTTProgram` owns latest exact-CB producer,
   release-reason, storage-format, page-size, and unique CB-requirement-owner
-  checks.  The current executable source gate replays constant physical CB
-  queue events and derives cross-kernel producers from projected non-compute
-  kernel pushes until `KernelSpec` carries structured queue events directly.
+  checks.  `KernelSpec.queue_events` now carries structured physical CB queue
+  events, and the executable queue gate replays those records rather than
+  parsing generated source text.
 - Current simulator gates must also be typed by `ExecutableSpec` facts.  The
   old T7/T9 `t_tile_mmio_wr32` classifier is gone; remaining PACR gates are
   limited to proven simulator capability boundaries such as compute-only
@@ -150,19 +150,21 @@ Current verified baseline:
   reported `4 passed`; direct-runtime TT-Sim gates pass for fp32 single-work,
   fp32 multi-work, and bf16 values with exact `int32` indices.
 - Typed tile-CB verifier baseline: `cmake --build build -j32` passed;
-  `test_blackhole_typed_tile_cb_queue_verifier.py` reported `7 passed`,
+  `test_blackhole_typed_tile_cb_queue_verifier.py` reported `9 passed`,
   covering duplicate CB-requirement ownership, exact-CB data-format mismatch,
-  invalid release reasons, and invalid constant physical queue events.
+  invalid release reasons, structured `KernelSpec.queue_events`, invalid
+  constant physical queue events, and writer output-CB wait/pop balance.
 - Leaf simulator-gate cleanup: the unused multi-block exact-CB republish
   runtime gate was deleted, and the old standalone fill/typecast PACR branch
   was replaced by a generic compute-only terminal-publish simulator gate.
   The focused typecast-publish selector reported `1 passed, 1 skipped`.
 - T7/T9 current runtime baseline: focused TT-Sim runtime selectors reported
-  `10 passed`, covering T3 sharded elementwise/reduce mix, T7 seq64 MHA
-  exact-CB partial combine, T9 page-addressed QK page1, T9 page-addressed AV
-  page1, T9.2 full paged GQA decode, T9.3 dual-score MLA GEMM, T9.3 full
-  paged MLA decode, and T9.1 grouped GEMM.  Extended seq still carries the
-  narrower loop-carried exact-CB PACR typed simulator reason.
+  `16 passed`, covering T3 sharded elementwise/reduce mix, T3 serialized
+  reshard and page-addressed copy, T7 seq64 MHA exact-CB partial combine,
+  T9 page-addressed QK page1, T9 page-addressed AV page1, T9.2 full paged
+  GQA decode, T9.3 dual-score MLA GEMM, T9.3 full paged MLA decode, and
+  T9.1 grouped GEMM.  Extended seq still carries the narrower loop-carried
+  exact-CB PACR typed simulator reason.
 
 Detailed historical checkpoint logs belong in git history and `memory/`, not
 in this file.

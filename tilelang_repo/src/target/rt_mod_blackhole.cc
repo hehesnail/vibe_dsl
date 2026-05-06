@@ -38,7 +38,6 @@
 #include <functional>
 #include <memory>
 #include <limits>
-#include <regex>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -1886,6 +1885,107 @@ struct SegmentInfo {
   Stmt body;
 };
 
+static bool MatchCBQueueEventCall(const tir::CallNode* call,
+                                  std::string* kind) {
+  if (call == nullptr || kind == nullptr) {
+    return false;
+  }
+  auto matches = [&](const Op& op, const char* op_name,
+                     const char* event_kind) {
+    if (call->op.same_as(op)) {
+      *kind = event_kind;
+      return true;
+    }
+    if (const auto* op_node = call->op.as<OpNode>()) {
+      if (op_node->name == op_name) {
+        *kind = event_kind;
+        return true;
+      }
+    }
+    return false;
+  };
+  return matches(tir::builtin::blackhole_cb_reserve_back(),
+                 "tl.blackhole.cb_reserve_back", "reserve_back") ||
+         matches(tir::builtin::blackhole_cb_push_back(),
+                 "tl.blackhole.cb_push_back", "push_back") ||
+         matches(tir::builtin::blackhole_cb_wait_front(),
+                 "tl.blackhole.cb_wait_front", "wait_front") ||
+         matches(tir::builtin::blackhole_cb_pop_front(),
+                 "tl.blackhole.cb_pop_front", "pop_front");
+}
+
+static bool TryReadUInt32Imm(const PrimExpr& expr, uint32_t* value) {
+  if (value == nullptr) {
+    return false;
+  }
+  const auto* imm = expr.as<tir::IntImmNode>();
+  if (imm == nullptr || imm->value < 0 ||
+      imm->value > std::numeric_limits<uint32_t>::max()) {
+    return false;
+  }
+  *value = static_cast<uint32_t>(imm->value);
+  return true;
+}
+
+static std::unordered_map<uint32_t, uint32_t> BuildCBRequirementIndexRemap(
+    const std::vector<CBConfig>& cb_configs) {
+  std::unordered_map<uint32_t, uint32_t> physical_cb_by_requirement_index;
+  for (const CBConfig& config : cb_configs) {
+    for (int64_t requirement_index : config.requirement_indices) {
+      if (requirement_index < 0 ||
+          requirement_index > std::numeric_limits<uint32_t>::max()) {
+        continue;
+      }
+      physical_cb_by_requirement_index.emplace(
+          static_cast<uint32_t>(requirement_index), config.cb_id);
+    }
+  }
+  return physical_cb_by_requirement_index;
+}
+
+static std::vector<CBQueueEventSpec> ExtractCBQueueEvents(
+    const Stmt& body,
+    const std::unordered_map<uint32_t, uint32_t>& physical_cb_by_requirement_index) {
+  std::vector<CBQueueEventSpec> events;
+  if (!body.defined()) {
+    return events;
+  }
+
+  class Collector final : public tir::StmtExprVisitor {
+   public:
+    Collector(std::vector<CBQueueEventSpec>* events,
+              const std::unordered_map<uint32_t, uint32_t>& physical_cb_by_requirement_index)
+        : events_(events),
+          physical_cb_by_requirement_index_(physical_cb_by_requirement_index) {}
+
+    void Collect(const Stmt& stmt) { VisitStmt(stmt); }
+
+    void VisitExpr_(const tir::CallNode* call) final {
+      std::string kind;
+      if (MatchCBQueueEventCall(call, &kind) && call->args.size() >= 2U) {
+        uint32_t cb_id = 0;
+        uint32_t pages = 0;
+        if (TryReadUInt32Imm(call->args[0], &cb_id) &&
+            TryReadUInt32Imm(call->args[1], &pages)) {
+          auto remap_it = physical_cb_by_requirement_index_.find(cb_id);
+          if (remap_it != physical_cb_by_requirement_index_.end()) {
+            cb_id = remap_it->second;
+          }
+          events_->push_back({kind, cb_id, pages});
+        }
+      }
+      tir::StmtExprVisitor::VisitExpr_(call);
+    }
+
+   private:
+    std::vector<CBQueueEventSpec>* events_;
+    const std::unordered_map<uint32_t, uint32_t>& physical_cb_by_requirement_index_;
+  };
+
+  Collector(&events, physical_cb_by_requirement_index).Collect(body);
+  return events;
+}
+
 static void PopulateBufferMaterializationSpecs(
     const std::unordered_map<std::string, StaticBufferInfo>& buffer_info_by_name,
     ExecutableSpec* spec);
@@ -3068,31 +3168,25 @@ static void EnforceLoopCarriedExactCBPacrSimulatorGate(ExecutableSpec* spec) {
       "tensix_execute_pacr: count=1 for the admitted compute-side pack path");
 }
 
-struct SourceCBQueueState {
+struct CBQueueState {
   int64_t visible_front_pages = 0;
   int64_t reserved_back_pages = 0;
 };
 
-static void EnforcePhysicalCBQueueSourceGate(ExecutableSpec* spec) {
+static void EnforcePhysicalCBQueueEventGate(ExecutableSpec* spec) {
   ICHECK(spec != nullptr);
   std::unordered_map<uint32_t, const CBConfig*> cb_by_id;
   for (const CBConfig& cb : spec->cb_configs) {
     cb_by_id.emplace(cb.cb_id, &cb);
   }
-  const std::regex cb_event_re(
-      R"(\bcb_(reserve_back|push_back|wait_front|pop_front)\(\s*(?:\(uint32_t\)\s*)?(\d+)\s*,\s*(?:\(uint32_t\)\s*)?(\d+)\s*\);)");
   std::unordered_set<uint32_t> externally_produced_cb_ids;
   for (const KernelSpec& kernel : spec->kernels) {
     if (kernel.kind == "compute" && kernel.core_type == "trisc") {
       continue;
     }
-    for (std::sregex_iterator it(kernel.source_code.begin(), kernel.source_code.end(),
-                                 cb_event_re),
-         end;
-         it != end; ++it) {
-      const std::smatch& match = *it;
-      if (match[1].str() == "push_back") {
-        externally_produced_cb_ids.insert(static_cast<uint32_t>(std::stoul(match[2].str())));
+    for (const CBQueueEventSpec& event : kernel.queue_events) {
+      if (event.kind == "push_back") {
+        externally_produced_cb_ids.insert(event.cb_id);
       }
     }
   }
@@ -3100,24 +3194,20 @@ static void EnforcePhysicalCBQueueSourceGate(ExecutableSpec* spec) {
     if (kernel.kind != "compute" || kernel.core_type != "trisc") {
       continue;
     }
-    std::unordered_map<uint32_t, SourceCBQueueState> state_by_cb_id;
-    for (std::sregex_iterator it(kernel.source_code.begin(),
-                                 kernel.source_code.end(), cb_event_re),
-         end;
-         it != end; ++it) {
-      const std::smatch& match = *it;
-      const std::string kind = match[1].str();
-      const uint32_t cb_id = static_cast<uint32_t>(std::stoul(match[2].str()));
-      const int64_t pages = std::stoll(match[3].str());
+    std::unordered_map<uint32_t, CBQueueState> state_by_cb_id;
+    for (const CBQueueEventSpec& event : kernel.queue_events) {
+      const std::string& kind = event.kind;
+      const uint32_t cb_id = event.cb_id;
+      const int64_t pages = static_cast<int64_t>(event.pages);
       ICHECK_GT(pages, 0)
-          << "physical CB queue source verifier requires positive pages in "
+          << "physical CB queue verifier requires positive pages in "
           << kernel.name;
       auto cb_it = cb_by_id.find(cb_id);
       if (cb_it == cb_by_id.end()) {
         continue;
       }
       const CBConfig& cb = *cb_it->second;
-      SourceCBQueueState& state = state_by_cb_id[cb_id];
+      CBQueueState& state = state_by_cb_id[cb_id];
       if (kind == "reserve_back") {
         ICHECK_LE(state.visible_front_pages + state.reserved_back_pages + pages,
                   static_cast<int64_t>(cb.num_pages))
@@ -3167,6 +3257,9 @@ static void EnforcePhysicalCBQueueSourceGate(ExecutableSpec* spec) {
         }
         state.visible_front_pages =
             std::max<int64_t>(0, state.visible_front_pages - pages);
+      } else {
+        LOG(FATAL) << "physical CB queue verifier saw unknown event kind "
+                   << kind << " in " << kernel.name;
       }
     }
   }
@@ -3683,6 +3776,8 @@ static void PopulateKernelSpecsForDeviceFunc(const tir::PrimFunc& f,
                                              ExecutableSpec* spec) {
   spec->kernels.clear();
   std::vector<SegmentInfo> segments = ExtractSegmentPlan(f, spec);
+  const std::unordered_map<uint32_t, uint32_t> physical_cb_by_requirement_index =
+      BuildCBRequirementIndexRemap(spec->cb_configs);
   ICHECK(!segments.empty())
       << "Blackhole build requires non-empty executable segment truth on device PrimFunc "
       << func_name;
@@ -3712,6 +3807,8 @@ static void PopulateKernelSpecsForDeviceFunc(const tir::PrimFunc& f,
     kernel.compute_ops = segment.compute_ops;
     kernel.accessors = segment.accessors;
     kernel.semaphore_bindings = segment.semaphore_bindings;
+    kernel.queue_events = ExtractCBQueueEvents(
+        segment_func->body, physical_cb_by_requirement_index);
     ValidateKernelRuntimeArgSchema(kernel, func_name);
     ValidateKernelExplicitPerWorkBindingSchema(spec->core_plan, kernel, func_name);
     ValidateKernelCommunicationProtocolSchema(segment_func, kernel, *spec);
@@ -3865,7 +3962,7 @@ ffi::Module BuildTileLangBlackhole(IRModule mod, Target target) {
     EnforceTypedDstCbAccumulationGate(&spec_it->second);
     EnforceExactLiveFormMultiPageRepublishGate(&spec_it->second);
     EnforceExplicitBufferRoleSchemaGate(&spec_it->second);
-    EnforcePhysicalCBQueueSourceGate(&spec_it->second);
+    EnforcePhysicalCBQueueEventGate(&spec_it->second);
     EnforceComputeOnlyTerminalPublishPacrSimulatorGate(&spec_it->second);
     EnforceLoopCarriedExactCBPacrSimulatorGate(&spec_it->second);
   }
@@ -3980,7 +4077,7 @@ ffi::Module BuildTileLangBlackholeWithoutHost(IRModule mod, Target target) {
     EnforceTypedDstCbAccumulationGate(&spec_it->second);
     EnforceExactLiveFormMultiPageRepublishGate(&spec_it->second);
     EnforceExplicitBufferRoleSchemaGate(&spec_it->second);
-    EnforcePhysicalCBQueueSourceGate(&spec_it->second);
+    EnforcePhysicalCBQueueEventGate(&spec_it->second);
     EnforceComputeOnlyTerminalPublishPacrSimulatorGate(&spec_it->second);
     EnforceLoopCarriedExactCBPacrSimulatorGate(&spec_it->second);
   }

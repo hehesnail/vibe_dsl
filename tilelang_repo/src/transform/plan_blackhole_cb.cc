@@ -1423,6 +1423,14 @@ tir::Stmt RetainLocalCBFrontForFutureWaits(
 
   std::vector<int> adjusted_pop_pages(events.size(), -1);
   std::vector<int> inserted_pop_before_event_pages(events.size(), 0);
+  std::vector<bool> can_retain_front(queue_view.LocalCBCount(), true);
+  for (const CBConfig& config : configs) {
+    if (config.cb_id >= 0 &&
+        config.cb_id < static_cast<int>(can_retain_front.size()) &&
+        config.role == "output") {
+      can_retain_front[config.cb_id] = false;
+    }
+  }
   std::vector<int> front_pages(queue_view.LocalCBCount(), 0);
   for (size_t i = 0; i < events.size(); ++i) {
     const CBQueueEvent& event = events[i];
@@ -1445,6 +1453,9 @@ tir::Stmt RetainLocalCBFrontForFutureWaits(
       continue;
     }
     if (event.kind != CBQueueEvent::Kind::kPop) {
+      continue;
+    }
+    if (!can_retain_front[cb_id]) {
       continue;
     }
     const int required_front =

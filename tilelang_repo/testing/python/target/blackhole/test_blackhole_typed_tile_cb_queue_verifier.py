@@ -9,6 +9,10 @@ from tvm.target import Target
 from .common import rebuild_tt_kernel, rebuild_tt_program, require_tt_program
 from .test_blackhole_copy_pipeline import _rebuild_codegen_module_with_tt_program
 from .test_blackhole_flash_attention_runtime import blackhole_mha_example
+from .test_blackhole_t3_compute_runtime import (
+    _lower_blackhole,
+    _t3_elementwise_chain_kernel,
+)
 
 
 def _seq64_mha_artifact():
@@ -134,9 +138,84 @@ def _append_compute_cb_event(tt_program, op_name, cb_id, pages):
     return rebuild_tt_program(tt_program, kernels=kernels)
 
 
+def _metadata_from_artifact(artifact):
+    rebuilt = _rebuild_codegen_module_with_tt_program(artifact)
+    return rebuilt.get_function_metadata("main")
+
+
 @pytest.fixture(scope="module")
 def seq64_artifact():
     return _seq64_mha_artifact()
+
+
+def test_kernel_specs_carry_structured_cb_queue_events(seq64_artifact):
+    metadata = _metadata_from_artifact(seq64_artifact)
+    kernels = metadata["kernels"]
+    assert kernels
+
+    cb_ids = {int(config["cb_id"]) for config in metadata["cb_configs"]}
+    compute_kernel = next(
+        kernel
+        for kernel in kernels
+        if str(kernel["kind"]) == "compute" and str(kernel["core_type"]) == "trisc"
+    )
+    compute_events = list(compute_kernel.get("queue_events", []))
+    assert compute_events
+    assert {str(event["kind"]) for event in compute_events} >= {
+        "reserve_back",
+        "push_back",
+        "wait_front",
+        "pop_front",
+    }
+    assert all(int(event["cb_id"]) in cb_ids for event in compute_events)
+    assert all(int(event["pages"]) > 0 for event in compute_events)
+
+    external_pushes = [
+        event
+        for kernel in kernels
+        if not (str(kernel["kind"]) == "compute" and str(kernel["core_type"]) == "trisc")
+        for event in kernel.get("queue_events", [])
+        if str(event["kind"]) == "push_back"
+    ]
+    assert external_pushes
+
+
+def test_structured_writer_queue_events_consume_all_output_pages():
+    artifact = _lower_blackhole(
+        _t3_elementwise_chain_kernel(
+            grid_x=8,
+            grid_y=4,
+            strategy="block",
+            tile_m=32,
+            tile_n=64,
+        )
+    )
+    metadata = _metadata_from_artifact(artifact)
+    output_cb_ids = {
+        int(config["cb_id"])
+        for config in metadata["cb_configs"]
+        if str(config["role"]) == "output"
+    }
+    assert output_cb_ids
+
+    writer_kernel = next(
+        kernel
+        for kernel in metadata["kernels"]
+        if str(kernel["kind"]) == "writer" and str(kernel["core_type"]) == "ncrisc"
+    )
+    wait_pages_by_cb = {cb_id: 0 for cb_id in output_cb_ids}
+    pop_pages_by_cb = {cb_id: 0 for cb_id in output_cb_ids}
+    for event in writer_kernel.get("queue_events", []):
+        cb_id = int(event["cb_id"])
+        if cb_id not in output_cb_ids:
+            continue
+        if str(event["kind"]) == "wait_front":
+            wait_pages_by_cb[cb_id] += int(event["pages"])
+        elif str(event["kind"]) == "pop_front":
+            pop_pages_by_cb[cb_id] += int(event["pages"])
+
+    assert any(wait_pages_by_cb.values())
+    assert pop_pages_by_cb == wait_pages_by_cb
 
 
 def test_typed_tile_cb_verifier_rejects_duplicate_requirement_owner(seq64_artifact):

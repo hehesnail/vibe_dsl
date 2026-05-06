@@ -1126,6 +1126,21 @@ static ExactCBReleaseEventSpec ReadExactCBReleaseEventSpec(dmlc::Stream* stream)
   return spec;
 }
 
+static void WriteCBQueueEventSpec(dmlc::Stream* stream,
+                                  const CBQueueEventSpec& spec) {
+  WriteString(stream, spec.kind);
+  WriteUInt32(stream, spec.cb_id);
+  WriteUInt32(stream, spec.pages);
+}
+
+static CBQueueEventSpec ReadCBQueueEventSpec(dmlc::Stream* stream) {
+  CBQueueEventSpec spec;
+  spec.kind = ReadString(stream, "cb_queue_event.kind");
+  spec.cb_id = ReadUInt32(stream, "cb_queue_event.cb_id");
+  spec.pages = ReadUInt32(stream, "cb_queue_event.pages");
+  return spec;
+}
+
 static void WriteKernelSpec(dmlc::Stream* stream, const KernelSpec& spec) {
   WriteString(stream, spec.name);
   WriteString(stream, spec.kind);
@@ -1147,6 +1162,8 @@ static void WriteKernelSpec(dmlc::Stream* stream, const KernelSpec& spec) {
       stream, spec.semaphore_bindings, WriteSemaphoreBindingSpec);
   WriteVectorField<RemoteCoreDescriptorSpec>(
       stream, spec.remote_core_descriptors, WriteRemoteCoreDescriptorSpec);
+  WriteVectorField<CBQueueEventSpec>(
+      stream, spec.queue_events, WriteCBQueueEventSpec);
 }
 
 static KernelSpec ReadKernelSpec(dmlc::Stream* stream) {
@@ -1176,6 +1193,8 @@ static KernelSpec ReadKernelSpec(dmlc::Stream* stream) {
       stream, "kernel.semaphore_bindings", ReadSemaphoreBindingSpec);
   spec.remote_core_descriptors = ReadVectorField<RemoteCoreDescriptorSpec>(
       stream, "kernel.remote_core_descriptors", ReadRemoteCoreDescriptorSpec);
+  spec.queue_events = ReadVectorField<CBQueueEventSpec>(
+      stream, "kernel.queue_events", ReadCBQueueEventSpec);
   return spec;
 }
 

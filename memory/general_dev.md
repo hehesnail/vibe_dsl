@@ -2744,14 +2744,19 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   uses must bind the latest visible producer for a logical value; allocations
   must agree with the virtual value data format and page size; release reasons
   must be from the typed lifecycle set; and each CB requirement index must have
-  a single `TTCBPlan` owner.  Physical CB queue replay is currently an
-  executable admission gate over constant projected leaf source because
-  `KernelSpec` does not yet store structured queue events.  When replaying a
-  compute kernel, do not assume only `role=input` can be prefilled: derive
-  externally produced CBs from projected non-compute `cb_push_back` events and
-  still bound `wait_front` / `pop_front` by the physical CB capacity.  Raw
-  `TTKernel.body` can contain pre-final requirement-index forms and should not
-  be treated as the final physical queue trace.
+  a single `TTCBPlan` owner.  Physical CB queue replay now consumes
+  `KernelSpec.queue_events`, not generated source text.  Queue events are
+  projected from final leaf TIR and must remap requirement indices through
+  `ExecutableSpec.cb_configs[*].requirement_indices -> cb_id`; raw
+  `TTKernel.body` can still contain pre-final requirement-index forms and is
+  not the final physical queue trace.  When replaying a compute kernel, do not
+  assume only `role=input` can be prefilled: derive externally produced CBs
+  from projected non-compute `cb_push_back` events and still bound
+  `wait_front` / `pop_front` by the physical CB capacity.  Writer-visible
+  output CBs must not use generic front-retention rewrites unless the writer
+  protocol also carries an explicit page offset; `write_tile_from_cb` reads the
+  FIFO front page, so delaying `pop_front` makes later tile writes reread the
+  same page.
 - 2026-05-07 Blackhole simulator-gate cleanup:
   After a generic verifier lands, delete stale workload or operation-name
   gates instead of leaving them as "extra safety".  If a simulator boundary is

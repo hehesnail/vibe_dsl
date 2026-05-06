@@ -1024,6 +1024,20 @@ struct ExactCBReleaseEventSpec {
   }
 };
 
+struct CBQueueEventSpec {
+  std::string kind;
+  uint32_t cb_id = 0;
+  uint32_t pages = 0;
+
+  void Save(dmlc::JSONWriter* writer) const {
+    writer->BeginObject();
+    writer->WriteObjectKeyValue("kind", kind);
+    writer->WriteObjectKeyValue("cb_id", static_cast<int64_t>(cb_id));
+    writer->WriteObjectKeyValue("pages", static_cast<int64_t>(pages));
+    writer->EndObject();
+  }
+};
+
 /*!
  * \brief Per-kernel source and argument metadata.
  */
@@ -1045,6 +1059,7 @@ struct KernelSpec {
   std::vector<AccessorSpec> accessors;
   std::vector<SemaphoreBindingSpec> semaphore_bindings;
   std::vector<RemoteCoreDescriptorSpec> remote_core_descriptors;
+  std::vector<CBQueueEventSpec> queue_events;
 
   void Save(dmlc::JSONWriter* writer) const {
     writer->BeginObject();
@@ -1090,6 +1105,9 @@ struct KernelSpec {
     }
     if (!remote_core_descriptors.empty()) {
       writer->WriteObjectKeyValue("remote_core_descriptors", remote_core_descriptors);
+    }
+    if (!queue_events.empty()) {
+      writer->WriteObjectKeyValue("queue_events", queue_events);
     }
     writer->EndObject();
   }

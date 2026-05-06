@@ -61,9 +61,9 @@ owners.
 - No T9.4 sparse attention, T9.5 scan, T9.6 multi-block flash, or T10
   distributed expansion.
 - No workload-specific verifier branches for GQA, MLA, or flash-attn.
-- No source-text recovery as owner truth.  Source text may be parsed only as a
-  temporary event extractor for projected leaf CB calls until those events are
-  represented directly in `KernelSpec`.
+- No source-text recovery as owner truth.  Projected leaf CB queue calls are
+  represented directly in `KernelSpec.queue_events`; source text may remain
+  only as a regression witness, not as an admission extractor.
 
 ## Representation Boundary
 
@@ -89,10 +89,9 @@ protocol unless a later task promotes them into explicit `TTProgram` fields.
 Consumes only validated projection.
 
 If the verifier finds a contradiction, admission must fail before runtime can
-recover behavior from names, source text, or observations.  The current
-physical queue checker extracts constant leaf queue events from projected
-kernel source because `KernelSpec` does not yet carry structured queue-event
-records; that extractor is an executable admission gate, not owner truth.
+recover behavior from names, source text, or observations.  The physical queue
+checker consumes `KernelSpec.queue_events`, which are projected from leaf CB
+queue calls after physical CB allocation/remapping.
 
 ## Verifier Invariants
 
@@ -136,6 +135,13 @@ For each kernel and physical CB ID, replay the projected queue events:
 This check validates logical-to-physical CB reuse as a FIFO observation
 problem, not just as an ID coloring problem.
 
+Writer-visible output CBs are not eligible for generic front-retention
+rewrites.  A writer `write_tile_from_cb` consumes the current FIFO front page;
+delaying the corresponding `pop_front` without a page-offset protocol makes
+later writes reread the same page.  Structured writer `queue_events` must
+therefore preserve output wait/pop page balance for the admitted tile writer
+surface.
+
 ### Storage Format
 
 For every exact-CB allocation and consumer binding:
@@ -160,13 +166,13 @@ For every exact-CB allocation and consumer binding:
    boundary:
    - `ValidateTTProgram` validates exact-CB producer, release, storage, and
      CB-requirement ownership invariants.
-   - The executable source gate replays constant physical queue events after
-     source projection until queue events become structured `KernelSpec`
-     records.
+   - `KernelSpec.queue_events` carries structured physical queue events for
+     each projected kernel; the executable admission gate replays those records
+     instead of parsing generated source.
 3. Run validation after CB allocation/remapping and before runtime execution.
 4. Remove or demote any existing local source checks that duplicate owner truth
-   for the covered paths.  Python source regex checks may remain as regression
-   witnesses, but they cannot be the only verifier.
+   for the covered paths.  Python source checks may remain as regression
+   witnesses, but they cannot be the verifier input.
 5. Keep T7 seq64, T9.2 full paged GQA, and T9.3 full paged MLA as positive
    bf16 direct-runtime correctness gates.
 
@@ -193,7 +199,7 @@ This task is complete only when:
 - current T7/T9 positive runtime gates still pass;
 - the verifier covers latest-producer, release, queue, and storage-format
   invariants for the admitted surface;
-- the source-extractor queue gate remains explicitly temporary, with the exit
-  condition that `KernelSpec` carries structured physical queue-event records;
+- the source-regex executable queue extractor is deleted and admission consumes
+  structured physical queue-event records from `KernelSpec`;
 - docs, progress, and memory reflect the new boundary;
 - no new side channel, payload, or workload-specific schema is introduced.

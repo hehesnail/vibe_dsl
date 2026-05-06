@@ -225,12 +225,12 @@
     those CBs while still checking the requested page count against physical
     CB capacity.
   - Keep exact-CB producer/release/storage checks in `ValidateTTProgram`; the
-    source extractor remains a temporary executable queue-event source until
-    `KernelSpec` carries structured physical queue events.
+    executable queue gate now consumes structured `KernelSpec.queue_events`
+    instead of parsing generated source text.
 - **验证**:
-  - Focused typed verifier tests reported `7 passed`.
+  - Focused typed verifier tests reported `9 passed`.
   - T3 sharded elementwise/reduce mix plus T7/T9 direct-runtime selectors
-    reported `10 passed`.
+    reported `16 passed`.
 
 ### T3 staged-copy reshard hardening exposed multi-record ABI and executable validation gaps
 
@@ -2124,6 +2124,29 @@
     event-size 和 per-core tile-start 问题。
   - exact-CB 的 capacity、event size、logical value shape 是三件事；
     混用会表现成 hang、错 CB、或 rank-1 writer 结构回归。
+
+#### Output CB front-retention rewrites broke multi-page tile writers
+
+- **症状**:
+  - T3 `block_rect_128x512` bf16 elementwise chain produced a stable mismatch:
+    the writer emitted two `cb_wait_front(output_cb, 1)` events for the
+    32x64 output but only one `cb_pop_front(output_cb, 1)`.
+  - Generated writer source wrote both output tiles from `get_read_ptr(cb)`,
+    so the second output tile reread the first FIFO page.
+- **根因**:
+  - `RetainLocalCBFrontForFutureWaits` delayed a pop when it saw a future
+    wait before the next producer.  That is unsafe for writer-visible output
+    CBs because `write_tile_from_cb` has no page-offset argument; retaining the
+    FIFO front changes which page the later write observes.
+- **修法**:
+  - Do not apply generic front-retention pop rewriting to `role=output` CBs.
+    Structured `KernelSpec.queue_events` now include a writer regression that
+    requires output wait/pop page balance for the admitted tile writer surface.
+- **验证**:
+  - `cmake --build build -j32` passed.
+  - `test_blackhole_typed_tile_cb_queue_verifier.py` reported `9 passed`.
+  - Focused TT-Sim runtime selectors reported `16 passed`, including the T3
+    32x64 elementwise chain.
 
 #### flash-attn seq64 exposed stale exact-CB fronts across k-block iterations
 
