@@ -2695,3 +2695,8 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   as explicit call annotations or typed fields; do not append op-specific
   positional tail payload to a TIR call.  Delete unused `Map<String, Any>`
   payload helpers instead of leaving them as attractive cross-stage bags.
+- 2026-05-06 Blackhole documentation hygiene:
+  Keep `tasks/progress.md` as the current board, protocol snapshot, next task
+  queue, and verification baseline only.  Active design docs should carry the
+  durable contract plus concise current boundary; detailed checkpoint history
+  belongs in git history or memory, not duplicated as rolling progress logs.

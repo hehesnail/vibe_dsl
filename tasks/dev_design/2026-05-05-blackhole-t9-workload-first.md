@@ -41,6 +41,21 @@ compare against a host reference.  A checkpoint is admitted only when:
   positions, or generated source text;
 - unsupported workload variants fail closed before source/runtime guessing.
 
+## Current Status
+
+- T9.1 pre-grouped MoE/routed grouped GEMM has bf16 direct-runtime correctness
+  through ordinary TIR-derived segmented A bindings and typed
+  materialization/lifecycle records.
+- T9.3 paged MLA decode has bf16 direct-runtime correctness through generic
+  page-table/ragged `value_expr` bindings, explicit score GEMMs, retained
+  latent-KV lifetime, and the existing flash partial-combine path.
+- T9.2 paged GQA keeps source/spec admission and page-addressed QK/AV micro
+  runtime coverage, but the full runtime path currently stops at the typed
+  PACR simulator boundary
+  `tensix_execute_pacr: intermediate_format=0 late_from_format=5`.
+- T9.4 sparse/ragged attention, T9.5 recurrence/scan, and T9.6 multi-block
+  flash decode are queued.
+
 ## Non-Goals
 
 - No frontend workload op such as `T.grouped_gemm`, `T.paged_decode`, or

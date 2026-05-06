@@ -70,8 +70,8 @@ are per-task acceptance gates, not a separate cleanup lane.
 - 任务级设计只写 goal / non-goal / representation contract /
   validation contract / completion criteria。
 - `progress.md`
-  只写当前执行状态、blocker、下一步、最近验证摘要；
-  不写按 HEAD 滚动的实现库存或历史流水。
+  只写当前看板、协议快照、后续任务队列和验证基线；
+  不写按 HEAD 滚动的实现库存、checkpoint log 或历史流水。
 - 经验沉淀写入 `memory/`；
   不要倒灌回核心设计文档。
 - 历史流水、阶段日志、patch notes、完整命令矩阵

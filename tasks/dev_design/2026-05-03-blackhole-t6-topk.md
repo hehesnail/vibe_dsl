@@ -55,35 +55,28 @@ is part of the GEMM/softmax compute chain, and standalone bf16 row reduce is
 also admissible once the emitted scaler fill/pack sequence initializes
 PACK/UNPACK format state correctly.
 
-The current T6 implementation admits the existing TIR value/index selection
-shape by consuming the typed value reduce plus typed `int32` index reduce
-records and emitting one backend repeated row-reduce scan over the
-reader-materialized input CB.  That scan publishes the value and index output
-CB pages consumed by the normal writer path.  Data-movement segment source
-generation skips residual compute-local `blackhole.acc` stores by the generic
-core-type / storage-scope rule, not by value/index names.  CB operands are
-resolved through executable `cb_configs` metadata and explicit compute operand
-bindings: `TTComputeOperandBindingPlan.cb_requirement_indices` links each
-recorded operand to the CB requirement(s) allocated by `TTCBPlan`, and codegen
-resolves those requirement indices to the physical `cb_id`.  Paired value /
-index outputs are therefore not selected by `<buffer>_reduce_out` suffixes,
-requirement names, data-format channel guessing, or value/index-local roles.
-Thread emission analysis filters through the current core's emitted body so
-the BRISC reader emits one input-CB publish event instead of serializing a
-loop-invariant `threadIdx.x` publish.  This replaces the unsupported standalone
-`Int32 reduce_tile<MAX, REDUCE_ROW>` execution shape without adding a frontend
-topk op, `TTSelectionPlan`, `selection_plans`, or a source-name side channel.
+## Current Status
 
-Architecture audit `2026-05-06`: this is runtime-complete but not a clean final
-lowering pattern.  The source path now enters through
-`CodeGenBlackhole::TryEmitTypedComputeRegionKernel` and uses typed compute
-records plus explicit operand-to-CB requirement links instead of value/index
-local codegen roles, output-CB name suffix matching, requirement-name lookup,
-or output data-format guessing.  It is still a limited repeated row-reduction
-backend projection, not the final generic DAG / compute-region lowering.  The
-desired cleanup is to express the same semantics through generic typed
-compute-region / reduction lowering, or to delete this path once the normal
-compute chain can represent and validate it without a limited emitter.
+T6 is runtime-complete for the admitted existing-TIR row-wise value/index
+selection shape, but still has one architecture cleanup item.
+
+The admitted implementation consumes typed value reduce and typed `int32`
+index reduce records, materializes the input through reader CBs, and publishes
+value/index output CB pages consumed by the normal writer path.  Data-movement
+source skips residual compute-local `blackhole.acc` stores by the generic
+core-type / storage-scope rule.  CB operands resolve through executable
+`cb_configs` and explicit
+`TTComputeOperandBindingPlan.cb_requirement_indices`; paired value/index
+outputs are not recovered from `<buffer>_reduce_out` suffixes, requirement
+names, output data formats, or local value/index roles.
+
+The remaining cleanup is replacing the limited
+`CodeGenBlackhole::TryEmitTypedComputeRegionKernel` repeated row-reduction
+source path with generic typed compute-region / reduction lowering, or
+deleting that path once the normal compute chain can represent and validate the
+same semantics.  This cleanup must preserve the existing runtime gates without
+adding a frontend topk op, `TTSelectionPlan`, `selection_plans`, or a
+source-name side channel.
 
 ## Contract
 
