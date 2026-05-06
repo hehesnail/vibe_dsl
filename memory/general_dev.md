@@ -2445,9 +2445,9 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   page per logical row: valid rows read DRAM, invalid rows explicitly zero the
   reserved CB page, and the writer writes all published pages.  Do not rely on
   host/output-buffer initialization to make invalid rows zero.
-- 2026-05-05 page-indexed host transfer:
+- 2026-05-05 page-addressed host transfer:
   Direct-runtime nfaces host tilization is valid only for complete 32x32 tile
-  pages.  Sub-tile page-indexed sticks/rows such as 64-byte bf16 row pages or
+  pages.  Sub-tile page-addressed sticks/rows such as 64-byte bf16 row pages or
   64-byte float32 16-column sticks are row-major pages and must be copied raw
   on host transfer; otherwise predicates over logical rows operate on TT face
   pages and produce grouped/rounded row counts.
@@ -2476,12 +2476,12 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   half-row fragments directly into arbitrary nfaces offsets on Blackhole:
   TT-Sim exposes a NOC alignment fault when source and destination low
   address bits differ.  The admitted shape is to read a 64-byte bf16 row tile
-  through a page-indexed accessor into a scratch CB, then copy the two
+  through a page-addressed interleaved accessor into a scratch CB, then copy the two
   32-byte face lines into the destination tiled CB with a local data-movement
   builtin and zero-fill invalid rows.  Direct runtime should keep the
   segmented A backing tensor raw row-major; only complete 32x32 tile pages use
   host nfaces tilization.
-- 2026-05-05 T9 page-indexed input materialization:
+- 2026-05-05 T9 page-addressed input materialization:
   Direct runtime input transfer should consume executable
   `BufferMaterializationSpec` records for any input binding, not only
   copy-shaped tests.  Complete 32x32 tile pages can use host nfaces
@@ -2574,7 +2574,15 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   `ExecutableSpec.buffer_distribution_plans`, and make the leaf/runtime fail
   closed if a referenced value-expr buffer has no distribution plan.  Do not
   restore hardcoded fallbacks such as `value_expr_buffer_load` or
-  `page_indexed/dram` in `rt_mod_blackhole.cc`.
+  runtime-invented DRAM layouts in `rt_mod_blackhole.cc`.
+- 2026-05-06 Blackhole page-addressed layout cleanup:
+  Page-addressed DRAM transport must not be represented as `page_indexed`
+  layout or `page_indexed_accessor_cta`.  Keep layout physical
+  (`interleaved` / `sharded`), carry page addressing through explicit
+  read/write page transport, positive page-size fields, and
+  `logical_index_mapping=interleaved_page_index`.  Host transfer decisions
+  should derive full-tile vs sub-tile materialization from static buffer
+  shape/dtype/page size, not from a special layout string.
 - 2026-05-06 Blackhole logical-z source binding:
   Codegen must not reconstruct `blockIdx.z` from k-tile runtime-arg kinds such
   as `k_tile_start_id / num_k_tiles`.  If device source still needs the

@@ -710,7 +710,10 @@ static std::string AccessorCompileTimeArgKind(const std::string &layout,
   if (layout == "sharded" || memory_space == "l1" || memory_space == "L1") {
     return "sharded_accessor_cta";
   }
-  return "page_indexed_accessor_cta";
+  ICHECK(false) << "Unsupported Blackhole accessor layout=" << layout
+                << ", memory_space=" << memory_space
+                << "; page-addressed DRAM transport still uses interleaved layout";
+  return "";
 }
 
 static TTPerWorkArgSpec MakePerWorkArgSpec(const std::string &arg_kind,

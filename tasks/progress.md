@@ -15,10 +15,10 @@
 
 | Task | State | Current boundary |
 | --- | --- | --- |
-| T1 Buffer address ABI | Complete | Runtime consumes typed buffer/address records for interleaved DRAM, staged-copy resident L1 views, and the admitted 64B page-indexed copy path. |
+| T1 Buffer address ABI | Complete | Runtime consumes typed buffer/address records for interleaved DRAM, staged-copy resident L1 views, and the admitted 64B page-addressed copy path. |
 | T2 Leaf compute / GEMM baseline | Complete | Admitted non-flash leaf families and current-placement GEMM run through `BlackholeModule` or fail closed with typed reasons. |
 | T3 Tensor/value sharding and explicit reshard | Complete | `T.MemoryConfig`, placement intents, tensor memory-config plans, op sharding contracts, placement resolution, and first `interleaved_to_sharded` staged-copy conversion are typed and projected. |
-| T4 External accessor / runtime ABI | Complete | External interleaved, 64B page-indexed DRAM, and static sharded-L1 accessors are executable records consumed by source/runtime; unsupported dynamic/common-runtime forms reject from typed records. |
+| T4 External accessor / runtime ABI | Complete | External interleaved DRAM, 64B page-addressed interleaved DRAM, and static sharded-L1 accessors are executable records consumed by source/runtime; unsupported dynamic/common-runtime forms reject from typed records. |
 | T5 Sharded GEMM / layout variants | Complete | First static external sharded-L1 GEMM layouts pass direct runtime, including single-core, 2x2 multi-core, 110-core many-core all-bf16, and first K-dimension partial-sum correctness path. |
 | T6 `topk` | Runtime complete / cleanup required | Existing-TIR row-wise value/index selection runs through direct runtime for fp32 and bf16 values with exact `int32` indices, without a frontend topk op or selection plan. The backend still uses a limited typed compute-region repeated-reduction source path; final cleanup is generic typed compute-region/reduction lowering. |
 | T7 Exact-CB / materialization primitives | Complete | Exact-CB materialization is admitted through typed live-form/materialization/consumer-binding records, including GEMM post-merge `pack_tile`, source-live `cb_republish`, and seq64 bf16 flash-attn exact-CB partial-combine direct runtime correctness. |
@@ -225,6 +225,25 @@ Each checkpoint needs its own direct-runtime correctness proof:
 
 ## Recent Verification
 
+2026-05-06 UTC page-addressed layout cleanup checkpoint:
+
+- Removed `page_indexed` as an active layout / accessor protocol.  Page
+  transport now stays on `layout = interleaved` with positive
+  `transport_page_size` and
+  `logical_index_mapping = interleaved_page_index`.
+- Deleted the leftover value-expr/accessor-backed buffer collector that only
+  existed to decide whether to rewrite a buffer distribution to the old
+  `page_indexed` layout.
+- Runtime materialization admission now distinguishes full-tile host
+  tilization from raw sub-tile row/stick pages using static buffer shape,
+  dtype, and page size, not a special layout name.
+- `cmake --build build -j32` passed.
+- Focused projection/schema selectors covering block-indexed, 2D indexed,
+  ragged, segmented, and stick page-addressed transport reported `8 passed`.
+- Direct-runtime selectors reported the page-addressed stick copy `1 passed`,
+  missing-page-metadata typed reject `1 passed`, and T9 page-addressed QK/AV
+  flash micro paths `4 passed`.
+
 2026-05-06 UTC IR-first CB/name/payload cleanup checkpoint:
 
 - Audited the same family as `page_value_arg_name`, `row_start`, `row_count`,
@@ -344,7 +363,7 @@ Each checkpoint needs its own direct-runtime correctness proof:
 - `cmake --build tilelang_repo/build -j32` passed.
 - Focused selectors covering the source guard, compile-time ABI projection,
   block-indexed and ragged per-work projection, explicit remote-core
-  projection, block-indexed runtime, ragged runtime, and page-indexed
+  projection, block-indexed runtime, ragged runtime, and page-addressed
   accessor runtime reported `9 passed`.
 - Remaining same-family implementation risks are not public-schema fields but
   still need cleanup: the pass-local bound/base/extent value routing state in
@@ -453,19 +472,20 @@ Each checkpoint needs its own direct-runtime correctness proof:
 
 - Removed runtime-side value-expr buffer materialization inference from the
   leaf reader.  `PopulateBufferMaterializationSpecs` no longer hardcodes
-  `page_indexed/dram`, and page-size selection no longer has a
+  a runtime-invented DRAM layout, and page-size selection no longer has a
   `value_expr_buffer_load` fallback.
-- `TTBufferDistributionPlan` now owns value-expr input-buffer layout for the
+- `TTBufferDistributionPlan` owns value-expr input-buffer distribution for the
   generic host-side table case: buffers reached by
   `TTPerWorkArgSpec.value_expr` `BufferLoad` nodes, and not already backed by
-  TT accessor device access, are marked page-indexed in
-  `buffer_distribution_plans` before executable projection.  Runtime
+  TT accessor device access, are projected as interleaved DRAM with explicit
+  page size and `logical_index_mapping = interleaved_page_index`.  Runtime
   materialization consumes that explicit plan and fails closed if a referenced
   value-expr buffer has no distribution record.
 - The public guard scans `rt_mod_blackhole.cc` for the removed fallback
   strings, and the block-indexed projection test now asserts
-  `buffer_distribution_plans["BlockIndices"].layout == "page_indexed"` so
-  owner truth is tested before runtime materialization.
+  `buffer_distribution_plans["BlockIndices"].layout == "interleaved"` plus
+  `logical_index_mapping = interleaved_page_index` so owner truth is tested
+  before runtime materialization.
 - `cmake --build build -j32` passed.
 - Focused TT-Sim selector covering the source guard, block-indexed and 2D
   table value-expr projection, sparse/ragged/segmented/paged value-expr

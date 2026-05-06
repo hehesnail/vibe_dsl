@@ -1523,7 +1523,7 @@ def test_blackhole_t3_serialized_module_preserves_reshard_runtime_contract():
     )
 
 
-def test_blackhole_module_direct_call_page_indexed_copy_consumes_address_contract():
+def test_blackhole_module_direct_call_page_addressed_copy_consumes_address_contract():
     can_run, msg = check_blackhole_direct_execution_requirements()
     if not can_run:
         pytest.skip(f"Blackhole requirements not met: {msg}")
@@ -1555,10 +1555,10 @@ def test_blackhole_module_direct_call_page_indexed_copy_consumes_address_contrac
         for spec in kernel_spec["compile_time_arg_specs"]
         if "buffer" in spec and "accessor_cta" in str(spec["kind"])
     }
-    assert str(compile_specs["A"]["kind"]) == "page_indexed_accessor_cta"
-    assert str(compile_specs["B"]["kind"]) == "page_indexed_accessor_cta"
-    assert str(accessors["A"]["layout"]) == "page_indexed"
-    assert str(accessors["B"]["layout"]) == "page_indexed"
+    assert str(compile_specs["A"]["kind"]) == "interleaved_accessor_cta"
+    assert str(compile_specs["B"]["kind"]) == "interleaved_accessor_cta"
+    assert str(accessors["A"]["layout"]) == "interleaved"
+    assert str(accessors["B"]["layout"]) == "interleaved"
     assert int(accessors["A"]["transport_page_size"]) == 64
     assert int(accessors["B"]["transport_page_size"]) == 64
     distribution_by_buffer = {
@@ -1567,8 +1567,8 @@ def test_blackhole_module_direct_call_page_indexed_copy_consumes_address_contrac
     }
     assert str(distribution_by_buffer["A"]["logical_index_mapping"]) == "interleaved_page_index"
     assert str(distribution_by_buffer["B"]["logical_index_mapping"]) == "interleaved_page_index"
-    assert str(distribution_by_buffer["A"]["layout"]) == "page_indexed"
-    assert str(distribution_by_buffer["B"]["layout"]) == "page_indexed"
+    assert str(distribution_by_buffer["A"]["layout"]) == "interleaved"
+    assert str(distribution_by_buffer["B"]["layout"]) == "interleaved"
     assert int(distribution_by_buffer["A"]["page_size_bytes"]) == 64
     assert int(distribution_by_buffer["B"]["page_size_bytes"]) == 64
 
@@ -1578,11 +1578,11 @@ def test_blackhole_module_direct_call_page_indexed_copy_consumes_address_contrac
         b_ref,
         atol=1e-5,
         rtol=1e-5,
-        failure_message="Page-indexed copy direct-call output mismatch",
+        failure_message="Page-addressed copy direct-call output mismatch",
     )
 
 
-def test_blackhole_t4_direct_runtime_rejects_page_indexed_accessor_missing_page_metadata():
+def test_blackhole_t4_direct_runtime_rejects_page_addressed_accessor_missing_page_metadata():
     target = Target("blackhole")
     kernel = staged_stick_copy_kernel(
         tile_m=32,

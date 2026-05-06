@@ -1920,7 +1920,7 @@ def test_blackhole_t9_grouped_gemm_projects_segmented_a_bindings():
         for accessor in reader["accessors"]
         if str(accessor["buffer"]) == "A"
     )
-    assert str(a_accessor["layout"]) == "page_indexed"
+    assert str(a_accessor["layout"]) == "interleaved"
     assert int(a_accessor["transport_page_size"]) == 64
 
     bindings = {

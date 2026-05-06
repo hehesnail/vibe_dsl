@@ -19,7 +19,7 @@ Current execution status lives in `tasks/progress.md`.
 
 ## Problem
 
-T1-T7.5 admitted regular tensor, sharded, page-indexed, topk, and exact-CB
+T1-T7.5 admitted regular tensor, sharded, page-addressed, topk, and exact-CB
 surfaces.  T8 is the next boundary: workload witnesses such as routed/grouped
 GEMM, paged decode, sparse/ragged attention, and indexed block traversal need
 non-uniform work and address evidence.
@@ -172,7 +172,7 @@ The admitted first segmented/grouped slice is a row-segment staged copy:
 - the copied output is a compact per-work tile-sized block, so invalid rows
   are zero-filled inside that block and cannot clobber a neighboring segment;
 - this slice admits non-uniform segment starts/counts only for a single
-  page-indexed bf16 row-copy surface.  Wider grouped GEMM dispatch is a later
+  page-addressed bf16 row-copy surface.  Wider grouped GEMM dispatch is a later
   workload path, but must reuse the same binding/evidence contract.
 
 The next segmented slice allows multiple independent row segments in one
@@ -354,9 +354,9 @@ Implemented:
   copies for the admitted source rewrite.  Source consumes
   `runtime_arg_u32("a_tile_start_id")`; it must not emit a raw
   `BufferLoad(BlockIndices[...])`.
-- The index table is materialized as a page-indexed DRAM input buffer with
-  4-byte pages so direct runtime can evaluate the per-work arg from host-side
-  table data without positional argument recovery.
+- The index table is materialized as an interleaved DRAM input buffer with
+  explicit 4-byte page addressing so direct runtime can evaluate the per-work
+  arg from host-side table data without positional argument recovery.
 - Direct runtime validates only `value_usage=buffer_tile_origin` values against
   the target buffer's typed materialization page count.  Out-of-range table
   entries fail closed instead of relying on the original TIR guard after
@@ -435,7 +435,7 @@ Implemented:
   publishing the CB.  The writer consumes the same 32 published row pages and
   writes them back, preserving the original TIR `if_then_else(load, 0)`
   semantics without relying on output-buffer initialization.
-- Row-count tables are materialized as 4-byte page-indexed DRAM inputs.
+- Row-count tables are materialized as 4-byte page-addressed interleaved DRAM inputs.
   64-byte bf16 row/stick pages remain row-major host pages; only complete
   32x32 tile pages use nfaces host tilization in direct runtime transfer.
 - The admitted direct-runtime gate proves `RowCounts=[32,17,0]` copies only
@@ -477,7 +477,7 @@ Implemented:
   `value_source=value_expr`.
 - Source consumes those two projected per-work bindings and must not emit
   raw source reads from `SegmentOffsets` / `SegmentCounts`.
-- The segmented reader uses page-indexed row pages
+- The segmented reader uses page-addressed row pages
   `base_value + page_row`; the writer emits a compact per-work output
   block and writes explicit zero pages for invalid rows.  The old input
   `a_tile_start_id` / tile-count / tile-stride bindings are not synthesized

@@ -1437,7 +1437,7 @@ Stmt PlanTTKernelABI::GenerateCopySequence(const BufferStoreNode* op,
         }
         stmts.push_back(MakeBlackholeCall(blackhole_noc_async_read_barrier(), {}));
         RegisterAccessor(segment_kind, load->buffer, accessor_slot, 2, 0, 0, 2,
-                         page_bytes, {0}, false, "page_indexed");
+                         page_bytes, {0}, false, "interleaved");
         stmts.push_back(MakeBlackholeCall(
             blackhole_cb_push_back(), {IntImm32(cb_id), IntImm32(1)}));
         RecordTiledCBLiveFormAliases(op->buffer, cb_id);
@@ -1603,7 +1603,7 @@ Stmt PlanTTKernelABI::GenerateCopySequence(const BufferStoreNode* op,
           stmts.push_back(MakeBlackholeCall(blackhole_noc_async_write_barrier(), {}));
         }
         RegisterAccessor(segment_kind, op->buffer, accessor_slot, 2, 0, 0, 2,
-                         write_page_bytes, {0}, false, "page_indexed");
+                         write_page_bytes, {0}, false, "interleaved");
         if (!(live_rank1_vector_output && !active_serial_loop_vars_.empty())) {
           stmts.push_back(make_pop());
         }
@@ -2185,7 +2185,7 @@ Stmt PlanTTKernelABI::GenerateStagedCopyLoopSequence(
           {IntImm32(cb_id), IntImm32(total_subtiles)}));
       RegisterAccessor(segment_kind, load->buffer,
                        accessor_slot, 2, 0, 0, 2, row_tile_page_bytes,
-                       host_axis_order, false, "page_indexed");
+                       host_axis_order, false, "interleaved");
       RecordTiledCBLiveFormAliases(cb_producer_buffer, cb_id);
       if (!SameBufferIdentity(cb_producer_buffer, op->buffer)) {
         RecordTiledCBLiveFormAliases(op->buffer, cb_id);
@@ -2231,7 +2231,7 @@ Stmt PlanTTKernelABI::GenerateStagedCopyLoopSequence(
                           tir::ForKind::kSerial, SeqStmt::Flatten(loop_stmts)));
       RegisterAccessor(segment_kind, load->buffer,
                        accessor_slot, 2, 0, 0, 2, geometry.page_bytes, host_axis_order,
-                       false, "page_indexed");
+                       false, "interleaved");
       RecordTiledCBLiveFormAliases(cb_producer_buffer, cb_id);
       if (!SameBufferIdentity(cb_producer_buffer, op->buffer)) {
         RecordTiledCBLiveFormAliases(op->buffer, cb_id);
@@ -2241,7 +2241,7 @@ Stmt PlanTTKernelABI::GenerateStagedCopyLoopSequence(
     if (use_page_transport) {
       ICHECK(!materialize_to_local)
           << "Blackhole DRAM-to-local materialization currently admits tiled CB pages; "
-             "page-indexed stick materialization must lower through an explicit local layout "
+             "page-addressed stick materialization must lower through an explicit local layout "
              "contract";
       SetRequirementPageLayout(cb_id, geometry.shared_bytes, 1);
       stmts.push_back(MakeBlackholeCall(
@@ -2254,7 +2254,7 @@ Stmt PlanTTKernelABI::GenerateStagedCopyLoopSequence(
                                           IntImm32(page_row * geometry.l1_stick_stride)}));
         RegisterAccessor(segment_kind, load->buffer,
                          accessor_slot, 2, 0, 0, 2, geometry.page_bytes, host_axis_order,
-                         /*transpose_2d=*/false, "page_indexed");
+                         /*transpose_2d=*/false, "interleaved");
       }
       stmts.push_back(MakeBlackholeCall(
           blackhole_noc_async_read_barrier(), {}));
@@ -2362,7 +2362,7 @@ Stmt PlanTTKernelABI::GenerateStagedCopyLoopSequence(
             blackhole_cb_pop_front(), {IntImm32(cb_id), IntImm32(1)}));
         RegisterAccessor(segment_kind, op->buffer,
                          accessor_slot, 2, 0, 0, 2, geometry.page_bytes, host_axis_order,
-                         false, "page_indexed");
+                         false, "interleaved");
       }
       return maybe_wrap_segment_stmt(SeqStmt::Flatten(stmts));
     }
@@ -2379,7 +2379,7 @@ Stmt PlanTTKernelABI::GenerateStagedCopyLoopSequence(
                                              IntImm32(page_row * geometry.l1_stick_stride)}));
         RegisterAccessor(segment_kind, op->buffer,
                          accessor_slot, 2, 0, 0, 2, geometry.page_bytes, host_axis_order,
-                         false, "page_indexed");
+                         false, "interleaved");
       }
       stmts.push_back(MakeBlackholeCall(
           blackhole_noc_async_write_barrier(), {}));
@@ -2476,7 +2476,7 @@ Stmt PlanTTKernelABI::GenerateFusedStagedCopySequence(
            IntImm32(geometry.page_bytes), IntImm32(input_accessor_slot),
            IntImm32(page_row * geometry.l1_stick_stride)}));
       RegisterAccessor(segment_kind, dram_load->buffer, input_accessor_slot, 2, 0, 0, 2,
-                       geometry.page_bytes, {}, false, "page_indexed");
+                       geometry.page_bytes, {}, false, "interleaved");
       stmts.push_back(MakeBlackholeCall(
           blackhole_noc_async_read_barrier(), {}));
     }
@@ -2499,7 +2499,7 @@ Stmt PlanTTKernelABI::GenerateFusedStagedCopySequence(
            IntImm32(geometry.page_bytes), IntImm32(output_accessor_slot),
            IntImm32(page_row * geometry.l1_stick_stride)}));
       RegisterAccessor(segment_kind, cb_to_dram->buffer, output_accessor_slot, 2, 0, 0, 2,
-                       geometry.page_bytes, {}, false, "page_indexed");
+                       geometry.page_bytes, {}, false, "interleaved");
       stmts.push_back(MakeBlackholeCall(
           blackhole_noc_async_write_barrier(), {}));
     }

@@ -1560,14 +1560,14 @@ static const BufferMaterializationSpec* FindBufferMaterializationSpec(
     const ExecutableSpec& spec,
     const std::string& buffer_name);
 
-static bool HasSubTilePageIndexedMaterialization(const ExecutableSpec& spec,
-                                                 const std::string& buffer) {
+static bool HasSubTileInterleavedPageMaterialization(const ExecutableSpec& spec,
+                                                    const std::string& buffer) {
   const BufferMaterializationSpec* materialization =
       FindBufferMaterializationSpec(spec, buffer);
   if (materialization == nullptr) {
     return false;
   }
-  return materialization->layout == "page_indexed" &&
+  return materialization->layout == "interleaved" &&
          materialization->memory_space == "dram" &&
          materialization->transport_page_size_bytes > 0U &&
          materialization->transport_page_size_bytes < 32U * 32U * 2U;
@@ -1599,7 +1599,7 @@ static bool HasValueExprPerWorkBindingForBuffer(const ExecutableSpec& spec,
 
 static bool HasRangeValueExprPerWorkBindingsForBuffer(const ExecutableSpec& spec,
                                                       const std::string& buffer) {
-  return HasSubTilePageIndexedMaterialization(spec, buffer) &&
+  return HasSubTileInterleavedPageMaterialization(spec, buffer) &&
          CountGenericValueExprPerWorkBindingsForBuffer(spec, buffer) >= 2;
 }
 
@@ -2115,14 +2115,13 @@ static const BufferMaterializationSpec& ResolveBufferMaterializationSpec(
       << materialization->materialization_kind;
   const std::string memory_space = LowerAsciiDirect(materialization->memory_space);
   const std::string layout = LowerAsciiDirect(materialization->layout);
-  const bool is_interleaved_dram =
-      memory_space == "dram" && (layout == "interleaved" || layout == "page_indexed");
+  const bool is_interleaved_dram = memory_space == "dram" && layout == "interleaved";
   const bool is_static_sharded_l1 = memory_space == "l1" && layout == "sharded";
   ICHECK(is_interleaved_dram || is_static_sharded_l1)
       << "Unsupported Blackhole buffer materialization for " << buffer_name
       << ": layout=" << materialization->layout
       << ", memory_space=" << materialization->memory_space
-      << "; direct runtime admits interleaved/page-indexed DRAM or static sharded L1";
+      << "; direct runtime admits interleaved DRAM or static sharded L1";
   ICHECK_GT(materialization->transport_page_size_bytes, 0U)
       << "Blackhole buffer materialization requires transport_page_size for " << buffer_name;
   return *materialization;
@@ -3013,8 +3012,7 @@ static void ValidateDirectRuntimeAccessorSpec(const std::string& buffer_name,
   ICHECK_EQ(common_runtime_arg_count, 0U)
       << "Blackhole direct runtime currently supports only compile-time accessor metadata";
   const bool is_interleaved_dram =
-      (layout == "interleaved" || layout == "page_indexed") && memory_space == "dram" &&
-      args_config_bits == 2U;
+      layout == "interleaved" && memory_space == "dram" && args_config_bits == 2U;
   const bool is_static_sharded_l1 =
       layout == "sharded" && memory_space == "l1" &&
       (args_config & tensor_accessor::ArgConfig::Sharded).raw() != 0 &&
@@ -3024,7 +3022,7 @@ static void ValidateDirectRuntimeAccessorSpec(const std::string& buffer_name,
       << " has unsupported ABI layout=" << layout
       << ", memory_space=" << memory_space
       << ", args_config_bits=" << args_config_bits
-      << "; admitted forms are interleaved/page-indexed DRAM or static sharded L1";
+      << "; admitted forms are interleaved DRAM or static sharded L1";
 }
 
 static void AppendAccessorCompileTimeArgsFromBuffer(
@@ -3218,8 +3216,7 @@ static void ValidateKernelDirectRuntimeSchema(const KernelSpec& kernel) {
 
   for (const auto& spec : kernel.compile_time_arg_specs) {
     if (spec.kind != "interleaved_accessor_cta" &&
-        spec.kind != "sharded_accessor_cta" &&
-        spec.kind != "page_indexed_accessor_cta") {
+        spec.kind != "sharded_accessor_cta") {
       continue;
     }
     ICHECK(!spec.buffer.empty())
@@ -3271,8 +3268,7 @@ static std::vector<uint32_t> BuildKernelCompileTimeArgsFromSchema(
         << ": got " << spec.offset << ", expected " << expected_offset;
 
     if (spec.kind == "interleaved_accessor_cta" ||
-        spec.kind == "sharded_accessor_cta" ||
-        spec.kind == "page_indexed_accessor_cta") {
+        spec.kind == "sharded_accessor_cta") {
       AppendAccessorCompileTimeArgs(spec, buffer_bindings, &compile_time_args);
     } else if (spec.kind == "gemm_shape" || spec.kind == "gemm_transpose_flags" ||
                spec.kind == "gemm_block_shape" || spec.kind == "gemm_subblock_shape" ||
@@ -4041,9 +4037,9 @@ static void ValidateExecutableSpecBufferDistributionPlans(const std::string& fun
 
     const std::string memory_space = LowerAscii(plan.memory_space);
     if (plan.distribution_kind == "interleaved") {
-      ICHECK(plan.layout == "interleaved" || plan.layout == "page_indexed")
+      ICHECK_EQ(plan.layout, "interleaved")
           << "Blackhole executable interleaved buffer distribution for "
-          << plan.buffer << " requires interleaved or page_indexed layout";
+          << plan.buffer << " requires interleaved layout";
       ICHECK_EQ(memory_space, "dram")
           << "Blackhole executable interleaved buffer distribution for "
           << plan.buffer << " requires DRAM memory_space";

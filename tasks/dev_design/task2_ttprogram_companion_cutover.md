@@ -115,6 +115,12 @@ Represents buffer distribution and placement class:
 - attached core range when relevant
 
 This is the low-level expansion point for placement and address ABI.
+`layout`
+is the physical memory layout class, currently `interleaved` or `sharded`;
+page-addressed DRAM transport is not a third layout.  Page-addressed access
+uses explicit read/write page builtins, positive page-size fields, and
+`logical_index_mapping = interleaved_page_index` on an interleaved DRAM
+distribution.
 
 `shard_shape`
 means the per-core tensor data shape in the durable contract.

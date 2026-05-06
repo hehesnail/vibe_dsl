@@ -1714,7 +1714,7 @@ def test_blackhole_t9_paged_mla_decode_projects_latent_and_pe_page_bindings():
     assert "tilelang_cb_write_ptr_bytes_direct" not in compute_source
 
 
-def test_blackhole_t9_page_indexed_qk_gemm_b_direct_runtime():
+def test_blackhole_t9_page_addressed_qk_gemm_b_direct_runtime():
     can_run, msg = check_blackhole_direct_execution_requirements()
     if not can_run:
         pytest.skip(f"Blackhole requirements not met: {msg}")
@@ -1771,11 +1771,11 @@ def test_blackhole_t9_page_indexed_qk_gemm_b_direct_runtime():
         ref,
         atol=2e-1,
         rtol=2e-1,
-        failure_message="Blackhole page-indexed QK GEMM B direct runtime mismatch",
+        failure_message="Blackhole page-addressed QK GEMM B direct runtime mismatch",
     )
 
 
-def test_blackhole_t9_page_indexed_qk_gemm_b_page1_direct_runtime():
+def test_blackhole_t9_page_addressed_qk_gemm_b_page1_direct_runtime():
     can_run, msg = check_blackhole_direct_execution_requirements()
     if not can_run:
         pytest.skip(f"Blackhole requirements not met: {msg}")
@@ -1830,11 +1830,11 @@ def test_blackhole_t9_page_indexed_qk_gemm_b_page1_direct_runtime():
         ref,
         atol=2e-1,
         rtol=2e-1,
-        failure_message="Blackhole page1-indexed QK GEMM B direct runtime mismatch",
+        failure_message="Blackhole page1-addressed QK GEMM B direct runtime mismatch",
     )
 
 
-def test_blackhole_t9_page_indexed_av_gemm_b_direct_runtime():
+def test_blackhole_t9_page_addressed_av_gemm_b_direct_runtime():
     can_run, msg = check_blackhole_direct_execution_requirements()
     if not can_run:
         pytest.skip(f"Blackhole requirements not met: {msg}")
@@ -1885,11 +1885,11 @@ def test_blackhole_t9_page_indexed_av_gemm_b_direct_runtime():
         ref,
         atol=2e-1,
         rtol=2e-1,
-        failure_message="Blackhole page-indexed AV GEMM B direct runtime mismatch",
+        failure_message="Blackhole page-addressed AV GEMM B direct runtime mismatch",
     )
 
 
-def test_blackhole_t9_page_indexed_av_gemm_b_page1_direct_runtime():
+def test_blackhole_t9_page_addressed_av_gemm_b_page1_direct_runtime():
     can_run, msg = check_blackhole_direct_execution_requirements()
     if not can_run:
         pytest.skip(f"Blackhole requirements not met: {msg}")

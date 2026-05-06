@@ -1389,14 +1389,15 @@ def test_blackhole_block_indexed_copy_per_work_spec_uses_value_expr_binding():
         str(item["buffer"]): item
         for item in executable_spec["buffer_distribution_plans"]
     }
-    assert str(distributions["BlockIndices"]["layout"]) == "page_indexed"
+    assert str(distributions["BlockIndices"]["layout"]) == "interleaved"
+    assert str(distributions["BlockIndices"]["logical_index_mapping"]) == "interleaved_page_index"
     assert int(distributions["BlockIndices"]["page_size_bytes"]) == 12
 
     materializations = {
         str(item["buffer"]): item
         for item in executable_spec["buffer_materializations"]
     }
-    assert str(materializations["BlockIndices"]["layout"]) == "page_indexed"
+    assert str(materializations["BlockIndices"]["layout"]) == "interleaved"
     assert str(materializations["BlockIndices"]["memory_space"]) == "dram"
     assert int(materializations["BlockIndices"]["transport_page_size"]) == 12
 
@@ -1432,7 +1433,7 @@ def test_blackhole_block_indexed_2d_copy_per_work_spec_carries_table_addressing(
         str(item["buffer"]): item
         for item in executable_spec["buffer_materializations"]
     }
-    assert str(materializations["BlockIndices"]["layout"]) == "page_indexed"
+    assert str(materializations["BlockIndices"]["layout"]) == "interleaved"
     assert str(materializations["BlockIndices"]["memory_space"]) == "dram"
     assert int(materializations["BlockIndices"]["transport_page_size"]) == 24
 
@@ -1662,11 +1663,11 @@ def test_blackhole_ragged_row_copy_uses_value_expr_bound_binding():
         str(item["buffer"]): item
         for item in executable_spec["buffer_materializations"]
     }
-    assert str(materializations["A"]["layout"]) == "page_indexed"
+    assert str(materializations["A"]["layout"]) == "interleaved"
     assert int(materializations["A"]["transport_page_size"]) == 64
-    assert str(materializations["B"]["layout"]) == "page_indexed"
+    assert str(materializations["B"]["layout"]) == "interleaved"
     assert int(materializations["B"]["transport_page_size"]) == 64
-    assert str(materializations["RowCounts"]["layout"]) == "page_indexed"
+    assert str(materializations["RowCounts"]["layout"]) == "interleaved"
     assert int(materializations["RowCounts"]["transport_page_size"]) == 12
 
 
@@ -1711,13 +1712,13 @@ def test_blackhole_segmented_row_copy_uses_value_expr_segment_bindings():
         str(item["buffer"]): item
         for item in executable_spec["buffer_materializations"]
     }
-    assert str(materializations["A"]["layout"]) == "page_indexed"
+    assert str(materializations["A"]["layout"]) == "interleaved"
     assert int(materializations["A"]["transport_page_size"]) == 64
-    assert str(materializations["B"]["layout"]) == "page_indexed"
+    assert str(materializations["B"]["layout"]) == "interleaved"
     assert int(materializations["B"]["transport_page_size"]) == 64
-    assert str(materializations["SegmentOffsets"]["layout"]) == "page_indexed"
+    assert str(materializations["SegmentOffsets"]["layout"]) == "interleaved"
     assert int(materializations["SegmentOffsets"]["transport_page_size"]) == 12
-    assert str(materializations["SegmentCounts"]["layout"]) == "page_indexed"
+    assert str(materializations["SegmentCounts"]["layout"]) == "interleaved"
     assert int(materializations["SegmentCounts"]["transport_page_size"]) == 12
 
 
@@ -2354,7 +2355,6 @@ def test_blackhole_copy_direct_runtime_rejects_unknown_compile_time_abi_kind():
     ("kind", "layout", "memory_space", "args_config_bits"),
     [
         ("sharded_accessor_cta", "sharded", "l1", 1),
-        ("page_indexed_accessor_cta", "page_indexed", "dram", 1),
     ],
 )
 def test_blackhole_copy_codegen_rejects_non_admitted_accessor_materialization_kinds(
@@ -2748,16 +2748,18 @@ def test_blackhole_stick_copy_pipeline_formalizes_page_transport():
     assert int(cb_configs[0]["num_pages"]) == 1
     accessors = {str(item["buffer"]): item for item in kernel_spec["accessors"]}
     for buffer in ("A", "B"):
-        assert str(compile_specs[buffer]["kind"]) == "page_indexed_accessor_cta"
-        assert str(compile_specs[buffer]["layout"]) == "page_indexed"
+        assert str(compile_specs[buffer]["kind"]) == "interleaved_accessor_cta"
+        assert str(compile_specs[buffer]["layout"]) == "interleaved"
         assert int(compile_specs[buffer]["transport_page_size"]) == 64
-        assert str(accessors[buffer]["layout"]) == "page_indexed"
+        assert str(accessors[buffer]["layout"]) == "interleaved"
         assert int(accessors[buffer]["transport_page_size"]) == 64
     distributions = {
         str(item["buffer"]): item for item in spec["buffer_distribution_plans"]
     }
-    assert str(distributions["A"]["layout"]) == "page_indexed"
-    assert str(distributions["B"]["layout"]) == "page_indexed"
+    assert str(distributions["A"]["layout"]) == "interleaved"
+    assert str(distributions["B"]["layout"]) == "interleaved"
+    assert str(distributions["A"]["logical_index_mapping"]) == "interleaved_page_index"
+    assert str(distributions["B"]["logical_index_mapping"]) == "interleaved_page_index"
 
 
 def test_blackhole_tall_stick_copy_pipeline_formalizes_page_transport():

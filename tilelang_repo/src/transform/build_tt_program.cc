@@ -1448,11 +1448,6 @@ bool EquivalentPlacementIntent(const TensorPlacementIntent &lhs,
          EqualIntegerArray(lhs->shard_shape, rhs->shard_shape);
 }
 
-std::unordered_set<std::string> CollectPerWorkValueExprInputBuffers(
-    const TTProgramSlices &slices);
-std::unordered_set<std::string> CollectAccessorBackedBuffers(
-    const TTProgramSlices &slices);
-
 Array<TTBufferDistributionPlan>
 BuildBufferDistributionPlans(const SpatialPlan &spatial_plan,
                              const TTProgramSlices &slices,
@@ -1483,10 +1478,6 @@ BuildBufferDistributionPlans(const SpatialPlan &spatial_plan,
       storage_info_by_buffer = CollectBufferStorageInfo(func);
   const std::unordered_map<std::string, std::string> source_buffer_by_target =
       CollectSourceBufferByMaterializedTarget(func, slices.cb_plans);
-  const std::unordered_set<std::string> value_expr_input_buffers =
-      CollectPerWorkValueExprInputBuffers(slices);
-  const std::unordered_set<std::string> accessor_backed_buffers =
-      CollectAccessorBackedBuffers(slices);
   const std::unordered_map<int64_t, std::string> cb_target_by_index =
       BuildCBRequirementTargetByIndex(slices.cb_plans);
   std::unordered_map<std::string, int64_t> cb_page_size_by_buffer;
@@ -1528,15 +1519,8 @@ BuildBufferDistributionPlans(const SpatialPlan &spatial_plan,
       if (IsShardedPlacementIntent(placement_intent)) {
         layout = String("sharded");
       } else if (str(placement_intent->strategy_class) == "interleaved") {
-        if (str(layout) != "page_indexed") {
-          layout = String("interleaved");
-        }
+        layout = String("interleaved");
       }
-    }
-    if (value_expr_input_buffers.count(buffer) != 0U &&
-        accessor_backed_buffers.count(buffer) == 0U &&
-        str(memory_space) == "DRAM" && str(layout) == "interleaved") {
-      layout = String("page_indexed");
     }
     auto storage_it = storage_info_by_buffer.find(buffer);
     if (page_size_bytes == 0 && storage_it != storage_info_by_buffer.end()) {
@@ -1605,8 +1589,7 @@ BuildBufferDistributionPlans(const SpatialPlan &spatial_plan,
         }
       }
     } else if (str(memory_space) == "DRAM" &&
-               (str(layout) == "interleaved" ||
-                str(layout) == "page_indexed")) {
+               str(layout) == "interleaved") {
       distribution_kind = String("interleaved");
       logical_index_mapping = String("interleaved_page_index");
     } else if (str(memory_space) == "L1" && has_core_group &&
@@ -1692,56 +1675,6 @@ std::vector<int64_t> PositiveIntegerVectorFromShape(
     result.push_back(maybe_extent.value());
   }
   return result;
-}
-
-std::unordered_set<std::string> CollectPerWorkValueExprInputBuffers(
-    const TTProgramSlices &slices) {
-  std::unordered_set<std::string> buffers;
-  for (const TTKernel &kernel : slices.kernels) {
-    for (const TTPerWorkArgSpec &spec : kernel->per_work_arg_specs) {
-      if (!spec->value_expr.defined()) {
-        continue;
-      }
-      tir::PostOrderVisit(
-          spec->value_expr, [&](const tvm::runtime::ObjectRef &node) {
-            if (const auto *load = node.as<tir::BufferLoadNode>()) {
-              const std::string buffer =
-                  static_cast<std::string>(load->buffer->name);
-              if (!buffer.empty()) {
-                buffers.insert(buffer);
-              }
-            }
-          });
-    }
-  }
-  return buffers;
-}
-
-bool IsAccessorCompileTimeArgKind(const std::string &kind) {
-  return kind == "interleaved_accessor_cta" ||
-         kind == "sharded_accessor_cta" ||
-         kind == "page_indexed_accessor_cta";
-}
-
-std::unordered_set<std::string> CollectAccessorBackedBuffers(
-    const TTProgramSlices &slices) {
-  std::unordered_set<std::string> buffers;
-  for (const TTABIPlan &abi : slices.abi_plans) {
-    for (const TTAccessorSpec &accessor : abi->accessors) {
-      const std::string buffer = static_cast<std::string>(accessor->buffer);
-      if (!buffer.empty()) {
-        buffers.insert(buffer);
-      }
-    }
-    for (const TTCompileTimeArgSpec &spec : abi->compile_time_arg_specs) {
-      const std::string buffer = static_cast<std::string>(spec->buffer);
-      if (!buffer.empty() &&
-          IsAccessorCompileTimeArgKind(static_cast<std::string>(spec->kind))) {
-        buffers.insert(buffer);
-      }
-    }
-  }
-  return buffers;
 }
 
 int64_t CeilDivPositive(int64_t value, int64_t divisor) {
@@ -1899,9 +1832,6 @@ String AccessorKindFromDistribution(
   if (distribution->distribution_kind == "sharded") {
     return String("sharded_accessor_cta");
   }
-  if (distribution->layout == "page_indexed") {
-    return String("page_indexed_accessor_cta");
-  }
   return String("interleaved_accessor_cta");
 }
 
@@ -1991,8 +1921,7 @@ Array<TTABIPlan> RewriteABIPlansForBufferDistributions(
       auto distribution_it = distribution_by_buffer.find(str(spec->buffer));
       const bool is_accessor =
           str(spec->kind) == "interleaved_accessor_cta" ||
-          str(spec->kind) == "sharded_accessor_cta" ||
-          str(spec->kind) == "page_indexed_accessor_cta";
+          str(spec->kind) == "sharded_accessor_cta";
       if (is_accessor && distribution_it != distribution_by_buffer.end()) {
         Array<PrimExpr> logical_shape;
         auto logical_shape_it = logical_shape_by_buffer.find(str(spec->buffer));

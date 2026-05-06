@@ -890,5 +890,5 @@ Required direct-runtime coverage:
   records.
 
 These tests do not admit external `sharded_accessor_cta`,
-`page_indexed_accessor_cta`, sharded GEMM/layout variants, or production
+page-addressed interleaved accessor transport, sharded GEMM/layout variants, or production
 DRAM-sharded weights. Those remain T4/T5 surfaces.

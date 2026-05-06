@@ -3105,8 +3105,7 @@ static bool IsAdmittedRuntimeBufferDistribution(const BufferDistributionSpec& di
                                                 std::string* reject_reason) {
   const std::string memory_space = NormalizeMemorySpace(distribution.memory_space);
   if (distribution.distribution_kind == "interleaved" &&
-      (distribution.layout == "interleaved" ||
-       distribution.layout == "page_indexed") &&
+      distribution.layout == "interleaved" &&
       memory_space == "dram") {
     if (distribution.logical_index_mapping != "interleaved_page_index") {
       if (reject_reason != nullptr) {
@@ -3303,15 +3302,33 @@ static void EnforceProjectedReshardAdmissionGate(ExecutableSpec* spec) {
 }
 
 static bool BufferMaterializationRequiresExplicitHostAxisOrder(
-    const BufferMaterializationSpec& materialization) {
-  return materialization.layout == "interleaved" && materialization.memory_space == "dram" &&
-         materialization.transport_page_size_bytes > 0;
+    const BufferMaterializationSpec& materialization,
+    const std::unordered_map<std::string, StaticBufferInfo>& buffer_info_by_name) {
+  if (materialization.layout != "interleaved" ||
+      materialization.memory_space != "dram" ||
+      materialization.transport_page_size_bytes == 0) {
+    return false;
+  }
+  auto info_it = buffer_info_by_name.find(materialization.buffer);
+  if (info_it == buffer_info_by_name.end()) {
+    return materialization.transport_page_size_bytes >= 32U * 32U * 2U;
+  }
+  const StaticBufferInfo& info = info_it->second;
+  if (info.shape.size() < 2 || info.dtype.bits == 0 || info.dtype.lanes == 0) {
+    return false;
+  }
+  const uint32_t element_size_bytes =
+      static_cast<uint32_t>((info.dtype.bits * info.dtype.lanes + 7) / 8);
+  if (element_size_bytes == 0U) {
+    return false;
+  }
+  const uint32_t full_tile_bytes = 32U * 32U * element_size_bytes;
+  return materialization.transport_page_size_bytes == full_tile_bytes;
 }
 
 static void PopulateBufferMaterializationSpecs(
     const std::unordered_map<std::string, StaticBufferInfo>& buffer_info_by_name,
     ExecutableSpec* spec) {
-  (void)buffer_info_by_name;
   std::unordered_map<std::string, BufferMaterializationSpec> by_buffer;
   std::vector<std::string> order;
 
@@ -3430,7 +3447,8 @@ static void PopulateBufferMaterializationSpecs(
     materialization.transport_page_size_bytes =
         ChooseBufferMaterializationPageSize(*spec, buffer_name);
     if (materialization.host_axis_order.empty()) {
-      ICHECK(!BufferMaterializationRequiresExplicitHostAxisOrder(materialization))
+      ICHECK(!BufferMaterializationRequiresExplicitHostAxisOrder(
+          materialization, buffer_info_by_name))
           << "Blackhole buffer materialization requires explicit host_axis_order for buffer "
           << materialization.buffer;
     }

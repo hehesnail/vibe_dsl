@@ -257,7 +257,7 @@ if a sharded L1 view is materialized from a DRAM / global source, it must carry
 `source_region_kind`,
 and `source_region_shape`;
 pure worker-local sharded scratch must not fabricate a source binding.
-Direct runtime may still reject sharded/page-indexed forms, but the reject must
+Direct runtime may still reject sharded/page-addressed forms, but the reject must
 come from these typed fields rather than source or runtime reconstruction.
 
 For TileLang programs written in a GPU style,
@@ -295,7 +295,7 @@ projected into `SpatialPlan` or lowered into `TTProgram`.
 | --- | --- | --- | --- |
 | Non-flash leaf compute and GEMM baseline | Current Blackhole copy / GEMM tests plus TT-Metal leaf API surface | Standalone unary / binary / broadcast / reduce / pack / typecast leaf families and current-placement GEMM layout variants with direct correctness gates; existing stick / page-shaped copy tests remain baseline coverage, not a new top-level task | Sharded layouts, wider multi-core placement, and non-replicated buffer distributions |
 | K-sharded GEMM partial reduction | T5 K-dimension sharded GEMM direct-runtime tests and TT-Metal semaphore / NoC primitives | Current direct-runtime path with `logical_grid_z`, per-K-shard waves, partial-C scratch, and runtime-issued device tile-add reduction | Production single-launch or fused-launch reducer protocol with typed reducer ownership, partial-C scratch placement, semaphore ids, remote NOC routes, transport choice, accumulation order, and final writer timing |
-| External accessor / runtime ABI | Existing executable accessor kinds `sharded_accessor_cta` and `page_indexed_accessor_cta` | Admit or precisely reject external sharded/page-indexed runtime/codegen accessors from executable records | Wider direct runtime coverage for sharded tensors, paged tensors, and page-table driven workloads |
+| External accessor / runtime ABI | Existing executable accessor kinds `interleaved_accessor_cta` and `sharded_accessor_cta` | Admit or precisely reject external sharded/page-addressed runtime/codegen accessors from executable records | Wider direct runtime coverage for sharded tensors, paged tensors, and page-table driven workloads |
 | `topk` / selection / indexing | `tilelang_repo/examples/topk/example_topk.py` | Single-device `reduce_max` selection with `int32` index outputs and correctness checks | Use value/index outputs as ordinary IR operands for later routing expressions |
 | MoE / `fusedmoe` | `tilelang_repo/examples/fusedmoe/example_fusedmoe_tilelang.py`; `tt_metal_repo/models/demos/deepseek_v3/tt/moe.py`; `tt_metal_repo/models/demos/deepseek_v3/tt/experts.py` | Shared expert plus pre-packed routed grouped GEMM where grouped dispatch and segmented token ranges are derived from TIR range/address expressions whose operands may include `group_sizes`, `group_offsets`, `group_padded_offsets`, or `group_idx_for_bx`; no claim of full MoE until gating and combine are admitted | In-pipeline topk, token packing, scatter / gather / combine, expert sharding, all-to-all dispatch / combine, reduce-scatter, all-gather, mesh memory placement |
 | Paged attention / paged decode / MLA decode | `tilelang_repo/examples/blocksparse_attention/example_tilelang_sparse_gqa_decode_paged.py`; `tilelang_repo/examples/deepseek_mla/example_mla_decode_paged.py`; `tt_metal_repo/models/tt_transformers/tt/attention.py` | Single-device page-table or block-table indexed KV reads and ragged bounds derived from TIR access expressions; operands such as `cache_seqlens` or fixed `num_split` are evidence only when tied to those expressions, with explicit partial-output / logsum combine and exact intermediate lifetime | Paged KV cache update / fill, sharded KV cache, multi-device all-gather / all-reduce, split reduction scheduling, NoC-aware max-cores-per-head policy |
@@ -320,8 +320,8 @@ Completed T1-T5 surfaces are inputs to this roadmap, not duplicated status:
 
 - T3 provides explicit placement intent, tensor memory-config plans,
   placement contracts, placement resolution, and first reshard projection.
-- T4 provides executable external accessor ABI records for interleaved,
-  page-indexed, and static sharded-L1 admitted subsets.
+- T4 provides executable external accessor ABI records for interleaved DRAM,
+  page-addressed interleaved DRAM, and static sharded-L1 admitted subsets.
 - T5 provides first sharded GEMM correctness, including the temporary
   blocking logical-z partial-K path.
 
@@ -331,7 +331,7 @@ against a host reference.  Projection, validation, source/schema checks, and
 typed unsupported diagnostics are necessary supporting tests, but they do not
 complete a task by themselves.
 
-New workload admission that needs sharded or page-indexed access must consume
+New workload admission that needs sharded or page-addressed access must consume
 the T4 executable accessor records.  New accessor variants outside the T4
 admitted subset need the same source/spec/direct-runtime admission or a typed
 reject from executable records.

@@ -1328,6 +1328,18 @@ def test_t8_per_work_runtime_values_use_generic_value_expr_not_case_schema():
     )
 
 
+def test_blackhole_page_indexed_addressing_is_not_a_layout_protocol():
+    hits = _source_tree_rg(
+        r"page_indexed|page-indexed|page indexed|page_indexed_accessor_cta",
+        REPO_ROOT / "tilelang_repo/src/transform/build_tt_program.cc",
+        REPO_ROOT / "tilelang_repo/src/transform/lower_blackhole_abi.cc",
+        REPO_ROOT / "tilelang_repo/src/transform/lower_blackhole_transport.cc",
+        REPO_ROOT / "tilelang_repo/src/target/blackhole_module.cc",
+        REPO_ROOT / "tilelang_repo/src/target/rt_mod_blackhole.cc",
+    )
+    assert hits == []
+
+
 def test_t6_value_index_scan_codegen_has_no_topk_named_protocol_surface():
     source = (REPO_ROOT / "tilelang_repo/src/target/codegen_blackhole.cc").read_text()
     header = (REPO_ROOT / "tilelang_repo/src/target/codegen_blackhole.h").read_text()

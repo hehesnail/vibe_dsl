@@ -1923,7 +1923,7 @@
     要支持它必须重新设计 source/destination packing 或 NOC transfer
     granularity，而不是简单放宽 validator。
 - **教训**:
-  - page-indexed ABI 的 typed metadata 通过不等于硬件 transfer 合法。
+  - page-addressed ABI 的 typed metadata 通过不等于硬件 transfer 合法。
     新 page size 必须跑 TT-Sim correctness；
     simulator fatal 不能被记录成普通 unsupported reason 后继续执行。
 
@@ -2522,7 +2522,8 @@
     table-backed tile-start binding from that evidence.
   - Project `index_buffer` / `index_value_scale` through TTProgram,
     executable metadata, serialization, and Python helpers.
-  - Register index tables as page-indexed DRAM input materializations and
+  - Register index tables as explicit page-addressed interleaved DRAM input
+    materializations and
     include them in direct-runtime buffer role checks.
   - Validate table-derived tile starts against the target buffer's typed page
     count so invalid table entries fail closed.
@@ -2568,7 +2569,7 @@
     but did not fix the rounded row counts.
 - **根因**:
   - The direct-runtime host transfer helper treated any bf16 64-byte
-    `page_indexed` materialization as an nfaces tiled plan because 64 bytes is
+    page-addressed materialization as an nfaces tiled plan because 64 bytes is
     32 bf16 elements.  The source reader/writer page IDs were logical row
     pages, but host data was laid out as TT face pages.
   - Skipping invalid writes was also semantically incomplete for
@@ -2576,14 +2577,14 @@
     contract for zero-fill.
 - **修法**:
   - Restrict host-side nfaces tilization to complete 32x32 tile pages.
-    Sub-tile page-indexed row/stick pages remain raw row-major pages.
+    Sub-tile page-addressed row/stick pages remain raw row-major pages.
   - For ragged row predicates, reader publishes one page per logical row:
     valid rows read DRAM, invalid rows zero the reserved CB page, and writer
     writes all pages.
 - **验证**:
   - Ragged row runtime selector passed for `RowCounts=[32,17,0]`.
   - T8 indexed/ragged aggregate selectors reported `7 passed`.
-  - Existing 64-byte page-indexed stick direct-runtime selectors remained
+  - Existing 64-byte page-addressed stick direct-runtime selectors remained
     green.
 
 ### Segment row offsets were lowered as tile-start bindings

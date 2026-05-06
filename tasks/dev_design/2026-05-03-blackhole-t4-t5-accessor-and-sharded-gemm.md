@@ -40,8 +40,7 @@ An external accessor is admitted only when the executable record states:
 
 - exact buffer identity
 - accessor kind:
-  `interleaved_accessor_cta`, `sharded_accessor_cta`, or
-  `page_indexed_accessor_cta`
+  `interleaved_accessor_cta` or `sharded_accessor_cta`
 - compile-time arg offset and count
 - common-runtime arg offset and count
 - TT-Metal `tensor_accessor::ArgConfig` bits
@@ -78,15 +77,16 @@ diagnostics instead of falling back to interleaved assumptions.
 
 The admitted T4 subset is intentionally narrow and explicit:
 
-- 64B page-indexed DRAM transport accessors are represented as
-  `page_indexed_accessor_cta` with `layout = page_indexed`, positive
-  `transport_page_size`, and matching `TTBufferDistributionPlan.page_size_bytes`.
+- 64B page-addressed DRAM transport accessors are represented as
+  `interleaved_accessor_cta` with `layout = interleaved`, positive
+  `transport_page_size`, matching `TTBufferDistributionPlan.page_size_bytes`,
+  and `logical_index_mapping = interleaved_page_index`.
 - static external sharded L1 accessors are represented as
   `sharded_accessor_cta` with sharded buffer distribution fields sufficient for
   TT-Metal `TensorAccessorArgs`.
 - codegen resolves TensorAccessor compile-time offsets from executable
   accessor records by buffer identity, not from stale TIR immediates.
-- direct runtime constructs interleaved/page-indexed DRAM buffers and static
+- direct runtime constructs interleaved DRAM buffers and static
   sharded L1 MeshBuffers from executable buffer distribution records.
 - unsupported dynamic/common-runtime accessor metadata and missing page/shard
   metadata fail closed from executable records.
@@ -189,7 +189,7 @@ execution path.
 
 T4 validation must cover:
 
-- `TTProgram` and executable projection tests for sharded/page-indexed
+- `TTProgram` and executable projection tests for sharded/page-addressed
   accessor records
 - codegen tests proving admitted source uses typed accessor offsets and rejects
   unsupported accessor ABI shapes

@@ -91,7 +91,7 @@ compute-compatible tiled CB:
 
 - the reader consumes generic A per-work value runtime args derived from
   `GroupOffsets` / `GroupSizes`; raw table loads are not present in source;
-- the A accessor is page-indexed over 64-byte bf16 row tiles, so non-32-row
+- the A accessor is page-addressed over 64-byte bf16 row tiles, so non-32-row
   group offsets are row-addressed instead of tile-addressed;
 - each valid row tile is read into a scratch CB and copied into the nfaces
   tile layout expected by `matmul_tiles`;
@@ -155,9 +155,9 @@ The admitted implementation keeps the workload surface in that chain:
   with the page-local row predicate.  Source
   consumes the projected runtime args and does not reload the page table or
   cache-length buffers.
-- Direct runtime materializes page-indexed K/V inputs from the executable
+- Direct runtime materializes page-addressed K/V inputs from the executable
   materialization records.  Complete tile pages use tiled host transfer;
-  row/stick-style page-indexed inputs remain raw row-major.  Indexed GEMM B
+  row/stick-style page-addressed inputs remain raw row-major.  Indexed GEMM B
   buffers that use explicit tile-start bindings stay raw so the runtime
   binding remains the owner of page selection.
 - The flash compute path reuses exact-CB partial combine.  Local intermediate
@@ -263,7 +263,7 @@ Runtime:
 - paged MLA uses two static latent/K-PE page steps, non-contiguous page ids,
   ragged sequence lengths, score accumulation from Q-nope and Q-PE, latent-KV
   value reuse, and a host MLA reference;
-- page-indexed QK and AV micro-tests exercise both page 0 and page 1 so table
+- page-addressed QK and AV micro-tests exercise both page 0 and page 1 so table
   constants and host materialization are covered independently from the full
   GQA tile.
 
@@ -272,11 +272,11 @@ Unsupported diagnostics:
 - if row-page A materialization cannot feed GEMM as a compute-compatible live
   form, the backend must reject with a typed admission reason rather than
   recovering from names or source text;
-- if page-indexed K/V materialization, ragged row bounds, or exact-CB
+- if page-addressed K/V materialization, ragged row bounds, or exact-CB
   lifecycle cannot feed the existing flash path, the backend must reject with
   a typed admission reason rather than recovering from names, argument order,
   or generated source text;
-- if page-indexed latent-KV / K-PE materialization, retained latent-KV input
+- if page-addressed latent-KV / K-PE materialization, retained latent-KV input
   lifetime, or the additive score GEMM sequence cannot feed the existing flash
   path, the backend must reject with a typed admission reason rather than
   adding a workload-specific side path.

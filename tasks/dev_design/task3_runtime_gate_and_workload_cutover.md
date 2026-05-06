@@ -149,6 +149,11 @@ the executable contract must state:
 - positive `page_size_bytes`
 - `logical_index_mapping = interleaved_page_index`
 
+There is no `page_indexed` layout or `page_indexed_accessor_cta`
+accessor kind in the executable/runtime contract.  Page-addressed transport
+remains ordinary interleaved DRAM plus explicit page-size and logical-index
+mapping fields.
+
 For admitted source-backed sharded L1 resident views,
 the executable contract must state:
 
