@@ -25,7 +25,7 @@
 | T7 Exact-CB / materialization primitives | Complete | Exact-CB materialization, publication, consumer binding, GEMM post-merge materialization, and seq64 bf16 flash-attn exact-CB partial combine pass `BlackholeModule` TT-Sim correctness. |
 | T7.5 Exact-CB liveness / allocation cutover | Complete | Covered exact-CB resident tiles use typed lifecycle, allocation, release events, latest-producer validation, storage-format validation, and fail-closed loop-carried/full-tile gates. |
 | T8 Irregular work domains / indexed access | Runtime surface admitted / cleanup pending | Indexed, sparse, ragged, paged, segmented, and T9.1 grouped-GEMM feed paths execute through generic `AccessRegion` + `value_expr` bindings.  The fused-dataflow ABI no longer classifies runtime args by `per_work_value*` identity prefixes; remaining work is broader shape coverage and continued removal of consumption-side recovery. |
-| T9 Workload first paths | In progress | T9.1 pre-grouped MoE/routed GEMM, T9.2 full paged GQA decode, T9.3 dual-score MLA GEMM, and T9.3 full paged MLA decode have bf16 direct-runtime correctness.  T9.4-T9.6 are queued. |
+| T9 Workload first paths | In progress | T9.1 pre-grouped MoE/routed GEMM, T9.2 full paged GQA decode, T9.3 dual-score MLA GEMM, T9.3 full paged MLA decode, and T9.4 sparse/ragged GQA decode have bf16 direct-runtime correctness.  T9.5-T9.6 are queued. |
 | T10 Distributed production variants | Queued | Mesh placement, CCL, NoC/multicast/global scheduling, distributed workload correctness, and production partial-K reduction remain future TT target-realization work. |
 
 ## Current Protocol Snapshot
@@ -104,9 +104,6 @@
   dual-score GEMM correctness, and full paged MLA decode direct-runtime
   correctness.  Broader MLA variants must keep the additive score chain
   generic and typed rather than adding a workload-specific side path.
-- T9.4 sparse/ragged attention:
-  admit bf16 sparse-block traversal plus ragged valid lengths through
-  ordinary TIR-derived indexed/ragged evidence and direct-runtime correctness.
 - T9.5 chunk recurrence / scan:
   represent multi-chunk loop-carried state and device state-buffer lifetime
   through typed lifecycle/allocation records before runtime execution.
@@ -175,6 +172,10 @@ Current verified baseline:
   GQA decode, T9.3 dual-score MLA GEMM, T9.3 full paged MLA decode, and
   T9.1 grouped GEMM.  Extended seq still carries the narrower loop-carried
   exact-CB PACR typed simulator reason.
+- T9.4 sparse/ragged GQA baseline: source/spec projection selector covering
+  `BlockIndices` sparse-block bindings, `ValidRows` per-entry ragged bounds,
+  raw-table-load absence, and compute-compatible K/V CBs reported `1 passed`;
+  bf16 TT-Sim direct-runtime correctness selector reported `1 passed`.
 
 Detailed historical checkpoint logs belong in git history and `memory/`, not
 in this file.

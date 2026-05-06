@@ -2768,6 +2768,16 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   rewriting must also exclude the pre-reserve drain insertion; the separate
   capacity-aware reserve pass owns real pressure and must not pop a
   writer-visible FIFO page before the writer consumes it.
+- 2026-05-07 T9.4 sparse/ragged attention slice:
+  Sparse/ragged attention should be admitted as ordinary TIR, not a workload
+  registry.  The first positive path uses `BlockIndices[sequence, slot]` for
+  K/V sparse block selection and `ValidRows[sequence, slot]` for independent
+  per-entry row bounds; both lower through generic `value_expr`
+  `TTPerWorkArgSpec` records consumed by the existing flash online-softmax
+  path.  Keep the admitted shape narrow until broader sparse scheduling has
+  typed load-balance/lifecycle records: two static sparse slots, bf16, block
+  rows 32, non-contiguous block ids, and direct-runtime host-reference
+  correctness.
 - 2026-05-07 Blackhole simulator-gate cleanup:
   After a generic verifier lands, delete stale workload or operation-name
   gates instead of leaving them as "extra safety".  If a simulator boundary is

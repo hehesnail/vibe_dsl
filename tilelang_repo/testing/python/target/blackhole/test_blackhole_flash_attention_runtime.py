@@ -215,6 +215,174 @@ def _paged_gqa_decode_reference(q, k_cache, v_cache, page_table, cache_seq_lens)
     return out
 
 
+def sparse_ragged_gqa_decode_kernel(
+    *,
+    batch=2,
+    heads=4,
+    groups=4,
+    sparse_blocks=2,
+    total_blocks=4,
+    block_M=32,
+    block_N=32,
+    dim=32,
+):
+    """Ordinary TIR sparse/ragged GQA decode tile for the first T9.4 slice."""
+    assert sparse_blocks == 2
+    assert heads == groups
+    dtype = T.bfloat16
+    accum_dtype = T.float32
+    scale = (1.0 / dim) ** 0.5 * 1.44269504
+
+    @T.prim_func
+    def main(
+        Q: T.Tensor((batch, block_M, heads, dim), dtype),
+        KBlocks: T.Tensor((total_blocks * block_N, dim), dtype),
+        VBlocks: T.Tensor((total_blocks * block_N, dim), dtype),
+        BlockIndices: T.Tensor((batch, sparse_blocks), "int32"),
+        ValidRows: T.Tensor((batch, sparse_blocks), "int32"),
+        Output: T.Tensor((batch, block_M, heads, dim), dtype),
+    ):
+        with T.Kernel(batch, heads, threads=128) as (bx, by):
+            Q_shared = T.alloc_shared((block_M, dim), dtype)
+            K0_shared = T.alloc_shared((block_N, dim), dtype)
+            V0_shared = T.alloc_shared((block_N, dim), dtype)
+            K1_shared = T.alloc_shared((block_N, dim), dtype)
+            V1_shared = T.alloc_shared((block_N, dim), dtype)
+            O_shared = T.alloc_shared((block_M, dim), dtype)
+            acc_s = T.alloc_fragment((block_M, block_N), accum_dtype)
+            acc_s_cast = T.alloc_fragment((block_M, block_N), dtype)
+            acc_o = T.alloc_fragment((block_M, dim), accum_dtype)
+            scores_max = T.alloc_fragment((block_M,), accum_dtype)
+            scores_max_prev = T.alloc_fragment((block_M,), accum_dtype)
+            scores_scale = T.alloc_fragment((block_M,), accum_dtype)
+            scores_sum = T.alloc_fragment((block_M,), accum_dtype)
+            logsum = T.alloc_fragment((block_M,), accum_dtype)
+
+            T.copy(Q[bx, 0:block_M, by, :], Q_shared)
+            T.fill(acc_o, 0)
+            T.fill(logsum, 0)
+            T.fill(scores_max, -T.infinity(accum_dtype))
+
+            block0 = BlockIndices[bx, 0]
+            valid0 = ValidRows[bx, 0]
+            for i, j in T.Parallel(block_N, dim):
+                K0_shared[i, j] = T.if_then_else(
+                    i < valid0,
+                    KBlocks[block0 * block_N + i, j],
+                    0,
+                )
+            T.fill(acc_s, 0)
+            T.gemm(
+                Q_shared,
+                K0_shared,
+                acc_s,
+                transpose_B=True,
+                policy=T.GemmWarpPolicy.FullRow,
+            )
+            for i, j in T.Parallel(block_M, block_N):
+                acc_s[i, j] = T.if_then_else(
+                    j < valid0,
+                    acc_s[i, j],
+                    -T.infinity(acc_s.dtype),
+                )
+            T.copy(scores_max, scores_max_prev)
+            T.fill(scores_max, -T.infinity(accum_dtype))
+            T.reduce_max(acc_s, scores_max, dim=1, clear=False)
+            for i in T.Parallel(block_M):
+                scores_max[i] = T.max(scores_max[i], scores_max_prev[i])
+            for i in T.Parallel(block_M):
+                scores_scale[i] = T.exp2(scores_max_prev[i] * scale - scores_max[i] * scale)
+            for i, j in T.Parallel(block_M, block_N):
+                acc_s[i, j] = T.exp2(acc_s[i, j] * scale - scores_max[i] * scale)
+            T.reduce_sum(acc_s, scores_sum, dim=1)
+            for i in T.Parallel(block_M):
+                logsum[i] = logsum[i] * scores_scale[i] + scores_sum[i]
+            T.copy(acc_s, acc_s_cast)
+            for i, j in T.Parallel(block_M, dim):
+                acc_o[i, j] *= scores_scale[i]
+            for i, j in T.Parallel(block_N, dim):
+                V0_shared[i, j] = T.if_then_else(
+                    i < valid0,
+                    VBlocks[block0 * block_N + i, j],
+                    0,
+                )
+            T.gemm(acc_s_cast, V0_shared, acc_o, policy=T.GemmWarpPolicy.FullRow)
+
+            block1 = BlockIndices[bx, 1]
+            valid1 = ValidRows[bx, 1]
+            for i, j in T.Parallel(block_N, dim):
+                K1_shared[i, j] = T.if_then_else(
+                    i < valid1,
+                    KBlocks[block1 * block_N + i, j],
+                    0,
+                )
+            T.fill(acc_s, 0)
+            T.gemm(
+                Q_shared,
+                K1_shared,
+                acc_s,
+                transpose_B=True,
+                policy=T.GemmWarpPolicy.FullRow,
+            )
+            for i, j in T.Parallel(block_M, block_N):
+                acc_s[i, j] = T.if_then_else(
+                    j < valid1,
+                    acc_s[i, j],
+                    -T.infinity(acc_s.dtype),
+                )
+            T.copy(scores_max, scores_max_prev)
+            T.fill(scores_max, -T.infinity(accum_dtype))
+            T.reduce_max(acc_s, scores_max, dim=1, clear=False)
+            for i in T.Parallel(block_M):
+                scores_max[i] = T.max(scores_max[i], scores_max_prev[i])
+            for i in T.Parallel(block_M):
+                scores_scale[i] = T.exp2(scores_max_prev[i] * scale - scores_max[i] * scale)
+            for i, j in T.Parallel(block_M, block_N):
+                acc_s[i, j] = T.exp2(acc_s[i, j] * scale - scores_max[i] * scale)
+            T.reduce_sum(acc_s, scores_sum, dim=1)
+            for i in T.Parallel(block_M):
+                logsum[i] = logsum[i] * scores_scale[i] + scores_sum[i]
+            T.copy(acc_s, acc_s_cast)
+            for i, j in T.Parallel(block_M, dim):
+                acc_o[i, j] *= scores_scale[i]
+            for i, j in T.Parallel(block_N, dim):
+                V1_shared[i, j] = T.if_then_else(
+                    i < valid1,
+                    VBlocks[block1 * block_N + i, j],
+                    0,
+                )
+            T.gemm(acc_s_cast, V1_shared, acc_o, policy=T.GemmWarpPolicy.FullRow)
+
+            for i, j in T.Parallel(block_M, dim):
+                acc_o[i, j] /= logsum[i]
+            T.copy(acc_o, O_shared)
+            T.copy(O_shared, Output[bx, 0:block_M, by, :])
+
+    return main
+
+
+def _sparse_ragged_gqa_decode_reference(q, k_blocks, v_blocks, block_indices, valid_rows):
+    batch, _, heads, dim = q.shape
+    block_rows = 32
+    out = torch.empty_like(q)
+    scale = dim ** -0.5
+    for seq in range(batch):
+        k_parts = []
+        v_parts = []
+        for slot in range(block_indices.shape[1]):
+            block = int(block_indices[seq, slot])
+            rows = int(valid_rows[seq, slot])
+            k_parts.append(k_blocks[block * block_rows : block * block_rows + rows])
+            v_parts.append(v_blocks[block * block_rows : block * block_rows + rows])
+        k_seq = torch.cat(k_parts, dim=0)
+        v_seq = torch.cat(v_parts, dim=0)
+        for head in range(heads):
+            scores = torch.matmul(q[seq, :, head, :].float(), k_seq.float().T) * scale
+            probs = torch.softmax(scores, dim=-1)
+            out[seq, :, head, :] = torch.matmul(probs, v_seq.float()).to(q.dtype)
+    return out
+
+
 def paged_mla_decode_kernel(
     *,
     batch=2,
@@ -1825,6 +1993,67 @@ def test_blackhole_t9_paged_gqa_decode_projects_page_table_and_cache_len_binding
         assert f"cb_push_back({cb_id}, 1);" in after_serial_loop
 
 
+def test_blackhole_t9_sparse_ragged_gqa_decode_projects_block_and_valid_row_bindings():
+    kernel = sparse_ragged_gqa_decode_kernel()
+    _, metadata = _lower_blackhole_flash_attention_metadata(kernel)
+
+    reasons = [str(reason) for reason in metadata.get("direct_runtime_unsupported_reasons", [])]
+    assert reasons == []
+    assert list(metadata["tvm_arg_names"]) == [
+        "Q",
+        "KBlocks",
+        "VBlocks",
+        "BlockIndices",
+        "ValidRows",
+        "Output",
+    ]
+
+    reader = next(kernel for kernel in metadata["kernels"] if str(kernel["kind"]) == "reader")
+    reader_source = str(reader["source_code"])
+    assert "BlockIndices" not in reader_source
+    assert "ValidRows" not in reader_source
+    assert "get_arg_val<uint32_t>" in reader_source
+
+    block_specs = [
+        spec
+        for spec in reader["per_work_arg_specs"]
+        if str(spec.get("value_source", "")) == "value_expr"
+        and "BlockIndices" in str(spec.get("value_expr", ""))
+    ]
+    assert len(block_specs) >= 4
+    assert {str(spec.get("buffer", "")) for spec in block_specs} == {"KBlocks", "VBlocks"}
+    assert all("index_buffer" not in spec for spec in block_specs)
+
+    valid_row_specs = [
+        spec
+        for spec in reader["per_work_arg_specs"]
+        if str(spec.get("value_source", "")) == "value_expr"
+        and "ValidRows" in str(spec.get("value_expr", ""))
+    ]
+    assert valid_row_specs
+    assert all("index_buffer" not in spec for spec in valid_row_specs)
+
+    compute_source = str(
+        next(
+            kernel["source_code"]
+            for kernel in metadata["kernels"]
+            if str(kernel["kind"]) == "compute"
+        )
+    )
+    assert "add_tiles_init(" in compute_source
+    assert "add_tiles(" in compute_source
+    assert "tilelang_add_fragment(dst, src, num_elements);" not in compute_source
+
+    reader_input_names = {"Q_shared", "K0_shared", "V0_shared", "K1_shared", "V1_shared"}
+    reader_input_configs = [
+        config
+        for config in metadata["cb_configs"]
+        if str(config["role"]) == "input"
+        and str(config["name"]) in reader_input_names
+    ]
+    assert {str(config["name"]) for config in reader_input_configs} == reader_input_names
+
+
 def test_blackhole_t9_paged_mla_decode_projects_latent_and_pe_page_bindings():
     kernel = paged_mla_decode_kernel()
     _, metadata = _lower_blackhole_flash_attention_metadata(kernel)
@@ -2246,6 +2475,68 @@ def test_blackhole_t9_paged_gqa_decode_bf16_direct_runtime():
         atol=5e-2,
         rtol=5e-2,
         failure_message="Blackhole T9 paged GQA decode bf16 direct runtime mismatch",
+    )
+
+
+def test_blackhole_t9_sparse_ragged_gqa_decode_bf16_direct_runtime():
+    can_run, msg = check_blackhole_direct_execution_requirements()
+    if not can_run:
+        pytest.skip(f"Blackhole requirements not met: {msg}")
+
+    batch = 2
+    heads = 4
+    sparse_blocks = 2
+    total_blocks = 4
+    block_M = 32
+    block_N = 32
+    dim = 32
+
+    torch.manual_seed(34)
+    q = torch.randn(
+        batch,
+        block_M,
+        heads,
+        dim,
+        dtype=BLACKHOLE_FLASH_ATTENTION_TORCH_DTYPE,
+    )
+    k_blocks = torch.randn(
+        total_blocks * block_N,
+        dim,
+        dtype=BLACKHOLE_FLASH_ATTENTION_TORCH_DTYPE,
+    )
+    v_blocks = torch.randn(
+        total_blocks * block_N,
+        dim,
+        dtype=BLACKHOLE_FLASH_ATTENTION_TORCH_DTYPE,
+    )
+    block_indices = torch.tensor([[3, 0], [2, 1]], dtype=torch.int32)
+    valid_rows = torch.tensor([[19, 32], [32, 11]], dtype=torch.int32)
+    out = torch.zeros_like(q)
+
+    kernel = sparse_ragged_gqa_decode_kernel(
+        batch=batch,
+        heads=heads,
+        groups=heads,
+        sparse_blocks=sparse_blocks,
+        total_blocks=total_blocks,
+        block_M=block_M,
+        block_N=block_N,
+        dim=dim,
+    )
+    artifact, metadata = _lower_blackhole_flash_attention_metadata(kernel)
+    assert [str(reason) for reason in metadata.get("direct_runtime_unsupported_reasons", [])] == []
+
+    artifact.codegen_mod["main"](q, k_blocks, v_blocks, block_indices, valid_rows, out)
+
+    ref = _sparse_ragged_gqa_decode_reference(
+        q, k_blocks, v_blocks, block_indices, valid_rows
+    )
+    assert_tensors_close_or_dump(
+        out,
+        ref,
+        atol=5e-2,
+        rtol=5e-2,
+        failure_message="Blackhole T9 sparse/ragged GQA decode bf16 direct runtime mismatch",
     )
 
 

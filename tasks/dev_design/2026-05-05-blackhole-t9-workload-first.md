@@ -56,8 +56,11 @@ compare against a host reference.  A checkpoint is admitted only when:
   page-table/ragged `value_expr` bindings, explicit score GEMMs, retained
   latent-KV lifetime, and the existing flash partial-combine path, and now
   has full online-softmax bf16 direct-runtime correctness.
-- T9.4 sparse/ragged attention, T9.5 recurrence/scan, and T9.6 multi-block
-  flash decode are queued.
+- T9.4 sparse/ragged GQA decode has bf16 direct-runtime correctness through
+  ordinary TIR-derived sparse block-list bindings, independent per-entry
+  valid-row bounds, and the existing online-softmax flash partial-combine
+  path.
+- T9.5 recurrence/scan and T9.6 multi-block flash decode are queued.
 
 ## Non-Goals
 
@@ -236,10 +239,48 @@ must be a generic typed compute-region / producer-chain lowering over explicit
 IR dependencies, lifecycle intervals, and compatible tile domains.  It must not
 be implemented as an adjacent-GEMM or MLA-specific source-shape matcher.
 
+## T9.4 Sparse/Ragged GQA Decode
+
+The first T9.4 slice admits a sparse/ragged GQA decode tile through ordinary
+TIR:
+
+- `BlockIndices[sequence, sparse_slot]` selects each K/V sparse block;
+- `ValidRows[sequence, sparse_slot]` guards rows independently for each sparse
+  block;
+- the two sparse block steps are static TIR statements, not a frontend sparse
+  attention op;
+- the attention update is the existing flash-attention tile sequence with
+  online max/sum, `acc_s_cast`, and `acc_o` partial combine.
+
+The first admitted shape is intentionally narrow:
+
+- bf16 Q, sparse K blocks, sparse V blocks, and output;
+- fp32 accumulators;
+- `batch=2`, `heads=4`, `groups=4`, one KV head;
+- `block_M=32`, `block_N=32`, `dim=32`;
+- exactly two sparse block slots per sequence;
+- non-contiguous sparse block ids and independent partial valid-row counts
+  such as 19/32 and 32/11.
+
+The required evidence chain is:
+
+```text
+TIR BlockIndices / ValidRows loads
+  -> per-sparse-block tile-start ABI bindings for K and V reads
+  -> generic valid-row bindings for the guarded sparse-block copies
+  -> compute-compatible K/V live forms
+  -> existing flash partial-combine compute/materialization path
+  -> sparse/ragged GQA direct runtime correctness
+```
+
+The source may consume runtime args projected from these bindings, but it must
+not emit raw `BlockIndices` or `ValidRows` reads to recover sparse traversal or
+ragged-bound semantics.  If sparse-block/ragged evidence cannot feed the
+existing flash compute path, the backend must reject with a typed reason
+before source/runtime guessing.
+
 ## Later T9 Checkpoints
 
-- T9.4 sparse/ragged attention: indexed sparse-block traversal plus ragged
-  valid lengths feeding attention compute.
 - T9.5 chunk recurrence/scan: multi-chunk loop-carried device state.
 - T9.6 multi-block flash decode: split blocks with exact-CB
   publish/consume and partial combine.
@@ -260,8 +301,11 @@ Structure/source:
 - the paged MLA executable contains value-expr latent-KV and K-PE
   tile-start ABI bindings and generic bound-value bindings for both static page
   steps;
-- source contains no raw `PageTable` / `CacheSeqLens` loads and no workload
-  decode registry;
+- the sparse/ragged GQA executable contains value-expr K/V sparse-block
+  tile-start bindings and generic valid-row bindings for both static sparse
+  block steps;
+- source contains no raw `PageTable` / `CacheSeqLens` /
+  `BlockIndices` / `ValidRows` loads and no workload decode registry;
 - source contains the existing flash partial-combine sequence rather than a
   separate paged-decode compute path;
 - source contains two explicit score GEMM contributions for MLA and keeps
@@ -281,6 +325,9 @@ Runtime:
 - paged MLA uses two static latent/K-PE page steps, non-contiguous page ids,
   ragged sequence lengths, score accumulation from Q-nope and Q-PE, latent-KV
   value reuse, and a host MLA reference;
+- sparse/ragged GQA uses two static sparse block steps, non-contiguous block
+  ids, independent per-entry valid-row counts, shared KV-head semantics, and a
+  host sparse-attention reference;
 - page-addressed QK and AV micro-tests exercise both page 0 and page 1 so table
   constants and host materialization are covered independently from the full
   GQA tile.
@@ -304,3 +351,7 @@ Unsupported diagnostics:
   lifetime, or the additive score GEMM sequence cannot feed the existing flash
   path, the backend must reject with a typed admission reason rather than
   adding a workload-specific side path.
+- if sparse-block K/V materialization, per-entry ragged row bounds, or
+  exact-CB lifecycle cannot feed the existing flash path, the backend must
+  reject with a typed admission reason rather than adding a sparse-attention
+  side path.
