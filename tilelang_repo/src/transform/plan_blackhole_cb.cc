@@ -1440,6 +1440,9 @@ tir::Stmt RetainLocalCBFrontForFutureWaits(
       continue;
     }
     if (event.kind == CBQueueEvent::Kind::kReserve) {
+      if (!can_retain_front[cb_id]) {
+        continue;
+      }
       const int required_front =
           max_future_wait_before_next_producer(i + 1, cb_id);
       if (front_pages[cb_id] > 0 && required_front <= 0) {
@@ -1456,6 +1459,7 @@ tir::Stmt RetainLocalCBFrontForFutureWaits(
       continue;
     }
     if (!can_retain_front[cb_id]) {
+      front_pages[cb_id] = std::max(0, front_pages[cb_id] - event.pages);
       continue;
     }
     const int required_front =

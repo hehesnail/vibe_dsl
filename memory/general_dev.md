@@ -2757,6 +2757,17 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   protocol also carries an explicit page offset; `write_tile_from_cb` reads the
   FIFO front page, so delaying `pop_front` makes later tile writes reread the
   same page.
+- 2026-05-07 T8 value_expr consumer cleanup:
+  Fused-dataflow ABI completion must suppress fallback input tile-origin
+  runtime args from typed segment evidence, not runtime-arg identity strings.
+  Treat existing non-synthesized runtime arg kinds and
+  `TTPerWorkArgSpec(value_source=value_expr, value_usage!=buffer_tile_origin)`
+  as explicit per-work value evidence.  Do not reintroduce
+  `per_work_value*` prefix checks as a consumption-side admission shortcut.
+  For output CB lifetimes, excluding `role=output` from retained-front
+  rewriting must also exclude the pre-reserve drain insertion; the separate
+  capacity-aware reserve pass owns real pressure and must not pop a
+  writer-visible FIFO page before the writer consumes it.
 - 2026-05-07 Blackhole simulator-gate cleanup:
   After a generic verifier lands, delete stale workload or operation-name
   gates instead of leaving them as "extra safety".  If a simulator boundary is

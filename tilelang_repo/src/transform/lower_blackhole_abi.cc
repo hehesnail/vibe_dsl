@@ -268,6 +268,13 @@ static bool IsBufferAddrRuntimeArgKind(const std::string &kind) {
          kind == "output_buffer_addr32" || kind == "output_buffer_addr";
 }
 
+static bool IsSynthesizedFusedDataflowRuntimeArgKind(const std::string& kind) {
+  return IsBufferAddrRuntimeArgKind(kind) || kind == "work_linear_id" ||
+         kind == "a_tile_start_id" || kind == "a_tile_num_tiles" ||
+         kind == "a_tile_stride" || kind == "output_tile_start_id" ||
+         kind == "output_tile_num_tiles" || kind == "output_tile_stride";
+}
+
 static std::string GetRuntimeArgKind(const Any &arg_item) {
   auto arg = arg_item.as<Map<String, Any>>().value_or(Map<String, Any>());
   if (arg.empty() || !arg.Get("kind")) {
@@ -390,7 +397,9 @@ EnsureSegmentBufferRuntimeArgs(const std::string &segment_kind,
                                const std::string &output_buffer_name = "",
                                const std::vector<std::string> &input_buffer_names = {},
                                const std::vector<std::string> &output_buffer_names = {},
-                               int64_t logical_grid_z = 1) {
+                               int64_t logical_grid_z = 1,
+                               const Optional<Any> &per_work_arg_specs_opt =
+                                   Optional<Any>()) {
   Array<Any> existing_runtime_args =
       runtime_args_opt ? Downcast<Array<Any>>(runtime_args_opt.value())
                        : Array<Any>();
@@ -450,15 +459,37 @@ EnsureSegmentBufferRuntimeArgs(const std::string &segment_kind,
                                    buffer_name);
     }
     push_existing_or_synthesized("work_linear_id", "work_linear_id");
-    const bool input_has_explicit_per_work_value =
-        std::any_of(existing_runtime_args.begin(), existing_runtime_args.end(),
-                    [&](const Any& arg_item) {
-                      const std::string kind = GetRuntimeArgKind(arg_item);
-                      return kind == kBlackholePerWorkValueArgPrefix ||
-                             kind.rfind(std::string(kBlackholePerWorkValueArgPrefix) + "_", 0) ==
-                                 0;
-                    });
-    if (!resolved_input_buffer_names.empty() && !input_has_explicit_per_work_value) {
+    auto input_has_explicit_value_expr_binding = [&]() {
+      for (const Any& arg_item : existing_runtime_args) {
+        const std::string kind = GetRuntimeArgKind(arg_item);
+        if (!kind.empty() && !IsSynthesizedFusedDataflowRuntimeArgKind(kind)) {
+          return true;
+        }
+      }
+      if (!per_work_arg_specs_opt) {
+        return false;
+      }
+      std::unordered_set<std::string> input_buffers(
+          resolved_input_buffer_names.begin(), resolved_input_buffer_names.end());
+      Array<TTPerWorkArgSpec> existing_specs =
+          Downcast<Array<TTPerWorkArgSpec>>(per_work_arg_specs_opt.value());
+      for (const TTPerWorkArgSpec& spec : existing_specs) {
+        const std::string buffer = spec->buffer;
+        if (!input_buffers.empty() &&
+            (buffer.empty() || input_buffers.count(buffer) == 0U)) {
+          continue;
+        }
+        const std::string value_source = spec->value_source;
+        const std::string value_usage = spec->value_usage;
+        if (value_source == blackhole_runtime_arg_schema::kValueSourceValueExpr &&
+            value_usage != blackhole_runtime_arg_schema::kValueUsageBufferTileOrigin) {
+          return true;
+        }
+      }
+      return false;
+    };
+    if (!resolved_input_buffer_names.empty() &&
+        !input_has_explicit_value_expr_binding()) {
       push_existing_or_synthesized("a_tile_start_id", "a_tile_start_id", "",
                                    true);
       push_existing_or_synthesized("a_tile_num_tiles", "a_tile_num_tiles", "",
@@ -2005,7 +2036,8 @@ void PlanTTKernelABI::StoreAccessorDescriptors(PrimFunc &func) {
               ? BufferIdentityName(copy_output_buffer_)
               : copy_output_buffer_name_,
           copy_input_buffer_names_, copy_output_buffer_names_,
-          logical_grid_z_);
+          logical_grid_z_,
+          segment.Get(String(blackhole_runtime_arg_schema::kPerWorkArgSpecs)));
       Array<TTPerWorkArgSpec> per_work_arg_specs =
           make_segment_per_work_arg_specs(
               kind, runtime_args, accessors,

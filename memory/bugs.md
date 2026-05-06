@@ -3279,6 +3279,36 @@
   - TT-Sim direct runtime passed for fp32 single-work, fp32 multi-work, and
     bf16 values with exact int32 indices.
 
+### Output-CB retained-front pre-drain caused a 2-tile fused-dataflow hang
+
+- **症状**:
+  - The block-indexed 2-tile copy direct-runtime selector hung in TT-Sim.
+  - Generated fused-dataflow source pushed the first output-CB page, then
+    waited/popped it before reading the second page, and later tried to write
+    two output tiles from only one remaining FIFO page.
+- **根因**:
+  - `RetainLocalCBFrontForFutureWaits` had been disabled for `role=output`
+    pop adjustment, but its reserve-side drain insertion still treated the
+    output CB as retainable state.
+  - The pass also skipped front-page accounting for disabled output pops, so
+    subsequent reserve handling could observe stale front depth.  Output CB
+    pressure should be handled by the capacity-aware reserve pass, not by the
+    generic retained-front rewrite.
+- **修法**:
+  - When retention is disabled for a physical CB, still account explicit pops
+    in the local front-depth model.
+  - Skip retained-front pre-reserve drain insertion for output CBs.  This
+    preserves FIFO order for writer-visible pages while leaving real
+    over-capacity cases to `InsertPhysicalPopsBeforeBlockingReserve`.
+- **验证**:
+  - The structured `KernelSpec.queue_events` regression for the 2-tile copy
+    now asserts `reserve,push,reserve,push,wait,pop,wait,pop`.
+  - The previously hanging TT-Sim selector
+    `test_blackhole_module_direct_call_block_indexed_2tile_copy_uses_scaled_table`
+    passed.
+  - The broader T8 direct-runtime selector covering indexed, sparse, ragged,
+    segmented, and paged copies reported `11 passed`.
+
 ## 3. 环境问题速查
 
 | 问题 | 解决 |

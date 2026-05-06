@@ -192,6 +192,7 @@ def test_blackhole_leaf_readers_do_not_keep_legacy_defaults_or_slot_fallbacks():
             "needs_dynamic_value_arg_",
             "needs_base_value_arg_",
             "needs_extent_value_for_base_arg_",
+            "kBlackholePerWorkValueArgPrefix",
         ],
         TEST_HELPER: [
             'item.get("compile_time_arg_offset", item.get("slot", 0))',
@@ -1462,6 +1463,17 @@ def test_blackhole_block_indexed_2tile_copy_scales_value_expr_binding():
         "static_cast<int32_t>(a_tile_start_id)+1" in compact_source
         or "a_tile_start_id+1" in compact_source
     )
+    queue_event_kinds = [str(event["kind"]) for event in kernel_spec["queue_events"]]
+    assert queue_event_kinds == [
+        "reserve_back",
+        "push_back",
+        "reserve_back",
+        "push_back",
+        "wait_front",
+        "pop_front",
+        "wait_front",
+        "pop_front",
+    ]
 
     bindings = _per_work_specs_by_identity(executable_spec)
 
@@ -1632,6 +1644,53 @@ def test_blackhole_per_work_runtime_arg_requirement_is_explicit_not_kind_suffix(
         _rebuild_codegen_module_with_body_and_segment_plan(
             artifact, segment_mutator=segment_mutator
         )
+
+
+def test_blackhole_value_expr_binding_not_per_work_kind_prefix_suppresses_tile_defaults():
+    target = Target("blackhole")
+    with target:
+        artifact = lower(
+            block_indexed_sparse_2tile_ragged_staged_copy_kernel(
+                grid_x=3,
+                source_tiles=6,
+            ),
+            target=target,
+        )
+
+    def segment_mutator(segment_plan):
+        mutated_segments = []
+        for segment in segment_plan:
+            mutated = dict(segment)
+            runtime_args = []
+            for arg in segment.get("runtime_args", []):
+                mutated_arg = dict(arg)
+                if str(mutated_arg.get("identity", "")).startswith("per_work_value"):
+                    mutated_arg["kind"] = "generic_per_work_u32"
+                    mutated_arg["requires_per_work_binding"] = True
+                runtime_args.append(mutated_arg)
+            mutated["runtime_args"] = runtime_args
+            mutated_segments.append(mutated)
+        return mutated_segments
+
+    rebuilt = _rebuild_codegen_module_with_body_and_segment_plan(
+        artifact, segment_mutator=segment_mutator
+    )
+    executable_spec = rebuilt.get_function_metadata("main")
+    kernel_spec = _require_blackhole_kernel(
+        executable_spec["kernels"], kind="fused_dataflow", core_type="brisc"
+    )
+    source = str(kernel_spec["source_code"])
+    assert "a_tile_start_id = get_arg_val<uint32_t>" in source
+    assert "a_tile_start_id_1 = get_arg_val<uint32_t>" in source
+    assert "per_work_value = get_arg_val<uint32_t>" in source
+    assert "per_work_value_1 = get_arg_val<uint32_t>" in source
+    assert "a_tile_num_tiles = get_arg_val<uint32_t>" not in source
+    assert "a_tile_stride = get_arg_val<uint32_t>" not in source
+    runtime_arg_identities = {
+        str(arg.get("identity", "")) for arg in kernel_spec["runtime_args"]
+    }
+    assert "a_tile_num_tiles" not in runtime_arg_identities
+    assert "a_tile_stride" not in runtime_arg_identities
 
 
 def test_blackhole_ragged_row_copy_uses_value_expr_bound_binding():

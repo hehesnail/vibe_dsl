@@ -130,6 +130,13 @@ Runtime/source may consume projected bindings, but must not recompute:
 - tile starts from raw `work_linear_id` when a stronger binding exists;
 - ragged bounds or index-table traversal from argument names.
 
+Fused-dataflow ABI completion may synthesize the regular default tile-origin
+runtime args only when the projected segment lacks stronger value evidence.
+The suppression test is the typed projected binding itself: existing
+non-synthesized runtime args and `TTPerWorkArgSpec` records whose
+`value_source=value_expr` is not a `buffer_tile_origin`.  It must not classify
+runtime args by identities or names such as `per_work_value*`.
+
 ## First Implementation Slice
 
 The first T8 slice is deliberately narrow:
@@ -351,14 +358,23 @@ Deleted or forbidden protocol surfaces remain deleted:
 - `work_linear_id` compatibility fallback for table-backed bindings with
   missing value evidence;
 - row-start / row-count binding synthesis from only an index-buffer name;
-- runtime-arg-name classification such as `per_work_value*` prefixes.
+- runtime-arg-name classification such as `per_work_value*` prefixes,
+  including fused-dataflow default tile-arg admission.
+
+The latest cleanup deleted the remaining fused-dataflow ABI consumer-side
+`per_work_value*` prefix classifier.  Explicit generic value-expression
+bindings now suppress fallback input tile defaults even when their runtime arg
+kind is not a legacy prefix.  The same validation slice also caught a CB
+lifecycle regression: writer-visible output CBs must not receive generic
+retained-front pre-drain rewrites, because the capacity-aware reserve rewrite
+already owns real pressure and premature output pops destroy FIFO order.
 
 Still open for T8:
 
 - broaden indexed / ragged / segmented / paged shape coverage without adding
   workload-shaped schema;
-- audit remaining consumption-side recovery through `arg_kind`, runtime-arg
-  names, helper state, or source materialization inference;
+- audit remaining consumption-side recovery through `arg_kind`, helper state,
+  or source materialization inference;
 - keep every broadened positive surface behind a `BlackholeModule`
   direct-runtime correctness gate or a typed simulator capability boundary
   after source/spec admission.

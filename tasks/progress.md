@@ -24,7 +24,7 @@
 | T6 `topk` | Complete | Existing TIR value/index selection runs through direct runtime for fp32 and bf16 values with exact `int32` indices.  The old limited typed compute-region emitter is deleted; codegen consumes executable reduction records through a `reduce_dim`-parameterized channel lowering and CB requirement mappings without topk/selection schema or raw host-pointer fallback. |
 | T7 Exact-CB / materialization primitives | Complete | Exact-CB materialization, publication, consumer binding, GEMM post-merge materialization, and seq64 bf16 flash-attn exact-CB partial combine pass `BlackholeModule` TT-Sim correctness. |
 | T7.5 Exact-CB liveness / allocation cutover | Complete | Covered exact-CB resident tiles use typed lifecycle, allocation, release events, latest-producer validation, storage-format validation, and fail-closed loop-carried/full-tile gates. |
-| T8 Irregular work domains / indexed access | Runtime surface admitted / cleanup pending | Indexed, sparse, ragged, paged, segmented, and T9.1 grouped-GEMM feed paths execute through generic `AccessRegion` + `value_expr` bindings.  Remaining work is broader shape coverage and continued removal of consumption-side recovery. |
+| T8 Irregular work domains / indexed access | Runtime surface admitted / cleanup pending | Indexed, sparse, ragged, paged, segmented, and T9.1 grouped-GEMM feed paths execute through generic `AccessRegion` + `value_expr` bindings.  The fused-dataflow ABI no longer classifies runtime args by `per_work_value*` identity prefixes; remaining work is broader shape coverage and continued removal of consumption-side recovery. |
 | T9 Workload first paths | In progress | T9.1 pre-grouped MoE/routed GEMM, T9.2 full paged GQA decode, T9.3 dual-score MLA GEMM, and T9.3 full paged MLA decode have bf16 direct-runtime correctness.  T9.4-T9.6 are queued. |
 | T10 Distributed production variants | Queued | Mesh placement, CCL, NoC/multicast/global scheduling, distributed workload correctness, and production partial-K reduction remain future TT target-realization work. |
 
@@ -69,6 +69,10 @@
   checks.  `KernelSpec.queue_events` now carries structured physical CB queue
   events, and the executable queue gate replays those records rather than
   parsing generated source text.
+- T8 value-expression bindings suppress fused-dataflow default tile-origin
+  runtime args through projected `TTPerWorkArgSpec` evidence and
+  non-synthesized arg kinds, not by classifying runtime arg identities such as
+  `per_work_value*`.
 - Current simulator gates must also be typed by `ExecutableSpec` facts.  The
   old T7/T9 `t_tile_mmio_wr32` classifier is gone; remaining PACR gates are
   limited to proven simulator capability boundaries such as compute-only
@@ -135,6 +139,12 @@ Every active implementation task uses these gates:
 
 Current verified baseline:
 
+- T8 consumer-side cleanup: `cmake --build build -j32` passed; source/spec
+  selectors covering deleted prefix classification, explicit value-expression
+  suppression, indexed/ragged/paged/segmented projection, and structured
+  2-tile output-CB queue order reported `14 passed`; TT-Sim direct-runtime
+  selectors covering indexed, sparse, ragged, segmented, and paged copies
+  reported `11 passed`.
 - Latest schema cleanup: `cmake --build build -j32` passed; focused selectors
   covering the source guard, block-indexed projection, stick page-addressed
   projection, direct runtime, and missing-page-metadata typed reject reported
