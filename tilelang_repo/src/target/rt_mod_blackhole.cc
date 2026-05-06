@@ -49,6 +49,7 @@
 #include "codegen_blackhole.h"
 #include "blackhole_module.h"
 #include "tt_program_projection.h"
+#include "../transform/common/blackhole_buffer_distribution_schema.h"
 #include "../transform/common/companion_base.h"
 #include "../tir/builtin_blackhole.h"
 
@@ -3107,9 +3108,11 @@ static bool IsAdmittedRuntimeBufferDistribution(const BufferDistributionSpec& di
   if (distribution.distribution_kind == "interleaved" &&
       distribution.layout == "interleaved" &&
       memory_space == "dram") {
-    if (distribution.logical_index_mapping != "interleaved_page_index") {
+    if (distribution.logical_index_mapping !=
+        ::tvm::tl::blackhole_buffer_distribution_schema::
+            kLogicalIndexMappingInterleavedLinearPage) {
       if (reject_reason != nullptr) {
-        *reject_reason = "lacks interleaved_page_index address mapping";
+        *reject_reason = "lacks interleaved_linear_page address mapping";
       }
       return false;
     }

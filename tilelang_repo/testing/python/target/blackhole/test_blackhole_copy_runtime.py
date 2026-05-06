@@ -1565,8 +1565,8 @@ def test_blackhole_module_direct_call_page_addressed_copy_consumes_address_contr
         str(plan["buffer"]): plan
         for plan in executable_spec["buffer_distribution_plans"]
     }
-    assert str(distribution_by_buffer["A"]["logical_index_mapping"]) == "interleaved_page_index"
-    assert str(distribution_by_buffer["B"]["logical_index_mapping"]) == "interleaved_page_index"
+    assert str(distribution_by_buffer["A"]["logical_index_mapping"]) == "interleaved_linear_page"
+    assert str(distribution_by_buffer["B"]["logical_index_mapping"]) == "interleaved_linear_page"
     assert str(distribution_by_buffer["A"]["layout"]) == "interleaved"
     assert str(distribution_by_buffer["B"]["layout"]) == "interleaved"
     assert int(distribution_by_buffer["A"]["page_size_bytes"]) == 64

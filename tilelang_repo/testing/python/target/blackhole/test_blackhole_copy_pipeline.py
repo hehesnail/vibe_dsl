@@ -1390,7 +1390,7 @@ def test_blackhole_block_indexed_copy_per_work_spec_uses_value_expr_binding():
         for item in executable_spec["buffer_distribution_plans"]
     }
     assert str(distributions["BlockIndices"]["layout"]) == "interleaved"
-    assert str(distributions["BlockIndices"]["logical_index_mapping"]) == "interleaved_page_index"
+    assert str(distributions["BlockIndices"]["logical_index_mapping"]) == "interleaved_linear_page"
     assert int(distributions["BlockIndices"]["page_size_bytes"]) == 12
 
     materializations = {
@@ -2758,8 +2758,8 @@ def test_blackhole_stick_copy_pipeline_formalizes_page_transport():
     }
     assert str(distributions["A"]["layout"]) == "interleaved"
     assert str(distributions["B"]["layout"]) == "interleaved"
-    assert str(distributions["A"]["logical_index_mapping"]) == "interleaved_page_index"
-    assert str(distributions["B"]["logical_index_mapping"]) == "interleaved_page_index"
+    assert str(distributions["A"]["logical_index_mapping"]) == "interleaved_linear_page"
+    assert str(distributions["B"]["logical_index_mapping"]) == "interleaved_linear_page"
 
 
 def test_blackhole_tall_stick_copy_pipeline_formalizes_page_transport():

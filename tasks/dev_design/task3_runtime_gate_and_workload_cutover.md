@@ -147,7 +147,7 @@ the executable contract must state:
 - `layout = interleaved`
 - `memory_space = DRAM`
 - positive `page_size_bytes`
-- `logical_index_mapping = interleaved_page_index`
+- `logical_index_mapping = interleaved_linear_page`
 
 There is no `page_indexed` layout or `page_indexed_accessor_cta`
 accessor kind in the executable/runtime contract.  Page-addressed transport

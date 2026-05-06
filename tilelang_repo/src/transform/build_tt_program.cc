@@ -21,6 +21,7 @@
 #include "assign_blackhole_cores.h"
 #include "common/blackhole_tile_compute_covering.h"
 #include "common/blackhole_tile_compute_dag.h"
+#include "common/blackhole_buffer_distribution_schema.h"
 #include "common/blackhole_utils.h"
 #include "common/buffer_tile_bridge_spec_utils.h"
 #include "common/companion_base.h"
@@ -1591,7 +1592,8 @@ BuildBufferDistributionPlans(const SpatialPlan &spatial_plan,
     } else if (str(memory_space) == "DRAM" &&
                str(layout) == "interleaved") {
       distribution_kind = String("interleaved");
-      logical_index_mapping = String("interleaved_page_index");
+      logical_index_mapping = String(
+          blackhole_buffer_distribution_schema::kLogicalIndexMappingInterleavedLinearPage);
     } else if (str(memory_space) == "L1" && has_core_group &&
                (IsSharedSpatialDistributionKind(spatial_distribution_kind) ||
                 IsCBBackedL1Layout(layout) || has_cb_page)) {

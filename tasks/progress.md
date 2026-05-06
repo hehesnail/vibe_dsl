@@ -225,12 +225,27 @@ Each checkpoint needs its own direct-runtime correctness proof:
 
 ## Recent Verification
 
+2026-05-06 UTC interleaved logical-mapping naming cleanup checkpoint:
+
+- Renamed the old page-index-looking interleaved DRAM logical mapping enum to
+  `interleaved_linear_page` so public buffer distribution records no longer
+  expose a `page_index`-looking subrole.
+- Added a shared C++ schema constant for the mapping value and made
+  `BuildTTProgram`, `rt_mod_blackhole.cc`, and `BlackholeModule` validators
+  consume that constant instead of open-coded strings.
+- Extended the page-indexed layout guard to reject the old mapping value in
+  active production source.
+- `cmake --build build -j32` passed.
+- Focused selectors covering the source guard, block-indexed projection,
+  stick page-addressed projection, direct runtime, and missing-page-metadata
+  typed reject reported `5 passed`.
+
 2026-05-06 UTC page-addressed layout cleanup checkpoint:
 
 - Removed `page_indexed` as an active layout / accessor protocol.  Page
   transport now stays on `layout = interleaved` with positive
   `transport_page_size` and
-  `logical_index_mapping = interleaved_page_index`.
+  `logical_index_mapping = interleaved_linear_page`.
 - Deleted the leftover value-expr/accessor-backed buffer collector that only
   existed to decide whether to rewrite a buffer distribution to the old
   `page_indexed` layout.
@@ -478,13 +493,13 @@ Each checkpoint needs its own direct-runtime correctness proof:
   generic host-side table case: buffers reached by
   `TTPerWorkArgSpec.value_expr` `BufferLoad` nodes, and not already backed by
   TT accessor device access, are projected as interleaved DRAM with explicit
-  page size and `logical_index_mapping = interleaved_page_index`.  Runtime
+  page size and `logical_index_mapping = interleaved_linear_page`.  Runtime
   materialization consumes that explicit plan and fails closed if a referenced
   value-expr buffer has no distribution record.
 - The public guard scans `rt_mod_blackhole.cc` for the removed fallback
   strings, and the block-indexed projection test now asserts
   `buffer_distribution_plans["BlockIndices"].layout == "interleaved"` plus
-  `logical_index_mapping = interleaved_page_index` so owner truth is tested
+  `logical_index_mapping = interleaved_linear_page` so owner truth is tested
   before runtime materialization.
 - `cmake --build build -j32` passed.
 - Focused TT-Sim selector covering the source guard, block-indexed and 2D

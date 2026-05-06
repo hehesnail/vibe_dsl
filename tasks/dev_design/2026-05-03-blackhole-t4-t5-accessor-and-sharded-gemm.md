@@ -80,7 +80,7 @@ The admitted T4 subset is intentionally narrow and explicit:
 - 64B page-addressed DRAM transport accessors are represented as
   `interleaved_accessor_cta` with `layout = interleaved`, positive
   `transport_page_size`, matching `TTBufferDistributionPlan.page_size_bytes`,
-  and `logical_index_mapping = interleaved_page_index`.
+  and `logical_index_mapping = interleaved_linear_page`.
 - static external sharded L1 accessors are represented as
   `sharded_accessor_cta` with sharded buffer distribution fields sufficient for
   TT-Metal `TensorAccessorArgs`.

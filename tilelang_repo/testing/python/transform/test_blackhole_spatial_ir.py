@@ -1330,7 +1330,7 @@ def test_t8_per_work_runtime_values_use_generic_value_expr_not_case_schema():
 
 def test_blackhole_page_indexed_addressing_is_not_a_layout_protocol():
     hits = _source_tree_rg(
-        r"page_indexed|page-indexed|page indexed|page_indexed_accessor_cta",
+        r"page_indexed|page-indexed|page indexed|page_indexed_accessor_cta|interleaved_page_index",
         REPO_ROOT / "tilelang_repo/src/transform/build_tt_program.cc",
         REPO_ROOT / "tilelang_repo/src/transform/lower_blackhole_abi.cc",
         REPO_ROOT / "tilelang_repo/src/transform/lower_blackhole_transport.cc",

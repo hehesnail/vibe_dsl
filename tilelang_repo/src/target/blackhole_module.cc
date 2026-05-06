@@ -35,6 +35,7 @@
 #include "runtime/file_utils.h"
 #include "runtime/meta_data.h"
 #include "runtime/pack_args.h"
+#include "../transform/common/blackhole_buffer_distribution_schema.h"
 
 #ifdef TILELANG_BLACKHOLE_DIRECT
 #include <tt-metalium/host_api.hpp>
@@ -4046,9 +4047,12 @@ static void ValidateExecutableSpecBufferDistributionPlans(const std::string& fun
       ICHECK(plan.shard_shape.empty() && plan.shard_grid_shape.empty())
           << "Blackhole executable interleaved buffer distribution for "
           << plan.buffer << " cannot carry shard shape";
-      ICHECK_EQ(plan.logical_index_mapping, "interleaved_page_index")
+      ICHECK_EQ(
+          plan.logical_index_mapping,
+          ::tvm::tl::blackhole_buffer_distribution_schema::
+              kLogicalIndexMappingInterleavedLinearPage)
           << "Blackhole executable interleaved buffer distribution for "
-          << plan.buffer << " requires interleaved_page_index";
+          << plan.buffer << " requires interleaved_linear_page";
     } else if (plan.distribution_kind == "sharded") {
       ICHECK_EQ(memory_space, "l1")
           << "Blackhole executable sharded buffer distribution for "

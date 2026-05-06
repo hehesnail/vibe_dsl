@@ -119,7 +119,7 @@ This is the low-level expansion point for placement and address ABI.
 is the physical memory layout class, currently `interleaved` or `sharded`;
 page-addressed DRAM transport is not a third layout.  Page-addressed access
 uses explicit read/write page builtins, positive page-size fields, and
-`logical_index_mapping = interleaved_page_index` on an interleaved DRAM
+`logical_index_mapping = interleaved_linear_page` on an interleaved DRAM
 distribution.
 
 `shard_shape`

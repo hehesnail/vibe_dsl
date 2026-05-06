@@ -2580,7 +2580,7 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   layout or `page_indexed_accessor_cta`.  Keep layout physical
   (`interleaved` / `sharded`), carry page addressing through explicit
   read/write page transport, positive page-size fields, and
-  `logical_index_mapping=interleaved_page_index`.  Host transfer decisions
+  `logical_index_mapping=interleaved_linear_page`.  Host transfer decisions
   should derive full-tile vs sub-tile materialization from static buffer
   shape/dtype/page size, not from a special layout string.
 - 2026-05-06 Blackhole logical-z source binding:
