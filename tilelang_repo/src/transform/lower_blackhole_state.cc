@@ -2207,16 +2207,38 @@ bool PlanTTKernelABI::ShouldDeferTerminalTransportPublicationAcrossSerialLoop(
   return scope.rfind("shared", 0) == 0 || scope.rfind("blackhole.cb", 0) == 0;
 }
 
-void PlanTTKernelABI::RecordSerialLoopRetainedComputeInputPop(const Buffer& buffer,
-                                                              int pages) {
-  if (serial_loop_retained_input_pop_pages_stack_.empty() || pages <= 0 ||
+int PlanTTKernelABI::ReserveSerialLoopRetainedComputeInputOffset(
+    const Buffer& buffer,
+    const std::string& region_key,
+    int pages) {
+  if (serial_loop_retained_input_pop_pages_stack_.empty() ||
+      serial_loop_retained_input_offsets_stack_.empty() || pages <= 0 ||
       !ShouldRetainComputeInputBufferAcrossSerialLoop(buffer, pages)) {
-    return;
+    return 0;
   }
   const int requirement_index = FindRequirementIndexForBuffer(buffer);
   ICHECK_GE(requirement_index, 0);
-  auto& pop_pages = serial_loop_retained_input_pop_pages_stack_.back()[requirement_index];
-  pop_pages = std::max(pop_pages, pages);
+  ICHECK_LT(requirement_index, static_cast<int>(cb_requirements_.size()));
+  ICHECK_EQ(serial_loop_retained_input_offsets_stack_.size(),
+            serial_loop_retained_input_pop_pages_stack_.size());
+  auto& retained_offsets =
+      serial_loop_retained_input_offsets_stack_.back()[requirement_index];
+  const std::string key =
+      region_key.empty() ? BufferIdentityName(buffer) : region_key;
+  if (!key.empty()) {
+    auto existing = retained_offsets.find(key);
+    if (existing != retained_offsets.end()) {
+      return existing->second;
+    }
+  }
+  auto& retained_pages =
+      serial_loop_retained_input_pop_pages_stack_.back()[requirement_index];
+  const int tile_offset = retained_pages;
+  retained_pages += pages;
+  if (!key.empty()) {
+    retained_offsets[key] = tile_offset;
+  }
+  return tile_offset;
 }
 
 Stmt PlanTTKernelABI::BuildSerialLoopRetainedInputPops(

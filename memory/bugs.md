@@ -22,6 +22,28 @@
     还是 TileLang target contract 回归，再继续分析
   - 当前已确认 `fp16` unpack 只是其中一个显式 gate，不是唯一约束面
 
+### GEMM/online-softmax flash direct runtime 当前命中 TT-Sim `t_tile_mmio_wr32`
+
+- **现象**:
+  - T7 seq64 flash-attn exact-CB partial-combine、T9.2 paged GQA full decode、
+    T9.3 full paged MLA decode 的 source/spec 都能投出 typed records，
+    但直接放进当前 TT-Sim 执行会命中
+    `UnimplementedFunctionality: t_tile_mmio_wr32`
+  - 这个边界出现在 GEMM + online-softmax leaf chain 上：
+    `matmul_tiles` 与 `reduce_tile`、`exp2_tile` / `recip_tile`
+    组合后触发；T9.1 grouped GEMM、T9.3 dual-score GEMM slice、small bf16
+    flash 正例不能被同一个 gate 误伤
+- **当前结论**:
+  - 这是当前 direct runtime 的 typed simulator capability boundary，
+    不是旧的 `tensix_execute_pacr:
+    intermediate_format=0 late_from_format=5` 边界
+  - gate 应从 `ExecutableSpec.kernel.compute_ops` 的 enabled leaf records
+    判定，并暴露
+    `GEMM/online-softmax flash-attention direct runtime is gated:
+    TT-Sim reports t_tile_mmio_wr32 for the current compute leaf chain`
+  - 保留非 softmax GEMM 正例，避免把真实 GEMM / accumulator live-form
+    回归藏在 simulator skip 后面
+
 ### loop-carried input exact-CB backedge 在 TT-Sim 上需要 typed `pacr count=1` gate
 
 - **现象**:
@@ -2949,28 +2971,32 @@
   - Follow-up guard now also scans `companion_base.h`; focused selectors
     covering stale contract/selection keys, generic value-expr schema, and
     public schema field forbids reported `3 passed`.
-  - TT-Sim direct-runtime copy selectors and T9.3 paged MLA selectors passed;
-    T9.2 paged GQA remains at the typed PACR simulator boundary in the current
-    run.
+  - TT-Sim direct-runtime copy selectors and T9.3 paged MLA selectors passed.
+    At that checkpoint T9.2 paged GQA still stopped at a typed PACR simulator
+    boundary; the later 2026-05-06 full online-softmax gate was reclassified
+    to the `t_tile_mmio_wr32` leaf-chain boundary recorded above.
 
-### T9.2 paged GQA reaches TT-Sim PACR capability boundary
+### T9.2 paged GQA previously reached TT-Sim PACR capability boundary
 
 - **症状**:
-  - The paged GQA decode direct-runtime selector compiles, creates reader /
-    compute / writer kernels, and launches the multi-core workload, then
-    TT-Sim aborts with
+  - An earlier paged GQA decode direct-runtime selector compiled, created
+    reader / compute / writer kernels, and launched the multi-core workload,
+    then TT-Sim aborted with
     `UnsupportedFunctionality: tensix_execute_pacr: intermediate_format=0 late_from_format=5`.
 - **根因**:
   - The failure is below the per-work binding/schema layer: source/spec
     projection has already reached TT-Metal execution, and the thrown reason
     is TT-Sim PACR format capability.
 - **修法**:
-  - Track this as T9.2 runtime/simulator-boundary work.  Do not work around it
+  - Track this as historical T9.2 runtime/simulator-boundary work.  Do not work around it
     by reintroducing row/page descriptors, page-value side variables,
     source-name recovery, or a paged-GQA-specific execution path.
+  - Do not treat this old PACR message as the current active full flash decode
+    gate without rerunning the typed source/spec path; the current
+    GEMM/online-softmax boundary is `t_tile_mmio_wr32`.
 - **验证**:
-  - The focused T9.2 selector currently reproduces the PACR boundary after the
-    IR-first per-work schema cleanup.
+  - The focused T9.2 selector reproduced the PACR boundary after the IR-first
+    per-work schema cleanup at that checkpoint.
 
 ### GEMM direct-runtime selectors failed before value-expression execution on missing buffer roles
 

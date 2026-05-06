@@ -1321,11 +1321,20 @@ tir::Stmt RewriteRetainedStreamInputMatmulTileOffsets(
       if (!IsTracked(cb_id) || pages <= 0) {
         return expr;
       }
-      active_event_base_[cb_id] = next_tile_offset_[cb_id];
+      const int base = next_tile_offset_[cb_id];
+      const bool wait_uses_absolute_depth =
+          pages > std::max(1, stream_inputs_[cb_id].event_pages);
+      active_event_base_[cb_id] =
+          wait_uses_absolute_depth ? 0 : base;
       next_tile_offset_[cb_id] =
           std::min(stream_inputs_[cb_id].capacity_pages,
-                   next_tile_offset_[cb_id] + pages);
-      return expr;
+                   wait_uses_absolute_depth ? std::max(base, pages) : base + pages);
+      if (wait_uses_absolute_depth || base <= 0) {
+        return expr;
+      }
+      Array<PrimExpr> args = op->args;
+      args.Set(1, tvm::IntImm(args[1].dtype(), base + pages));
+      return tir::Call(op->dtype, op->op, args, op->annotations, op->span);
     }
 
     PrimExpr VisitMatmulTiles(const tir::CallNode* op, const PrimExpr& expr) {

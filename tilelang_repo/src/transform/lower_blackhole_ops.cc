@@ -308,6 +308,159 @@ static void UpdateCBRequirementDepthsFromLoweredBody(std::vector<CBRequirement>*
   }
 }
 
+static tir::Stmt RewriteRetainedStreamInputMatmulTileOffsetsForRequirements(
+    const tir::Stmt& body,
+    const std::vector<CBRequirement>& requirements) {
+  struct StreamInputInfo {
+    bool tracked = false;
+    int capacity_pages = 0;
+    int event_pages = 1;
+  };
+  std::vector<StreamInputInfo> stream_inputs(requirements.size());
+  for (size_t i = 0; i < requirements.size(); ++i) {
+    const CBRequirement& req = requirements[i];
+    if (req.type != CBType::kInput || req.flow_class != CBFlowClass::kStream) {
+      continue;
+    }
+    const int event_pages = std::max(1, req.consume_pages_per_event);
+    if (req.num_pages <= event_pages) {
+      continue;
+    }
+    StreamInputInfo& info = stream_inputs[i];
+    info.tracked = true;
+    info.capacity_pages = std::max(info.capacity_pages, req.num_pages);
+    info.event_pages = std::max(info.event_pages, event_pages);
+  }
+
+  class Rewriter final : public tir::StmtExprMutator {
+   public:
+    explicit Rewriter(std::vector<StreamInputInfo> stream_inputs)
+        : stream_inputs_(std::move(stream_inputs)),
+          next_tile_offset_(stream_inputs_.size(), 0),
+          active_event_base_(stream_inputs_.size(), -1) {}
+
+    PrimExpr VisitExpr_(const tir::CallNode* op) final {
+      PrimExpr expr = tir::StmtExprMutator::VisitExpr_(op);
+      const auto* rewritten = expr.as<tir::CallNode>();
+      if (rewritten == nullptr || !rewritten->op->IsInstance<OpNode>()) {
+        return expr;
+      }
+      if (IsBlackholeBuiltinCall(rewritten, tir::builtin::blackhole_cb_wait_front(),
+                                 "tl.blackhole.cb_wait_front")) {
+        return VisitWait(rewritten, expr);
+      }
+      if (IsBlackholeBuiltinCall(rewritten, tir::builtin::blackhole_matmul_tiles(),
+                                 "tl.blackhole.matmul_tiles")) {
+        return VisitMatmulTiles(rewritten, expr);
+      }
+      if (IsBlackholeBuiltinCall(rewritten, tir::builtin::blackhole_cb_pop_front(),
+                                 "tl.blackhole.cb_pop_front")) {
+        return VisitPop(rewritten, expr);
+      }
+      return expr;
+    }
+
+   private:
+    int StaticCBId(const tir::CallNode* op) const {
+      if (op == nullptr || op->args.empty()) {
+        return -1;
+      }
+      const auto* cb_id = op->args[0].as<IntImmNode>();
+      if (cb_id == nullptr || cb_id->value < 0 ||
+          cb_id->value >= static_cast<int64_t>(stream_inputs_.size())) {
+        return -1;
+      }
+      return static_cast<int>(cb_id->value);
+    }
+
+    int StaticPages(const tir::CallNode* op) const {
+      if (op == nullptr || op->args.size() < 2U) {
+        return 0;
+      }
+      const auto* pages = op->args[1].as<IntImmNode>();
+      return pages != nullptr ? static_cast<int>(pages->value) : 0;
+    }
+
+    bool IsTracked(int cb_id) const {
+      return cb_id >= 0 && cb_id < static_cast<int>(stream_inputs_.size()) &&
+             stream_inputs_[cb_id].tracked;
+    }
+
+    PrimExpr VisitWait(const tir::CallNode* op, const PrimExpr& expr) {
+      const int cb_id = StaticCBId(op);
+      const int pages = StaticPages(op);
+      if (!IsTracked(cb_id) || pages <= 0) {
+        return expr;
+      }
+      const int base = next_tile_offset_[cb_id];
+      const int event_pages = std::max(1, stream_inputs_[cb_id].event_pages);
+      const bool wait_uses_absolute_depth = pages > event_pages;
+      active_event_base_[cb_id] = wait_uses_absolute_depth ? 0 : base;
+      next_tile_offset_[cb_id] =
+          std::min(stream_inputs_[cb_id].capacity_pages,
+                   wait_uses_absolute_depth ? std::max(base, pages) : base + pages);
+      if (wait_uses_absolute_depth || base <= 0) {
+        return expr;
+      }
+      tvm::Array<PrimExpr> args = op->args;
+      args.Set(1, tvm::IntImm(args[1].dtype(), base + pages));
+      return tir::Call(op->dtype, op->op, args, op->annotations, op->span);
+    }
+
+    PrimExpr VisitMatmulTiles(const tir::CallNode* op, const PrimExpr& expr) {
+      if (op->args.size() < 5U) {
+        return expr;
+      }
+      tvm::Array<PrimExpr> args = op->args;
+      bool changed = false;
+      auto apply_input_offset = [&](int cb_arg_pos, int tile_arg_pos) {
+        const auto* cb_id = args[cb_arg_pos].as<IntImmNode>();
+        const auto* tile = args[tile_arg_pos].as<IntImmNode>();
+        if (cb_id == nullptr || tile == nullptr || !IsTracked(static_cast<int>(cb_id->value))) {
+          return;
+        }
+        const int cb = static_cast<int>(cb_id->value);
+        const int base = active_event_base_[cb];
+        if (base <= 0) {
+          return;
+        }
+        args.Set(tile_arg_pos, tvm::IntImm(args[tile_arg_pos].dtype(), tile->value + base));
+        changed = true;
+      };
+      apply_input_offset(/*cb_arg_pos=*/0, /*tile_arg_pos=*/2);
+      apply_input_offset(/*cb_arg_pos=*/1, /*tile_arg_pos=*/3);
+      if (!changed) {
+        return expr;
+      }
+      return tir::Call(op->dtype, op->op, args, op->annotations, op->span);
+    }
+
+    PrimExpr VisitPop(const tir::CallNode* op, const PrimExpr& expr) {
+      const int cb_id = StaticCBId(op);
+      const int pages = StaticPages(op);
+      if (!IsTracked(cb_id) || pages <= 0) {
+        return expr;
+      }
+      const int pop_pages = std::max(pages, next_tile_offset_[cb_id]);
+      next_tile_offset_[cb_id] = std::max(0, next_tile_offset_[cb_id] - pop_pages);
+      active_event_base_[cb_id] = -1;
+      if (pop_pages == pages) {
+        return expr;
+      }
+      tvm::Array<PrimExpr> args = op->args;
+      args.Set(1, tvm::IntImm(args[1].dtype(), pop_pages));
+      return tir::Call(op->dtype, op->op, args, op->annotations, op->span);
+    }
+
+    std::vector<StreamInputInfo> stream_inputs_;
+    std::vector<int> next_tile_offset_;
+    std::vector<int> active_event_base_;
+  };
+
+  Rewriter rewriter(std::move(stream_inputs));
+  return rewriter(body);
+}
+
 using tir::PrimFunc;
 using tir::PrimFuncNode;
 using tir::Stmt;
@@ -1536,6 +1689,7 @@ PrimFunc PlanTTKernelABI::SelectComputeBuiltins(const PrimFunc& func) {
   buffer_data_to_req_index_.clear();
   buffer_identity_to_req_index_.clear();
   cb_requirements_.clear();
+  seeded_cb_requirement_indices_.clear();
   next_requirement_index_ = 0;
   logical_buffer_shapes_.clear();
   compute_physical_buffers_by_data_.clear();
@@ -1567,6 +1721,7 @@ PrimFunc PlanTTKernelABI::SelectComputeBuiltins(const PrimFunc& func) {
   active_serial_loop_vars_.clear();
   active_serial_loop_order_ranges_.clear();
   serial_loop_retained_input_pop_pages_stack_.clear();
+  serial_loop_retained_input_offsets_stack_.clear();
   serial_loop_terminal_transport_publications_stack_.clear();
   block_index_vars_.clear();
   block_index_var_names_.clear();
@@ -1843,6 +1998,7 @@ PrimFunc PlanTTKernelABI::Transform(const PrimFunc& func) {
   buffer_data_to_req_index_.clear();
   buffer_identity_to_req_index_.clear();
   cb_requirements_.clear();
+  seeded_cb_requirement_indices_.clear();
   accessor_descriptors_.clear();
   next_requirement_index_ = 0;
   saw_copy_op_ = false;
@@ -1874,6 +2030,7 @@ PrimFunc PlanTTKernelABI::Transform(const PrimFunc& func) {
   active_serial_loop_vars_.clear();
   active_serial_loop_order_ranges_.clear();
   serial_loop_retained_input_pop_pages_stack_.clear();
+  serial_loop_retained_input_offsets_stack_.clear();
   serial_loop_terminal_transport_publications_stack_.clear();
   block_index_vars_.clear();
   block_index_var_names_.clear();
@@ -1964,6 +2121,8 @@ PrimFunc PlanTTKernelABI::Transform(const PrimFunc& func) {
   gemm_a_buffer_name_.clear();
   gemm_b_buffer_name_.clear();
   gemm_c_buffer_name_.clear();
+  gemm_a_region_key_.clear();
+  gemm_b_region_key_.clear();
   gemm_c_scope_.clear();
   gemm_has_mbarrier_ = false;
   gemm_mbarrier_buffer_ = Buffer();
@@ -2128,6 +2287,9 @@ PrimFunc PlanTTKernelABI::Transform(const PrimFunc& func) {
   UpdateCBRequirementDepthsFromLoweredBody(&cb_requirements_, body_with_segment_markers,
                                            gemm_a_buffer_name_.empty() ? "fused_dataflow"
                                                                        : "compute");
+  body_with_segment_markers =
+      RewriteRetainedStreamInputMatmulTileOffsetsForRequirements(body_with_segment_markers,
+                                                                 cb_requirements_);
   std::vector<std::string> unresolved_unsupported_ops;
   std::unordered_set<std::string> unresolved_unsupported_seen;
   auto push_unresolved = [&](const char* op_name) {
@@ -2374,6 +2536,7 @@ void PlanTTKernelABI::LoadSeededCBRequirements(const PrimFunc& func) {
     }
 
     cb_requirements_.push_back(req);
+    seeded_cb_requirement_indices_.insert(req_index);
     if (!req.name.empty()) {
       buffer_identity_to_req_index_[req.name] = req_index;
     }
@@ -3166,6 +3329,7 @@ Stmt PlanTTKernelABI::VisitStmt_(const AttrStmtNode* op) {
     if (zero_thread_var) {
       active_serial_loop_vars_.push_back(iv->var);
       serial_loop_retained_input_pop_pages_stack_.push_back({});
+      serial_loop_retained_input_offsets_stack_.push_back({});
       serial_loop_terminal_transport_publications_stack_.push_back({});
     }
     Stmt body = VisitStmt(op->body);
@@ -3180,6 +3344,7 @@ Stmt PlanTTKernelABI::VisitStmt_(const AttrStmtNode* op) {
       terminal_transport_publications = BuildSerialLoopTerminalTransportPublications(
           serial_loop_terminal_transport_publications_stack_.back());
       serial_loop_terminal_transport_publications_stack_.pop_back();
+      serial_loop_retained_input_offsets_stack_.pop_back();
       serial_loop_retained_input_pop_pages_stack_.pop_back();
       active_serial_loop_vars_.pop_back();
     }
@@ -5018,6 +5183,7 @@ Stmt PlanTTKernelABI::VisitStmt_(const ForNode* op) {
   }
   active_serial_loop_vars_.push_back(op->loop_var);
   serial_loop_retained_input_pop_pages_stack_.push_back({});
+  serial_loop_retained_input_offsets_stack_.push_back({});
   serial_loop_terminal_transport_publications_stack_.push_back({});
   auto compute_loop_body_order_range = [&]() -> std::pair<int, int> {
     int min_order = std::numeric_limits<int>::max();
@@ -5180,6 +5346,7 @@ Stmt PlanTTKernelABI::VisitStmt_(const ForNode* op) {
   serial_loop_terminal_transport_publications_stack_.pop_back();
   retained_input_pops =
       BuildSerialLoopRetainedInputPops(serial_loop_retained_input_pop_pages_stack_.back());
+  serial_loop_retained_input_offsets_stack_.pop_back();
   serial_loop_retained_input_pop_pages_stack_.pop_back();
   for (const std::string& identity : loop_carried_identities) {
     InvalidateLastFragmentFillValueIdentity(identity);

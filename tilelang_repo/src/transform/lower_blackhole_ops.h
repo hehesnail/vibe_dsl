@@ -584,6 +584,7 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
                                         bool preserve_out_local_state = false,
                                         bool reacquire_in0 = false,
                                         bool reacquire_in1 = false,
+                                        bool output_requires_separate_compute_live_form = false,
                                         const FragmentCastMatch* post_merge_cast = nullptr,
                                         int post_merge_cast_order_index = -1);
   tvm::tir::Stmt GenerateMatmulSequenceForOutputRequirement(int out_req_index,
@@ -614,7 +615,8 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
                                                     const FragmentCastMatch* post_merge_cast,
                                                     int post_merge_cast_order_index,
                                                     bool merge_with_zero_reload,
-                                                    bool reload_from_loop_carried_local_state);
+                                                    bool reload_from_loop_carried_local_state,
+                                                    bool output_requires_separate_compute_live_form);
   bool CanPublishPostMergeCastWithPackTile(const FragmentCastMatch& match,
                                            int cast_order_index) const;
   bool HasZeroFragmentFillFact(const tvm::tir::Buffer& buffer) const;
@@ -922,8 +924,9 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
       const tvm::tir::Buffer& buffer,
       int current_order_index) const;
   int FindRequirementIndexForBuffer(const tvm::tir::Buffer& buffer) const;
-  void RecordSerialLoopRetainedComputeInputPop(const tvm::tir::Buffer& buffer,
-                                               int pages);
+  int ReserveSerialLoopRetainedComputeInputOffset(const tvm::tir::Buffer& buffer,
+                                                  const std::string& region_key,
+                                                  int pages);
   tvm::tir::Stmt BuildSerialLoopRetainedInputPops(
       const std::map<int, int>& pop_pages_by_requirement_index) const;
   void RecordSerialLoopTerminalTransportPublication(const tvm::tir::Stmt& stmt);
@@ -979,6 +982,7 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   // the same physical resource can appear as distinct Buffer/Var objects.
   std::unordered_map<std::string, int> buffer_identity_to_req_index_;
   std::vector<CBRequirement> cb_requirements_;
+  std::unordered_set<int> seeded_cb_requirement_indices_;
   bool saw_copy_op_ = false;
   bool needs_copy_runtime_args_ = false;
   bool requires_compute_segment_ = false;
@@ -1008,6 +1012,8 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   std::string gemm_a_buffer_name_;
   std::string gemm_b_buffer_name_;
   std::string gemm_c_buffer_name_;
+  std::string gemm_a_region_key_;
+  std::string gemm_b_region_key_;
   std::string gemm_c_scope_;
   bool gemm_has_mbarrier_ = false;
   tvm::tir::Buffer gemm_mbarrier_buffer_;
@@ -1054,6 +1060,8 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   std::vector<tvm::tir::Var> active_serial_loop_vars_;
   std::vector<std::pair<int, int>> active_serial_loop_order_ranges_;
   std::vector<std::map<int, int>> serial_loop_retained_input_pop_pages_stack_;
+  std::vector<std::map<int, std::map<std::string, int>>>
+      serial_loop_retained_input_offsets_stack_;
   std::vector<std::vector<tvm::tir::Stmt>> serial_loop_terminal_transport_publications_stack_;
   std::unordered_set<const tvm::tir::VarNode*> block_index_vars_;
   std::unordered_set<std::string> block_index_var_names_;

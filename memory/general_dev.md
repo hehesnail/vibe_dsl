@@ -2718,3 +2718,12 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   coordinate channel increased local state and triggered TT-Sim
   `t_tile_mmio_wr32`.  A separate internal history buffer is only justified
   when no coordinate projection channel exists.
+- 2026-05-06 GEMM accumulator live-form ownership:
+  A writer-visible output CB must not double as a compute-only accumulator
+  live form when a later compute producer for the same logical buffer runs
+  before direct transport.  Publish the first GEMM result to a separate
+  intermediate live-form CB, then let the final merge publish the output CB;
+  otherwise the writer can legally consume the intermediate first GEMM page.
+  For serial-loop retained GEMM inputs, track retained regions by structural
+  buffer-region keys and rewrite waits/matmul tile offsets to absolute retained
+  depth before the final pop, instead of relying on one buffer-level pop count.

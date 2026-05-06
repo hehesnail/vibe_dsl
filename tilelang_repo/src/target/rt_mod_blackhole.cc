@@ -3043,6 +3043,37 @@ static void EnforceStandalonePacrLeafSimulatorGate(ExecutableSpec* spec) {
   }
 }
 
+static constexpr const char* kGemmOnlineSoftmaxTTSimMMIOReason =
+    "GEMM/online-softmax flash-attention direct runtime is gated: "
+    "TT-Sim reports t_tile_mmio_wr32 for the current compute leaf chain";
+
+static bool HasLoopCarriedInputExactCBBackedgeRelease(const ExecutableSpec& spec);
+
+static void EnforceGemmOnlineSoftmaxTTSimMMIOGate(ExecutableSpec* spec) {
+  ICHECK(spec != nullptr);
+  if (HasLoopCarriedInputExactCBBackedgeRelease(*spec)) {
+    return;
+  }
+  bool has_gemm = false;
+  bool has_reduce = false;
+  bool has_exp2_or_recip = false;
+  for (const KernelSpec& kernel : spec->kernels) {
+    for (const KernelComputeOpSpec& compute_op : kernel.compute_ops) {
+      if (!compute_op.enabled) {
+        continue;
+      }
+      has_gemm = has_gemm || compute_op.kind == "gemm";
+      has_reduce = has_reduce || compute_op.operation_name == "reduce_tile";
+      has_exp2_or_recip = has_exp2_or_recip ||
+                          compute_op.operation_name == "exp2_tile" ||
+                          compute_op.operation_name == "recip_tile";
+    }
+  }
+  if (has_gemm && has_reduce && has_exp2_or_recip) {
+    AppendDirectRuntimeUnsupportedReason(spec, kGemmOnlineSoftmaxTTSimMMIOReason);
+  }
+}
+
 static bool HasLoopCarriedInputExactCBBackedgeRelease(const ExecutableSpec& spec) {
   std::unordered_map<std::string, const ExactCBAllocationSpec*> allocation_by_name;
   for (const ExactCBAllocationSpec& allocation : spec.exact_cb_allocations) {
@@ -3776,6 +3807,7 @@ ffi::Module BuildTileLangBlackhole(IRModule mod, Target target) {
     EnforceExactLiveFormMultiPageRepublishGate(&spec_it->second);
     EnforceExplicitBufferRoleSchemaGate(&spec_it->second);
     EnforceStandalonePacrLeafSimulatorGate(&spec_it->second);
+    EnforceGemmOnlineSoftmaxTTSimMMIOGate(&spec_it->second);
     EnforceLoopCarriedExactCBPacrSimulatorGate(&spec_it->second);
   }
   for (const auto& kv : host_to_device) {
@@ -3890,6 +3922,7 @@ ffi::Module BuildTileLangBlackholeWithoutHost(IRModule mod, Target target) {
     EnforceExactLiveFormMultiPageRepublishGate(&spec_it->second);
     EnforceExplicitBufferRoleSchemaGate(&spec_it->second);
     EnforceStandalonePacrLeafSimulatorGate(&spec_it->second);
+    EnforceGemmOnlineSoftmaxTTSimMMIOGate(&spec_it->second);
     EnforceLoopCarriedExactCBPacrSimulatorGate(&spec_it->second);
   }
   for (const auto& kv : host_to_device) {

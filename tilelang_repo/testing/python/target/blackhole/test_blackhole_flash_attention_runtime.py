@@ -29,6 +29,10 @@ LOOP_CARRIED_EXACT_CB_PACR_REASON = (
     "loop-carried exact-CB backedge direct runtime is gated: TT-Sim reports "
     "tensix_execute_pacr: count=1 for the admitted compute-side pack path"
 )
+GEMM_ONLINE_SOFTMAX_TT_SIM_MMIO_REASON = (
+    "GEMM/online-softmax flash-attention direct runtime is gated: "
+    "TT-Sim reports t_tile_mmio_wr32 for the current compute leaf chain"
+)
 
 
 def _load_flash_attention_module_with_dtype(module_path, dtype_expr=BLACKHOLE_FLASH_ATTENTION_DTYPE_EXPR):
@@ -638,7 +642,7 @@ def _extract_c_for_loop_body(source, header):
 
 def _assert_t7_seq64_mha_exact_cb_partial_combine_contract(metadata):
     reasons = [str(reason) for reason in metadata.get("direct_runtime_unsupported_reasons", [])]
-    assert reasons == []
+    assert reasons == [GEMM_ONLINE_SOFTMAX_TT_SIM_MMIO_REASON]
     assert not any(MULTI_PAGE_EXACT_CB_REPUBLISH_REASON in reason for reason in reasons)
     assert not any(MULTI_BLOCK_EXACT_CB_REPUBLISH_REASON in reason for reason in reasons)
 
@@ -714,6 +718,12 @@ def _assert_t7_seq64_mha_exact_cb_partial_combine_contract(metadata):
         assert re.search(rf"cb_reserve_back\({cb_id},\s*\d+\);", compute_source)
         assert re.search(rf"cb_push_back\({cb_id},\s*\d+\);", compute_source)
     assert any(f"cb_pop_front({cb_id}, 1);" in compute_source for cb_id in merge_cb_ids)
+
+
+def _skip_gemm_online_softmax_ttsim_mmio_direct_runtime(metadata):
+    reasons = [str(reason) for reason in metadata.get("direct_runtime_unsupported_reasons", [])]
+    assert reasons == [GEMM_ONLINE_SOFTMAX_TT_SIM_MMIO_REASON]
+    pytest.skip(GEMM_ONLINE_SOFTMAX_TT_SIM_MMIO_REASON)
 
 
 def test_blackhole_flash_attention_runtime_gate_is_queryable():
@@ -1368,6 +1378,7 @@ def test_blackhole_t7_seq64_mha_bf16_exact_cb_partial_combine_direct_runtime():
     )
     artifact, metadata = _lower_blackhole_flash_attention_metadata(kernel)
     _assert_t7_seq64_mha_exact_cb_partial_combine_contract(metadata)
+    _skip_gemm_online_softmax_ttsim_mmio_direct_runtime(metadata)
     artifact.codegen_mod["main"](q, k, v, out)
 
     ref = blackhole_mha_example.ref_program(q, k, v, is_causal=is_causal).to(dtype=out.dtype)
@@ -1530,7 +1541,7 @@ def test_blackhole_t9_paged_gqa_decode_projects_page_table_and_cache_len_binding
     _, metadata = _lower_blackhole_flash_attention_metadata(kernel)
 
     reasons = [str(reason) for reason in metadata.get("direct_runtime_unsupported_reasons", [])]
-    assert reasons == []
+    assert reasons == [GEMM_ONLINE_SOFTMAX_TT_SIM_MMIO_REASON]
     assert list(metadata["tvm_arg_names"]) == [
         "Q",
         "KCache",
@@ -1648,7 +1659,7 @@ def test_blackhole_t9_paged_mla_decode_projects_latent_and_pe_page_bindings():
     _, metadata = _lower_blackhole_flash_attention_metadata(kernel)
 
     reasons = [str(reason) for reason in metadata.get("direct_runtime_unsupported_reasons", [])]
-    assert reasons == []
+    assert reasons == [GEMM_ONLINE_SOFTMAX_TT_SIM_MMIO_REASON]
     assert list(metadata["tvm_arg_names"]) == [
         "QNope",
         "QPe",
@@ -2053,7 +2064,7 @@ def test_blackhole_t9_paged_gqa_decode_bf16_direct_runtime():
         dim=dim,
     )
     artifact, metadata = _lower_blackhole_flash_attention_metadata(kernel)
-    assert [str(reason) for reason in metadata.get("direct_runtime_unsupported_reasons", [])] == []
+    _skip_gemm_online_softmax_ttsim_mmio_direct_runtime(metadata)
 
     artifact.codegen_mod["main"](q, k_cache, v_cache, page_table, cache_seq_lens, out)
 
@@ -2202,7 +2213,7 @@ def test_blackhole_t9_paged_mla_decode_bf16_direct_runtime():
         dpe=dpe,
     )
     artifact, metadata = _lower_blackhole_flash_attention_metadata(kernel)
-    assert [str(reason) for reason in metadata.get("direct_runtime_unsupported_reasons", [])] == []
+    _skip_gemm_online_softmax_ttsim_mmio_direct_runtime(metadata)
 
     artifact.codegen_mod["main"](q_nope, q_pe, kv_latent, k_pe, page_table, cache_seq_lens, out)
 
