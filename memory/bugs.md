@@ -3488,6 +3488,33 @@
   - TT-Sim host-shim, page-addressed copy, and sharded T3 bf16 selectors
     passed.
 
+### Guarded row-page and guard-mask CB events used mismatched thread ownership
+
+- **症状**:
+  - Paged GQA decode hung at `EnqueueMeshWorkload` because guard-mask CBs had
+    one physical page but every `tx` lane reserved and pushed that page.
+  - T8 ragged row and sparse/ragged row-page copies hung when the reader was
+    guarded to `tx == 0` but the writer loop still waited and popped from every
+    `tx` lane.
+- **根因**:
+  - The leaf source represented one per-work FIFO event, but source generation
+    did not apply a consistent active-thread owner predicate to both producer
+    and consumer sides.  This was an execution-event ownership bug, not a GQA
+    or sparse workload special case.
+- **修法**:
+  - Add a shared `PlanTTKernelABI::WrapActiveThreadSinglePublication` helper and
+    apply it to guard-mask source publication, guarded row-page reader
+    publication, and guarded row-page writer consumption.
+  - Keep the fix structural: derive the predicate from active TIR thread vars
+    already tracked by lowering, not from buffer names or workload labels.
+- **验证**:
+  - Added source guards for guard-mask CB publication and guarded row-page CB
+    producer/consumer ownership.
+  - `cmake --build build -j32` passed.
+  - TT-Sim direct-runtime selectors for paged GQA, T8 ragged/sparse row-page
+    copies, full T8 indexed/ragged/paged/segmented copy gates, and the active
+    T7/T9 workload group passed.
+
 ## 3. 环境问题速查
 
 | 问题 | 解决 |

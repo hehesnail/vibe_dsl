@@ -1297,10 +1297,12 @@ Stmt PlanTTKernelABI::GenerateGuardMaskApplySequence(
        IntImm32(mask_page_bytes)}));
   reader_stmts.push_back(MakeBlackholeCall(
       blackhole_cb_push_back(), {IntImm32(mask_cb_id), IntImm32(1)}));
+  Stmt reader_body =
+      WrapActiveThreadSinglePublication(SeqStmt::Flatten(reader_stmts));
   Stmt reader = AttrStmt(StringImm("blackhole.segment_kind"),
                          "blackhole.segment_kind",
                          StringImm("reader"),
-                         SeqStmt::Flatten(reader_stmts));
+                         reader_body);
 
   std::vector<Stmt> compute_stmts;
   MarkFutureLiveExactCBRequirementsOverlapWith(out.cb_id, out.num_tiles,

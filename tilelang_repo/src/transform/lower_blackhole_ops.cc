@@ -100,6 +100,25 @@ static std::optional<CBFlowClass> ParseCBFlowClass(const std::string& flow_class
   return std::nullopt;
 }
 
+tvm::tir::Stmt PlanTTKernelABI::WrapActiveThreadSinglePublication(tvm::tir::Stmt stmt) const {
+  PrimExpr predicate;
+  for (const tir::Var& active_var : active_serial_loop_vars_) {
+    const bool is_thread_var =
+        thread_index_vars_.count(active_var.get()) != 0U ||
+        thread_index_var_names_.count(active_var->name_hint) != 0U;
+    if (!is_thread_var) {
+      continue;
+    }
+    PrimExpr zero = IntImm(active_var.dtype(), 0);
+    PrimExpr is_zero = tir::EQ(active_var, zero);
+    predicate = predicate.defined() ? tir::And(predicate, is_zero) : is_zero;
+  }
+  if (!predicate.defined()) {
+    return stmt;
+  }
+  return tir::IfThenElse(predicate, stmt);
+}
+
 static bool IsLiteralZeroValue(const PrimExpr& expr) {
   if (const auto* imm = expr.as<IntImmNode>()) {
     return imm->value == 0;

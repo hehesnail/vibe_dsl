@@ -1586,19 +1586,6 @@ static const BufferMaterializationSpec* FindBufferMaterializationSpec(
     const ExecutableSpec& spec,
     const std::string& buffer_name);
 
-static bool HasSubTileInterleavedPageMaterialization(const ExecutableSpec& spec,
-                                                    const std::string& buffer) {
-  const BufferMaterializationSpec* materialization =
-      FindBufferMaterializationSpec(spec, buffer);
-  if (materialization == nullptr) {
-    return false;
-  }
-  return materialization->layout == "interleaved" &&
-         materialization->memory_space == "dram" &&
-         materialization->transport_page_size_bytes > 0U &&
-         materialization->transport_page_size_bytes < 32U * 32U * 2U;
-}
-
 static int CountGenericValueExprPerWorkBindingsForBuffer(
     const ExecutableSpec& spec,
     const std::string& buffer) {
@@ -1625,8 +1612,7 @@ static bool HasValueExprPerWorkBindingForBuffer(const ExecutableSpec& spec,
 
 static bool HasRangeValueExprPerWorkBindingsForBuffer(const ExecutableSpec& spec,
                                                       const std::string& buffer) {
-  return HasSubTileInterleavedPageMaterialization(spec, buffer) &&
-         CountGenericValueExprPerWorkBindingsForBuffer(spec, buffer) >= 2;
+  return CountGenericValueExprPerWorkBindingsForBuffer(spec, buffer) >= 2;
 }
 
 static void ValidateGemmInputShape(const ExecutableSpec& spec,
@@ -1928,6 +1914,40 @@ static std::vector<uint8_t> BuildInterleavedTiledTransferData(const DLTensor* te
 }
 
 template <typename T>
+static std::vector<uint8_t> BuildSegmentedGemmATiledWindowTransferData(
+    const DLTensor* tensor,
+    uint32_t tile_rows,
+    uint32_t tile_cols) {
+  const auto [rows64, cols64] = GetTensorShape2D(tensor);
+  const uint32_t rows = rows64;
+  const uint32_t cols = cols64;
+  ICHECK_GT(tile_rows, 0U);
+  ICHECK_GT(tile_cols, 0U);
+  ICHECK_EQ(cols % tile_cols, 0U)
+      << "Blackhole segmented GEMM A materialization requires K aligned to tile cols";
+  const uint32_t tiles_per_row = cols / tile_cols;
+  const T* raw = GetTensorData<T>(tensor);
+  std::vector<T> tiled_windows;
+  tiled_windows.reserve(static_cast<size_t>(rows) * tiles_per_row * tile_rows * tile_cols);
+  for (uint32_t row_start = 0; row_start < rows; ++row_start) {
+    for (uint32_t tile_col = 0; tile_col < tiles_per_row; ++tile_col) {
+      std::vector<T> window(static_cast<size_t>(tile_rows) * tile_cols, T{});
+      for (uint32_t r = 0; r < tile_rows && row_start + r < rows; ++r) {
+        const T* src = raw + static_cast<size_t>(row_start + r) * cols +
+                       static_cast<size_t>(tile_col) * tile_cols;
+        T* dst = window.data() + static_cast<size_t>(r) * tile_cols;
+        std::copy(src, src + tile_cols, dst);
+      }
+      std::vector<T> tiled_window = tilize_nfaces(window, tile_rows, tile_cols);
+      tiled_windows.insert(tiled_windows.end(), tiled_window.begin(), tiled_window.end());
+    }
+  }
+  std::vector<uint8_t> bytes(tiled_windows.size() * sizeof(T));
+  std::memcpy(bytes.data(), tiled_windows.data(), bytes.size());
+  return bytes;
+}
+
+template <typename T>
 static void CopyInterleavedTiledOutputToTensor(DLTensor* tensor,
                                                const InterleavedTilePlan& plan,
                                                const std::vector<uint8_t>& output_data) {
@@ -1973,11 +1993,6 @@ static std::vector<uint8_t> BuildInputTransferData(const ExecutableSpec& spec,
     std::memcpy(raw.data(), GetTensorData<uint8_t>(tensor), tensor_size);
     return raw;
   };
-  if (gemm.enabled && gemm.kind == "gemm" && binding.name == gemm.a_buffer &&
-      HasRangeValueExprPerWorkBindingsForBuffer(spec, binding.name)) {
-    return build_raw_transfer();
-  }
-
   const auto& materialization = ResolveBufferMaterializationSpec(spec, binding.name);
   const InterleavedTilePlan tile_plan =
       BuildInterleavedTilePlan(spec, materialization, tensor);
@@ -2026,6 +2041,12 @@ static std::vector<uint8_t> BuildInputTransferData(const ExecutableSpec& spec,
   const auto* raw = GetTensorData<uint16_t>(tensor);
   const auto [rows, cols] = GetTensorShape2D(tensor);
   ValidateGemmInputShape(spec, binding, rows, cols);
+
+  if (binding.name == gemm.a_buffer &&
+      HasRangeValueExprPerWorkBindingsForBuffer(spec, binding.name)) {
+    return BuildSegmentedGemmATiledWindowTransferData<uint16_t>(
+        tensor, gemm.M, 32U);
+  }
 
   if (binding.name == gemm.b_buffer &&
       HasValueExprPerWorkBindingForBuffer(spec, binding.name)) {
@@ -2571,6 +2592,11 @@ static DirectRuntimeBufferState MaterializeRuntimeBuffers(
     ICHECK(binding.tensor != nullptr) << "Null tensor passed to Blackhole direct path";
     const size_t tensor_size = GetDataSize(*binding.tensor);
     const auto& materialization = ResolveBufferMaterializationSpec(spec, binding.name);
+    std::vector<uint8_t> initial_data = BuildInputTransferData(spec, binding);
+    const size_t buffer_size = binding.is_output ? tensor_size : initial_data.size();
+    ICHECK_GT(buffer_size, 0U)
+        << "Blackhole direct runtime requires non-empty runtime buffer for "
+        << binding.name;
     const BufferDistributionSpec* distribution =
         FindRuntimeBufferDistributionSpec(spec, binding.name);
     const bool is_static_sharded_l1 =
@@ -2583,13 +2609,12 @@ static DirectRuntimeBufferState MaterializeRuntimeBuffers(
       dram_config.sharding_args = BuildStaticShardedL1BufferShardingArgs(
           *distribution, binding.tensor, materialization.transport_page_size_bytes);
     }
-    distributed::ReplicatedBufferConfig buffer_config{.size = tensor_size};
+    distributed::ReplicatedBufferConfig buffer_config{.size = buffer_size};
     auto mesh_buffer =
         distributed::MeshBuffer::create(buffer_config, dram_config, mesh_device);
-    std::vector<uint8_t> initial_data = BuildInputTransferData(spec, binding);
     state.runtime_buffers.emplace(binding.name, RuntimeBufferBinding{
                                                 .mesh_buffer = mesh_buffer,
-                                                .size_bytes = tensor_size,
+                                                .size_bytes = buffer_size,
                                                 .transport_page_size_bytes =
                                                     materialization.transport_page_size_bytes,
                                                 .is_output = binding.is_output,

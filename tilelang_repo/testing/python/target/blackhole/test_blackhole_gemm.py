@@ -1921,7 +1921,7 @@ def test_blackhole_t9_grouped_gemm_projects_segmented_a_bindings():
         if str(accessor["buffer"]) == "A"
     )
     assert str(a_accessor["layout"]) == "interleaved"
-    assert int(a_accessor["transport_page_size"]) == 64
+    assert int(a_accessor["transport_page_size"]) == 2048
 
     bindings = {
         str(spec["arg_identity"]): spec
@@ -1956,6 +1956,42 @@ def test_blackhole_t9_grouped_gemm_projects_segmented_a_bindings():
     assert '"type": "ir.IntImm"' in a_tile_count_expr
     assert '"dtype": "uint32"' in a_tile_count_expr
     assert '"value": 4' in a_tile_count_expr
+
+
+def test_blackhole_t9_grouped_gemm_guarded_tiled_rows_use_direct_tile_reads():
+    target = Target("blackhole")
+    kernel = grouped_gemm_kernel(groups=1, total_rows=32, N=32, K=128)
+
+    with target:
+        artifact = lower(kernel, target=target)
+
+    executable_spec = _extract_blackhole_executable_spec(artifact)
+    scratch_configs = [
+        config
+        for config in executable_spec["cb_configs"]
+        if "_base_value_scratch_" in str(config["name"])
+    ]
+    assert not scratch_configs
+
+    reader = _require_blackhole_kernel(
+        executable_spec["kernels"], kind="reader", core_type="brisc"
+    )
+    reader_source = str(reader["source_code"])
+    a_accessor = next(
+        accessor
+        for accessor in reader["accessors"]
+        if str(accessor["buffer"]) == "A"
+    )
+    assert int(a_accessor["transport_page_size"]) == 2048
+    assert reader_source.count("cb_reserve_back(0, 1);") == 1
+    assert "get_read_ptr(17)" not in reader_source
+    assert "cb_reserve_back(17, 1);" not in reader_source
+    assert "noc_async_read_tile" in reader_source
+    assert reader_source.index("if (((tx == 0)") < reader_source.index(
+        "cb_reserve_back(0, 1);"
+    )
+    assert "for (int32_t __tl_base_value_page_row = 0;" in reader_source
+    assert "for (int32_t __tl_base_value_subtile_col = 0;" in reader_source
 
 
 def test_blackhole_t5_external_sharded_l1_gemm_direct_runtime_bf16():

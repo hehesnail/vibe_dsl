@@ -48,6 +48,8 @@ using tir::Buffer;
 using tir::CallNode;
 using tir::PrimFunc;
 using tir::Stmt;
+using tir::Var;
+using tir::VarNode;
 using tvm::Bool;
 using tvm::DataType;
 using tvm::Integer;
@@ -1549,6 +1551,49 @@ void PlanTTKernelABI::StoreAccessorDescriptors(PrimFunc &func) {
       os << "]";
       return os.str();
     };
+    auto find_region_for_indexed_arg =
+        [&](const std::string& buffer, const std::string& access_kind,
+            const IndexedPerWorkRuntimeArg& arg) -> const SpatialAccessRegionRef* {
+      const SpatialAccessRegionRef* region =
+          FindSpatialAccessRegionRef(buffer, access_kind, arg.subject_index_exprs);
+      if (region != nullptr || !arg.value_expr.defined()) {
+        return region;
+      }
+      std::vector<Var> candidate_vars;
+      std::unordered_set<const VarNode*> seen_vars;
+      for (const PrimExpr& index_expr : arg.subject_index_exprs) {
+        tir::PostOrderVisit(index_expr, [&](const ObjectRef& node) {
+          const auto* var = node.as<VarNode>();
+          if (var == nullptr || !seen_vars.insert(var).second) {
+            return;
+          }
+          candidate_vars.push_back(GetRef<Var>(var));
+        });
+      }
+      std::vector<PrimExpr> value_expr_candidates{arg.value_expr};
+      for (const IndexedPerWorkRuntimeArg& existing : indexed_per_work_runtime_args_) {
+        if (existing.subject_buffer != arg.subject_buffer ||
+            !existing.value_expr.defined()) {
+          continue;
+        }
+        value_expr_candidates.push_back(existing.value_expr);
+      }
+      for (const PrimExpr& value_expr : value_expr_candidates) {
+        for (const Var& var : candidate_vars) {
+          ffi::Map<Var, PrimExpr> substitutions;
+          substitutions.Set(var, value_expr);
+          ffi::Array<PrimExpr> normalized_indices;
+          for (const PrimExpr& index_expr : arg.subject_index_exprs) {
+            normalized_indices.push_back(tir::Substitute(index_expr, substitutions));
+          }
+          region = FindSpatialAccessRegionRef(buffer, access_kind, normalized_indices);
+          if (region != nullptr) {
+            return region;
+          }
+        }
+      }
+      return nullptr;
+    };
     auto tile_start_value_source_for_buffer =
         [&](const std::string& buffer_name,
             const std::string& default_value_source) -> std::string {
@@ -1666,8 +1711,7 @@ void PlanTTKernelABI::StoreAccessorDescriptors(PrimFunc &func) {
         std::string access_region;
         int64_t access_region_index = -1;
         const SpatialAccessRegionRef* region =
-            FindSpatialAccessRegionRef(arg_buffer, "read",
-                                       arg.subject_index_exprs);
+            find_region_for_indexed_arg(arg_buffer, "read", arg);
         if (region != nullptr) {
           access_region = region->name;
           access_region_index = region->index;

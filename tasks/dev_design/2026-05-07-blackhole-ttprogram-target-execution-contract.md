@@ -119,6 +119,12 @@ Completed slice:
   `repeat_extent` for reduce ops, `ValidateTTProgram` checks them, and the
   executable `compute_ops` projection is the only source consumed by
   Blackhole codegen/runtime serialization.
+- Guarded row-page copy and guard-mask source CBs now keep physical FIFO
+  publish and consume events at one active thread grain.  Source generation
+  no longer lets every thread lane reserve/push or wait/pop the same per-work
+  CB event when the executable contract only contains one physical CB page
+  event.  This is a leaf execution-ordering hardening slice; broader shared
+  event/admission centralization remains P0.3 work.
 
 Remaining audit targets include remote sync validation.  Each must be
 classified as either local validation mechanics or execution owner truth that

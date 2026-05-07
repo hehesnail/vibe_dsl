@@ -80,6 +80,25 @@ def _rebuild_direct_runtime_module_with_runtime_args(artifact, runtime_args):
     return _rebuild_direct_runtime_module_with_tt_program(artifact, tt_program_mutator=mutate)
 
 
+def _assert_row_page_cb_owned_by_single_active_thread(artifact, cb_ids):
+    executable_spec = _extract_blackhole_executable_spec(artifact)
+    source = str(executable_spec["kernels"][0]["source_code"])
+    thread_loop = "for (int32_t tx = 0;"
+    for cb_id in cb_ids:
+        reserve = f"cb_reserve_back({cb_id}, 1);"
+        wait = f"cb_wait_front({cb_id}, 1);"
+        assert source.count(reserve) == 1
+        assert source.count(wait) == 1
+        reserve_pos = source.index(reserve)
+        wait_pos = source.index(wait)
+        assert source.rfind("if (tx == 0)", 0, reserve_pos) > source.rfind(
+            thread_loop, 0, reserve_pos
+        )
+        assert source.rfind("if (tx == 0)", 0, wait_pos) > source.rfind(
+            thread_loop, 0, wait_pos
+        )
+
+
 def _normalize_semaphore_plan_for_tt_program(semaphore_plan):
     normalized = []
     for i, plan in enumerate(semaphore_plan):
@@ -945,6 +964,7 @@ def test_blackhole_module_direct_call_sparse_2tile_ragged_copy_uses_per_entry_bo
     with target:
         artifact = lower(kernel, target=target)
 
+    _assert_row_page_cb_owned_by_single_active_thread(artifact, [16, 17])
     artifact.codegen_mod["main"](a_torch, block_indices, valid_rows, b_output)
     assert_tensors_close_or_dump(
         b_output,
@@ -1093,6 +1113,7 @@ def test_blackhole_module_direct_call_ragged_row_copy_uses_row_count_predicate()
     with target:
         artifact = lower(kernel, target=target)
 
+    _assert_row_page_cb_owned_by_single_active_thread(artifact, [16])
     artifact.codegen_mod["main"](a_torch, row_counts, b_output)
     assert_tensors_close_or_dump(
         b_output,

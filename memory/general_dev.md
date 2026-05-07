@@ -2853,3 +2853,13 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   owns `reduction_kind`, `reduction_dim`, and `repeat_extent`; projection
   carries them through `ExecutableSpec.compute_ops`, and codegen/runtime
   serialization must fail closed if reduce metadata is missing or inconsistent.
+- 2026-05-07 active-thread CB event grain:
+  If a per-work CB event is generated under a synthetic `tx` lane loop, every
+  source and sink operation for that physical FIFO event must use the same
+  active-thread grain.  Guarding only the producer side is still wrong: row-page
+  copy writers will have every lane wait/pop the one page stream and deadlock.
+  Guard-mask source pages and guarded row-page copy reader/writer loops should
+  wrap reserve/push and wait/pop loops with the same active-thread predicate
+  derived from current TIR thread vars.  Keep this as leaf-local mechanics until
+  P0.3 promotes shared execution ordering/admission facts into typed
+  `TTProgram` owner truth.

@@ -501,6 +501,9 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   /*! \brief Pick the active thread var that indexes logical matrix rows, when unique. */
   tvm::tir::Var SelectLogicalRowThreadVar(int64_t logical_rows) const;
 
+  /*! \brief Restrict a single FIFO-page publication to one active reader thread. */
+  tvm::tir::Stmt WrapActiveThreadSinglePublication(tvm::tir::Stmt stmt) const;
+
   /*! \brief Select the 2-D transport axes for a possibly higher-rank global buffer view. */
   std::pair<int, int> SelectStagedCopyTransportAxes(
       const tvm::ffi::Array<tvm::PrimExpr>& global_indices,

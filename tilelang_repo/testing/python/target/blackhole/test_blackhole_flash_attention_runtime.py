@@ -1942,6 +1942,14 @@ def test_blackhole_t9_paged_gqa_decode_projects_page_table_and_cache_len_binding
     }
     assert guard_mask_cb_ids
     for mask_cb_id in guard_mask_cb_ids:
+        assert re.search(
+            rf"if \(\(\(tx == 0\).*?\)\s*\{{\s*"
+            rf"cb_reserve_back\({mask_cb_id}, 1\);.*?"
+            rf"cb_push_back\({mask_cb_id}, 1\);",
+            reader_source,
+            re.S,
+        ), f"guard mask CB {mask_cb_id} must be published by one active reader thread"
+    for mask_cb_id in guard_mask_cb_ids:
         mask_apply = re.search(
             rf"binary_op_init_common\((\d+),\s*{mask_cb_id},\s*(\d+)\);"
             rf"(?P<body>.*?)"
