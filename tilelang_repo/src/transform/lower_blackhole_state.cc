@@ -322,6 +322,7 @@ PlanTTKernelABI::FindSpatialAccessRegionRef(
         return &region;
       }
     }
+    return nullptr;
   }
   ICHECK_LT(it->second.front(), spatial_access_regions_.size());
   return &spatial_access_regions_[it->second.front()];

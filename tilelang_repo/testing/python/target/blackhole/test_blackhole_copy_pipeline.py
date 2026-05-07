@@ -34,6 +34,7 @@ from .common import (
     lower_blackhole_to_tt_target,
     paged_cache_len_masked_staged_copy_kernel,
     paged_valid_rows_masked_staged_copy_kernel,
+    rebuild_tt_buffer_distribution_plan,
     rebuild_tt_abi_plan,
     rebuild_tt_kernel,
     rebuild_tt_program,
@@ -43,6 +44,7 @@ from .common import (
     require_tt_program,
     ragged_row_masked_staged_copy_kernel,
     segmented_two_range_masked_staged_copy_kernel,
+    segmented_three_range_masked_staged_copy_kernel,
     segmented_row_masked_staged_copy_kernel,
     staged_copy_kernel,
     staged_stick_copy_kernel,
@@ -242,6 +244,10 @@ def test_blackhole_leaf_readers_do_not_keep_legacy_defaults_or_slot_fallbacks():
             'name == "num_k_tiles"',
             'name == "logical_n_tiles"',
         ],
+        TRANSFORM_SRC_DIR / "lower_blackhole_abi.cc": [
+            "inferred_access_kind_for_spec",
+            "attach_access_region_evidence",
+        ],
     }
 
     offenders = []
@@ -252,6 +258,29 @@ def test_blackhole_leaf_readers_do_not_keep_legacy_defaults_or_slot_fallbacks():
                 offenders.append(f"{path.relative_to(REPO_ROOT)}: {snippet}")
 
     assert offenders == []
+
+
+def test_blackhole_indexed_access_region_lookup_fails_closed():
+    source = (TRANSFORM_SRC_DIR / "lower_blackhole_state.cc").read_text()
+    signature = (
+        "PlanTTKernelABI::FindSpatialAccessRegionRef(\n"
+        "    const std::string& subject,\n"
+        "    const std::string& access_kind,\n"
+        "    const ffi::Array<PrimExpr>& index_exprs) const"
+    )
+    start = source.index(signature)
+    body_start = source.index("{", start)
+    body_end = source.index(
+        "\nstd::optional<PlanTTKernelABI::SpatialLiveValueRef>",
+        body_start,
+    )
+    body = source[body_start:body_end]
+    indexed_branch = body[
+        body.index("if (!index_exprs.empty()") : body.index(
+            "ICHECK_LT(it->second.front()"
+        )
+    ]
+    assert "return nullptr;" in indexed_branch
 
 
 def test_blackhole_public_schema_files_do_not_define_case_shaped_workload_fields():
@@ -1264,13 +1293,23 @@ def test_blackhole_copy_build_rejects_missing_explicit_transport_page_size():
             mutated.append(segment)
         return mutated
 
+    def program_mutator(tt_program):
+        rebuilt = _rebuild_tt_program_with_segment_plan(
+            tt_program, segment_mutator(_extract_segment_plan_from_artifact(artifact))
+        )
+        rebuilt_distributions = [
+            rebuild_tt_buffer_distribution_plan(plan, page_size_bytes=0)
+            for plan in rebuilt.buffer_distribution_plans
+        ]
+        return rebuild_tt_program(
+            rebuilt, buffer_distribution_plans=rebuilt_distributions
+        )
+
     with pytest.raises(
         tvm.TVMError,
-        match="Blackhole buffer materialization requires explicit transport_page_size",
+        match="TTBufferDistributionPlan interleaved placement requires page_size_bytes",
     ):
-        _rebuild_codegen_module_with_body_and_segment_plan(
-            artifact, segment_mutator=segment_mutator
-        )
+        _rebuild_codegen_module_with_tt_program(artifact, tt_program_mutator=program_mutator)
 
 
 def test_blackhole_copy_build_reads_executable_without_legacy_projection_attrs():
@@ -1816,6 +1855,78 @@ def test_blackhole_two_segment_row_copy_uses_per_range_value_bindings():
     ]:
         spec = by_identity[identity]
         _assert_value_expr_binding(spec, index_buffer)
+
+
+def test_blackhole_three_segment_row_copy_scales_per_range_value_bindings():
+    target = Target("blackhole")
+    with target:
+        artifact = lower(
+            segmented_three_range_masked_staged_copy_kernel(
+                grid_x=3,
+                source_rows=128,
+            ),
+            target=target,
+        )
+
+    executable_spec = _extract_blackhole_executable_spec(artifact)
+    kernel_spec = _require_blackhole_kernel(
+        executable_spec["kernels"], kind="fused_dataflow", core_type="brisc"
+    )
+    source = str(kernel_spec["source_code"])
+    for identity in [
+        "per_work_value",
+        "per_work_value_1",
+        "per_work_value_2",
+        "per_work_value_3",
+        "per_work_value_4",
+        "per_work_value_5",
+    ]:
+        assert f"{identity} = get_arg_val<uint32_t>" in source
+    assert "SegmentOffsets" not in source
+    assert "SegmentCounts" not in source
+
+    by_identity = _per_work_specs_by_identity(executable_spec, buffer="A")
+    for identity, index_buffer in [
+        ("per_work_value", "SegmentOffsets"),
+        ("per_work_value_1", "SegmentOffsets"),
+        ("per_work_value_2", "SegmentOffsets"),
+        ("per_work_value_3", "SegmentCounts"),
+        ("per_work_value_4", "SegmentCounts"),
+        ("per_work_value_5", "SegmentCounts"),
+    ]:
+        spec = by_identity[identity]
+        _assert_value_expr_binding(spec, index_buffer)
+        assert str(spec["access_region"])
+        assert int(spec["access_region_index"]) >= 0
+
+
+def test_blackhole_per_work_arg_access_region_is_owner_truth_not_reconstructed():
+    target = Target("blackhole")
+    with target:
+        artifact = lower(
+            segmented_row_masked_staged_copy_kernel(grid_x=3, source_rows=80),
+            target=target,
+        )
+
+    def segment_mutator(segment_plan):
+        mutated_segments = []
+        for segment in segment_plan:
+            mutated = dict(segment)
+            stripped_specs = []
+            for spec in segment.get("per_work_arg_specs", []):
+                stripped = dict(spec)
+                if str(stripped.get("buffer", "")) == "A":
+                    stripped.pop("access_region", None)
+                    stripped.pop("access_region_index", None)
+                stripped_specs.append(stripped)
+            mutated["per_work_arg_specs"] = stripped_specs
+            mutated_segments.append(mutated)
+        return mutated_segments
+
+    with pytest.raises(Exception, match="per-work.*AccessRegion|access_region"):
+        _rebuild_codegen_module_with_body_and_segment_plan(
+            artifact, segment_mutator=segment_mutator
+        )
 
 
 def test_blackhole_paged_cache_len_copy_uses_page_table_and_bound_bindings():

@@ -316,8 +316,8 @@ Unsupported diagnostics:
 
 ## Current Status
 
-T8 has admitted the generic evidence chain and several direct-runtime
-surfaces.  The current owner truth is:
+T8 has completed the generic evidence chain for the current backend boundary.
+The current owner truth is:
 
 - `AccessRegion` records concrete access `index_exprs`, participating
   loop/launch variables, guarded predicate kind, and concrete
@@ -327,13 +327,23 @@ surfaces.  The current owner truth is:
 - `TTPerWorkArgSpec`, executable projection, serialization, and direct
   runtime metadata carry the source `AccessRegion` identity for per-work
   bindings derived from indexed access;
+- `ValidateTTProgram` rejects buffer-bound per-work specs that lack
+  `access_region`, have an invalid `access_region_index`, or point at a region
+  whose subject does not match the bound buffer;
+- `FindSpatialAccessRegionRef(subject, access_kind, index_exprs)` fails closed
+  when indexed structural indices are present and no exact `AccessRegion`
+  matches; it must not fall back to the first same-buffer/same-kind region;
 - dynamic table and work-context values lower as generic
   `value_source=value_expr` records, with optional
   `value_usage=buffer_tile_origin` only when the value is consumed as a buffer
   tile origin;
 - launch-axis dependencies are normalized to explicit runtime-arg calls before
   projection, so direct runtime evaluates serialized expressions instead of
-  interpreting naked variable names.
+  interpreting naked variable names;
+- value-expression matching includes the referenced table-buffer identity and
+  `value_usage`, so structurally similar loads such as
+  `SegmentOffsets[bx, k]` and `SegmentCounts[bx, k]` do not collapse into one
+  runtime arg.
 
 Admitted positive surfaces include:
 
@@ -345,8 +355,8 @@ Admitted positive surfaces include:
 - ragged row-bound copy through `RowCounts[bx]`;
 - paged ragged copy through `PageTable[bx, by]` plus `CacheSeqLens[bx]`;
 - page-local row-bound copy through `PageValidRows[bx, by]`;
-- non-uniform segmented row copy through `SegmentOffsets` /
-  `SegmentCounts`;
+- non-uniform segmented row copy through one, two, and three independent
+  `SegmentOffsets` / `SegmentCounts` range pairs;
 - the T9.1 grouped-GEMM segmented-A feed path.
 
 Deleted or forbidden protocol surfaces remain deleted:
@@ -359,7 +369,11 @@ Deleted or forbidden protocol surfaces remain deleted:
   missing value evidence;
 - row-start / row-count binding synthesis from only an index-buffer name;
 - runtime-arg-name classification such as `per_work_value*` prefixes,
-  including fused-dataflow default tile-arg admission.
+  including fused-dataflow default tile-arg admission;
+- ABI consumer-side access-region recovery helpers such as
+  `inferred_access_kind_for_spec` and `attach_access_region_evidence`;
+- indexed `AccessRegion` first-match fallbacks that ignore structural
+  `index_exprs`.
 
 The latest cleanup deleted the remaining fused-dataflow ABI consumer-side
 `per_work_value*` prefix classifier.  Explicit generic value-expression
@@ -369,19 +383,22 @@ lifecycle regression: writer-visible output CBs must not receive generic
 retained-front pre-drain rewrites, because the capacity-aware reserve rewrite
 already owns real pressure and premature output pops destroy FIFO order.
 
-Still open for T8:
+The final T8 cleanup also removed the remaining consumer-side access-region
+reconstruction path.  ABI lowering now creates each buffer-bound per-work spec
+with explicit read/write access context, `ValidateTTProgram` checks that
+evidence, and indexed lookup fails closed when the current TIR-derived
+structural indices do not match a SpatialPlan region.  The broadened runtime
+gate includes three independent segmented ranges in one work item, plus the
+existing sparse, ragged, paged, and indexed copy cases.
 
-- broaden indexed / ragged / segmented / paged shape coverage without adding
-  workload-shaped schema;
-- audit remaining consumption-side recovery through `arg_kind`, helper state,
-  or source materialization inference;
-- keep every broadened positive surface behind a `BlackholeModule`
-  direct-runtime correctness gate or a typed simulator capability boundary
-  after source/spec admission.
+Known residual outside T8: the full copy-pipeline suite still exposes a flash
+bridge granularity guard at `merge_fragment_tiles` destination `acc_o`.  That is
+a T9 exact-CB / materialization follow-up and must not be used to reopen T8
+copy-side fallback schema.
 
 ## Completion Criteria
 
-T8 is implemented only when:
+T8 is implemented when:
 
 - segmented/grouped, ragged, and indexed-block evidence are derived from TIR
   structure, not workload names;

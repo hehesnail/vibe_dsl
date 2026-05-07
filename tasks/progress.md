@@ -24,7 +24,7 @@
 | T6 `topk` | Complete | Existing TIR value/index selection runs through direct runtime for fp32 and bf16 values with exact `int32` indices.  The old limited typed compute-region emitter is deleted; codegen consumes executable reduction records through a `reduce_dim`-parameterized channel lowering and CB requirement mappings without topk/selection schema or raw host-pointer fallback. |
 | T7 Exact-CB / materialization primitives | Complete | Exact-CB materialization, publication, consumer binding, GEMM post-merge materialization, and seq64 bf16 flash-attn exact-CB partial combine pass `BlackholeModule` TT-Sim correctness. |
 | T7.5 Exact-CB liveness / allocation cutover | Complete | Covered exact-CB resident tiles use typed lifecycle, allocation, release events, latest-producer validation, storage-format validation, and fail-closed loop-carried/full-tile gates. |
-| T8 Irregular work domains / indexed access | Runtime surface admitted / cleanup pending | Indexed, sparse, ragged, paged, segmented, and T9.1 grouped-GEMM feed paths execute through generic `AccessRegion` + `value_expr` bindings.  The fused-dataflow ABI no longer classifies runtime args by `per_work_value*` identity prefixes; remaining work is broader shape coverage and continued removal of consumption-side recovery. |
+| T8 Irregular work domains / indexed access | Complete | Indexed, sparse, ragged, paged, segmented, and T9.1 grouped-GEMM feed paths execute through generic `AccessRegion` + `value_expr` bindings.  Buffer-bound per-work specs carry explicit `AccessRegion` evidence, indexed lookups fail closed on missing structural matches, and broadened segmented/paged/ragged/indexed copy shapes pass direct-runtime gates. |
 | T9 Workload first paths | In progress | T9.1 pre-grouped MoE/routed GEMM, T9.2 full paged GQA decode, T9.3 dual-score MLA GEMM, T9.3 full paged MLA decode, and T9.4 sparse/ragged GQA decode have bf16 direct-runtime correctness.  T9.5-T9.6 are queued. |
 | T10 Distributed production variants | Queued | Mesh placement, CCL, NoC/multicast/global scheduling, distributed workload correctness, and production partial-K reduction remain future TT target-realization work. |
 
@@ -35,8 +35,9 @@
   observation, or neighboring builtins.
 - Public per-work schema is generic:
   `arg_kind`, `arg_identity`, `buffer`, `value_source`, optional
-  `value_expr`, optional `value_usage`, and optional `AccessRegion`
-  evidence.  Workload-shaped fields such as `index_table_*`, `row_start`,
+  `value_expr`, and optional `value_usage`.  Buffer-bound indexed/guarded
+  bindings must carry explicit `AccessRegion` evidence.  Workload-shaped
+  fields such as `index_table_*`, `row_start`,
   `row_count`, `page_index`, `descriptor_kind`, or topk/selection fields are
   not schema.
 - Dynamic table/work-context values use `value_source=value_expr`.  Launch
@@ -73,6 +74,10 @@
   runtime args through projected `TTPerWorkArgSpec` evidence and
   non-synthesized arg kinds, not by classifying runtime arg identities such as
   `per_work_value*`.
+- T8 buffer-bound per-work bindings are valid only when they reference explicit
+  SpatialPlan `AccessRegion` evidence.  ABI lowering may select evidence from
+  current TIR-derived structural indices, but consumers must not reattach it
+  from names, arg kinds, helper state, or first same-buffer fallbacks.
 - Current simulator gates must also be typed by `ExecutableSpec` facts.  The
   old T7/T9 `t_tile_mmio_wr32` classifier is gone; remaining PACR gates are
   limited to proven simulator capability boundaries such as compute-only
@@ -80,20 +85,7 @@
 
 ## Next Work Queue
 
-### P1: T8 Cleanup And Runtime Breadth
-
-- Broaden indexed / ragged / segmented / paged shapes only when the evidence
-  comes from TIR access expressions, predicates, loop domains, and
-  `AccessRegion` records.
-- Audit consumption-side code for remaining semantic recovery through
-  `arg_kind`, runtime-arg names, transport helper state, or value-expression
-  materialization inference.
-- Keep page-addressed transport generic: builtin page IDs and local variables
-  are allowed, but no public row/page/index-table subroles may re-enter.
-- Projection-only tests do not complete T8 extensions; each admitted positive
-  form needs a `BlackholeModule` TT-Sim correctness gate.
-
-### P2: T9 Workload-First Paths
+### P1: T9 Workload-First Paths
 
 - T9.5 chunk recurrence / scan:
   represent multi-chunk loop-carried state and device state-buffer lifetime
@@ -101,7 +93,7 @@
 - T9.6 multi-block flash decode:
   admit bf16 split blocks with exact-CB publish/consume and partial combine.
 
-### P3: T10 Distributed Production
+### P2: T10 Distributed Production
 
 - Add typed mesh / multi-device placement before distributed runtime movement.
 - Add CCL contracts for all-gather, reduce-scatter, and all-to-all.
@@ -129,8 +121,9 @@ Current active baseline:
 
 - Compile: `cmake --build build -j32`.
 - Protocol/source guards:
-  typed tile-CB queue verifier, T8 indexed/ragged/paged/segmented projection
-  selectors, T9 workload projection selectors, and deleted-schema guards.
+  typed tile-CB queue verifier, completed T8 indexed/ragged/paged/segmented
+  projection selectors, T9 workload projection selectors, and deleted-schema
+  guards.
 - Direct-runtime correctness:
   active admitted T7/T8/T9 positive paths run through `BlackholeModule` with
   the repository TT-Sim bf16 baseline where tensor values are involved.
@@ -142,6 +135,10 @@ Current active baseline:
   extended-sequence loop-carried exact-CB backedge publish remains gated by the
   typed PACR reason until T9.5/T9.6 introduce the needed lifecycle/runtime
   protocol.
+- Current known non-T8 source/spec failure:
+  the full copy-pipeline suite still reaches the flash bridge granularity gate
+  at `merge_fragment_tiles` destination `acc_o`; that is a T9 exact-CB /
+  materialization follow-up, not part of the completed T8 copy cleanup gates.
 
 Historical checkpoint logs, exact selector counts, and patch notes belong in
 git history and `memory/`, not in this file.

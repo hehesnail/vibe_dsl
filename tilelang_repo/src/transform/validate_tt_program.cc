@@ -16,6 +16,7 @@
 
 #include "common/blackhole_tile_compute_covering.h"
 #include "common/blackhole_tile_compute_legalizer.h"
+#include "common/blackhole_runtime_arg_schema.h"
 #include "common/blackhole_utils.h"
 #include "common/companion_base.h"
 #include "common/spatial_plan.h"
@@ -1176,6 +1177,44 @@ void ValidateCompileTimeArgSpec(const TTCompileTimeArgSpec &spec) {
   ICHECK_GE(spec->count, 0) << "TTABIPlan compile_time_arg_spec requires count";
 }
 
+void ValidatePerWorkArgSpec(const TTPerWorkArgSpec &spec,
+                            const SpatialPlan &spatial_plan,
+                            const TTKernel &kernel) {
+  ICHECK(!spec->arg_kind.empty()) << "TTPerWorkArgSpec requires arg_kind";
+  ICHECK(!spec->arg_identity.empty()) << "TTPerWorkArgSpec requires arg_identity";
+  ICHECK(!spec->value_source.empty()) << "TTPerWorkArgSpec requires value_source";
+  if (spec->value_source == blackhole_runtime_arg_schema::kValueSourceValueExpr) {
+    ICHECK(spec->value_expr.defined())
+        << "TTPerWorkArgSpec value_expr binding requires value_expr";
+  }
+  if (!spec->value_usage.empty()) {
+    ICHECK_EQ(spec->value_usage,
+              blackhole_runtime_arg_schema::kValueUsageBufferTileOrigin)
+        << "TTPerWorkArgSpec has unsupported value_usage "
+        << spec->value_usage;
+  }
+  if (spec->buffer.empty()) {
+    return;
+  }
+  ICHECK(!spec->access_region.empty())
+      << "TTPerWorkArgSpec buffer-bound per-work binding requires "
+      << "SpatialPlan AccessRegion evidence for arg_identity "
+      << spec->arg_identity << " on kernel " << kernel->name;
+  ICHECK_GE(spec->access_region_index, 0)
+      << "TTPerWorkArgSpec requires access_region_index for "
+      << spec->arg_identity;
+  ICHECK_LT(spec->access_region_index,
+            static_cast<int64_t>(spatial_plan->access_regions.size()))
+      << "TTPerWorkArgSpec access_region_index out of bounds for "
+      << spec->arg_identity;
+  const AccessRegion &region =
+      spatial_plan->access_regions[static_cast<size_t>(spec->access_region_index)];
+  ICHECK_EQ(spec->access_region, region->name)
+      << "TTPerWorkArgSpec access_region must match SpatialPlan index";
+  ICHECK_EQ(spec->buffer, region->subject)
+      << "TTPerWorkArgSpec buffer must match AccessRegion subject";
+}
+
 void ValidateKernelLeafFields(const TTKernel &kernel) {
   ICHECK(kernel->launch_spec.defined()) << "TTKernel requires launch_spec";
   ICHECK(!kernel->launch_spec->core_type.empty())
@@ -1890,6 +1929,9 @@ void CheckTTProgram(
     ICHECK(kernel_names.insert(kernel->name).second)
         << "duplicate TTKernel name " << kernel->name;
     ValidateKernelLeafFields(kernel);
+    for (const TTPerWorkArgSpec &spec : kernel->per_work_arg_specs) {
+      ValidatePerWorkArgSpec(spec, spatial_plan, kernel);
+    }
   }
   for (const TTKernelPlan &kernel_plan : program->kernel_plans) {
     ValidateKernelPlan(kernel_plan,

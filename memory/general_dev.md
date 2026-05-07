@@ -2785,3 +2785,14 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   fill/typecast PACR gate became a compute-only terminal-publish gate keyed by
   runtime input/output buffers and compute operand host-buffer binding; the
   unused multi-block exact-CB republish gate was deleted.
+- 2026-05-07 T8 per-work AccessRegion fail-closed:
+  Buffer-bound `TTPerWorkArgSpec` records must carry explicit `access_region`
+  and nonnegative `access_region_index` evidence, and `ValidateTTProgram` should
+  check the region subject matches the bound buffer.  Indexed
+  `FindSpatialAccessRegionRef(subject, kind, index_exprs)` must return null
+  when no exact structural match exists; do not fall back to the first
+  same-buffer region.  Normalize subject indices with the same active Let
+  substitutions used by SpatialPlan before selection, including transport guard
+  values.  Generic `value_expr` equality must include referenced buffer-load
+  identity and `value_usage`, so `SegmentOffsets[bx, k]` and
+  `SegmentCounts[bx, k]` never dedupe just because their index shapes match.

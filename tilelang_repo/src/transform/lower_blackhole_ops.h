@@ -1007,6 +1007,7 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   std::vector<std::string> copy_output_buffer_names_;
   std::unordered_map<const tvm::tir::VarNode*, ActivePerWorkRuntimeArgBinding>
       active_per_work_runtime_arg_bindings_;
+  std::vector<std::pair<tvm::tir::Var, tvm::PrimExpr>> active_let_bindings_;
   std::unordered_set<std::string> guarded_per_work_value_buffer_identities_;
   std::vector<IndexedPerWorkRuntimeArg> indexed_per_work_runtime_args_;
   std::unordered_map<std::string, std::string> host_buffer_by_compute_operand_buffer_;

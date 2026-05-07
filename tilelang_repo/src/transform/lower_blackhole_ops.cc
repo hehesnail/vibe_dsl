@@ -1888,6 +1888,7 @@ PrimFunc PlanTTKernelABI::SelectComputeBuiltins(const PrimFunc& func) {
   block_index_source_by_var_.clear();
   indexed_per_work_runtime_args_.clear();
   active_per_work_runtime_arg_bindings_.clear();
+  active_let_bindings_.clear();
   guarded_per_work_value_buffer_identities_.clear();
   cb_consumed_compute_input_pages_by_buffer_identity_.clear();
   cb_consumed_compute_input_use_count_by_buffer_identity_.clear();
@@ -2174,6 +2175,7 @@ PrimFunc PlanTTKernelABI::Transform(const PrimFunc& func) {
   copy_output_buffer_names_.clear();
   indexed_per_work_runtime_args_.clear();
   active_per_work_runtime_arg_bindings_.clear();
+  active_let_bindings_.clear();
   guarded_per_work_value_buffer_identities_.clear();
   host_buffer_by_compute_operand_buffer_.clear();
   direct_copy_source_by_buffer_identity_.clear();
@@ -3681,12 +3683,34 @@ std::string PlanTTKernelABI::GetOrCreateIndexedPerWorkRuntimeArg(
     }
     return true;
   };
-  auto same_value_expr = [](const PrimExpr& lhs, const PrimExpr& rhs) {
+  auto collect_value_expr_buffers = [](const PrimExpr& expr) {
+    std::vector<std::string> buffers;
+    if (!expr.defined()) {
+      return buffers;
+    }
+    tir::PostOrderVisit(expr, [&](const ObjectRef& node) {
+      const auto* load = node.as<BufferLoadNode>();
+      if (load == nullptr) {
+        return;
+      }
+      const std::string name = BufferIdentityName(load->buffer);
+      if (!name.empty()) {
+        buffers.push_back(name);
+      }
+    });
+    std::sort(buffers.begin(), buffers.end());
+    buffers.erase(std::unique(buffers.begin(), buffers.end()), buffers.end());
+    return buffers;
+  };
+  auto same_value_expr = [&](const PrimExpr& lhs, const PrimExpr& rhs) {
     if (lhs.defined() != rhs.defined()) {
       return false;
     }
     if (!lhs.defined()) {
       return true;
+    }
+    if (collect_value_expr_buffers(lhs) != collect_value_expr_buffers(rhs)) {
+      return false;
     }
     StructuralEqual equal;
     return equal(lhs, rhs);
@@ -3700,10 +3724,8 @@ std::string PlanTTKernelABI::GetOrCreateIndexedPerWorkRuntimeArg(
     if (existing.subject_buffer == subject_buffer &&
         same_index_exprs(existing.subject_index_exprs, subject_index_exprs) &&
         existing.value_source == value_source &&
-        same_value_expr(existing.value_expr, value_expr)) {
-      ICHECK(existing.value_usage == value_usage)
-          << "Blackhole indexed per-work runtime arg usage mismatch for "
-          << existing.arg_name;
+        same_value_expr(existing.value_expr, value_expr) &&
+        existing.value_usage == value_usage) {
       existing.include_in_compute_segment =
           existing.include_in_compute_segment || include_in_compute_segment;
       return existing.arg_name;
@@ -3751,12 +3773,34 @@ void PlanTTKernelABI::RecordIndexedPerWorkRuntimeArgSubjectAlias(
     }
     return true;
   };
-  auto same_value_expr = [](const PrimExpr& lhs, const PrimExpr& rhs) {
+  auto collect_value_expr_buffers = [](const PrimExpr& expr) {
+    std::vector<std::string> buffers;
+    if (!expr.defined()) {
+      return buffers;
+    }
+    tir::PostOrderVisit(expr, [&](const ObjectRef& node) {
+      const auto* load = node.as<BufferLoadNode>();
+      if (load == nullptr) {
+        return;
+      }
+      const std::string name = BufferIdentityName(load->buffer);
+      if (!name.empty()) {
+        buffers.push_back(name);
+      }
+    });
+    std::sort(buffers.begin(), buffers.end());
+    buffers.erase(std::unique(buffers.begin(), buffers.end()), buffers.end());
+    return buffers;
+  };
+  auto same_value_expr = [&](const PrimExpr& lhs, const PrimExpr& rhs) {
     if (lhs.defined() != rhs.defined()) {
       return false;
     }
     if (!lhs.defined()) {
       return true;
+    }
+    if (collect_value_expr_buffers(lhs) != collect_value_expr_buffers(rhs)) {
+      return false;
     }
     StructuralEqual equal;
     return equal(lhs, rhs);
@@ -3916,9 +3960,27 @@ Stmt PlanTTKernelABI::VisitStmt_(const LetStmtNode* op) {
     }
     return true;
   };
-  auto substitute_let_var_in_indices =
+  auto active_let_substitutions = [&]() -> ffi::Map<Var, PrimExpr> {
+    ffi::Map<Var, PrimExpr> substitutions;
+    for (const auto& binding : active_let_bindings_) {
+      substitutions.Set(binding.first, binding.second);
+    }
+    return substitutions;
+  };
+  auto substitute_active_let_bindings = [&](const PrimExpr& expr) -> PrimExpr {
+    if (active_let_bindings_.empty()) {
+      return expr;
+    }
+    return tir::Substitute(expr, active_let_substitutions());
+  };
+  auto visible_let_substitutions = [&]() -> ffi::Map<Var, PrimExpr> {
+    ffi::Map<Var, PrimExpr> substitutions = active_let_substitutions();
+    substitutions.Set(op->var, substitute_active_let_bindings(op->value));
+    return substitutions;
+  };
+  auto substitute_visible_let_bindings_in_indices =
       [&](const ffi::Array<PrimExpr>& indices) -> ffi::Array<PrimExpr> {
-    ffi::Map<Var, PrimExpr> substitutions{{op->var, op->value}};
+    const ffi::Map<Var, PrimExpr> substitutions = visible_let_substitutions();
     ffi::Array<PrimExpr> rewritten;
     for (const PrimExpr& index : indices) {
       rewritten.push_back(tir::Substitute(index, substitutions));
@@ -3939,12 +4001,13 @@ Stmt PlanTTKernelABI::VisitStmt_(const LetStmtNode* op) {
       for (const SubjectAccessCandidate& existing : accesses) {
         if (existing.buffer == name &&
             same_index_exprs(existing.index_exprs,
-                             substitute_let_var_in_indices(load->indices))) {
+                             substitute_visible_let_bindings_in_indices(
+                                 load->indices))) {
           return;
         }
       }
       accesses.push_back(SubjectAccessCandidate{
-          name, substitute_let_var_in_indices(load->indices)});
+          name, substitute_visible_let_bindings_in_indices(load->indices)});
     };
     tir::PostOrderVisit(body, [&](const ObjectRef& node) {
       const auto* store = node.as<BufferStoreNode>();
@@ -4004,6 +4067,7 @@ Stmt PlanTTKernelABI::VisitStmt_(const LetStmtNode* op) {
     PrimExpr per_work_value =
         Call(op->var.dtype(), blackhole_runtime_arg_u32(), {StringImm(arg_name)});
     Stmt rewritten = LetStmt(op->var, per_work_value, op->body, op->span);
+    const PrimExpr active_value = substitute_active_let_bindings(op->value);
     std::optional<ActivePerWorkRuntimeArgBinding> previous_binding;
     auto previous_it = active_per_work_runtime_arg_bindings_.find(op->var.get());
     if (previous_it != active_per_work_runtime_arg_bindings_.end()) {
@@ -4016,7 +4080,9 @@ Stmt PlanTTKernelABI::VisitStmt_(const LetStmtNode* op) {
               indexed_arg->arg_name, indexed_arg->value_source,
               indexed_arg->value_usage};
     }
+    active_let_bindings_.push_back({op->var, active_value});
     Stmt lowered = StmtExprMutator::VisitStmt_(rewritten.as<LetStmtNode>());
+    active_let_bindings_.pop_back();
     if (previous_binding.has_value()) {
       active_per_work_runtime_arg_bindings_[op->var.get()] =
           previous_binding.value();
@@ -4029,10 +4095,13 @@ Stmt PlanTTKernelABI::VisitStmt_(const LetStmtNode* op) {
       table_load->buffer->dtype.is_int() && table_load->buffer->dtype.bits() == 32 &&
       GetStorageScope(table_load->buffer) == "global" &&
       body_uses_let_var_for_guarded_copy_predicate(op->body)) {
+    const PrimExpr active_value = substitute_active_let_bindings(op->value);
     active_per_work_runtime_arg_bindings_[op->var.get()] =
         ActivePerWorkRuntimeArgBinding{
             "", blackhole_runtime_arg_schema::kValueSourceValueExpr, ""};
+    active_let_bindings_.push_back({op->var, active_value});
     Stmt lowered = StmtExprMutator::VisitStmt_(op);
+    active_let_bindings_.pop_back();
     active_per_work_runtime_arg_bindings_.erase(op->var.get());
     return lowered;
   }
@@ -4049,18 +4118,18 @@ Stmt PlanTTKernelABI::VisitStmt_(const LetStmtNode* op) {
     ICHECK(!subject_buffer.empty())
         << "Blackhole table-backed copy index requires named subject buffer";
     const ffi::Array<PrimExpr> subject_index_exprs =
-        substitute_let_var_in_indices(subject_load->indices);
+        substitute_visible_let_bindings_in_indices(subject_load->indices);
     const std::vector<SubjectAccessCandidate> subject_accesses =
         collect_copy_load_subject_accesses_using_let_var(op->body);
     std::string arg_name = "a_tile_start_id";
     int64_t tile_start_scale = 1;
-    PrimExpr runtime_value_expr = op->value;
+    PrimExpr runtime_value_expr = substitute_active_let_bindings(op->value);
     if (coefficient.has_value() && coefficient.value() == 1) {
       arg_name = GetOrCreateIndexedPerWorkRuntimeArg(
           kBlackholePerWorkValueArgPrefix,
           subject_buffer, subject_index_exprs,
           blackhole_runtime_arg_schema::kValueSourceValueExpr,
-          op->value, false);
+          runtime_value_expr, false);
     } else if (coefficient.has_value() &&
                coefficient.value() > 0 &&
                coefficient.value() % kBlackholeTileRows == 0) {
@@ -4071,7 +4140,7 @@ Stmt PlanTTKernelABI::VisitStmt_(const LetStmtNode* op) {
       if (tile_start_scale != 1) {
         Analyzer analyzer;
         runtime_value_expr = analyzer.Simplify(
-            op->value * IntImm(op->value.dtype(), tile_start_scale));
+            runtime_value_expr * IntImm(op->value.dtype(), tile_start_scale));
       }
       arg_name = GetOrCreateIndexedPerWorkRuntimeArg(
           tile_start_arg_prefix,
@@ -4105,7 +4174,7 @@ Stmt PlanTTKernelABI::VisitStmt_(const LetStmtNode* op) {
     ICHECK(!subject_buffer.empty())
         << "Blackhole guarded per-work binding requires named subject buffer";
     const ffi::Array<PrimExpr> subject_index_exprs =
-        substitute_let_var_in_indices(subject_load->indices);
+        substitute_visible_let_bindings_in_indices(subject_load->indices);
     const std::vector<SubjectAccessCandidate> subject_accesses =
         collect_copy_load_subject_accesses_using_let_var(op->body);
     bool copy_index_already_uses_per_work = false;
@@ -4119,7 +4188,8 @@ Stmt PlanTTKernelABI::VisitStmt_(const LetStmtNode* op) {
         kBlackholePerWorkValueArgPrefix,
         subject_buffer, subject_index_exprs,
         blackhole_runtime_arg_schema::kValueSourceValueExpr,
-        op->value, !copy_index_already_uses_per_work);
+        substitute_active_let_bindings(op->value),
+        !copy_index_already_uses_per_work);
     for (const SubjectAccessCandidate& alias_access : subject_accesses) {
       if (alias_access.buffer == subject_buffer &&
           same_index_exprs(alias_access.index_exprs, subject_index_exprs)) {
@@ -4128,12 +4198,20 @@ Stmt PlanTTKernelABI::VisitStmt_(const LetStmtNode* op) {
       RecordIndexedPerWorkRuntimeArgSubjectAlias(
           arg_name, alias_access.buffer, alias_access.index_exprs,
           blackhole_runtime_arg_schema::kValueSourceValueExpr,
-          op->value);
+          substitute_active_let_bindings(op->value));
     }
     return visit_with_active_per_work_binding(arg_name);
   }
 
-  return StmtExprMutator::VisitStmt_(op);
+  const PrimExpr value = StmtExprMutator::VisitExpr(op->value);
+  const PrimExpr active_value = substitute_active_let_bindings(op->value);
+  active_let_bindings_.push_back({op->var, active_value});
+  const Stmt body = StmtExprMutator::VisitStmt(op->body);
+  active_let_bindings_.pop_back();
+  if (value.same_as(op->value) && body.same_as(op->body)) {
+    return GetRef<Stmt>(op);
+  }
+  return LetStmt(op->var, value, body, op->span);
 }
 
 Stmt PlanTTKernelABI::VisitStmt_(const SeqStmtNode* op) {

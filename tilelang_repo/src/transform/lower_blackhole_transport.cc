@@ -1956,9 +1956,21 @@ Stmt PlanTTKernelABI::GenerateStagedCopyLoopSequence(
       std::string dynamic_value_arg_name;
       auto make_dynamic_value_arg = [&]() {
         if (dynamic_value_arg_name.empty()) {
+          ffi::Array<PrimExpr> normalized_load_indices;
+          if (active_let_bindings_.empty()) {
+            normalized_load_indices = load->indices;
+          } else {
+            ffi::Map<Var, PrimExpr> substitutions;
+            for (const auto& binding : active_let_bindings_) {
+              substitutions.Set(binding.first, binding.second);
+            }
+            for (const PrimExpr& index : load->indices) {
+              normalized_load_indices.push_back(tir::Substitute(index, substitutions));
+            }
+          }
           dynamic_value_arg_name = GetOrCreateIndexedPerWorkRuntimeArg(
               kBlackholePerWorkValueArgPrefix,
-              BufferIdentityName(load->buffer), load->indices,
+              BufferIdentityName(load->buffer), normalized_load_indices,
               blackhole_runtime_arg_schema::kValueSourceLogicalBlockY,
               PrimExpr(), false);
         }

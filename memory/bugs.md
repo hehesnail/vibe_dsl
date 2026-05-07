@@ -3309,6 +3309,42 @@
   - The broader T8 direct-runtime selector covering indexed, sparse, ragged,
     segmented, and paged copies reported `11 passed`.
 
+### T8 indexed AccessRegion fallback masked missing owner evidence
+
+- **症状**:
+  - After deleting the remaining ABI-side `AccessRegion` reattachment helpers,
+    T8 indexed/ragged/segmented/paged projection tests first failed with missing
+    access-region diagnostics.
+  - A three-range segmented copy then reused one generic per-work value arg for
+    both `SegmentOffsets[bx, k]` and `SegmentCounts[bx, k]`, and the paged
+    cache-length guard tried to bind an access region for raw `page_id` indices
+    instead of the original `PageTable[bx, by]` expression.
+- **根因**:
+  - `FindSpatialAccessRegionRef(subject, kind, index_exprs)` still had a
+    first-match fallback for same-buffer/same-kind regions when an indexed exact
+    match failed.
+  - ABI/transport subject-index collection did not consistently apply active
+    Let substitutions, so it compared a later local variable shape against the
+    original SpatialPlan expression.
+  - Generic `value_expr` dedup compared expression shape but did not include the
+    referenced table-buffer identity or `value_usage`.
+- **修法**:
+  - Make indexed access-region lookup fail closed when explicit structural
+    `index_exprs` are present and no exact match exists.
+  - Track active Let bindings through Blackhole lowering and apply them when
+    deriving subject indices for per-work runtime args, including transport
+    guard predicate values.
+  - Validate every buffer-bound per-work spec in `ValidateTTProgram` against
+    explicit access-region evidence, and include buffer-load identity plus
+    `value_usage` in generic value-expression dedup.
+- **验证**:
+  - Focused T8 projection/source selector covering deleted recovery helpers,
+    fail-closed indexed lookup, explicit page size owner truth, indexed, sparse,
+    ragged, paged, segmented, three-range segmented, and per-work
+    access-region negative coverage reported `19 passed, 66 deselected`.
+  - TT-Sim direct-runtime selector covering indexed, sparse, ragged, paged,
+    one/two/three-range segmented copies reported `13 passed, 35 deselected`.
+
 ## 3. 环境问题速查
 
 | 问题 | 解决 |

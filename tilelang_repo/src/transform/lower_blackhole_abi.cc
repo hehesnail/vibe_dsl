@@ -1537,6 +1537,18 @@ void PlanTTKernelABI::StoreAccessorDescriptors(PrimFunc &func) {
     auto runtime_args_contain_kind = [&](const char *arg_kind) {
       return !runtime_arg_identity_for_kind(arg_kind).empty();
     };
+    auto index_exprs_to_string = [](const ffi::Array<PrimExpr>& exprs) {
+      std::ostringstream os;
+      os << "[";
+      for (size_t i = 0; i < exprs.size(); ++i) {
+        if (i != 0) {
+          os << ", ";
+        }
+        os << exprs[i];
+      }
+      os << "]";
+      return os.str();
+    };
     auto tile_start_value_source_for_buffer =
         [&](const std::string& buffer_name,
             const std::string& default_value_source) -> std::string {
@@ -1562,52 +1574,50 @@ void PlanTTKernelABI::StoreAccessorDescriptors(PrimFunc &func) {
       }
       return default_value_source;
     };
-    auto indexed_runtime_arg_named = [&](const std::string &arg_name) {
-      return std::any_of(indexed_per_work_runtime_args_.begin(),
-                         indexed_per_work_runtime_args_.end(),
-                         [&](const IndexedPerWorkRuntimeArg &arg) {
-                           return arg.arg_name == arg_name;
-                         });
+    auto require_access_region =
+        [&](const std::string& buffer, const std::string& access_kind,
+            const ffi::Array<PrimExpr>& index_exprs =
+                ffi::Array<PrimExpr>()) -> const SpatialAccessRegionRef* {
+      if (buffer.empty()) {
+        return nullptr;
+      }
+      ICHECK(!access_kind.empty())
+          << "Blackhole per-work binding for buffer " << buffer
+          << " requires explicit access kind";
+      const SpatialAccessRegionRef* region =
+          index_exprs.empty()
+              ? FindSpatialAccessRegionRef(buffer, access_kind)
+              : FindSpatialAccessRegionRef(buffer, access_kind, index_exprs);
+      ICHECK(region != nullptr)
+          << "Blackhole per-work binding for buffer " << buffer
+          << " requires SpatialPlan AccessRegion evidence";
+      return region;
     };
-    auto inferred_access_kind_for_spec =
-        [&](const TTPerWorkArgSpec &spec) -> std::string {
-      const std::string arg_kind = static_cast<std::string>(spec->arg_kind);
-      if (arg_kind.rfind("output_", 0) == 0 || kind == "writer") {
-        return "write";
-      }
-      if (kind == "reader" || kind == "fused_dataflow") {
-        return "read";
-      }
-      return "";
-    };
-    auto attach_access_region_evidence =
-        [&](const TTPerWorkArgSpec &spec) -> TTPerWorkArgSpec {
-      if (!spec->access_region.empty()) {
-        return spec;
-      }
-      const std::string buffer = static_cast<std::string>(spec->buffer);
-      const std::string access_kind = inferred_access_kind_for_spec(spec);
-      if (buffer.empty() || access_kind.empty()) {
-        return spec;
-      }
-      const SpatialAccessRegionRef *region =
-          FindSpatialAccessRegionRef(buffer, access_kind);
-      if (region == nullptr) {
-        return spec;
-      }
+    auto make_spec_for_access =
+        [&](const std::string& arg_kind, const std::string& arg_identity,
+            const std::string& value_source, const std::string& buffer,
+            uint32_t constant_value, const std::string& access_kind,
+            PrimExpr value_expr = PrimExpr(),
+            const std::string& value_usage = "") -> TTPerWorkArgSpec {
+      const SpatialAccessRegionRef* region =
+          require_access_region(buffer, access_kind);
       return MakePerWorkArgSpec(
-          static_cast<std::string>(spec->arg_kind),
-          static_cast<std::string>(spec->arg_identity),
-          spec->value_expr.defined()
-              ? blackhole_runtime_arg_schema::kValueSourceValueExpr
-              : static_cast<std::string>(spec->value_source),
-          buffer,
-          static_cast<uint32_t>(spec->constant_value), region->name,
-          region->index, spec->value_expr,
-          static_cast<std::string>(spec->value_usage));
+          arg_kind, arg_identity, value_source, buffer, constant_value,
+          region == nullptr ? "" : region->name,
+          region == nullptr ? -1 : region->index, std::move(value_expr),
+          value_usage);
+    };
+    auto make_value_expr_spec_for_access =
+        [&](const std::string& arg_kind, const std::string& arg_identity,
+            const std::string& buffer, PrimExpr value_expr,
+            const std::string& access_kind) -> TTPerWorkArgSpec {
+      return make_spec_for_access(
+          arg_kind, arg_identity,
+          blackhole_runtime_arg_schema::kValueSourceValueExpr, buffer, 0,
+          access_kind, std::move(value_expr));
     };
     auto upsert_spec = [&](const TTPerWorkArgSpec &raw_spec) {
-      const TTPerWorkArgSpec spec = attach_access_region_evidence(raw_spec);
+      const TTPerWorkArgSpec spec = raw_spec;
       const std::string arg_identity =
           static_cast<std::string>(spec->arg_identity);
       for (int i = 0; i < per_work_arg_specs.size(); ++i) {
@@ -1633,10 +1643,10 @@ void PlanTTKernelABI::StoreAccessorDescriptors(PrimFunc &func) {
 
     if (kind == "fused_dataflow") {
       if (runtime_args_contain_kind("a_tile_start_id")) {
-        upsert_spec(MakePerWorkArgSpec(
+        upsert_spec(make_spec_for_access(
             "a_tile_start_id", runtime_arg_identity_for_kind("a_tile_start_id"),
             blackhole_runtime_arg_schema::kValueSourceWorkLinearId,
-            copy_input_buffer_name, 0, "", -1, PrimExpr(),
+            copy_input_buffer_name, 0, "read", PrimExpr(),
             blackhole_runtime_arg_schema::kValueUsageBufferTileOrigin));
       }
     }
@@ -1662,6 +1672,13 @@ void PlanTTKernelABI::StoreAccessorDescriptors(PrimFunc &func) {
           access_region = region->name;
           access_region_index = region->index;
         }
+        ICHECK(!arg_buffer.empty())
+            << "Blackhole indexed per-work runtime arg requires subject buffer";
+        ICHECK(region != nullptr)
+            << "Blackhole indexed per-work runtime arg " << arg.arg_name
+            << " requires SpatialPlan AccessRegion evidence for "
+            << arg_buffer << " read indices "
+            << index_exprs_to_string(arg.subject_index_exprs);
         upsert_spec(MakePerWorkArgSpec(
             arg.arg_name, runtime_arg_identity_for_kind(arg.arg_name.c_str()),
             arg.value_source, arg_buffer, 0, access_region,
@@ -1670,40 +1687,40 @@ void PlanTTKernelABI::StoreAccessorDescriptors(PrimFunc &func) {
       }
       if (!reader_uses_gemm_tile_contract &&
           runtime_args_contain_kind("a_tile_num_tiles")) {
-        upsert_spec(MakePerWorkArgSpec(
+        upsert_spec(make_spec_for_access(
             "a_tile_num_tiles",
             runtime_arg_identity_for_kind("a_tile_num_tiles"),
             blackhole_runtime_arg_schema::kValueSourceConstant,
-            copy_input_buffer_name, 1));
+            copy_input_buffer_name, 1, "read"));
       }
       if (!reader_uses_gemm_tile_contract &&
           runtime_args_contain_kind("a_tile_stride")) {
-        upsert_spec(MakePerWorkArgSpec(
+        upsert_spec(make_spec_for_access(
             "a_tile_stride", runtime_arg_identity_for_kind("a_tile_stride"),
             blackhole_runtime_arg_schema::kValueSourceConstant,
-            copy_input_buffer_name, 1));
+            copy_input_buffer_name, 1, "read"));
       }
       if (runtime_args_contain_kind("output_tile_start_id")) {
-        upsert_spec(MakePerWorkArgSpec(
+        upsert_spec(make_spec_for_access(
             "output_tile_start_id",
             runtime_arg_identity_for_kind("output_tile_start_id"),
             blackhole_runtime_arg_schema::kValueSourceWorkLinearId,
-            copy_output_buffer_name, 0, "", -1, PrimExpr(),
+            copy_output_buffer_name, 0, "write", PrimExpr(),
             blackhole_runtime_arg_schema::kValueUsageBufferTileOrigin));
       }
       if (runtime_args_contain_kind("output_tile_num_tiles")) {
-        upsert_spec(MakePerWorkArgSpec(
+        upsert_spec(make_spec_for_access(
             "output_tile_num_tiles",
             runtime_arg_identity_for_kind("output_tile_num_tiles"),
             blackhole_runtime_arg_schema::kValueSourceConstant,
-            copy_output_buffer_name, 1));
+            copy_output_buffer_name, 1, "write"));
       }
       if (runtime_args_contain_kind("output_tile_stride")) {
-        upsert_spec(MakePerWorkArgSpec(
+        upsert_spec(make_spec_for_access(
             "output_tile_stride",
             runtime_arg_identity_for_kind("output_tile_stride"),
             blackhole_runtime_arg_schema::kValueSourceConstant,
-            copy_output_buffer_name, 1));
+            copy_output_buffer_name, 1, "write"));
       }
     }
     if (kind == "reader") {
@@ -1718,69 +1735,70 @@ void PlanTTKernelABI::StoreAccessorDescriptors(PrimFunc &func) {
       const std::string b_tile_buffer =
           !runtime_b_buffer.empty() ? runtime_b_buffer : gemm_b_buffer_name_;
       if (runtime_args_contain_kind("a_tile_start_id")) {
-        upsert_spec(MakePerWorkArgSpec(
+        upsert_spec(make_spec_for_access(
             "a_tile_start_id", runtime_arg_identity_for_kind("a_tile_start_id"),
             tile_start_value_source_for_buffer(
                 a_tile_buffer,
                 has_gemm_reader_contract
                     ? blackhole_runtime_arg_schema::kValueSourceLogicalBlockY
                     : blackhole_runtime_arg_schema::kValueSourceWorkLinearId),
-            a_tile_buffer, 0, "", -1, PrimExpr(),
+            a_tile_buffer, 0, "read", PrimExpr(),
             blackhole_runtime_arg_schema::kValueUsageBufferTileOrigin));
       }
       if (runtime_args_contain_kind("a_tile_num_tiles")) {
         upsert_spec(has_gemm_reader_contract
-                        ? MakeValueExprPerWorkArgSpec(
+                        ? make_value_expr_spec_for_access(
                               "a_tile_num_tiles",
                               runtime_arg_identity_for_kind("a_tile_num_tiles"),
-                              a_tile_buffer, NumKTilesExpr(gemm_k_))
-                        : MakePerWorkArgSpec(
+                              a_tile_buffer, NumKTilesExpr(gemm_k_), "read")
+                        : make_spec_for_access(
                               "a_tile_num_tiles",
                               runtime_arg_identity_for_kind("a_tile_num_tiles"),
                               blackhole_runtime_arg_schema::kValueSourceConstant,
-                              a_tile_buffer, 1));
+                              a_tile_buffer, 1, "read"));
       }
       if (runtime_args_contain_kind("a_tile_stride")) {
-        upsert_spec(MakePerWorkArgSpec(
+        upsert_spec(make_spec_for_access(
             "a_tile_stride", runtime_arg_identity_for_kind("a_tile_stride"),
             blackhole_runtime_arg_schema::kValueSourceConstant,
-            a_tile_buffer, 1));
+            a_tile_buffer, 1, "read"));
       }
       if (runtime_args_contain_kind("b_tile_start_id")) {
-        upsert_spec(MakePerWorkArgSpec(
+        upsert_spec(make_spec_for_access(
             "b_tile_start_id", runtime_arg_identity_for_kind("b_tile_start_id"),
             tile_start_value_source_for_buffer(
                 b_tile_buffer,
                 has_gemm_reader_contract
                     ? blackhole_runtime_arg_schema::kValueSourceLogicalBlockX
                     : blackhole_runtime_arg_schema::kValueSourceWorkLinearId),
-            b_tile_buffer, 0, "", -1, PrimExpr(),
+            b_tile_buffer, 0, "read", PrimExpr(),
             blackhole_runtime_arg_schema::kValueUsageBufferTileOrigin));
       }
       if (runtime_args_contain_kind("b_tile_num_tiles")) {
         upsert_spec(has_gemm_reader_contract
-                        ? MakeValueExprPerWorkArgSpec(
+                        ? make_value_expr_spec_for_access(
                               "b_tile_num_tiles",
                               runtime_arg_identity_for_kind("b_tile_num_tiles"),
-                              b_tile_buffer, NumKTilesExpr(gemm_k_))
-                        : MakePerWorkArgSpec(
+                              b_tile_buffer, NumKTilesExpr(gemm_k_), "read")
+                        : make_spec_for_access(
                               "b_tile_num_tiles",
                               runtime_arg_identity_for_kind("b_tile_num_tiles"),
                               blackhole_runtime_arg_schema::kValueSourceConstant,
-                              b_tile_buffer, 1));
+                              b_tile_buffer, 1, "read"));
       }
       if (runtime_args_contain_kind("b_tile_stride")) {
         upsert_spec(has_gemm_reader_contract
-                        ? MakeValueExprPerWorkArgSpec(
+                        ? make_value_expr_spec_for_access(
                               "b_tile_stride",
                               runtime_arg_identity_for_kind("b_tile_stride"),
                               b_tile_buffer,
-                              LogicalNTilesExpr(gemm_n_, logical_grid_x_))
-                        : MakePerWorkArgSpec(
+                              LogicalNTilesExpr(gemm_n_, logical_grid_x_),
+                              "read")
+                        : make_spec_for_access(
                               "b_tile_stride",
                               runtime_arg_identity_for_kind("b_tile_stride"),
                               blackhole_runtime_arg_schema::kValueSourceConstant,
-                              b_tile_buffer, 1));
+                              b_tile_buffer, 1, "read"));
       }
     }
     if (kind == "reader" || kind == "compute") {
@@ -1815,7 +1833,7 @@ void PlanTTKernelABI::StoreAccessorDescriptors(PrimFunc &func) {
       const std::string output_tile_buffer =
           !runtime_output_buffer.empty() ? runtime_output_buffer : gemm_c_buffer_name_;
       if (runtime_args_contain_kind("output_tile_start_id")) {
-        upsert_spec(MakePerWorkArgSpec(
+        upsert_spec(make_spec_for_access(
             "output_tile_start_id",
             runtime_arg_identity_for_kind("output_tile_start_id"),
             tile_start_value_source_for_buffer(
@@ -1823,22 +1841,22 @@ void PlanTTKernelABI::StoreAccessorDescriptors(PrimFunc &func) {
                 logical_grid_z_ > 1
                     ? blackhole_runtime_arg_schema::kValueSourceLogicalBlockXYLinear
                     : blackhole_runtime_arg_schema::kValueSourceWorkLinearId),
-            output_tile_buffer, 0, "", -1, PrimExpr(),
+            output_tile_buffer, 0, "write", PrimExpr(),
             blackhole_runtime_arg_schema::kValueUsageBufferTileOrigin));
       }
       if (runtime_args_contain_kind("output_tile_num_tiles")) {
-        upsert_spec(MakePerWorkArgSpec(
+        upsert_spec(make_spec_for_access(
             "output_tile_num_tiles",
             runtime_arg_identity_for_kind("output_tile_num_tiles"),
             blackhole_runtime_arg_schema::kValueSourceConstant,
-            output_tile_buffer, 1));
+            output_tile_buffer, 1, "write"));
       }
       if (runtime_args_contain_kind("output_tile_stride")) {
-        upsert_spec(MakePerWorkArgSpec(
+        upsert_spec(make_spec_for_access(
             "output_tile_stride",
             runtime_arg_identity_for_kind("output_tile_stride"),
             blackhole_runtime_arg_schema::kValueSourceConstant,
-            output_tile_buffer, 1));
+            output_tile_buffer, 1, "write"));
       }
     }
     return per_work_arg_specs;
