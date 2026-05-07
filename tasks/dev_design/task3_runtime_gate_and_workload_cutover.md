@@ -112,6 +112,9 @@ leaf builtin, but the endpoint object must already be projected as a
 `remote_core_descriptors` segment/kernel record.  Leaf readers may validate
 that the runtime args agree with that object; they must not reconstruct the
 descriptor from the arg pair when the explicit record is missing.
+The executable projection gets those endpoint records from explicit
+`TTProgram` / `TTABIPlan` descriptor objects, not by scanning or pairing
+runtime args during projection.
 
 Physical CB queue events follow the same boundary.  `KernelSpec.queue_events`
 is the serialized execution trace projected from validated `TTProgram`

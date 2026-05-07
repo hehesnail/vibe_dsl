@@ -946,6 +946,25 @@ DecodeSemaphoreBindingSpecs(const Optional<Any> &items_opt) {
   return specs;
 }
 
+static TTRemoteCoreDescriptorSpec DecodeRemoteCoreDescriptorSpec(const Any &item) {
+  const Map<String, Any> descriptor = AsStringAnyMap(item);
+  return TTRemoteCoreDescriptorSpec(GetMapString(descriptor, "identity"),
+                                    GetMapInteger(descriptor, "core_x"),
+                                    GetMapInteger(descriptor, "core_y"));
+}
+
+static Array<TTRemoteCoreDescriptorSpec>
+DecodeRemoteCoreDescriptorSpecs(const Optional<Any> &items_opt) {
+  Array<TTRemoteCoreDescriptorSpec> specs;
+  if (!items_opt) {
+    return specs;
+  }
+  for (const Any &item : Downcast<Array<Any>>(items_opt.value())) {
+    specs.push_back(DecodeRemoteCoreDescriptorSpec(item));
+  }
+  return specs;
+}
+
 static void BuildTTKernelAndABISeeds(const Array<Any> &segment_plan,
                                      Array<TTKernel> *kernels_out,
                                      Array<TTABIPlan> *abi_plans_out) {
@@ -977,6 +996,8 @@ static void BuildTTKernelAndABISeeds(const Array<Any> &segment_plan,
         DecodeAccessorSpecs(segment.Get("accessors"));
     Array<TTSemaphoreBindingSpec> semaphore_bindings =
         DecodeSemaphoreBindingSpecs(segment.Get("semaphore_bindings"));
+    Array<TTRemoteCoreDescriptorSpec> remote_core_descriptors =
+        DecodeRemoteCoreDescriptorSpecs(segment.Get("remote_core_descriptors"));
     TTKernelLaunchSpec launch_spec =
         segment.Get("launch_spec")
             ? Downcast<TTKernelLaunchSpec>(segment.Get("launch_spec").value())
@@ -1001,7 +1022,8 @@ static void BuildTTKernelAndABISeeds(const Array<Any> &segment_plan,
     abi_plans.push_back(TTABIPlan(String("abi_" + std::to_string(index)),
                                   kernel_name, runtime_args,
                                   common_runtime_args, compile_time_arg_specs,
-                                  accessors, semaphore_bindings));
+                                  accessors, semaphore_bindings,
+                                  remote_core_descriptors));
     kernels.push_back(TTKernel(kernel_name, kernel_kind, core_type, index,
                                launch_spec, compute_config,
                                per_work_arg_specs, body));

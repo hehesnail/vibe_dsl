@@ -226,6 +226,11 @@
   loop-carried exact-CB output, bind the materialized value to the destination
   logical identity before release lookup so allocator records, not ephemeral
   local buffers, choose the pop event.
+- Remote synchronization endpoints must be explicit target records.  Do not
+  let a pair of `logical_core_noc_x/y` runtime args become endpoint owner
+  truth: `TTRemoteCoreDescriptorSpec` owns the identity and logical core
+  coordinates, `ValidateTTProgram` checks runtime args against it, and
+  `KernelSpec.remote_core_descriptors` is projected from that descriptor.
 - A full-logical-tile consumer cannot bind a `thread_distributed_slice` live
   form.  If the IR only proves slice coverage, either materialize a full-tile
   live form through a typed plan or reject before source/runtime.
@@ -2549,12 +2554,13 @@ cd <当前 checkout 或 worktree>/tilelang_repo
 - 2026-05-06 Blackhole remote core descriptor owner truth:
   `logical_core_noc_x/y` runtime args are ABI value bindings, not the owner of
   the remote endpoint object.  Materialize `remote_core_descriptors` during
-  `TTProgram -> ExecutableSpec` segment projection from typed ABI records, and
-  make leaf/runtime extraction consume that explicit field.  A missing
-  descriptor with logical-core NOC runtime args must fail closed instead of
-  being reconstructed in `rt_mod_blackhole.cc`.  When adding source guards,
-  avoid duplicate Python dict keys for the same file; a later key silently
-  masks earlier forbidden snippets.
+  `TTProgram -> ExecutableSpec` segment projection from explicit
+  `TTRemoteCoreDescriptorSpec` ABI records, and make leaf/runtime extraction
+  consume that field.  A missing descriptor with logical-core NOC runtime args
+  must fail closed instead of being reconstructed in projection or
+  `rt_mod_blackhole.cc`.  When adding source guards, avoid duplicate Python
+  dict keys for the same file; a later key silently masks earlier forbidden
+  snippets.
 - 2026-05-05 Blackhole guard-mask leaf naming:
   Guard mask materialization can be a Blackhole leaf builtin only if it stays
   generic: `guard_mask_to_cb(cb_id, bound_value, base_value, page_bytes)`.
@@ -2860,6 +2866,6 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   copy writers will have every lane wait/pop the one page stream and deadlock.
   Guard-mask source pages and guarded row-page copy reader/writer loops should
   wrap reserve/push and wait/pop loops with the same active-thread predicate
-  derived from current TIR thread vars.  Keep this as leaf-local mechanics until
-  P0.3 promotes shared execution ordering/admission facts into typed
-  `TTProgram` owner truth.
+  derived from current TIR thread vars.  The P0.3 execution spine now keeps
+  the shared owner truth in typed `TTProgram` records and projects the
+  executable FIFO trace once.

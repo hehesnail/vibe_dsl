@@ -1191,6 +1191,87 @@ void ValidateCompileTimeArgSpec(const TTCompileTimeArgSpec &spec) {
   ICHECK_GE(spec->count, 0) << "TTABIPlan compile_time_arg_spec requires count";
 }
 
+bool IsLogicalCoreNocRuntimeArgKind(const ffi::String &kind) {
+  return kind == "logical_core_noc_x" || kind == "logical_core_noc_y";
+}
+
+void ValidateABIRemoteCoreDescriptors(const TTABIPlan &abi) {
+  struct LogicalCoreNocPairState {
+    const TTRuntimeArgSpecNode *x = nullptr;
+    const TTRuntimeArgSpecNode *y = nullptr;
+  };
+
+  std::unordered_map<std::string, const TTRemoteCoreDescriptorSpecNode *>
+      descriptor_by_identity;
+  for (const TTRemoteCoreDescriptorSpec &descriptor :
+       abi->remote_core_descriptors) {
+    ICHECK(!descriptor->identity.empty())
+        << "TTABIPlan remote_core_descriptor requires identity";
+    ICHECK_GE(descriptor->core_x, 0)
+        << "TTABIPlan remote_core_descriptor " << descriptor->identity
+        << " requires core_x";
+    ICHECK_GE(descriptor->core_y, 0)
+        << "TTABIPlan remote_core_descriptor " << descriptor->identity
+        << " requires core_y";
+    ICHECK(descriptor_by_identity.emplace(str(descriptor->identity),
+                                          descriptor.get())
+               .second)
+        << "duplicate TTABIPlan remote_core_descriptor "
+        << descriptor->identity;
+  }
+
+  std::unordered_map<std::string, LogicalCoreNocPairState> pair_by_identity;
+  auto ingest_runtime_arg = [&](const TTRuntimeArgSpec &arg) {
+    if (!IsLogicalCoreNocRuntimeArgKind(arg->kind)) {
+      return;
+    }
+    ICHECK(!arg->identity.empty())
+        << "TTABIPlan logical_core_noc runtime arg " << arg->name
+        << " requires identity";
+    ICHECK_GE(arg->core_x, 0)
+        << "TTABIPlan logical_core_noc runtime arg " << arg->name
+        << " requires core_x";
+    ICHECK_GE(arg->core_y, 0)
+        << "TTABIPlan logical_core_noc runtime arg " << arg->name
+        << " requires core_y";
+    auto descriptor_it = descriptor_by_identity.find(str(arg->identity));
+    ICHECK(descriptor_it != descriptor_by_identity.end())
+        << "TTABIPlan logical_core_noc runtime arg " << arg->name
+        << " requires matching explicit remote core descriptor";
+    const auto *descriptor = descriptor_it->second;
+    ICHECK_EQ(descriptor->core_x, arg->core_x)
+        << "TTABIPlan logical_core_noc runtime arg " << arg->name
+        << " core_x must match remote_core_descriptor " << arg->identity;
+    ICHECK_EQ(descriptor->core_y, arg->core_y)
+        << "TTABIPlan logical_core_noc runtime arg " << arg->name
+        << " core_y must match remote_core_descriptor " << arg->identity;
+
+    LogicalCoreNocPairState &pair = pair_by_identity[str(arg->identity)];
+    if (arg->kind == "logical_core_noc_x") {
+      ICHECK(pair.x == nullptr)
+          << "TTABIPlan remote_core_descriptor " << arg->identity
+          << " cannot bind logical_core_noc_x more than once";
+      pair.x = arg.get();
+    } else {
+      ICHECK(pair.y == nullptr)
+          << "TTABIPlan remote_core_descriptor " << arg->identity
+          << " cannot bind logical_core_noc_y more than once";
+      pair.y = arg.get();
+    }
+  };
+  for (const TTRuntimeArgSpec &arg : abi->runtime_args) {
+    ingest_runtime_arg(arg);
+  }
+  for (const TTRuntimeArgSpec &arg : abi->common_runtime_args) {
+    ingest_runtime_arg(arg);
+  }
+  for (const auto &entry : pair_by_identity) {
+    ICHECK(entry.second.x != nullptr && entry.second.y != nullptr)
+        << "TTABIPlan remote_core_descriptor " << entry.first
+        << " requires both logical_core_noc_x and logical_core_noc_y ABI args";
+  }
+}
+
 void ValidatePerWorkArgSpec(const TTPerWorkArgSpec &spec,
                             const SpatialPlan &spatial_plan,
                             const TTKernel &kernel) {
@@ -2130,6 +2211,7 @@ void CheckTTProgram(
     for (const TTCompileTimeArgSpec &spec : abi->compile_time_arg_specs) {
       ValidateCompileTimeArgSpec(spec);
     }
+    ValidateABIRemoteCoreDescriptors(abi);
     abi_kernel_names.insert(abi->kernel_name);
   }
   for (const TTKernel &kernel : program->kernels) {

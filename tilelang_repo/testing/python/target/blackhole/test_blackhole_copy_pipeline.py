@@ -54,6 +54,7 @@ from .common import (
     tt_per_work_arg_specs_to_list,
     tt_accessor_specs_to_list,
     tt_compile_time_arg_specs_to_list,
+    tt_remote_core_descriptor_specs_to_list,
     tt_runtime_arg_specs_to_list,
     tt_semaphore_binding_specs_to_list,
 )
@@ -446,6 +447,11 @@ def _rebuild_tt_program_with_segment_plan(tt_program, segment_plan):
             if "semaphore_bindings" in segment
             else tt_semaphore_binding_specs_to_list(abi.semaphore_bindings)
         )
+        remote_core_descriptors = (
+            list(segment["remote_core_descriptors"])
+            if "remote_core_descriptors" in segment
+            else tt_remote_core_descriptor_specs_to_list(abi.remote_core_descriptors)
+        )
 
         rebuilt_abi_plans.append(
             rebuild_tt_abi_plan(
@@ -457,6 +463,7 @@ def _rebuild_tt_program_with_segment_plan(tt_program, segment_plan):
                 compile_time_arg_specs=compile_time_arg_specs,
                 accessors=accessors,
                 semaphore_bindings=semaphore_bindings,
+                remote_core_descriptors=remote_core_descriptors,
             )
         )
         rebuilt_kernels.append(
@@ -2753,11 +2760,29 @@ def test_blackhole_copy_build_rejects_unpaired_logical_core_noc_runtime_arg():
             }
         ]
 
+    def segment_mutator(segment_plan):
+        mutated_segments = []
+        for segment in segment_plan:
+            mutated = dict(segment)
+            mutated["remote_core_descriptors"] = [
+                {
+                    "identity": "remote_consumer_core",
+                    "core_x": int(consumer_core["core_x"]),
+                    "core_y": int(consumer_core["core_y"]),
+                }
+            ]
+            mutated_segments.append(mutated)
+        return mutated_segments
+
     with pytest.raises(
         tvm.error.InternalError,
         match="logical_core_noc_x.*logical_core_noc_y|synchronization core descriptor",
     ):
-        _rebuild_codegen_module_with_runtime_args(artifact, runtime_args_mutator(base_runtime_args))
+        _rebuild_codegen_module_with_semaphore_binding(
+            artifact,
+            segment_mutator=segment_mutator,
+            runtime_args_mutator=lambda _runtime_args: runtime_args_mutator(base_runtime_args),
+        )
 
 
 def test_blackhole_copy_build_rejects_logical_core_noc_without_remote_descriptor():
@@ -2844,6 +2869,13 @@ def test_blackhole_copy_remote_core_descriptor_is_materialized():
         for segment in segment_plan:
             mutated = dict(segment)
             mutated["runtime_args"] = runtime_args
+            mutated["remote_core_descriptors"] = [
+                {
+                    "identity": "remote_consumer_core",
+                    "core_x": int(consumer_core["core_x"]),
+                    "core_y": int(consumer_core["core_y"]),
+                }
+            ]
             mutated_segments.append(mutated)
         return mutated_segments
 
@@ -2863,6 +2895,45 @@ def test_blackhole_copy_remote_core_descriptor_is_materialized():
     assert str(descriptor["identity"]) == "remote_consumer_core"
     assert int(descriptor["core_x"]) == int(consumer_core["core_x"])
     assert int(descriptor["core_y"]) == int(consumer_core["core_y"])
+
+
+def test_blackhole_copy_build_rejects_remote_descriptor_recovered_from_runtime_args():
+    kernel = grid_indexed_staged_copy_kernel(grid_x=2, grid_y=1)
+    target = Target("blackhole")
+
+    with target:
+        artifact = lower(kernel, target=target)
+
+    device_funcs = {str(gvar): func for gvar, func in artifact.device_mod.functions.items()}
+    device_main = device_funcs['I.GlobalVar("main_kernel")']
+    consumer_core = extract_blackhole_core_plan(device_main)["physical_cores"][1]
+    runtime_args = list(extract_blackhole_runtime_args(device_main))
+    runtime_args.extend(
+        [
+            {
+                "name": "remote_noc_x",
+                "kind": "logical_core_noc_x",
+                "identity": "remote_consumer_core",
+                "dtype": "uint32",
+                "core_x": int(consumer_core["core_x"]),
+                "core_y": int(consumer_core["core_y"]),
+            },
+            {
+                "name": "remote_noc_y",
+                "kind": "logical_core_noc_y",
+                "identity": "remote_consumer_core",
+                "dtype": "uint32",
+                "core_x": int(consumer_core["core_x"]),
+                "core_y": int(consumer_core["core_y"]),
+            },
+        ]
+    )
+
+    with pytest.raises(tvm.error.InternalError, match="explicit remote core descriptor"):
+        _rebuild_codegen_module_with_semaphore_binding(
+            artifact,
+            runtime_args_mutator=lambda _runtime_args: runtime_args,
+        )
 
 
 @pytest.mark.xfail(

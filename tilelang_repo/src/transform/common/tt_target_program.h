@@ -1226,6 +1226,26 @@ public:
                                              TTSemaphoreBindingSpecNode);
 };
 
+class TTRemoteCoreDescriptorSpecNode : public Object {
+public:
+  ffi::String identity;
+  int64_t core_x = -1;
+  int64_t core_y = -1;
+
+  static void RegisterReflection();
+  TVM_FFI_DECLARE_OBJECT_INFO_FINAL("tl.TTRemoteCoreDescriptorSpec",
+                                    TTRemoteCoreDescriptorSpecNode, Object);
+};
+
+class TTRemoteCoreDescriptorSpec : public ObjectRef {
+public:
+  TVM_DLL TTRemoteCoreDescriptorSpec(ffi::String identity, int64_t core_x,
+                                     int64_t core_y);
+  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(TTRemoteCoreDescriptorSpec,
+                                             ObjectRef,
+                                             TTRemoteCoreDescriptorSpecNode);
+};
+
 class TTABIPlanNode : public Object {
 public:
   ffi::String name;
@@ -1235,6 +1255,7 @@ public:
   ffi::Array<TTCompileTimeArgSpec> compile_time_arg_specs;
   ffi::Array<TTAccessorSpec> accessors;
   ffi::Array<TTSemaphoreBindingSpec> semaphore_bindings;
+  ffi::Array<TTRemoteCoreDescriptorSpec> remote_core_descriptors;
 
   static void RegisterReflection();
   TVM_FFI_DECLARE_OBJECT_INFO_FINAL("tl.TTABIPlan", TTABIPlanNode, Object);
@@ -1247,7 +1268,9 @@ public:
                     ffi::Array<TTRuntimeArgSpec> common_runtime_args,
                     ffi::Array<TTCompileTimeArgSpec> compile_time_arg_specs,
                     ffi::Array<TTAccessorSpec> accessors,
-                    ffi::Array<TTSemaphoreBindingSpec> semaphore_bindings);
+                    ffi::Array<TTSemaphoreBindingSpec> semaphore_bindings,
+                    ffi::Array<TTRemoteCoreDescriptorSpec>
+                        remote_core_descriptors);
   TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(TTABIPlan, ObjectRef,
                                              TTABIPlanNode);
 };

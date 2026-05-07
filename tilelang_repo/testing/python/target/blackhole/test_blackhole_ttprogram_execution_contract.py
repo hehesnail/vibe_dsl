@@ -58,3 +58,9 @@ def test_codegen_does_not_recover_reduction_region_from_final_body():
 
     assert "InferReductionSignature" not in source
     assert "InferReductionRepeatExtent" not in source
+
+
+def test_projection_does_not_recover_remote_descriptors_from_runtime_args():
+    source = _repo_src_path("target", "tt_program_projection.h").read_text(encoding="utf-8")
+
+    assert "EncodeRemoteCoreDescriptorsFromRuntimeArgs" not in source

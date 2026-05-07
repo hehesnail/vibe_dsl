@@ -1957,7 +1957,7 @@ Array<TTABIPlan> RewriteABIPlansForBufferDistributions(
     rewritten_abis.push_back(TTABIPlan(
         abi->name, abi->kernel_name, abi->runtime_args,
         abi->common_runtime_args, compile_time_arg_specs, accessors,
-        abi->semaphore_bindings));
+        abi->semaphore_bindings, abi->remote_core_descriptors));
   }
   return rewritten_abis;
 }

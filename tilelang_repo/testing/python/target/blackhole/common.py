@@ -401,6 +401,23 @@ def tt_semaphore_binding_specs_to_list(semaphore_bindings):
     return encoded
 
 
+def tt_remote_core_descriptor_specs_to_list(remote_core_descriptors):
+    encoded = []
+    for spec in remote_core_descriptors or []:
+        plain = _try_plain_dict(spec)
+        if plain is not None:
+            encoded.append(dict(plain))
+            continue
+        encoded.append(
+            {
+                "identity": str(spec.identity),
+                "core_x": int(spec.core_x),
+                "core_y": int(spec.core_y),
+            }
+        )
+    return encoded
+
+
 def make_tt_runtime_arg_specs(runtime_args):
     make = tilelang.tvm.get_global_func("tl.TTRuntimeArgSpec")
     return [
@@ -473,6 +490,18 @@ def make_tt_semaphore_binding_specs(semaphore_bindings):
     ]
 
 
+def make_tt_remote_core_descriptor_specs(remote_core_descriptors):
+    make = tilelang.tvm.get_global_func("tl.TTRemoteCoreDescriptorSpec")
+    return [
+        make(
+            str(item.get("identity", "")),
+            int(item.get("core_x", -1)),
+            int(item.get("core_y", -1)),
+        )
+        for item in tt_remote_core_descriptor_specs_to_list(remote_core_descriptors)
+    ]
+
+
 def extract_tt_program_segments(func):
     """Extract segment-like kernel/ABI records from TTProgram for regression tests."""
     tt_program = require_tt_program(func)
@@ -514,6 +543,12 @@ def extract_tt_program_segments(func):
             payload.setdefault(
                 "semaphore_bindings",
                 tt_semaphore_binding_specs_to_list(abi.semaphore_bindings),
+            )
+            payload.setdefault(
+                "remote_core_descriptors",
+                tt_remote_core_descriptor_specs_to_list(
+                    abi.remote_core_descriptors
+                ),
             )
         compute_ops = [
             encode_tt_compute_op_plan(plan)
@@ -887,6 +922,7 @@ def rebuild_tt_abi_plan(
     compile_time_arg_specs=None,
     accessors=None,
     semaphore_bindings=None,
+    remote_core_descriptors=None,
 ):
     """Rebuild a TTABIPlan with optional field overrides."""
     make_tt_abi_plan = tilelang.tvm.get_global_func("tl.TTABIPlan")
@@ -911,6 +947,11 @@ def rebuild_tt_abi_plan(
             abi_plan.semaphore_bindings
             if semaphore_bindings is None
             else semaphore_bindings
+        ),
+        make_tt_remote_core_descriptor_specs(
+            abi_plan.remote_core_descriptors
+            if remote_core_descriptors is None
+            else remote_core_descriptors
         ),
     )
 

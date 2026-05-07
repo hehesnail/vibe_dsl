@@ -179,6 +179,29 @@
 
 ## 2. 已解决但值得记住的模式
 
+### Remote core endpoints cannot be recovered from logical_core_noc ABI pairs
+
+- **症状**:
+  - `KernelSpec.remote_core_descriptors`
+    曾经在 `TTProgram -> ExecutableSpec` projection 时从
+    `logical_core_noc_x/y` runtime args 配对生成。
+  - leaf reader 虽然会要求 descriptor 存在，但 endpoint owner truth
+    实际仍藏在 ABI arg pair 里。
+- **根因**:
+  - runtime arg 是 ABI value binding，不是 synchronization endpoint
+    record。把 x/y arg pair 当 descriptor 来源会让 projection 层恢复
+    TT sync 语义，违反 P0 target execution contract。
+- **修法**:
+  - 新增显式 `TTRemoteCoreDescriptorSpec`。
+  - `ValidateTTProgram` 要求所有 `logical_core_noc_*` runtime args
+    引用 matching descriptor，并校验 core 坐标一致和 x/y 成对。
+  - `TTProgram -> ExecutableSpec` 只从 descriptor records 投影
+    `KernelSpec.remote_core_descriptors`；缺 descriptor 时 fail closed。
+- **验证**:
+  - remote descriptor recovery 负例、descriptor materialization 正例、
+    logical_core_noc unpaired / missing descriptor 负例，以及 P0 source
+    guard 均通过。
+
 ### T7/T9 online-softmax runtime failure was backend live-form/codegen, not TT-Sim `t_tile_mmio_wr32`
 
 - **症状**:

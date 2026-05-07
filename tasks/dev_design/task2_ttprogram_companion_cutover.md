@@ -233,6 +233,13 @@ per-work data, it must inspect the current TIR expression and the associated
 generic value record; tile-origin scale normalization is owned by
 `value_usage=buffer_tile_origin`, not by runtime-arg name maps.
 
+Remote synchronization endpoint ownership is separate from ABI value binding.
+`TTRemoteCoreDescriptorSpec` records on the TT ABI/sync surface own the
+remote endpoint identity and logical core coordinates.  `logical_core_noc_x`
+and `logical_core_noc_y` runtime args may expose those coordinates to a
+kernel builtin, but they must reference a matching explicit descriptor and
+must not be used to reconstruct the endpoint during projection.
+
 ## Validation Contract
 
 `ValidateTTProgram`

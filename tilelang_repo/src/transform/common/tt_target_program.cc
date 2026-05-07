@@ -1551,6 +1551,24 @@ TTSemaphoreBindingSpec::TTSemaphoreBindingSpec(ffi::String name,
   data_ = std::move(n);
 }
 
+void TTRemoteCoreDescriptorSpecNode::RegisterReflection() {
+  namespace refl = tvm::ffi::reflection;
+  refl::ObjectDef<TTRemoteCoreDescriptorSpecNode>()
+      .def_ro("identity", &TTRemoteCoreDescriptorSpecNode::identity)
+      .def_ro("core_x", &TTRemoteCoreDescriptorSpecNode::core_x)
+      .def_ro("core_y", &TTRemoteCoreDescriptorSpecNode::core_y);
+}
+
+TTRemoteCoreDescriptorSpec::TTRemoteCoreDescriptorSpec(ffi::String identity,
+                                                       int64_t core_x,
+                                                       int64_t core_y) {
+  auto n = ffi::make_object<TTRemoteCoreDescriptorSpecNode>();
+  n->identity = std::move(identity);
+  n->core_x = core_x;
+  n->core_y = core_y;
+  data_ = std::move(n);
+}
+
 void TTABIPlanNode::RegisterReflection() {
   namespace refl = tvm::ffi::reflection;
   refl::ObjectDef<TTABIPlanNode>()
@@ -1560,7 +1578,9 @@ void TTABIPlanNode::RegisterReflection() {
       .def_ro("common_runtime_args", &TTABIPlanNode::common_runtime_args)
       .def_ro("compile_time_arg_specs", &TTABIPlanNode::compile_time_arg_specs)
       .def_ro("accessors", &TTABIPlanNode::accessors)
-      .def_ro("semaphore_bindings", &TTABIPlanNode::semaphore_bindings);
+      .def_ro("semaphore_bindings", &TTABIPlanNode::semaphore_bindings)
+      .def_ro("remote_core_descriptors",
+              &TTABIPlanNode::remote_core_descriptors);
 }
 
 TTABIPlan::TTABIPlan(ffi::String name, ffi::String kernel_name,
@@ -1568,7 +1588,9 @@ TTABIPlan::TTABIPlan(ffi::String name, ffi::String kernel_name,
                      ffi::Array<TTRuntimeArgSpec> common_runtime_args,
                      ffi::Array<TTCompileTimeArgSpec> compile_time_arg_specs,
                      ffi::Array<TTAccessorSpec> accessors,
-                     ffi::Array<TTSemaphoreBindingSpec> semaphore_bindings) {
+                     ffi::Array<TTSemaphoreBindingSpec> semaphore_bindings,
+                     ffi::Array<TTRemoteCoreDescriptorSpec>
+                         remote_core_descriptors) {
   auto n = ffi::make_object<TTABIPlanNode>();
   n->name = std::move(name);
   n->kernel_name = std::move(kernel_name);
@@ -1577,6 +1599,7 @@ TTABIPlan::TTABIPlan(ffi::String name, ffi::String kernel_name,
   n->compile_time_arg_specs = std::move(compile_time_arg_specs);
   n->accessors = std::move(accessors);
   n->semaphore_bindings = std::move(semaphore_bindings);
+  n->remote_core_descriptors = std::move(remote_core_descriptors);
   data_ = std::move(n);
 }
 
@@ -1744,6 +1767,7 @@ TVM_FFI_STATIC_INIT_BLOCK() {
   RegisterNodeReflection<TTCompileTimeArgSpecNode>();
   RegisterNodeReflection<TTAccessorSpecNode>();
   RegisterNodeReflection<TTSemaphoreBindingSpecNode>();
+  RegisterNodeReflection<TTRemoteCoreDescriptorSpecNode>();
   RegisterNodeReflection<TTABIPlanNode>();
   RegisterNodeReflection<TTExecutionPlanNode>();
   RegisterNodeReflection<TTProgramNode>();
@@ -2338,17 +2362,24 @@ TVM_FFI_STATIC_INIT_BLOCK() {
                                       std::move(arg_kind));
       });
   refl::GlobalDef().def(
+      "tl.TTRemoteCoreDescriptorSpec",
+      [](ffi::String identity, int64_t core_x, int64_t core_y) {
+        return TTRemoteCoreDescriptorSpec(std::move(identity), core_x, core_y);
+      });
+  refl::GlobalDef().def(
       "tl.TTABIPlan",
       [](ffi::String name, ffi::String kernel_name,
          ffi::Array<TTRuntimeArgSpec> runtime_args,
          ffi::Array<TTRuntimeArgSpec> common_runtime_args,
          ffi::Array<TTCompileTimeArgSpec> compile_time_arg_specs,
          ffi::Array<TTAccessorSpec> accessors,
-         ffi::Array<TTSemaphoreBindingSpec> semaphore_bindings) {
+         ffi::Array<TTSemaphoreBindingSpec> semaphore_bindings,
+         ffi::Array<TTRemoteCoreDescriptorSpec> remote_core_descriptors) {
         return TTABIPlan(
             std::move(name), std::move(kernel_name), std::move(runtime_args),
             std::move(common_runtime_args), std::move(compile_time_arg_specs),
-            std::move(accessors), std::move(semaphore_bindings));
+            std::move(accessors), std::move(semaphore_bindings),
+            std::move(remote_core_descriptors));
       });
   refl::GlobalDef().def(
       "tl.TTExecutionPlan",

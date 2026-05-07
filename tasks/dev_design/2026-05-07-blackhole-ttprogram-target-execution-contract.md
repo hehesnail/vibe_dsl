@@ -76,7 +76,7 @@ old runtime source/body queue-event scanner is deleted.
 
 ### P0.2 Remaining Semantic Recovery Audit
 
-Status: in progress.
+Status: complete.
 
 Audit runtime/codegen/executable readers for target execution facts still
 recovered from:
@@ -123,21 +123,54 @@ Completed slice:
   publish and consume events at one active thread grain.  Source generation
   no longer lets every thread lane reserve/push or wait/pop the same per-work
   CB event when the executable contract only contains one physical CB page
-  event.  This is a leaf execution-ordering hardening slice; broader shared
-  event/admission centralization remains P0.3 work.
-
-Remaining audit targets include remote sync validation.  Each must be
-classified as either local validation mechanics or execution owner truth that
-must move into typed `TTProgram` / `ExecutableSpec` records.
+  event.
+- Remote synchronization endpoints no longer use `logical_core_noc_x/y`
+  runtime-arg pairs as projection owner truth.  `TTABIPlan` carries explicit
+  `TTRemoteCoreDescriptorSpec` records, `ValidateTTProgram` requires any
+  `logical_core_noc_*` ABI arg to reference one of those descriptors, and
+  `TTProgram -> ExecutableSpec` projection serializes
+  `KernelSpec.remote_core_descriptors` only from the explicit descriptor
+  records.  The remaining segment-body walk in the Blackhole build path is
+  validation-only: it checks that semaphore/remote builtins consume the
+  projected schema and rejects literal or body-recovered endpoints.
 
 ### P0.3 Execution Event / Admission Spine
 
-Status: queued.
+Status: complete.
 
 Where multiple leaf readers need the same execution ordering or admission
 fact, centralize it as `TTProgram` owner truth and project it once.  Do not
 let runtime, source emission, and Python metadata each reconstruct the same
 decision.
+
+The current P0 spine is:
+
+- physical CB FIFO events:
+  `TTKernel` body + `TTCBPlan` requirement ownership ->
+  `KernelSpec.queue_events`;
+- exact-CB lifecycle and storage legality:
+  `TTExactCB*` records plus `TTCBPlan` ->
+  `ValidateTTProgram` and executable queue/lifecycle gates;
+- semaphore endpoints:
+  `TTSemaphorePlan` plus `TTSemaphoreBindingSpec` ->
+  `ExecutableSpec.semaphores` and `KernelSpec.semaphore_bindings`;
+- remote synchronization endpoints:
+  `TTRemoteCoreDescriptorSpec` plus logical-core ABI references ->
+  `KernelSpec.remote_core_descriptors`;
+- kernel launch association:
+  explicit `tl.launched_kernel_symbols` IR attr ->
+  host/device executable association;
+- runtime/common/per-work ABI:
+  `TTABIPlan` and `TTPerWorkArgSpec` records ->
+  executable runtime arg and per-work schemas;
+- buffer/materialization/resource admission:
+  `TTBufferDistributionPlan`, `TTTensorMemoryConfigPlan`,
+  materialization/liveness records, and `TTResourcePressureReport` ->
+  executable distribution, materialization, and typed admission gates.
+
+Backend-local simulator capability gates may still append typed
+`direct_runtime_unsupported_reasons` during executable build.  Those gates are
+leaf admission results over projected records, not planner semantic recovery.
 
 ## Completion Criteria
 
