@@ -67,16 +67,25 @@ using tir::builtin::blackhole_cb_push_back;
 using tir::builtin::blackhole_cb_reserve_back;
 using tir::builtin::blackhole_cb_wait_front;
 using tir::builtin::blackhole_copy_cb_page;
+using tir::builtin::blackhole_copy_tile;
+using tir::builtin::blackhole_copy_tile_to_dst_init_short;
 using tir::builtin::blackhole_noc_async_read;
 using tir::builtin::blackhole_noc_async_read_barrier;
 using tir::builtin::blackhole_noc_async_write;
 using tir::builtin::blackhole_noc_async_write_barrier;
+using tir::builtin::blackhole_pack_reconfig_data_format;
+using tir::builtin::blackhole_pack_tile;
 using tir::builtin::blackhole_pack_untilize_slice;
 using tir::builtin::blackhole_pack_untilize_tile;
+using tir::builtin::blackhole_reconfig_data_format;
 using tir::builtin::blackhole_runtime_arg_u32;
 using tir::builtin::blackhole_read_page_to_cb;
 using tir::builtin::blackhole_read_bcast_cols_to_cb;
 using tir::builtin::blackhole_read_tile_to_cb;
+using tir::builtin::blackhole_tile_regs_acquire;
+using tir::builtin::blackhole_tile_regs_commit;
+using tir::builtin::blackhole_tile_regs_release;
+using tir::builtin::blackhole_tile_regs_wait;
 using tir::builtin::blackhole_untilize_cb_front_tile;
 using tir::builtin::blackhole_write_page_from_cb;
 using tir::builtin::blackhole_write_tile_from_cb;
@@ -1521,18 +1530,35 @@ Stmt PlanTTKernelABI::GenerateCopySequence(const BufferStoreNode* op,
         const bool has_live_output =
             TryCreateExactOutputLiveTiledCBValue(load->buffer, &live_output) ||
             TryCreateLiveExactTiledCBValue(load->buffer, &live_output);
-        if (has_live_output) {
+        const bool publish_loop_carried_output =
+            has_live_output && IsActiveLoopCarriedExactCBValue(live_output) &&
+            !active_serial_loop_vars_.empty() && live_output.num_tiles == 1;
+        if (has_live_output && !publish_loop_carried_output) {
           MarkExactTiledCBValueConsumedByTransport(live_output);
         }
-        const int cb_id =
-            has_live_output
-                ? live_output.cb_id
-                : AllocateRequirementIndex(
-                      load->buffer,
-                      (segmented_gemm && accumulator_like_src) ? CBType::kOutput
-                                                               : CBType::kIntermediate);
         const int page_bytes = static_cast<int>(
             std::max<int64_t>(1, shared_rank1.value()) * load->buffer->dtype.bytes());
+        Stmt loop_carried_publication;
+        int cb_id = -1;
+        if (publish_loop_carried_output) {
+          ExactTiledCBValue publication_value;
+          if (TryGetLoopCarriedTransportPublicationValue(load->buffer, live_output,
+                                                         &publication_value)) {
+            cb_id = publication_value.cb_id;
+          } else {
+            auto publication = CreateLoopCarriedTransportPublication(
+                load->buffer, live_output, 1, page_bytes);
+            cb_id = publication.first;
+            loop_carried_publication = publication.second;
+          }
+        } else {
+          cb_id = has_live_output
+                      ? live_output.cb_id
+                      : AllocateRequirementIndex(
+                            load->buffer,
+                            (segmented_gemm && accumulator_like_src) ? CBType::kOutput
+                                                                     : CBType::kIntermediate);
+        }
         if (!has_live_output) {
           SetRequirementPageLayout(cb_id, page_bytes, 1);
         }
@@ -1607,8 +1633,13 @@ Stmt PlanTTKernelABI::GenerateCopySequence(const BufferStoreNode* op,
         if (!(live_rank1_vector_output && !active_serial_loop_vars_.empty())) {
           stmts.push_back(make_pop());
         }
-        return WrapSegmentStmtIfNeeded(current_segment_kind_, segment_kind,
-                                       SeqStmt::Flatten(stmts));
+        Stmt writer = WrapSegmentStmtIfNeeded(current_segment_kind_, segment_kind,
+                                              SeqStmt::Flatten(stmts));
+        if (loop_carried_publication.defined()) {
+          std::vector<Stmt> publication_then_writer{loop_carried_publication, writer};
+          return SeqStmt::Flatten(publication_then_writer);
+        }
+        return writer;
       }
       // Staged shared -> DRAM copies should be collapsed at loop granularity.
       return GetRef<Stmt>(op);
@@ -1697,6 +1728,133 @@ Stmt PlanTTKernelABI::GenerateCopySequence(const BufferStoreNode* op,
   return SeqStmt::Flatten(stmts);
 }
 
+std::string PlanTTKernelABI::LoopCarriedTransportPublicationIdentity(
+    const Buffer& source_buffer,
+    const ExactTiledCBValue& live_output) const {
+  if (!live_output.live_identity.empty()) {
+    return live_output.live_identity;
+  }
+  const std::string source_identity = BufferIdentityName(source_buffer);
+  if (!source_identity.empty()) {
+    return source_identity;
+  }
+  if (live_output.buffer.defined()) {
+    const std::string identity = BufferIdentityName(live_output.buffer);
+    if (!identity.empty()) {
+      return identity;
+    }
+  }
+  return "";
+}
+
+PlanTTKernelABI::ExactTiledCBValue
+PlanTTKernelABI::GetOrCreateLoopCarriedTransportPublicationValue(
+    const Buffer& source_buffer,
+    const ExactTiledCBValue& live_output,
+    int page_count,
+    int page_bytes) {
+  page_count = std::max(1, page_count);
+  page_bytes = std::max(1, page_bytes);
+  const std::string identity =
+      LoopCarriedTransportPublicationIdentity(source_buffer, live_output);
+  ICHECK(!identity.empty())
+      << "Loop-carried transport publication requires a logical identity";
+  auto existing = loop_carried_transport_publication_by_logical_value_.find(identity);
+  if (existing != loop_carried_transport_publication_by_logical_value_.end()) {
+    return existing->second;
+  }
+
+  ExactTiledCBValue publication;
+  publication.buffer =
+      tir::decl_buffer(source_buffer->shape, ExactTiledCBStorageDType(source_buffer->dtype),
+                       identity + "_loop_carried_transport_publish",
+                       GetStorageScope(source_buffer));
+  PopulateExactTiledCBValueShape(source_buffer, &publication);
+  publication.cb_id = PrepareExactTiledCBRequirement(publication.buffer, CBType::kOutput);
+  ICHECK_GE(publication.cb_id, 0);
+  ICHECK_LT(publication.cb_id, static_cast<int>(cb_requirements_.size()));
+  SetRequirementPageLayout(publication.cb_id, page_bytes, std::max(4, page_count));
+  auto& publication_req = cb_requirements_.at(publication.cb_id);
+  publication_req.publish_pages_per_event =
+      std::max(publication_req.publish_pages_per_event, page_count);
+  publication_req.consume_pages_per_event =
+      std::max(publication_req.consume_pages_per_event, page_count);
+  MarkExactCBValuesOverlap({live_output.cb_id, publication.cb_id});
+  loop_carried_transport_publication_by_logical_value_[identity] = publication;
+  return publication;
+}
+
+bool PlanTTKernelABI::TryGetLoopCarriedTransportPublicationValue(
+    const Buffer& source_buffer,
+    const ExactTiledCBValue& live_output,
+    ExactTiledCBValue* publication) const {
+  ICHECK(publication != nullptr);
+  const std::string identity =
+      LoopCarriedTransportPublicationIdentity(source_buffer, live_output);
+  if (identity.empty()) {
+    return false;
+  }
+  auto existing = loop_carried_transport_publication_by_logical_value_.find(identity);
+  if (existing == loop_carried_transport_publication_by_logical_value_.end()) {
+    const std::string publication_name = identity + "_loop_carried_transport_publish";
+    auto req_it = buffer_identity_to_req_index_.find(publication_name);
+    if (req_it == buffer_identity_to_req_index_.end()) {
+      return false;
+    }
+    publication->buffer =
+        tir::decl_buffer(source_buffer->shape, ExactTiledCBStorageDType(source_buffer->dtype),
+                         publication_name, GetStorageScope(source_buffer));
+    PopulateExactTiledCBValueShape(source_buffer, publication);
+    publication->cb_id = req_it->second;
+    RefineExactTiledCBValueShapeFromRequirement(publication);
+    return true;
+  }
+  *publication = existing->second;
+  return true;
+}
+
+std::pair<int, Stmt> PlanTTKernelABI::CreateLoopCarriedTransportPublication(
+    const Buffer& source_buffer,
+    const ExactTiledCBValue& live_output,
+    int page_count,
+    int page_bytes) {
+  ICHECK(live_output.cb_id >= 0);
+  page_count = std::max(1, page_count);
+  page_bytes = std::max(1, page_bytes);
+  ExactTiledCBValue publication = GetOrCreateLoopCarriedTransportPublicationValue(
+      source_buffer, live_output, page_count, page_bytes);
+  RecordExactCBUseAndReleaseEvent(live_output, current_lowering_order_index_,
+                                  ExactCBReleasePolicy::kNever);
+
+  std::vector<Stmt> stmts;
+  stmts.push_back(MakeBlackholeCall(blackhole_cb_wait_front(),
+                                    {IntImm32(live_output.cb_id), IntImm32(page_count)}));
+  stmts.push_back(MakeBlackholeCall(blackhole_cb_reserve_back(),
+                                    {IntImm32(publication.cb_id), IntImm32(page_count)}));
+  for (int page = 0; page < page_count; ++page) {
+    stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_acquire(), {}));
+    stmts.push_back(MakeBlackholeCall(blackhole_reconfig_data_format(),
+                                      {IntImm32(live_output.cb_id),
+                                       IntImm32(live_output.cb_id)}));
+    stmts.push_back(MakeBlackholeCall(blackhole_copy_tile_to_dst_init_short(),
+                                      {IntImm32(live_output.cb_id)}));
+    stmts.push_back(MakeBlackholeCall(blackhole_copy_tile(),
+                                      {IntImm32(live_output.cb_id),
+                                       IntImm32(page), IntImm32(0)}));
+    stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_commit(), {}));
+    stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_wait(), {}));
+    stmts.push_back(MakeBlackholeCall(blackhole_pack_reconfig_data_format(),
+                                      {IntImm32(publication.cb_id)}));
+    stmts.push_back(MakeBlackholeCall(blackhole_pack_tile(),
+                                      {IntImm32(0), IntImm32(publication.cb_id),
+                                       IntImm32(page)}));
+    stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_release(), {}));
+  }
+  stmts.push_back(MakeBlackholeCall(blackhole_cb_push_back(),
+                                    {IntImm32(publication.cb_id), IntImm32(page_count)}));
+  return {publication.cb_id, MaybeWrapComputeSegment(SeqStmt::Flatten(stmts))};
+}
+
 Stmt PlanTTKernelABI::GenerateCopySequence(const BufferStoreNode* op,
                                              const PrimExpr& tile_index) {
   CopyDirection direction = GetCopyDirection(op);
@@ -1756,16 +1914,34 @@ Stmt PlanTTKernelABI::GenerateCopySequence(const BufferStoreNode* op,
       const bool has_live_output =
           TryCreateExactOutputLiveTiledCBValue(load->buffer, &live_output) ||
           TryCreateLiveExactTiledCBValue(load->buffer, &live_output);
-      if (has_live_output) {
+      const bool publish_loop_carried_output =
+          has_live_output && IsActiveLoopCarriedExactCBValue(live_output) &&
+          !active_serial_loop_vars_.empty() && live_output.num_tiles == 1;
+      if (has_live_output && !publish_loop_carried_output) {
         MarkExactTiledCBValueConsumedByTransport(live_output);
       }
-      int cb_id = has_live_output
-                      ? live_output.cb_id
-                      : AllocateRequirementIndex(
-                            load->buffer,
-                            (segmented_gemm && accumulator_like_src) ? CBType::kOutput
-                                                                     : CBType::kIntermediate);
       int tile_bytes = EstimateCopyPageSize(load->buffer);
+      Stmt loop_carried_publication;
+      int cb_id = -1;
+      if (publish_loop_carried_output) {
+        ExactTiledCBValue publication_value;
+        if (TryGetLoopCarriedTransportPublicationValue(load->buffer, live_output,
+                                                       &publication_value)) {
+          cb_id = publication_value.cb_id;
+        } else {
+          auto publication = CreateLoopCarriedTransportPublication(
+              load->buffer, live_output, std::max(1, live_output.num_tiles), tile_bytes);
+          cb_id = publication.first;
+          loop_carried_publication = publication.second;
+        }
+      } else {
+        cb_id = has_live_output
+                    ? live_output.cb_id
+                    : AllocateRequirementIndex(
+                          load->buffer,
+                          (segmented_gemm && accumulator_like_src) ? CBType::kOutput
+                                                                   : CBType::kIntermediate);
+      }
       RecordStagedCopyBufferBinding(op, direction);
       const Array<PrimExpr>& global_indices = op->indices;
       const Array<Integer> global_shape = GetEncodedCurrentBufferShape(op->buffer);
@@ -1784,7 +1960,12 @@ Stmt PlanTTKernelABI::GenerateCopySequence(const BufferStoreNode* op,
                        accessor_slot, 2, 0, 0, 2, tile_bytes, host_axis_order);
       stmts.push_back(MakeBlackholeCall(
           blackhole_cb_pop_front(), {IntImm32(cb_id), IntImm32(1)}));
-      return maybe_wrap_segment_stmt(segment_kind, SeqStmt::Flatten(stmts));
+      Stmt writer = maybe_wrap_segment_stmt(segment_kind, SeqStmt::Flatten(stmts));
+      if (loop_carried_publication.defined()) {
+        std::vector<Stmt> publication_then_writer{loop_carried_publication, writer};
+        return SeqStmt::Flatten(publication_then_writer);
+      }
+      return writer;
     }
     default:
       return GenerateCopySequence(op);
@@ -1897,6 +2078,24 @@ Stmt PlanTTKernelABI::GenerateStagedCopyLoopSequence(
       page_index = analyzer.Simplify(page_index + IntImm32(page_row));
     }
     return page_index;
+  };
+  auto wrap_active_thread_single_publication = [&](Stmt stmt) -> Stmt {
+    PrimExpr predicate;
+    for (const Var& active_var : active_serial_loop_vars_) {
+      const bool is_thread_var =
+          thread_index_vars_.count(active_var.get()) != 0U ||
+          thread_index_var_names_.count(active_var->name_hint) != 0U;
+      if (!is_thread_var) {
+        continue;
+      }
+      PrimExpr zero = IntImm(active_var.dtype(), 0);
+      PrimExpr is_zero = tir::EQ(active_var, zero);
+      predicate = predicate.defined() ? tir::And(predicate, is_zero) : is_zero;
+    }
+    if (!predicate.defined()) {
+      return stmt;
+    }
+    return tir::IfThenElse(predicate, stmt);
   };
   if (IsDramToDeviceCopyDirection(direction)) {
     const bool materialize_to_local = direction == CopyDirection::kDramToLocal;
@@ -2321,7 +2520,9 @@ Stmt PlanTTKernelABI::GenerateStagedCopyLoopSequence(
           std::max<int64_t>(live_value.num_elements,
                             static_cast<int64_t>(total_subtiles) *
                                 kBlackholeTileRows * kBlackholeTileCols);
-      Stmt reader_stmt = maybe_wrap_segment_stmt(SeqStmt::Flatten(stmts));
+      Stmt reader_body =
+          wrap_active_thread_single_publication(SeqStmt::Flatten(stmts));
+      Stmt reader_stmt = maybe_wrap_segment_stmt(reader_body);
       Stmt materialize_stmt =
           MaterializeExactTiledCBToLocalBuffer(op->buffer, live_value,
                                                /*pop_front=*/true);
@@ -2336,7 +2537,11 @@ Stmt PlanTTKernelABI::GenerateStagedCopyLoopSequence(
     if (!SameBufferIdentity(cb_producer_buffer, op->buffer)) {
       RecordTiledCBLiveFormAliases(op->buffer, cb_id);
     }
-    return maybe_wrap_segment_stmt(SeqStmt::Flatten(stmts));
+    Stmt reader_body = SeqStmt::Flatten(stmts);
+    if (guarded_copy_feeds_tile_compute) {
+      reader_body = wrap_active_thread_single_publication(reader_body);
+    }
+    return maybe_wrap_segment_stmt(reader_body);
   }
 
   if (direction == CopyDirection::kCBToDram) {
@@ -2344,15 +2549,50 @@ Stmt PlanTTKernelABI::GenerateStagedCopyLoopSequence(
     const bool has_live_output =
         TryCreateExactOutputLiveTiledCBValue(load->buffer, &live_output) ||
         TryCreateLiveExactTiledCBValue(load->buffer, &live_output);
-    if (has_live_output) {
+    ExactTiledCBValue existing_loop_carried_publication;
+    const bool use_existing_loop_carried_publication =
+        has_live_output &&
+        TryGetLoopCarriedTransportPublicationValue(load->buffer, live_output,
+                                                   &existing_loop_carried_publication);
+    const bool publish_loop_carried_output =
+        !use_existing_loop_carried_publication &&
+        has_live_output && IsActiveLoopCarriedExactCBValue(live_output) &&
+        !active_serial_loop_vars_.empty() && live_output.num_tiles == 1 &&
+        !geometry.use_page_transport && geometry.subtile_rows == 1 && geometry.subtile_cols == 1;
+    if (has_live_output && !publish_loop_carried_output &&
+        !use_existing_loop_carried_publication) {
       MarkExactTiledCBValueConsumedByTransport(live_output);
     }
-    int cb_id = has_live_output
-                    ? live_output.cb_id
-                    : AllocateRequirementIndex(
-                          load->buffer,
-                          (segmented_gemm && accumulator_like_src) ? CBType::kOutput
-                                                                   : CBType::kIntermediate);
+    Stmt loop_carried_publication;
+    int cb_id = -1;
+    if (use_existing_loop_carried_publication) {
+      cb_id = existing_loop_carried_publication.cb_id;
+    } else if (publish_loop_carried_output) {
+      ExactTiledCBValue publication_value;
+      if (TryGetLoopCarriedTransportPublicationValue(load->buffer, live_output,
+                                                     &publication_value)) {
+        cb_id = publication_value.cb_id;
+      } else {
+        auto publication = CreateLoopCarriedTransportPublication(
+            load->buffer, live_output, 1, geometry.tile_bytes);
+        cb_id = publication.first;
+        loop_carried_publication = publication.second;
+      }
+    } else {
+      cb_id = has_live_output
+                  ? live_output.cb_id
+                  : AllocateRequirementIndex(
+                        load->buffer,
+                        (segmented_gemm && accumulator_like_src) ? CBType::kOutput
+                                                                 : CBType::kIntermediate);
+    }
+    auto maybe_prepend_loop_carried_publication = [&](Stmt writer) -> Stmt {
+      if (!loop_carried_publication.defined()) {
+        return writer;
+      }
+      std::vector<Stmt> publication_then_writer{loop_carried_publication, writer};
+      return SeqStmt::Flatten(publication_then_writer);
+    };
     RecordStagedCopyBufferBinding(op, direction);
     const int accessor_slot = GetWriteAccessorSlot(segment_kind, op->buffer, direction);
     const std::string live_input_name = BufferIdentityName(load->buffer);
@@ -2376,7 +2616,8 @@ Stmt PlanTTKernelABI::GenerateStagedCopyLoopSequence(
                          accessor_slot, 2, 0, 0, 2, geometry.page_bytes, host_axis_order,
                          false, "interleaved");
       }
-      return maybe_wrap_segment_stmt(SeqStmt::Flatten(stmts));
+      return maybe_prepend_loop_carried_publication(
+          maybe_wrap_segment_stmt(SeqStmt::Flatten(stmts)));
     }
     if (use_page_transport) {
       SetRequirementPageLayout(cb_id, geometry.shared_bytes, 1);
@@ -2397,7 +2638,8 @@ Stmt PlanTTKernelABI::GenerateStagedCopyLoopSequence(
           blackhole_noc_async_write_barrier(), {}));
       stmts.push_back(MakeBlackholeCall(
           blackhole_cb_pop_front(), {IntImm32(cb_id), IntImm32(1)}));
-      return maybe_wrap_segment_stmt(SeqStmt::Flatten(stmts));
+      return maybe_prepend_loop_carried_publication(
+          maybe_wrap_segment_stmt(SeqStmt::Flatten(stmts)));
     }
     for (int subtile_row = 0; subtile_row < geometry.subtile_rows; ++subtile_row) {
       for (int subtile_col = 0; subtile_col < geometry.subtile_cols; ++subtile_col) {
@@ -2414,7 +2656,8 @@ Stmt PlanTTKernelABI::GenerateStagedCopyLoopSequence(
             blackhole_cb_pop_front(), {IntImm32(cb_id), IntImm32(1)}));
       }
     }
-    return maybe_wrap_segment_stmt(SeqStmt::Flatten(stmts));
+    return maybe_prepend_loop_carried_publication(
+        maybe_wrap_segment_stmt(SeqStmt::Flatten(stmts)));
   }
 
   return GenerateCopySequence(op);

@@ -2796,3 +2796,22 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   values.  Generic `value_expr` equality must include referenced buffer-load
   identity and `value_usage`, so `SegmentOffsets[bx, k]` and
   `SegmentCounts[bx, k]` never dedupe just because their index shapes match.
+- 2026-05-07 T9.5 loop-carried exact-CB runtime:
+  A loop-carried exact-CB state update must not render as a same-physical-CB
+  input/output backedge such as compute consuming and publishing the state CB in
+  one tile operation.  Writer-visible recurrence output must also use a
+  separate publication CB; otherwise the writer can consume the state live-in or
+  backedge page before compute owns it.  The first admitted chunk-scan slice
+  uses typed loop-carried lifecycle records, two alternate state CBs for the
+  three static chunk updates, a separate writer publication CB for per-chunk
+  `Output` plus final `StateOut`, and a three-page retained `X` stream window.
+- 2026-05-07 threaded source-publication grain:
+  When a full-tile DRAM source publication is generated inside a thread-lane
+  loop, it is still one per-work CB event unless the typed transport evidence
+  says otherwise.  Guard the publication on active thread vars being zero;
+  otherwise a reader can reserve/push the same CB page many times while compute
+  waits/pops it once.  This applies to ordinary full-tile sources as well as
+  broadcast-cols rank-1 RHS materialization.  Keep the guard scoped to source
+  publications that feed tile compute; a pure copy with reader and writer in
+  the same thread loop must keep the paired source and sink events at the same
+  execution grain.

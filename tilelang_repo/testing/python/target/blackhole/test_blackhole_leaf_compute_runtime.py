@@ -51,6 +51,16 @@ def _compute_kernel_source(executable_spec):
     )
 
 
+def _reader_kernel_source(executable_spec):
+    return str(
+        next(
+            kernel["source_code"]
+            for kernel in executable_spec["kernels"]
+            if str(kernel["kind"]) == "reader" and str(kernel["core_type"]) == "brisc"
+        )
+    )
+
+
 def binary_leaf_kernel(operation):
     @T.prim_func
     def main(
@@ -173,6 +183,29 @@ def test_blackhole_standalone_leaf_compute_projects_typed_runtime_contracts(
     else:
         assert not reasons, case_name
     assert expected_ops <= set(_compute_operation_names(executable_spec))
+
+
+def test_blackhole_broadcast_cols_reader_publishes_full_tile_sources_once():
+    artifact = _lower_blackhole(broadcast_cols_leaf_kernel("add"))
+    executable_spec = _extract_blackhole_executable_spec(artifact)
+    reader_source = _reader_kernel_source(executable_spec)
+    a_cb_id = next(
+        int(config["cb_id"])
+        for config in executable_spec["cb_configs"]
+        if str(config["name"]) == "A_local"
+    )
+
+    thread_loop = re.search(
+        r"for\s*\(\s*int32_t\s+tx\s*=\s*0;.*?\)\s*\{(?P<body>.*)\n\}",
+        reader_source,
+        re.DOTALL,
+    )
+    assert thread_loop
+    body = thread_loop.group("body")
+    reserve = f"cb_reserve_back({a_cb_id}, 1);"
+    reserve_pos = body.find(reserve)
+    assert reserve_pos != -1
+    assert body.rfind("tx == 0", 0, reserve_pos) != -1
 
 
 def test_blackhole_standalone_reduce_packs_before_reduce_uninit():

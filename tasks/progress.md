@@ -25,7 +25,7 @@
 | T7 Exact-CB / materialization primitives | Complete | Exact-CB materialization, publication, consumer binding, GEMM post-merge materialization, and seq64 bf16 flash-attn exact-CB partial combine pass `BlackholeModule` TT-Sim correctness. |
 | T7.5 Exact-CB liveness / allocation cutover | Complete | Covered exact-CB resident tiles use typed lifecycle, allocation, release events, latest-producer validation, storage-format validation, and fail-closed loop-carried/full-tile gates. |
 | T8 Irregular work domains / indexed access | Complete | Indexed, sparse, ragged, paged, segmented, and T9.1 grouped-GEMM feed paths execute through generic `AccessRegion` + `value_expr` bindings.  Buffer-bound per-work specs carry explicit `AccessRegion` evidence, indexed lookups fail closed on missing structural matches, and broadened segmented/paged/ragged/indexed copy shapes pass direct-runtime gates. |
-| T9 Workload first paths | In progress | T9.1 pre-grouped MoE/routed GEMM, T9.2 full paged GQA decode, T9.3 dual-score MLA GEMM, T9.3 full paged MLA decode, and T9.4 sparse/ragged GQA decode have bf16 direct-runtime correctness.  T9.5-T9.6 are queued. |
+| T9 Workload first paths | In progress | T9.1 pre-grouped MoE/routed GEMM, T9.2 full paged GQA decode, T9.3 dual-score MLA GEMM, T9.3 full paged MLA decode, T9.4 sparse/ragged GQA decode, and T9.5 chunk recurrence / scan have bf16 direct-runtime correctness.  T9.6 is queued. |
 | T10 Distributed production variants | Queued | Mesh placement, CCL, NoC/multicast/global scheduling, distributed workload correctness, and production partial-K reduction remain future TT target-realization work. |
 
 ## Current Protocol Snapshot
@@ -87,9 +87,6 @@
 
 ### P1: T9 Workload-First Paths
 
-- T9.5 chunk recurrence / scan:
-  represent multi-chunk loop-carried state and device state-buffer lifetime
-  through typed lifecycle/allocation records before runtime execution.
 - T9.6 multi-block flash decode:
   admit bf16 split blocks with exact-CB publish/consume and partial combine.
 
@@ -132,9 +129,10 @@ Current active baseline:
   and current simulator capability boundaries fail closed before source or
   runtime guessing.
 - Current known simulator boundary:
-  extended-sequence loop-carried exact-CB backedge publish remains gated by the
-  typed PACR reason until T9.5/T9.6 introduce the needed lifecycle/runtime
-  protocol.
+  the first T9.5 three-chunk recurrence slice is admitted through typed
+  ping-pong state CBs plus a separate writer publication CB.  Broader dynamic
+  or extended loop-carried exact-CB recurrence remains future work and must
+  still fail closed until it has equivalent typed lifecycle/runtime evidence.
 - Current known non-T8 source/spec failure:
   the full copy-pipeline suite still reaches the flash bridge granularity gate
   at `merge_fragment_tiles` destination `acc_o`; that is a T9 exact-CB /

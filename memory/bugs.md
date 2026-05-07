@@ -2006,12 +2006,21 @@
     source copy 位于 `tx < 32` 这类 vector/thread loop 中时，
     reader 会对同一个 RHS CB page reserve/push 多次，而 compute 只消费
     一次。
+  - T9.5 后续相邻验证又暴露了同类问题的完整 tile 版本：
+    `A_local` full-tile source publication 落在 `tx` loop 内，reader 重复
+    push A CB，compute 仍只消费一次，enqueue 卡住。
 - **根因**:
   - rank-1 RHS materialization 是一次 per-work tile source event，不是每个
     vector lane / thread lane 的独立 transport event。
+  - full-tile DRAM source publication 也是同一个 per-work CB event；thread
+    lane loop 是执行组织，不是额外 transport event 粒度。
 - **修法**:
   - 对 broadcast-cols source copy 使用当前 loop/thread guard，只在所有
     active lane var 为 0 时执行 reader-side materialization。
+  - 对 thread-lane 内生成的 full-tile DRAM-to-device publication 同样加
+    active-thread-zero guard，但只在该 source publication feeds tile
+    compute 时这么做；纯 copy 的 reader/writer 成对事件必须保持相同执行
+    粒度，否则 writer 会在后续 thread lane 等一个没有发布的新 CB page。
 - **教训**:
   - 把 scalar/vector source loop lower 成 CB publication 时，必须重新确认
     publication event 的粒度；CB event 粒度错了会表现为 runtime hang，
@@ -3344,6 +3353,27 @@
     access-region negative coverage reported `19 passed, 66 deselected`.
   - TT-Sim direct-runtime selector covering indexed, sparse, ragged, paged,
     one/two/three-range segmented copies reported `13 passed, 35 deselected`.
+
+### T9.5 loop-carried state CB aliasing hung TT-Sim
+
+- **症状**:
+  - The first chunk-scan direct-runtime shape hung when generated compute used
+    the same physical CB for the loop-carried state input and output, or when
+    the writer consumed the state CB directly for per-chunk output.
+- **根因**:
+  - The loop-carried state live-in/backedge CB and writer-visible publication
+    stream have different ownership.  Sharing the physical CB lets the writer
+    steal the state page or makes compute publish a self-backedge that the
+    simulator/runtime cannot progress.
+- **修法**:
+  - Keep the state lifecycle in typed exact-CB records, but render the first
+    admitted three-chunk recurrence with alternate state CBs and a distinct
+    writer publication CB.  The `X` input stream is retained as a three-page
+    loop window and popped at the final chunk.
+- **验证**:
+  - `test_blackhole_t9_chunk_scan_bf16_direct_runtime` passed under the
+    repository TT-Sim bf16 setup.
+  - The full T9.5 chunk-scan file reported `2 passed`.
 
 ## 3. 环境问题速查
 

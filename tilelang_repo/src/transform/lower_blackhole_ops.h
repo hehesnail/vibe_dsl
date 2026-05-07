@@ -743,6 +743,11 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
       const tvm::tir::Stmt& body) const;
   tvm::tir::Stmt InitializeLoopCarriedExactLiveForms(
       const std::unordered_set<std::string>& loop_carried_identities);
+  bool IsActiveLoopCarriedExactCBValue(const ExactTiledCBValue& value) const;
+  bool IsActiveLoopCarriedTransportPublicationValue(
+      const ExactTiledCBValue& value) const;
+  tvm::PrimExpr ActiveLoopCarriedTransportPublicationFinalPredicate(
+      const ExactTiledCBValue& value) const;
   bool ShouldMaterializeLoopCarriedExactOutput(const tvm::tir::Buffer& dst) const;
   tvm::tir::Stmt MaterializeLoopCarriedExactOutput(const tvm::tir::Buffer& dst,
                                                    const ExactTiledCBValue& cb_value);
@@ -758,6 +763,23 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   ExactTiledCBValue CreateConstantExactTiledCBValue(tvm::DataType dtype,
                                                     const std::string& suffix);
   ExactTiledCBValue CreateReduceScalerExactTiledCBValue();
+  std::string LoopCarriedTransportPublicationIdentity(
+      const tvm::tir::Buffer& source_buffer,
+      const ExactTiledCBValue& live_output) const;
+  ExactTiledCBValue GetOrCreateLoopCarriedTransportPublicationValue(
+      const tvm::tir::Buffer& source_buffer,
+      const ExactTiledCBValue& live_output,
+      int page_count,
+      int page_bytes);
+  bool TryGetLoopCarriedTransportPublicationValue(
+      const tvm::tir::Buffer& source_buffer,
+      const ExactTiledCBValue& live_output,
+      ExactTiledCBValue* publication) const;
+  std::pair<int, tvm::tir::Stmt> CreateLoopCarriedTransportPublication(
+      const tvm::tir::Buffer& source_buffer,
+      const ExactTiledCBValue& live_output,
+      int page_count,
+      int page_bytes);
 
   /*! \brief Generate copy builtin sequence (DRAM->CB, CB->DRAM, CB->CB) */
   tvm::tir::Stmt GenerateCopySequence(const tvm::tir::BufferStoreNode* op);
@@ -1099,8 +1121,14 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   std::unordered_map<std::string, int> invalidated_live_form_order_by_buffer_identity_;
   std::unordered_set<std::string> local_only_live_form_buffer_identities_;
   std::vector<std::unordered_set<std::string>> active_loop_carried_buffer_identity_stack_;
+  std::vector<std::unordered_set<std::string>>
+      active_loop_carried_transport_publication_identity_stack_;
+  std::vector<tvm::PrimExpr>
+      active_loop_carried_transport_publication_final_predicate_stack_;
   std::unordered_map<std::string, LoopCarriedExactCBState>
       loop_carried_exact_cb_state_by_logical_value_;
+  std::unordered_map<std::string, ExactTiledCBValue>
+      loop_carried_transport_publication_by_logical_value_;
   std::unordered_set<std::string> selected_source_live_producer_buffers_;
   std::unordered_map<std::string, int> selected_source_live_producer_order_by_buffer_identity_;
   std::vector<SpatialMaterializationBoundaryRef> spatial_materialization_boundaries_;

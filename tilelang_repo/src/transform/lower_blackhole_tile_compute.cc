@@ -200,6 +200,12 @@ class ExactTileComputeEmitter {
     stmts_->push_back(MakeBlackholeCall(op, args));
   }
 
+  void AppendStmt(const Stmt& stmt) {
+    if (stmt.defined()) {
+      stmts_->push_back(stmt);
+    }
+  }
+
   void Reserve(int cb_id, int num_tiles) {
     Append(blackhole_cb_reserve_back(), {IntImm32(cb_id), IntImm32(num_tiles)});
   }
@@ -1551,6 +1557,62 @@ Stmt PlanTTKernelABI::GenerateBinaryTileSequence(const Buffer& dst,
         dst, operation_name + "_out",
         ExactOutputCBTypeForBuffer(dst, current_lowering_order_index_));
   }
+  ExactTiledCBValue loop_carried_transport_publication;
+  ExactTiledCBValue loop_carried_alternate_state;
+  ExactTiledCBValue loop_carried_second_alternate_state;
+  const bool mirror_loop_carried_transport_output =
+      out.num_tiles == 1 && IsActiveLoopCarriedExactCBValue(out) &&
+      IsActiveLoopCarriedTransportPublicationValue(out);
+  const bool inplace_loop_carried_output =
+      !mirror_loop_carried_transport_output && out.num_tiles == 1 &&
+      IsActiveLoopCarriedExactCBValue(out) && out.cb_id == lhs_in.cb_id;
+  if (mirror_loop_carried_transport_output) {
+    const int out_page_bytes =
+        out.cb_id >= 0 && out.cb_id < static_cast<int>(cb_requirements_.size())
+            ? std::max(1, cb_requirements_.at(out.cb_id).page_size)
+            : kBlackholeTileRows * kBlackholeTileCols * out.buffer->dtype.bytes();
+    loop_carried_transport_publication =
+        GetOrCreateLoopCarriedTransportPublicationValue(
+            dst, out, out.num_tiles, out_page_bytes);
+    if (loop_carried_transport_publication.cb_id >= 0 &&
+        loop_carried_transport_publication.cb_id <
+            static_cast<int>(cb_requirements_.size())) {
+      auto& publication_req =
+          cb_requirements_.at(loop_carried_transport_publication.cb_id);
+      publication_req.publish_pages_per_event =
+          std::max(publication_req.publish_pages_per_event, 2);
+      publication_req.consume_pages_per_event =
+          std::max(publication_req.consume_pages_per_event, 1);
+    }
+    loop_carried_alternate_state =
+        CreateEmptyExactTiledCBValue(dst, operation_name + "_loop_carried_alternate",
+                                     CBType::kIntermediate);
+    if (loop_carried_alternate_state.cb_id >= 0 &&
+        loop_carried_alternate_state.cb_id <
+            static_cast<int>(cb_requirements_.size())) {
+      auto& alternate_req =
+          cb_requirements_.at(loop_carried_alternate_state.cb_id);
+      alternate_req.flow_class = CBFlowClass::kState;
+      alternate_req.publish_pages_per_event =
+          std::max(alternate_req.publish_pages_per_event, 1);
+      alternate_req.consume_pages_per_event =
+          std::max(alternate_req.consume_pages_per_event, 1);
+    }
+    loop_carried_second_alternate_state =
+        CreateEmptyExactTiledCBValue(dst, operation_name + "_loop_carried_alternate_2",
+                                     CBType::kIntermediate);
+    if (loop_carried_second_alternate_state.cb_id >= 0 &&
+        loop_carried_second_alternate_state.cb_id <
+            static_cast<int>(cb_requirements_.size())) {
+      auto& alternate_req =
+          cb_requirements_.at(loop_carried_second_alternate_state.cb_id);
+      alternate_req.flow_class = CBFlowClass::kState;
+      alternate_req.publish_pages_per_event =
+          std::max(alternate_req.publish_pages_per_event, 1);
+      alternate_req.consume_pages_per_event =
+          std::max(alternate_req.consume_pages_per_event, 1);
+    }
+  }
   RecordExactComputeOpPlan("binary", operation_name,
                            {{"lhs", dst, "identity"},
                             {"rhs", rhs, "identity"},
@@ -1563,34 +1625,267 @@ Stmt PlanTTKernelABI::GenerateBinaryTileSequence(const Buffer& dst,
   if (Stmt publish_rhs = PublishExactInputToTiledCB(rhs, &rhs_in); publish_rhs.defined()) {
     stmts.push_back(publish_rhs);
   }
+  const PrimExpr final_serial_iteration =
+      mirror_loop_carried_transport_output
+          ? ActiveLoopCarriedTransportPublicationFinalPredicate(out)
+          : PrimExpr();
   MarkFutureLiveExactCBRequirementsOverlapWith(out.cb_id, out.num_tiles,
                                                current_lowering_order_index_);
-  MarkExactCBValuesOverlap({lhs_in.cb_id, rhs_in.cb_id, out.cb_id});
+  MarkExactCBValuesOverlap({lhs_in.cb_id, rhs_in.cb_id, out.cb_id,
+                            loop_carried_transport_publication.cb_id,
+                            loop_carried_alternate_state.cb_id,
+                            loop_carried_second_alternate_state.cb_id});
   ExactTileComputeEmitter emit(&stmts);
-  emit.BinaryOpInitCommon(lhs_in.cb_id, rhs_in.cb_id, out.cb_id);
-  emit.Reserve(out.cb_id, out.num_tiles);
+  const bool use_ping_pong_loop_carried_transport =
+      mirror_loop_carried_transport_output && final_serial_iteration.defined() &&
+      !active_serial_loop_vars_.empty() &&
+      loop_carried_alternate_state.cb_id >= 0 &&
+      loop_carried_second_alternate_state.cb_id >= 0;
+  if (use_ping_pong_loop_carried_transport) {
+    (void)ReleaseExactInputAfterUse(lhs_in, current_lowering_order_index_);
+    if (rhs_in.cb_id >= 0 && rhs_in.cb_id < static_cast<int>(cb_requirements_.size())) {
+      auto& rhs_req = cb_requirements_.at(rhs_in.cb_id);
+      rhs_req.num_pages = std::max(rhs_req.num_pages, 3);
+      rhs_req.publish_pages_per_event =
+          std::max(rhs_req.publish_pages_per_event, 1);
+      rhs_req.consume_pages_per_event =
+          std::max(rhs_req.consume_pages_per_event, 3);
+    }
+    const Var chunk_var = active_serial_loop_vars_.back();
+    const PrimExpr first_iteration =
+        tir::EQ(chunk_var, IntImm(chunk_var.dtype(), 0));
+
+    auto append_binary_pack = [&](std::vector<Stmt>* target, int input_state_cb_id,
+                                  int output_cb_id, int reserve_pages,
+                                  int output_tile, int rhs_tile) {
+      ExactTileComputeEmitter branch_emit(target);
+      branch_emit.BinaryOpInitCommon(input_state_cb_id, rhs_in.cb_id,
+                                     output_cb_id);
+      if (reserve_pages > 0) {
+        branch_emit.Reserve(output_cb_id, reserve_pages);
+      }
+      branch_emit.Wait(input_state_cb_id, 1);
+      branch_emit.Wait(rhs_in.cb_id, rhs_tile + 1);
+      branch_emit.ReconfigDataFormat(input_state_cb_id, rhs_in.cb_id);
+      branch_emit.Append(init_op,
+                         {IntImm32(input_state_cb_id), IntImm32(rhs_in.cb_id)});
+      branch_emit.EmitPackedTile(
+          output_cb_id, output_tile,
+          [&](ExactTileComputeEmitter& tile_emit) {
+            tile_emit.Append(tile_op,
+                             {IntImm32(input_state_cb_id), IntImm32(rhs_in.cb_id),
+                              IntImm32(0), IntImm32(rhs_tile), IntImm32(0)});
+          });
+    };
+
+    auto append_pop_inputs = [&](std::vector<Stmt>* target, int input_state_cb_id,
+                                 bool pop_state) {
+      if (pop_state) {
+        target->push_back(MakeBlackholeCall(
+            blackhole_cb_pop_front(), {IntImm32(input_state_cb_id), IntImm32(1)}));
+      }
+    };
+
+    auto make_nonfinal_iteration = [&](int input_state_cb_id,
+                                       int next_state_cb_id,
+                                       bool pop_input_state,
+                                       int rhs_tile) -> Stmt {
+      std::vector<Stmt> branch;
+      append_binary_pack(&branch, input_state_cb_id,
+                         loop_carried_transport_publication.cb_id, 1, 0,
+                         rhs_tile);
+      append_binary_pack(&branch, input_state_cb_id, next_state_cb_id, 1, 0,
+                         rhs_tile);
+      append_pop_inputs(&branch, input_state_cb_id, pop_input_state);
+      branch.push_back(MakeBlackholeCall(
+          blackhole_cb_push_back(), {IntImm32(next_state_cb_id), IntImm32(1)}));
+      branch.push_back(MakeBlackholeCall(
+          blackhole_cb_push_back(),
+          {IntImm32(loop_carried_transport_publication.cb_id), IntImm32(1)}));
+      return SeqStmt::Flatten(branch);
+    };
+
+    auto make_final_iteration = [&]() -> Stmt {
+      std::vector<Stmt> branch;
+      append_binary_pack(&branch, loop_carried_second_alternate_state.cb_id,
+                         loop_carried_transport_publication.cb_id, 2, 0, 2);
+      append_binary_pack(&branch, loop_carried_second_alternate_state.cb_id,
+                         loop_carried_transport_publication.cb_id, 0, 1, 2);
+      append_pop_inputs(&branch, loop_carried_second_alternate_state.cb_id,
+                        /*pop_state=*/true);
+      branch.push_back(MakeBlackholeCall(
+          blackhole_cb_pop_front(), {IntImm32(rhs_in.cb_id), IntImm32(3)}));
+      branch.push_back(MakeBlackholeCall(
+          blackhole_cb_push_back(),
+          {IntImm32(loop_carried_transport_publication.cb_id), IntImm32(2)}));
+      return SeqStmt::Flatten(branch);
+    };
+
+    Stmt first_branch =
+        make_nonfinal_iteration(out.cb_id, loop_carried_alternate_state.cb_id,
+                                /*pop_input_state=*/false, /*rhs_tile=*/0);
+    Stmt middle_branch =
+        make_nonfinal_iteration(loop_carried_alternate_state.cb_id,
+                                loop_carried_second_alternate_state.cb_id,
+                                /*pop_input_state=*/true, /*rhs_tile=*/1);
+    Stmt final_branch = make_final_iteration();
+    stmts.push_back(tir::IfThenElse(
+        first_iteration, first_branch,
+        tir::IfThenElse(tir::Not(final_serial_iteration), middle_branch,
+                        final_branch)));
+
+    const bool materialize_loop_carried =
+        ShouldMaterializeLoopCarriedExactOutput(dst);
+    if (materialize_loop_carried) {
+      if (Stmt materialize = MaterializeLoopCarriedExactOutput(dst, out);
+          materialize.defined()) {
+        stmts.push_back(materialize);
+      }
+    } else {
+      RecordExactOutputLiveForm(dst, out);
+    }
+    Stmt body = SeqStmt::Flatten(stmts);
+    if (!materialize_loop_carried) {
+      body = AttachExactOutputLiveFormMarker(dst, out, body);
+    }
+    return MaybeWrapComputeSegment(body);
+  }
+  const int compute_output_cb_id =
+      mirror_loop_carried_transport_output ? loop_carried_transport_publication.cb_id
+                                           : out.cb_id;
+  emit.BinaryOpInitCommon(lhs_in.cb_id, rhs_in.cb_id, compute_output_cb_id);
+  if (!mirror_loop_carried_transport_output && !inplace_loop_carried_output) {
+    emit.Reserve(out.cb_id, out.num_tiles);
+  }
+  if (mirror_loop_carried_transport_output) {
+    Stmt reserve_writer_one = MakeBlackholeCall(
+        blackhole_cb_reserve_back(),
+        {IntImm32(loop_carried_transport_publication.cb_id), IntImm32(1)});
+    if (final_serial_iteration.defined()) {
+      Stmt reserve_writer_two = MakeBlackholeCall(
+          blackhole_cb_reserve_back(),
+          {IntImm32(loop_carried_transport_publication.cb_id), IntImm32(2)});
+      stmts.push_back(tir::IfThenElse(final_serial_iteration, reserve_writer_two,
+                                      reserve_writer_one));
+    } else {
+      stmts.push_back(reserve_writer_one);
+    }
+  }
   emit.Wait(lhs_in.cb_id, lhs_in.num_tiles);
   emit.Wait(rhs_in.cb_id, rhs_in.num_tiles);
   emit.ReconfigDataFormat(lhs_in.cb_id, rhs_in.cb_id);
   emit.Append(init_op, {IntImm32(lhs_in.cb_id), IntImm32(rhs_in.cb_id)});
-  emit.EmitPackedTileLoop(out.cb_id, out.num_tiles, "tile",
-                          [&](ExactTileComputeEmitter& tile_emit,
+  auto emit_binary_tile = [&](ExactTileComputeEmitter& tile_emit,
                               const PrimExpr& tile) {
       const PrimExpr lhs_tile = ExactCBReadTileIndex(lhs_in.num_tiles, tile);
       const PrimExpr rhs_tile = ExactCBReadTileIndex(rhs_in.num_tiles, tile);
       tile_emit.Append(tile_op,
                        {IntImm32(lhs_in.cb_id), IntImm32(rhs_in.cb_id),
                         lhs_tile, rhs_tile, IntImm32(0)});
-    });
-  if (Stmt release = ReleaseExactInputAfterUse(lhs_in, current_lowering_order_index_);
-      release.defined()) {
-    stmts.push_back(release);
+  };
+  if (mirror_loop_carried_transport_output) {
+    emit.EmitPackedTile(
+        loop_carried_transport_publication.cb_id, 0,
+        [&](ExactTileComputeEmitter& tile_emit) {
+          emit_binary_tile(tile_emit, IntImm32(0));
+        });
+  } else if (inplace_loop_carried_output) {
+    emit.Append(blackhole_tile_regs_acquire(), {});
+    emit_binary_tile(emit, IntImm32(0));
+    emit.Append(blackhole_tile_regs_commit(), {});
+    if (Stmt release = ReleaseExactInputAfterUse(
+            lhs_in, current_lowering_order_index_);
+        release.defined()) {
+      stmts.push_back(release);
+    }
+    if (Stmt release = ReleaseExactInputAfterUse(
+            rhs_in, current_lowering_order_index_);
+        release.defined()) {
+      stmts.push_back(release);
+    }
+    emit.Reserve(out.cb_id, out.num_tiles);
+    emit.Append(blackhole_tile_regs_wait(), {});
+    emit.PackTile(out.cb_id, 0);
+    emit.Append(blackhole_tile_regs_release(), {});
+  } else {
+    emit.EmitPackedTileLoop(out.cb_id, out.num_tiles, "tile",
+                            [&](ExactTileComputeEmitter& tile_emit,
+                                const PrimExpr& tile) {
+        emit_binary_tile(tile_emit, tile);
+      });
+    if (Stmt release = ReleaseExactInputAfterUse(
+            lhs_in, current_lowering_order_index_);
+        release.defined()) {
+      stmts.push_back(release);
+    }
+    if (Stmt release = ReleaseExactInputAfterUse(
+            rhs_in, current_lowering_order_index_);
+        release.defined()) {
+      stmts.push_back(release);
+    }
   }
-  if (Stmt release = ReleaseExactInputAfterUse(rhs_in, current_lowering_order_index_);
-      release.defined()) {
-    stmts.push_back(release);
+  if (mirror_loop_carried_transport_output) {
+    Stmt push_writer_one = MakeBlackholeCall(
+        blackhole_cb_push_back(),
+        {IntImm32(loop_carried_transport_publication.cb_id), IntImm32(1)});
+    Stmt push_writer_two = MakeBlackholeCall(
+        blackhole_cb_push_back(),
+        {IntImm32(loop_carried_transport_publication.cb_id), IntImm32(2)});
+
+    Stmt release_lhs = ReleaseExactInputAfterUse(
+        lhs_in, current_lowering_order_index_);
+    Stmt release_rhs = ReleaseExactInputAfterUse(
+        rhs_in, current_lowering_order_index_);
+
+    std::vector<Stmt> final_publish_stmts;
+    ExactTileComputeEmitter final_publish_emit(&final_publish_stmts);
+    final_publish_emit.BinaryOpInitCommon(lhs_in.cb_id, rhs_in.cb_id,
+                                          loop_carried_transport_publication.cb_id);
+    final_publish_emit.Wait(lhs_in.cb_id, lhs_in.num_tiles);
+    final_publish_emit.Wait(rhs_in.cb_id, rhs_in.num_tiles);
+    final_publish_emit.ReconfigDataFormat(lhs_in.cb_id, rhs_in.cb_id);
+    final_publish_emit.Append(init_op,
+                              {IntImm32(lhs_in.cb_id), IntImm32(rhs_in.cb_id)});
+    final_publish_emit.EmitPackedTile(
+        loop_carried_transport_publication.cb_id, 1,
+        [&](ExactTileComputeEmitter& tile_emit) {
+          emit_binary_tile(tile_emit, IntImm32(0));
+        });
+    final_publish_emit.AppendStmt(release_lhs);
+    final_publish_emit.AppendStmt(release_rhs);
+    final_publish_emit.AppendStmt(push_writer_two);
+    Stmt final_publish = SeqStmt::Flatten(final_publish_stmts);
+
+    std::vector<Stmt> state_update_stmts;
+    ExactTileComputeEmitter state_update_emit(&state_update_stmts);
+    state_update_emit.BinaryOpInitCommon(lhs_in.cb_id, rhs_in.cb_id, out.cb_id);
+    state_update_emit.Wait(lhs_in.cb_id, lhs_in.num_tiles);
+    state_update_emit.Wait(rhs_in.cb_id, rhs_in.num_tiles);
+    state_update_emit.ReconfigDataFormat(lhs_in.cb_id, rhs_in.cb_id);
+    state_update_emit.Append(init_op,
+                             {IntImm32(lhs_in.cb_id), IntImm32(rhs_in.cb_id)});
+    state_update_emit.Append(blackhole_tile_regs_acquire(), {});
+    emit_binary_tile(state_update_emit, IntImm32(0));
+    state_update_emit.Append(blackhole_tile_regs_commit(), {});
+    state_update_emit.AppendStmt(release_lhs);
+    state_update_emit.AppendStmt(release_rhs);
+    state_update_emit.Reserve(out.cb_id, out.num_tiles);
+    state_update_emit.Append(blackhole_tile_regs_wait(), {});
+    state_update_emit.PackTile(out.cb_id, 0);
+    state_update_emit.Append(blackhole_tile_regs_release(), {});
+    state_update_emit.Push(out.cb_id, out.num_tiles);
+    state_update_emit.AppendStmt(push_writer_one);
+    Stmt state_update = SeqStmt::Flatten(state_update_stmts);
+
+    if (final_serial_iteration.defined()) {
+      stmts.push_back(tir::IfThenElse(final_serial_iteration, final_publish,
+                                      state_update));
+    } else {
+      stmts.push_back(state_update);
+    }
+  } else {
+    emit.Push(out.cb_id, out.num_tiles);
   }
-  emit.Push(out.cb_id, out.num_tiles);
   const bool materialize_loop_carried = ShouldMaterializeLoopCarriedExactOutput(dst);
   if (materialize_loop_carried) {
     if (Stmt materialize = MaterializeLoopCarriedExactOutput(dst, out); materialize.defined()) {

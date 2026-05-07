@@ -60,7 +60,10 @@ compare against a host reference.  A checkpoint is admitted only when:
   ordinary TIR-derived sparse block-list bindings, independent per-entry
   valid-row bounds, and the existing online-softmax flash partial-combine
   path.
-- T9.5 recurrence/scan and T9.6 multi-block flash decode are queued.
+- T9.5 chunk recurrence/scan has bf16 direct-runtime correctness through a
+  typed loop-carried exact-CB lifecycle, ping-pong state CBs, and a separate
+  writer publication CB for per-chunk `Output` plus final `StateOut`.
+- T9.6 multi-block flash decode is queued.
 
 ## Non-Goals
 
@@ -281,12 +284,69 @@ before source/runtime guessing.
 
 ## Later T9 Checkpoints
 
-- T9.5 chunk recurrence/scan: multi-chunk loop-carried device state.
 - T9.6 multi-block flash decode: split blocks with exact-CB
   publish/consume and partial combine.
 
 Each later checkpoint must define its own narrow admitted shape and direct
 runtime correctness gate before broadening.
+
+## T9.5 Chunk Recurrence / Scan
+
+The first T9.5 slice admits a single-device chunk scan surface through
+ordinary TIR:
+
+- an external `StateIn` tile initializes a per-work logical state value;
+- a static serial chunk loop consumes one `X[work, chunk]` tile per iteration;
+- the state tile is updated as an explicit leaf tile-compute recurrence;
+- every chunk publishes the updated state to `Output[work, chunk]`;
+- the final loop-exit state is written to `StateOut[work]`.
+
+The first admitted shape is intentionally narrow:
+
+- bf16 `StateIn`, `X`, `Output`, and `StateOut`;
+- tile shape `32 x 32`;
+- static `num_chunks=3`;
+- one logical work item per batch entry;
+- recurrence op is elementwise add over one full tile;
+- no dynamic chunk count, segmented chunk scheduling, cross-core state handoff,
+  state sharding, or distributed recurrence claim.
+
+The required evidence chain is:
+
+```text
+TIR StateIn / X chunk loads
+  -> explicit serial-loop carried logical state
+  -> TTProgram exact/live-form lifecycle and allocation records
+  -> per-chunk output publication plus loop-exit StateOut publication
+  -> chunk-scan direct runtime correctness
+```
+
+This checkpoint is not satisfied by unrolling three independent elementwise
+copies.  The state value must be represented as one loop-carried lifecycle
+problem: initial state, body live-in, per-chunk update, backedge value, and
+loop-exit value.  Source/runtime may render the selected events, but they must
+not recover the recurrence from buffer names, generated source text, or a
+workload-shaped scan schema.
+
+The admitted implementation renders the three static chunk steps as one
+loop-carried lifecycle rather than as three independent copies:
+
+- the original state live-in CB is not consumed by the writer;
+- two alternate state CBs carry the chunk-1 and chunk-2 backedge values;
+- a separate writer publication CB carries each per-chunk `Output` page and
+  the final `StateOut` page;
+- the `X` stream is retained as a three-page loop window and popped after the
+  final chunk;
+- compute never uses the same physical CB as both input state and output
+  state in one tile operation.
+
+Unsupported forms must fail closed before source/runtime guessing:
+
+- dynamic chunk count without explicit loop/lifetime evidence;
+- partial-tile or slice-only state consumed as a full logical tile;
+- missing loop-exit state evidence before `StateOut` publication;
+- lifecycle/allocation pressure that cannot be admitted by typed CB records;
+- runtime/simulator capability boundaries after source/spec admission.
 
 ## Validation Plan
 
@@ -337,6 +397,9 @@ Runtime:
 - a non-softmax MLA score-only slice remains a positive direct-runtime gate so
   the T9.3 additive GEMM chain is covered independently from the full
   online-softmax decode.
+- T9.5 chunk scan uses three static chunk updates, nonzero initial state, a
+  host reference that checks every intermediate chunk output, and a final
+  `StateOut` check against the loop-exit state.
 
 Unsupported diagnostics:
 

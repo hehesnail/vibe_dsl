@@ -1862,6 +1862,7 @@ PrimFunc PlanTTKernelABI::SelectComputeBuiltins(const PrimFunc& func) {
   selected_source_live_producer_buffers_.clear();
   selected_source_live_producer_order_by_buffer_identity_.clear();
   loop_carried_exact_cb_state_by_logical_value_.clear();
+  loop_carried_transport_publication_by_logical_value_.clear();
   tt_exact_cb_virtual_values_.clear();
   tt_exact_cb_use_events_.clear();
   tt_exact_cb_live_intervals_.clear();
@@ -2211,7 +2212,10 @@ PrimFunc PlanTTKernelABI::Transform(const PrimFunc& func) {
   invalidated_live_form_order_by_buffer_identity_.clear();
   local_only_live_form_buffer_identities_.clear();
   active_loop_carried_buffer_identity_stack_.clear();
+  active_loop_carried_transport_publication_identity_stack_.clear();
+  active_loop_carried_transport_publication_final_predicate_stack_.clear();
   loop_carried_exact_cb_state_by_logical_value_.clear();
+  loop_carried_transport_publication_by_logical_value_.clear();
   selected_source_live_producer_buffers_.clear();
   selected_source_live_producer_order_by_buffer_identity_.clear();
   stmt_order_index_by_node_.clear();
@@ -5209,6 +5213,108 @@ bool PlanTTKernelABI::IsActiveLoopCarriedBuffer(const Buffer& buffer) const {
   return false;
 }
 
+bool PlanTTKernelABI::IsActiveLoopCarriedExactCBValue(
+    const ExactTiledCBValue& value) const {
+  if (active_loop_carried_buffer_identity_stack_.empty()) {
+    return false;
+  }
+  auto is_active_identity = [&](const std::string& identity) {
+    if (identity.empty()) {
+      return false;
+    }
+    const LoopCarriedExactCBState* state = FindLoopCarriedExactCBState(identity);
+    if (state != nullptr && !state->completed) {
+      return true;
+    }
+    for (auto stack_it = active_loop_carried_buffer_identity_stack_.rbegin();
+         stack_it != active_loop_carried_buffer_identity_stack_.rend(); ++stack_it) {
+      if (stack_it->count(identity) != 0U) {
+        return true;
+      }
+    }
+    return false;
+  };
+  if (is_active_identity(value.live_identity)) {
+    return true;
+  }
+  if (!value.buffer.defined()) {
+    return false;
+  }
+  for (const std::string& identity : CollectBufferFlowIdentities(value.buffer)) {
+    if (is_active_identity(identity)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool PlanTTKernelABI::IsActiveLoopCarriedTransportPublicationValue(
+    const ExactTiledCBValue& value) const {
+  if (active_loop_carried_transport_publication_identity_stack_.empty()) {
+    return false;
+  }
+  auto is_publication_identity = [&](const std::string& identity) {
+    if (identity.empty()) {
+      return false;
+    }
+    for (auto stack_it =
+             active_loop_carried_transport_publication_identity_stack_.rbegin();
+         stack_it != active_loop_carried_transport_publication_identity_stack_.rend();
+         ++stack_it) {
+      if (stack_it->count(identity) != 0U) {
+        return true;
+      }
+    }
+    return false;
+  };
+  if (is_publication_identity(value.live_identity)) {
+    return true;
+  }
+  if (!value.buffer.defined()) {
+    return false;
+  }
+  for (const std::string& identity : CollectBufferFlowIdentities(value.buffer)) {
+    if (is_publication_identity(identity)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+PrimExpr PlanTTKernelABI::ActiveLoopCarriedTransportPublicationFinalPredicate(
+    const ExactTiledCBValue& value) const {
+  if (active_loop_carried_transport_publication_identity_stack_.empty()) {
+    return PrimExpr();
+  }
+  auto identity_matches = [&](const std::string& identity,
+                              const std::unordered_set<std::string>& identities) {
+    return !identity.empty() && identities.count(identity) != 0U;
+  };
+  for (size_t offset = 0;
+       offset < active_loop_carried_transport_publication_identity_stack_.size();
+       ++offset) {
+    const size_t index =
+        active_loop_carried_transport_publication_identity_stack_.size() - 1 - offset;
+    const auto& identities =
+        active_loop_carried_transport_publication_identity_stack_[index];
+    bool matches = identity_matches(value.live_identity, identities);
+    if (!matches && value.buffer.defined()) {
+      for (const std::string& identity : CollectBufferFlowIdentities(value.buffer)) {
+        if (identity_matches(identity, identities)) {
+          matches = true;
+          break;
+        }
+      }
+    }
+    if (!matches ||
+        index >= active_loop_carried_transport_publication_final_predicate_stack_.size()) {
+      continue;
+    }
+    return active_loop_carried_transport_publication_final_predicate_stack_[index];
+  }
+  return PrimExpr();
+}
+
 bool PlanTTKernelABI::IsCompletedLoopCarriedBuffer(const Buffer& buffer) const {
   if (!buffer.defined() || loop_carried_exact_cb_state_by_logical_value_.empty()) {
     return false;
@@ -5445,6 +5551,43 @@ Stmt PlanTTKernelABI::VisitStmt_(const ForNode* op) {
   const std::unordered_set<std::string> loop_carried_identities =
       CollectLoopCarriedBufferIdentities(op->body);
   active_loop_carried_buffer_identity_stack_.push_back(loop_carried_identities);
+  auto collect_loop_carried_transport_publication_identities = [&]() {
+    std::unordered_set<std::string> identities;
+    if (loop_carried_identities.empty()) {
+      return identities;
+    }
+    tir::PostOrderVisit(op->body, [&](const ObjectRef& node) {
+      const auto* store = node.as<BufferStoreNode>();
+      if (store == nullptr || !IsCopyOperation(store) ||
+          GetCopyDirection(store) != CopyDirection::kCBToDram) {
+        return;
+      }
+      const auto* load = GetCopyLoad(store);
+      if (load == nullptr || !load->buffer.defined()) {
+        return;
+      }
+      for (const std::string& identity : CollectBufferFlowIdentities(load->buffer)) {
+        if (!identity.empty() && loop_carried_identities.count(identity) != 0U) {
+          identities.insert(identity);
+        }
+      }
+    });
+    return identities;
+  };
+  const std::unordered_set<std::string> loop_carried_transport_publication_identities =
+      collect_loop_carried_transport_publication_identities();
+  active_loop_carried_transport_publication_identity_stack_.push_back(
+      loop_carried_transport_publication_identities);
+  PrimExpr loop_carried_transport_final_predicate;
+  if (!loop_carried_transport_publication_identities.empty()) {
+    if (const auto* extent = op->extent.as<IntImmNode>()) {
+      Analyzer analyzer;
+      loop_carried_transport_final_predicate = analyzer.Simplify(
+          tir::EQ(op->loop_var, op->min + IntImm(op->loop_var.dtype(), extent->value - 1)));
+    }
+  }
+  active_loop_carried_transport_publication_final_predicate_stack_.push_back(
+      loop_carried_transport_final_predicate);
   auto collect_local_self_update_buffers = [&]() {
     std::vector<Buffer> buffers;
     std::unordered_set<std::string> seen;
@@ -5580,6 +5723,8 @@ Stmt PlanTTKernelABI::VisitStmt_(const ForNode* op) {
     }
   }
   active_loop_carried_buffer_identity_stack_.pop_back();
+  active_loop_carried_transport_publication_identity_stack_.pop_back();
+  active_loop_carried_transport_publication_final_predicate_stack_.pop_back();
   active_serial_loop_order_ranges_.pop_back();
   Stmt terminal_transport_publications = BuildSerialLoopTerminalTransportPublications(
       serial_loop_terminal_transport_publications_stack_.back());
