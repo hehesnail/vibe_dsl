@@ -1880,6 +1880,7 @@ PrimFunc PlanTTKernelABI::SelectComputeBuiltins(const PrimFunc& func) {
   thread_index_var_static_extents_.clear();
   loop_var_static_extents_.clear();
   active_serial_loop_vars_.clear();
+  active_serial_loop_static_extents_.clear();
   active_serial_loop_order_ranges_.clear();
   serial_loop_retained_input_pop_pages_stack_.clear();
   serial_loop_retained_input_offsets_stack_.clear();
@@ -2191,6 +2192,7 @@ PrimFunc PlanTTKernelABI::Transform(const PrimFunc& func) {
   thread_index_var_static_extents_.clear();
   loop_var_static_extents_.clear();
   active_serial_loop_vars_.clear();
+  active_serial_loop_static_extents_.clear();
   active_serial_loop_order_ranges_.clear();
   serial_loop_retained_input_pop_pages_stack_.clear();
   serial_loop_retained_input_offsets_stack_.clear();
@@ -3496,6 +3498,7 @@ Stmt PlanTTKernelABI::VisitStmt_(const AttrStmtNode* op) {
     }
     if (zero_thread_var) {
       active_serial_loop_vars_.push_back(iv->var);
+      active_serial_loop_static_extents_.push_back(1);
       serial_loop_retained_input_pop_pages_stack_.push_back({});
       serial_loop_retained_input_offsets_stack_.push_back({});
       serial_loop_terminal_transport_publications_stack_.push_back({});
@@ -3514,6 +3517,7 @@ Stmt PlanTTKernelABI::VisitStmt_(const AttrStmtNode* op) {
       serial_loop_terminal_transport_publications_stack_.pop_back();
       serial_loop_retained_input_offsets_stack_.pop_back();
       serial_loop_retained_input_pop_pages_stack_.pop_back();
+      active_serial_loop_static_extents_.pop_back();
       active_serial_loop_vars_.pop_back();
     }
     if (zero_thread_var) {
@@ -5528,6 +5532,11 @@ Stmt PlanTTKernelABI::VisitStmt_(const ForNode* op) {
     }
   }
   active_serial_loop_vars_.push_back(op->loop_var);
+  int64_t active_loop_extent = 1;
+  if (const auto* extent = op->extent.as<IntImmNode>()) {
+    active_loop_extent = std::max<int64_t>(1, extent->value);
+  }
+  active_serial_loop_static_extents_.push_back(active_loop_extent);
   serial_loop_retained_input_pop_pages_stack_.push_back({});
   serial_loop_retained_input_offsets_stack_.push_back({});
   serial_loop_terminal_transport_publications_stack_.push_back({});
@@ -5737,6 +5746,7 @@ Stmt PlanTTKernelABI::VisitStmt_(const ForNode* op) {
     InvalidateLastFragmentFillValueIdentity(identity);
     MarkLoopCarriedExactCBStateCompleted(identity);
   }
+  active_serial_loop_static_extents_.pop_back();
   active_serial_loop_vars_.pop_back();
   if (terminal_transport_publications.defined() || retained_input_pops.defined()) {
     std::vector<Stmt> loop_suffix{lowered};

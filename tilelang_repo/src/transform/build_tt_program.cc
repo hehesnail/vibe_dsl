@@ -1102,7 +1102,8 @@ AttachComputeOpKernelPlanIndices(const Array<TTComputeOpPlan> &compute_op_plans,
         plan->mbarrier_buffer, plan->mbarrier_scope, plan->mbarrier_index_exprs,
         plan->tile_compute_dag_node_id, plan->tile_compute_source_emitter,
         plan->tile_compute_materialization_policy,
-        plan->tile_compute_fanout_use_count, plan->tile_compute_fanout_policy));
+        plan->tile_compute_fanout_use_count, plan->tile_compute_fanout_policy,
+        plan->reduction_kind, plan->reduction_dim, plan->repeat_extent));
   }
   return updated;
 }
@@ -1196,7 +1197,8 @@ Array<TTComputeOpPlan> AttachComputeOperandBoundaryCBRequirementIndices(
         plan->mbarrier_buffer, plan->mbarrier_scope, plan->mbarrier_index_exprs,
         plan->tile_compute_dag_node_id, plan->tile_compute_source_emitter,
         plan->tile_compute_materialization_policy,
-        plan->tile_compute_fanout_use_count, plan->tile_compute_fanout_policy));
+        plan->tile_compute_fanout_use_count, plan->tile_compute_fanout_policy,
+        plan->reduction_kind, plan->reduction_dim, plan->repeat_extent));
   }
   return updated;
 }

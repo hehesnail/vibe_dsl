@@ -1029,7 +1029,8 @@ Stmt PlanTTKernelABI::GenerateRowReductionSequence(const RowReductionMatch& matc
                             {"scaler", scaler.buffer, "identity", scaler.cb_id},
                             {"output",
                              accumulate_existing ? reduced.buffer : match.dst,
-                             "identity", reduced.cb_id}});
+                             "identity", reduced.cb_id}},
+                           match.kind, "row", CurrentSerialLoopRepeatExtent());
   if (accumulate_existing) {
     RecordExactComputeOpPlan("binary", match.kind == "sum" ? "add_tiles" : "binary_max_tile",
                              {{"lhs", match.dst, "identity", dst_in.cb_id},

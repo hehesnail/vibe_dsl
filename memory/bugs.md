@@ -3464,6 +3464,30 @@
   - TT-Sim selectors for host shim export, page-addressed copy, and sharded T3
     bf16 direct runtime passed.
 
+### Codegen recovered reduction-region semantics from final bodies
+
+- **症状**:
+  - `CodeGenBlackhole::EmitTypedReductionRegionIfSupported` consumed typed
+    compute operands and CB bindings, but recovered reduction kind, reduction
+    dimension, and loop repeat extent by scanning the final TIR body.
+- **根因**:
+  - Reduce execution facts were not owned by `TTComputeOpPlan`, so codegen
+    treated builtin neighborhoods and serial loop structure as a second owner
+    of target execution semantics.
+- **修法**:
+  - Add typed `reduction_kind`, `reduction_dim`, and `repeat_extent` fields to
+    reduce `TTComputeOpPlan` records, validate them in `ValidateTTProgram`,
+    project them into `ExecutableSpec.compute_ops`, and make Blackhole codegen
+    consume only those executable records.
+- **验证**:
+  - Added a source guard that `InferReductionSignature` and
+    `InferReductionRepeatExtent` stay deleted.
+  - Added projection assertions for topk reduce ops.
+  - `cmake --build build -j32` passed.
+  - TT-Sim topk runtime file passed with `7 passed`.
+  - TT-Sim host-shim, page-addressed copy, and sharded T3 bf16 selectors
+    passed.
+
 ## 3. 环境问题速查
 
 | 问题 | 解决 |

@@ -629,6 +629,16 @@ static bool ExtractComputeOp(const ffi::Map<ffi::String, ffi::Any>& spec_info,
   if (auto v = spec_info.Get("accumulator_dtype")) {
     compute_op->accumulator_dtype = Downcast<String>(v.value());
   }
+  if (auto v = spec_info.Get("reduction_kind")) {
+    compute_op->reduction_kind = Downcast<String>(v.value());
+  }
+  if (auto v = spec_info.Get("reduction_dim")) {
+    compute_op->reduction_dim = Downcast<String>(v.value());
+  }
+  if (auto v = spec_info.Get("repeat_extent")) {
+    compute_op->repeat_extent =
+        static_cast<uint32_t>(Downcast<Integer>(v.value()).IntValue());
+  }
   if (auto v = spec_info.Get("has_mbarrier")) {
     compute_op->has_mbarrier = Downcast<Bool>(v.value());
   }
@@ -657,6 +667,22 @@ static bool ExtractComputeOp(const ffi::Map<ffi::String, ffi::Any>& spec_info,
         << "Blackhole GEMM compute_op requires explicit subblock_m_tiles";
     ICHECK_GT(compute_op->subblock_n_tiles, 0U)
         << "Blackhole GEMM compute_op requires explicit subblock_n_tiles";
+  }
+  if (compute_op->enabled && compute_op->kind == "reduce") {
+    ICHECK(!compute_op->reduction_kind.empty())
+        << "Blackhole reduce compute_op requires explicit reduction_kind";
+    ICHECK(compute_op->reduction_kind == "sum" ||
+           compute_op->reduction_kind == "max")
+        << "Blackhole reduce compute_op unsupported reduction_kind "
+        << compute_op->reduction_kind;
+    ICHECK(!compute_op->reduction_dim.empty())
+        << "Blackhole reduce compute_op requires explicit reduction_dim";
+    ICHECK(compute_op->reduction_dim == "row" ||
+           compute_op->reduction_dim == "col")
+        << "Blackhole reduce compute_op unsupported reduction_dim "
+        << compute_op->reduction_dim;
+    ICHECK_GT(compute_op->repeat_extent, 0U)
+        << "Blackhole reduce compute_op requires positive repeat_extent";
   }
   return compute_op->enabled && !compute_op->kind.empty();
 }
@@ -708,6 +734,15 @@ static ffi::Map<ffi::String, ffi::Any> EncodeKernelComputeOp(
   item.Set("b_cb_dtype", ffi::String(compute_op.b_cb_dtype));
   item.Set("c_cb_dtype", ffi::String(compute_op.c_cb_dtype));
   item.Set("accumulator_dtype", ffi::String(compute_op.accumulator_dtype));
+  if (!compute_op.reduction_kind.empty()) {
+    item.Set("reduction_kind", ffi::String(compute_op.reduction_kind));
+  }
+  if (!compute_op.reduction_dim.empty()) {
+    item.Set("reduction_dim", ffi::String(compute_op.reduction_dim));
+  }
+  if (!compute_op.reduction_kind.empty() || compute_op.repeat_extent != 1U) {
+    item.Set("repeat_extent", Integer(static_cast<int>(compute_op.repeat_extent)));
+  }
   item.Set("has_mbarrier", Bool(compute_op.has_mbarrier));
   item.Set("mbarrier_buffer", ffi::String(compute_op.mbarrier_buffer));
   item.Set("mbarrier_scope", ffi::String(compute_op.mbarrier_scope));

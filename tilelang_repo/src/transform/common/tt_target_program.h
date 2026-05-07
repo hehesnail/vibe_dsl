@@ -321,6 +321,9 @@ public:
   ffi::Array<Integer> block_shape;
   ffi::Array<Integer> subblock_shape;
   ffi::String accumulator_dtype;
+  ffi::String reduction_kind;
+  ffi::String reduction_dim;
+  int64_t repeat_extent = 1;
   ffi::String mbarrier_buffer;
   ffi::String mbarrier_scope;
   ffi::Array<ffi::String> mbarrier_index_exprs;
@@ -349,7 +352,10 @@ public:
       int64_t tile_compute_dag_node_id, ffi::String tile_compute_source_emitter,
       ffi::String tile_compute_materialization_policy,
       int64_t tile_compute_fanout_use_count,
-      ffi::String tile_compute_fanout_policy);
+      ffi::String tile_compute_fanout_policy,
+      ffi::String reduction_kind = ffi::String(),
+      ffi::String reduction_dim = ffi::String(),
+      int64_t repeat_extent = 1);
   TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(TTComputeOpPlan, ObjectRef,
                                              TTComputeOpPlanNode);
 };

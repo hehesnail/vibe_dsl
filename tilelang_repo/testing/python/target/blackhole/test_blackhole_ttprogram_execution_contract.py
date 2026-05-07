@@ -51,3 +51,10 @@ def test_runtime_does_not_recover_static_buffer_info_from_device_body():
     source = _repo_src_path("target", "rt_mod_blackhole.cc").read_text(encoding="utf-8")
 
     assert "CollectStaticBufferInfo" not in source
+
+
+def test_codegen_does_not_recover_reduction_region_from_final_body():
+    source = _repo_src_path("target", "codegen_blackhole.cc").read_text(encoding="utf-8")
+
+    assert "InferReductionSignature" not in source
+    assert "InferReductionRepeatExtent" not in source

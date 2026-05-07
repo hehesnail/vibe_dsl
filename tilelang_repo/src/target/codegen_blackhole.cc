@@ -897,105 +897,6 @@ ffi::Array<ffi::Any> MapGetArray(const ffi::Map<ffi::String, ffi::Any>& map,
   return ffi::Array<ffi::Any>();
 }
 
-bool ContainsBlackholeReduceTileCall(const tvm::tir::Stmt& stmt) {
-  bool found = false;
-  tir::PostOrderVisit(stmt, [&](const ObjectRef& node) {
-    if (found) {
-      return;
-    }
-    const auto* call = node.as<tvm::tir::CallNode>();
-    if (call == nullptr || !call->op->IsInstance<OpNode>()) {
-      return;
-    }
-    const Op op = Downcast<Op>(call->op);
-    found = op->name == "tl.blackhole.reduce_tile";
-  });
-  return found;
-}
-
-struct ReductionSignature {
-  std::string kind;
-  std::string dim;
-};
-
-std::optional<ReductionSignature> ExtractReductionSignature(const tvm::tir::CallNode* call) {
-  if (call == nullptr || !call->op->IsInstance<OpNode>()) {
-    return std::nullopt;
-  }
-  const Op op = Downcast<Op>(call->op);
-  size_t kind_arg = 0;
-  size_t dim_arg = 0;
-  if (op->name == "tl.blackhole.reduce_init") {
-    if (call->args.size() != 5U) {
-      return std::nullopt;
-    }
-    kind_arg = 3;
-    dim_arg = 4;
-  } else if (op->name == "tl.blackhole.reduce_tile") {
-    if (call->args.size() != 7U) {
-      return std::nullopt;
-    }
-    kind_arg = 5;
-    dim_arg = 6;
-  } else if (op->name == "tl.blackhole.reduce_uninit") {
-    if (call->args.size() != 2U) {
-      return std::nullopt;
-    }
-    kind_arg = 0;
-    dim_arg = 1;
-  } else {
-    return std::nullopt;
-  }
-  const auto* kind = call->args[kind_arg].as<tvm::tir::StringImmNode>();
-  const auto* dim = call->args[dim_arg].as<tvm::tir::StringImmNode>();
-  if (kind == nullptr || dim == nullptr) {
-    return std::nullopt;
-  }
-  return ReductionSignature{kind->value, dim->value};
-}
-
-std::optional<ReductionSignature> InferReductionSignature(const tvm::tir::PrimFunc& f) {
-  std::optional<ReductionSignature> signature;
-  bool inconsistent = false;
-  tir::PostOrderVisit(f->body, [&](const ObjectRef& node) {
-    if (inconsistent) {
-      return;
-    }
-    const auto* call = node.as<tvm::tir::CallNode>();
-    std::optional<ReductionSignature> current = ExtractReductionSignature(call);
-    if (!current.has_value()) {
-      return;
-    }
-    if (!signature.has_value()) {
-      signature = current;
-      return;
-    }
-    if (signature->kind != current->kind || signature->dim != current->dim) {
-      inconsistent = true;
-    }
-  });
-  if (inconsistent) {
-    return std::nullopt;
-  }
-  return signature;
-}
-
-int InferReductionRepeatExtent(const tvm::tir::PrimFunc& f) {
-  int extent = 1;
-  tir::PostOrderVisit(f->body, [&](const ObjectRef& node) {
-    const auto* loop = node.as<tvm::tir::ForNode>();
-    if (loop == nullptr || !ContainsBlackholeReduceTileCall(loop->body)) {
-      return;
-    }
-    const auto* imm = loop->extent.as<tvm::tir::IntImmNode>();
-    if (imm == nullptr || imm->value <= 1 || imm->value > 32) {
-      return;
-    }
-    extent = static_cast<int>(imm->value);
-  });
-  return extent;
-}
-
 ffi::Map<ffi::String, ffi::Any> GetCorePlanForCodegen(const tvm::tir::PrimFunc& f) {
   return tt_program_projection::GetCorePlanFromExecutable(f, "Blackhole codegen");
 }
@@ -1395,17 +1296,14 @@ bool CodeGenBlackhole::EmitTypedReductionRegionIfSupported(const tvm::tir::PrimF
     return false;
   }
 
-  const std::optional<ReductionSignature> signature = InferReductionSignature(f);
-  if (!signature.has_value() || signature->kind != "max" ||
-      (signature->dim != "row" && signature->dim != "col")) {
-    return false;
-  }
-
   struct ReductionOpRecord {
     std::string input_buffer;
     std::string output_buffer;
     std::string host_buffer;
     std::string accumulator_dtype;
+    std::string reduction_kind;
+    std::string reduction_dim;
+    int repeat_extent = 1;
     std::vector<int64_t> input_cb_requirement_indices;
     std::vector<int64_t> output_cb_requirement_indices;
   };
@@ -1427,6 +1325,9 @@ bool CodeGenBlackhole::EmitTypedReductionRegionIfSupported(const tvm::tir::PrimF
       }
       ReductionOpRecord info;
       info.accumulator_dtype = MapGetString(op, "accumulator_dtype");
+      info.reduction_kind = MapGetString(op, "reduction_kind");
+      info.reduction_dim = MapGetString(op, "reduction_dim");
+      info.repeat_extent = static_cast<int>(MapGetInt(op, "repeat_extent", 1));
       for (const ffi::Any& binding_any : MapGetArray(op, "operand_bindings")) {
         auto binding = binding_any.as<ffi::Map<ffi::String, ffi::Any>>().value_or(
             ffi::Map<ffi::String, ffi::Any>());
@@ -1448,6 +1349,30 @@ bool CodeGenBlackhole::EmitTypedReductionRegionIfSupported(const tvm::tir::PrimF
     }
   }
   if (reduction_records.empty()) {
+    return false;
+  }
+  std::string reduction_kind;
+  std::string reduction_dim;
+  int repeat_extent = 0;
+  for (const ReductionOpRecord& info : reduction_records) {
+    if (info.reduction_kind.empty() || info.reduction_dim.empty() ||
+        info.repeat_extent <= 0) {
+      return false;
+    }
+    if (reduction_kind.empty()) {
+      reduction_kind = info.reduction_kind;
+      reduction_dim = info.reduction_dim;
+      repeat_extent = info.repeat_extent;
+      continue;
+    }
+    if (reduction_kind != info.reduction_kind ||
+        reduction_dim != info.reduction_dim ||
+        repeat_extent != info.repeat_extent) {
+      return false;
+    }
+  }
+  if (reduction_kind != "max" ||
+      (reduction_dim != "row" && reduction_dim != "col")) {
     return false;
   }
 
@@ -1481,7 +1406,7 @@ bool CodeGenBlackhole::EmitTypedReductionRegionIfSupported(const tvm::tir::PrimF
   }
   const int rows = static_cast<int>(rows_imm->value);
   const int cols = static_cast<int>(cols_imm->value);
-  const bool reduce_over_cols = signature->dim == "row";
+  const bool reduce_over_cols = reduction_dim == "row";
   const int output_extent = reduce_over_cols ? rows : cols;
   const int reduction_extent = reduce_over_cols ? cols : rows;
   if (output_extent <= 0 || reduction_extent <= 0 ||
@@ -1631,7 +1556,6 @@ bool CodeGenBlackhole::EmitTypedReductionRegionIfSupported(const tvm::tir::PrimF
     return false;
   }
 
-  const int repeat_extent = InferReductionRepeatExtent(f);
   if (repeat_extent <= 0 || repeat_extent > 32) {
     return false;
   }

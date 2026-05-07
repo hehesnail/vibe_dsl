@@ -277,6 +277,9 @@ def test_blackhole_existing_tir_value_index_selection_compute_operands_link_cbs(
     assert len(reduce_ops) == 2
 
     for op in reduce_ops:
+        assert str(op["reduction_kind"]) == "max"
+        assert str(op["reduction_dim"]) == "row"
+        assert int(op["repeat_extent"]) == 6
         for binding in op["operand_bindings"]:
             requirement_indices = [
                 int(index) for index in binding.get("cb_requirement_indices", [])

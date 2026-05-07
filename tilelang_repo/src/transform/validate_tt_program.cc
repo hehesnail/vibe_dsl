@@ -600,6 +600,20 @@ void ValidateComputeOpPlan(
     ICHECK(!plan->accumulator_dtype.empty())
         << "TTComputeOpPlan GEMM requires accumulator_dtype";
   }
+  if (kind == "reduce") {
+    ICHECK(!plan->reduction_kind.empty())
+        << "TTComputeOpPlan reduce requires reduction_kind";
+    ICHECK(plan->reduction_kind == "sum" || plan->reduction_kind == "max")
+        << "TTComputeOpPlan reduce unsupported reduction_kind "
+        << plan->reduction_kind;
+    ICHECK(!plan->reduction_dim.empty())
+        << "TTComputeOpPlan reduce requires reduction_dim";
+    ICHECK(plan->reduction_dim == "row" || plan->reduction_dim == "col")
+        << "TTComputeOpPlan reduce unsupported reduction_dim "
+        << plan->reduction_dim;
+    ICHECK_GT(plan->repeat_extent, 0)
+        << "TTComputeOpPlan reduce requires positive repeat_extent";
+  }
   RequireSelectedBlackholeTileComputeCoveringForPlan(plan, operand_roles);
   if (plan->tile_compute_dag_node_id >= 0) {
     ICHECK(!plan->tile_compute_source_emitter.empty())

@@ -973,9 +973,13 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
                                                     const LocalToCBSliceMatch& match);
   std::string ResolveHostBufferForComputeOperand(const tvm::tir::Buffer& buffer) const;
   std::string ComputeKernelNameForCurrentPlan() const;
+  int64_t CurrentSerialLoopRepeatExtent() const;
   void RecordExactComputeOpPlan(const std::string& kind,
                                 const std::string& operation_name,
-                                const std::vector<ComputeOperandPlanSeed>& operands);
+                                const std::vector<ComputeOperandPlanSeed>& operands,
+                                const std::string& reduction_kind = "",
+                                const std::string& reduction_dim = "",
+                                int64_t repeat_extent = 1);
   std::string GetOrCreateIndexedPerWorkRuntimeArg(
       const std::string& arg_prefix,
       const std::string& subject_buffer,
@@ -1093,6 +1097,7 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   std::unordered_map<const tvm::tir::VarNode*, int64_t> thread_index_var_static_extents_;
   std::unordered_map<const tvm::tir::VarNode*, int64_t> loop_var_static_extents_;
   std::vector<tvm::tir::Var> active_serial_loop_vars_;
+  std::vector<int64_t> active_serial_loop_static_extents_;
   std::vector<std::pair<int, int>> active_serial_loop_order_ranges_;
   std::vector<std::map<int, int>> serial_loop_retained_input_pop_pages_stack_;
   std::vector<std::map<int, std::map<std::string, int>>>

@@ -1185,7 +1185,7 @@ def test_modern_cpp_audit_blackhole_serialization_contract_is_real():
 
     assert "opaque imported runtime modules" in header
     assert "kBinarySerializable | ffi::Module::kRunnable" in header
-    assert "tilelang.blackhole.module.v3" in source
+    assert "tilelang.blackhole.module.v4" in source
     assert "WriteExecutableSpecMap(stream, fmap_)" in source
     assert "ReadExecutableSpecMap(stream)" in source
     assert "ffi.Module.load_from_bytes.blackhole" in source

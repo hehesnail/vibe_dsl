@@ -2847,3 +2847,9 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   projected from `TTProgram`; runtime may build local lookup maps from that
   schema but must not rescan `PrimFunc` bodies or `buffer_map` to recover
   static buffer rank/dtype semantics.
+- 2026-05-07 reduction execution fact ownership:
+  Reduction source emission must consume typed compute-op records, not recover
+  semantics from the final body.  For Blackhole reduce ops, `TTComputeOpPlan`
+  owns `reduction_kind`, `reduction_dim`, and `repeat_extent`; projection
+  carries them through `ExecutableSpec.compute_ops`, and codegen/runtime
+  serialization must fail closed if reduce metadata is missing or inconsistent.

@@ -421,6 +421,9 @@ struct KernelComputeOpSpec {
   std::string b_cb_dtype;
   std::string c_cb_dtype;
   std::string accumulator_dtype;
+  std::string reduction_kind;
+  std::string reduction_dim;
+  uint32_t repeat_extent = 1;
   bool has_mbarrier = false;
   std::string mbarrier_buffer;
   std::string mbarrier_scope;
@@ -455,6 +458,16 @@ struct KernelComputeOpSpec {
     writer->WriteObjectKeyValue("b_cb_dtype", b_cb_dtype);
     writer->WriteObjectKeyValue("c_cb_dtype", c_cb_dtype);
     writer->WriteObjectKeyValue("accumulator_dtype", accumulator_dtype);
+    if (!reduction_kind.empty()) {
+      writer->WriteObjectKeyValue("reduction_kind", reduction_kind);
+    }
+    if (!reduction_dim.empty()) {
+      writer->WriteObjectKeyValue("reduction_dim", reduction_dim);
+    }
+    if (!reduction_kind.empty() || repeat_extent != 1U) {
+      writer->WriteObjectKeyValue("repeat_extent",
+                                  static_cast<int64_t>(repeat_extent));
+    }
     writer->WriteObjectKeyValue("has_mbarrier", has_mbarrier);
     writer->WriteObjectKeyValue("mbarrier_buffer", mbarrier_buffer);
     writer->WriteObjectKeyValue("mbarrier_scope", mbarrier_scope);

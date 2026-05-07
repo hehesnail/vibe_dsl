@@ -67,7 +67,7 @@ static std::string EncodeExecutableSpecMetadata(const ExecutableSpec& spec) {
 }
 
 static constexpr const char* kBlackholeModuleSerializationMagic =
-    "tilelang.blackhole.module.v3";
+    "tilelang.blackhole.module.v4";
 
 static uint64_t ReadUInt64(dmlc::Stream* stream, const char* field) {
   uint64_t value = 0;
@@ -566,6 +566,9 @@ static void WriteKernelComputeOpSpec(dmlc::Stream* stream, const KernelComputeOp
   WriteString(stream, spec.b_cb_dtype);
   WriteString(stream, spec.c_cb_dtype);
   WriteString(stream, spec.accumulator_dtype);
+  WriteString(stream, spec.reduction_kind);
+  WriteString(stream, spec.reduction_dim);
+  WriteUInt32(stream, spec.repeat_extent);
   WriteBool(stream, spec.has_mbarrier);
   WriteString(stream, spec.mbarrier_buffer);
   WriteString(stream, spec.mbarrier_scope);
@@ -602,6 +605,9 @@ static KernelComputeOpSpec ReadKernelComputeOpSpec(dmlc::Stream* stream) {
   spec.b_cb_dtype = ReadString(stream, "compute_op.b_cb_dtype");
   spec.c_cb_dtype = ReadString(stream, "compute_op.c_cb_dtype");
   spec.accumulator_dtype = ReadString(stream, "compute_op.accumulator_dtype");
+  spec.reduction_kind = ReadString(stream, "compute_op.reduction_kind");
+  spec.reduction_dim = ReadString(stream, "compute_op.reduction_dim");
+  spec.repeat_extent = ReadUInt32(stream, "compute_op.repeat_extent");
   spec.has_mbarrier = ReadBool(stream, "compute_op.has_mbarrier");
   spec.mbarrier_buffer = ReadString(stream, "compute_op.mbarrier_buffer");
   spec.mbarrier_scope = ReadString(stream, "compute_op.mbarrier_scope");

@@ -2198,9 +2198,22 @@ std::string PlanTTKernelABI::ComputeKernelNameForCurrentPlan() const {
                                    : std::string("main");
 }
 
+int64_t PlanTTKernelABI::CurrentSerialLoopRepeatExtent() const {
+  for (auto it = active_serial_loop_static_extents_.rbegin();
+       it != active_serial_loop_static_extents_.rend(); ++it) {
+    if (*it > 1) {
+      return *it;
+    }
+  }
+  return 1;
+}
+
 void PlanTTKernelABI::RecordExactComputeOpPlan(
     const std::string &kind, const std::string &operation_name,
-    const std::vector<ComputeOperandPlanSeed> &operands) {
+    const std::vector<ComputeOperandPlanSeed> &operands,
+    const std::string &reduction_kind,
+    const std::string &reduction_dim,
+    int64_t repeat_extent) {
   if (operation_name.empty() || operands.empty()) {
     return;
   }
@@ -2304,7 +2317,8 @@ void PlanTTKernelABI::RecordExactComputeOpPlan(
       CurrentTileComputeDAGSourceEmitter(),
       CurrentTileComputeDAGMaterializationPolicy(),
       CurrentTileComputeDAGFanoutUseCount(),
-      CurrentTileComputeDAGFanoutPolicy()));
+      CurrentTileComputeDAGFanoutPolicy(), String(reduction_kind),
+      String(reduction_dim), repeat_extent));
 }
 
 void PlanTTKernelABI::RegisterAccessor(

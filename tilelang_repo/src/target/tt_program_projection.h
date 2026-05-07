@@ -519,6 +519,15 @@ inline Map<String, Any> EncodeComputeOpPlan(const TTComputeOpPlan &plan) {
   if (!plan->accumulator_dtype.empty()) {
     item.Set("accumulator_dtype", plan->accumulator_dtype);
   }
+  if (!plan->reduction_kind.empty()) {
+    item.Set("reduction_kind", plan->reduction_kind);
+  }
+  if (!plan->reduction_dim.empty()) {
+    item.Set("reduction_dim", plan->reduction_dim);
+  }
+  if (!plan->reduction_kind.empty() || plan->repeat_extent != 1) {
+    item.Set("repeat_extent", Integer(plan->repeat_extent));
+  }
   if (!plan->mbarrier_buffer.empty()) {
     item.Set("mbarrier_buffer", plan->mbarrier_buffer);
   }

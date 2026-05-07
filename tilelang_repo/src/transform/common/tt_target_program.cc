@@ -449,6 +449,9 @@ void TTComputeOpPlanNode::RegisterReflection() {
       .def_ro("block_shape", &TTComputeOpPlanNode::block_shape)
       .def_ro("subblock_shape", &TTComputeOpPlanNode::subblock_shape)
       .def_ro("accumulator_dtype", &TTComputeOpPlanNode::accumulator_dtype)
+      .def_ro("reduction_kind", &TTComputeOpPlanNode::reduction_kind)
+      .def_ro("reduction_dim", &TTComputeOpPlanNode::reduction_dim)
+      .def_ro("repeat_extent", &TTComputeOpPlanNode::repeat_extent)
       .def_ro("mbarrier_buffer", &TTComputeOpPlanNode::mbarrier_buffer)
       .def_ro("mbarrier_scope", &TTComputeOpPlanNode::mbarrier_scope)
       .def_ro("mbarrier_index_exprs",
@@ -477,7 +480,10 @@ TTComputeOpPlan::TTComputeOpPlan(
     int64_t tile_compute_dag_node_id, ffi::String tile_compute_source_emitter,
     ffi::String tile_compute_materialization_policy,
     int64_t tile_compute_fanout_use_count,
-    ffi::String tile_compute_fanout_policy) {
+    ffi::String tile_compute_fanout_policy,
+    ffi::String reduction_kind,
+    ffi::String reduction_dim,
+    int64_t repeat_extent) {
   auto n = ffi::make_object<TTComputeOpPlanNode>();
   n->name = std::move(name);
   n->kernel_name = std::move(kernel_name);
@@ -492,6 +498,9 @@ TTComputeOpPlan::TTComputeOpPlan(
   n->block_shape = std::move(block_shape);
   n->subblock_shape = std::move(subblock_shape);
   n->accumulator_dtype = std::move(accumulator_dtype);
+  n->reduction_kind = std::move(reduction_kind);
+  n->reduction_dim = std::move(reduction_dim);
+  n->repeat_extent = repeat_extent;
   n->mbarrier_buffer = std::move(mbarrier_buffer);
   n->mbarrier_scope = std::move(mbarrier_scope);
   n->mbarrier_index_exprs = std::move(mbarrier_index_exprs);

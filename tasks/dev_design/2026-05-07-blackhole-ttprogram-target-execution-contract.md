@@ -113,11 +113,16 @@ Completed slice:
   static buffer shape/dtype facts.  They consume projected
   `ExecutableSpec.tensor_memory_config_plans[*].logical_shape` records,
   requiring conflicts to fail closed at the executable schema boundary.
+- Reduction-region source emission no longer scans the final TIR body to
+  recover reduction kind, reduction dimension, or repeated tile extent.
+  `TTComputeOpPlan` owns `reduction_kind`, `reduction_dim`, and
+  `repeat_extent` for reduce ops, `ValidateTTProgram` checks them, and the
+  executable `compute_ops` projection is the only source consumed by
+  Blackhole codegen/runtime serialization.
 
-Remaining audit targets include reduction-region codegen body analysis and
-remote sync validation.  Each must be classified as either local validation
-mechanics or execution owner truth that must move into typed `TTProgram` /
-`ExecutableSpec` records.
+Remaining audit targets include remote sync validation.  Each must be
+classified as either local validation mechanics or execution owner truth that
+must move into typed `TTProgram` / `ExecutableSpec` records.
 
 ### P0.3 Execution Event / Admission Spine
 
