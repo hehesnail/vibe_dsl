@@ -580,10 +580,10 @@ Stmt PlanTTKernelABI::GenerateFragmentCastSequence(const FragmentCastMatch& matc
                                                 {IntImm32(cb_id),
                                                  IntImm32(num_pages)}));
         RecordSerialLoopTerminalTransportPublication(
-            MaybeWrapComputeSegment(SeqStmt::Flatten(publication)));
+            RecordComputeSegmentStmt(SeqStmt::Flatten(publication)));
         ClearTiledCBLiveFormAliases(live_source.buffer);
         RecordTiledCBLiveFormAliases(match.dst, cb_id);
-        return MaybeWrapComputeSegment(SeqStmt::Flatten(loop_stmts));
+        return RecordComputeSegmentStmt(SeqStmt::Flatten(loop_stmts));
       }
       stmts.push_back(MakeBlackholeCall(blackhole_cb_wait_front(),
                                         {IntImm32(live_source.cb_id), IntImm32(live_source.num_tiles)}));
@@ -598,7 +598,7 @@ Stmt PlanTTKernelABI::GenerateFragmentCastSequence(const FragmentCastMatch& matc
       stmts.push_back(MakeBlackholeCall(tir::builtin::blackhole_cb_push_back(),
                                         {IntImm32(cb_id), IntImm32(num_pages)}));
       RecordTiledCBLiveFormAliases(match.dst, cb_id);
-      return MaybeWrapComputeSegment(SeqStmt::Flatten(stmts));
+      return RecordComputeSegmentStmt(SeqStmt::Flatten(stmts));
     }
     // The republish fact says the result becomes cb-live. Whether the logical
     // buffer also happens to use blackhole.acc storage does not imply a page has
@@ -641,7 +641,7 @@ Stmt PlanTTKernelABI::GenerateFragmentCastSequence(const FragmentCastMatch& matc
                                       {IntImm32(cb_id), IntImm32(num_pages)}));
   }
 
-  return MaybeWrapComputeSegment(stmts.size() == 1 ? stmts.front() : SeqStmt::Flatten(stmts));
+  return RecordComputeSegmentStmt(stmts.size() == 1 ? stmts.front() : SeqStmt::Flatten(stmts));
 }
 
 bool PlanTTKernelABI::MatchDirectLocalToCBSliceLoop(const ForNode* op,
@@ -853,10 +853,10 @@ Stmt PlanTTKernelABI::GenerateLocalToCBSliceLoopSequence(const ForNode* op,
                                                 {IntImm32(cb_id),
                                                  IntImm32(num_pages)}));
         RecordSerialLoopTerminalTransportPublication(
-            MaybeWrapComputeSegment(SeqStmt::Flatten(publication)));
+            RecordComputeSegmentStmt(SeqStmt::Flatten(publication)));
         ClearTiledCBLiveFormAliases(live_source_candidate);
         RecordTiledCBLiveFormAliases(match.dst, cb_id);
-        return MaybeWrapComputeSegment(SeqStmt::Flatten(stmts));
+        return RecordComputeSegmentStmt(SeqStmt::Flatten(stmts));
       }
     }
     stmts.push_back(MakeBlackholeCall(blackhole_cb_wait_front(),
@@ -878,7 +878,7 @@ Stmt PlanTTKernelABI::GenerateLocalToCBSliceLoopSequence(const ForNode* op,
     }
     stmts.push_back(MakeBlackholeCall(blackhole_cb_push_back(),
                                       {IntImm32(cb_id), IntImm32(num_pages)}));
-    return MaybeWrapComputeSegment(SeqStmt::Flatten(stmts));
+    return RecordComputeSegmentStmt(SeqStmt::Flatten(stmts));
   }
   stmts.push_back(MakeBlackholeCall(blackhole_cb_reserve_back(),
                                     {IntImm32(cb_id), IntImm32(num_pages)}));
@@ -909,7 +909,7 @@ Stmt PlanTTKernelABI::GenerateLocalToCBSliceLoopSequence(const ForNode* op,
                       op->annotations));
   stmts.push_back(MakeBlackholeCall(blackhole_cb_push_back(),
                                     {IntImm32(cb_id), IntImm32(num_pages)}));
-  return MaybeWrapComputeSegment(SeqStmt::Flatten(stmts));
+  return RecordComputeSegmentStmt(SeqStmt::Flatten(stmts));
 }
 
 

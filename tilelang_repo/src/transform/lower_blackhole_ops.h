@@ -349,8 +349,24 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   /*! \brief Load staged exact compute op plans from TTProgram. */
   void LoadSeededComputeOpPlans(const tvm::tir::PrimFunc& func);
 
-  /*! \brief Store minimal segment/kernel plan inferred during lowering */
+  /*! \brief Store minimal segment/kernel plan recorded during lowering */
   void StoreSegmentPlan(tvm::tir::PrimFunc& func);
+
+  /*! \brief Load explicit segment-body seeds already carried by staged TTProgram. */
+  void LoadSeededSegmentBodies(const tvm::tir::PrimFunc& func);
+
+  /*! \brief Record a segment-local lowered statement without writing a TIR marker. */
+  tvm::tir::Stmt RecordSegmentStmtIfNeeded(const std::string& segment_kind,
+                                           const tvm::tir::Stmt& stmt);
+
+  /*! \brief Record a compute-segment lowered statement without writing a TIR marker. */
+  tvm::tir::Stmt RecordComputeSegmentStmt(const tvm::tir::Stmt& stmt);
+
+  /*! \brief Store recorded segment bodies as staged kernel seeds after builtin selection. */
+  void StoreRecordedSegmentKernelSeeds();
+
+  /*! \brief Build concrete segment bodies from seeded and newly-recorded fragments. */
+  std::unordered_map<std::string, tvm::tir::Stmt> BuildRecordedSegmentBodies() const;
 
   /*! \brief Store per-segment accessor descriptors for dataflow kernels */
   void StoreAccessorDescriptors(tvm::tir::PrimFunc& func);
@@ -548,7 +564,6 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
                         const std::string& memory_space = "dram");
 
   std::string ResolveAccessorSegmentKind(CopyDirection direction) const;
-  tvm::tir::Stmt MaybeWrapComputeSegment(const tvm::tir::Stmt& stmt) const;
 
   /*! \brief Return compile-time accessor slot for a reader/source buffer */
   int GetReadAccessorSlot(const std::string& segment_kind, const tvm::tir::Buffer& buffer,
@@ -963,7 +978,7 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
                                                   const std::string& region_key,
                                                   int pages);
   tvm::tir::Stmt BuildSerialLoopRetainedInputPops(
-      const std::map<int, int>& pop_pages_by_requirement_index) const;
+      const std::map<int, int>& pop_pages_by_requirement_index);
   void RecordSerialLoopTerminalTransportPublication(const tvm::tir::Stmt& stmt);
   tvm::tir::Stmt BuildSerialLoopTerminalTransportPublications(
       const std::vector<tvm::tir::Stmt>& publications) const;
@@ -1110,7 +1125,11 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   std::unordered_set<std::string> block_index_var_names_;
   std::unordered_map<const tvm::tir::VarNode*, std::string> block_index_source_by_var_;
   std::vector<AccessorDescriptor> accessor_descriptors_;
-  std::string current_segment_kind_;
+  std::vector<std::string> recorded_segment_kind_order_;
+  std::unordered_map<std::string, std::unordered_set<const tvm::tir::StmtNode*>>
+      recorded_segment_nodes_by_kind_;
+  std::unordered_map<std::string, tvm::tir::Stmt> seeded_segment_bodies_by_kind_;
+  std::unordered_map<std::string, tvm::tir::Stmt> materialized_segment_bodies_by_kind_;
   std::unordered_map<std::string, int> read_accessor_slots_;
   std::unordered_map<std::string, int> write_accessor_slots_;
   std::unordered_map<std::string, int> fused_dataflow_accessor_slots_;

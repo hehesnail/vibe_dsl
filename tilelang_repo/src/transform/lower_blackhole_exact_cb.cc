@@ -828,9 +828,7 @@ PlanTTKernelABI::RecordExactCBUseAndReleaseEvent(
   const TTExactCBVirtualValue& virtual_value =
       tt_exact_cb_virtual_values_[static_cast<size_t>(virtual_value_index)];
   const std::string kernel_name =
-      !current_segment_kind_.empty()
-          ? current_segment_kind_
-          : (requires_compute_segment_ ? std::string("compute") : std::string("main"));
+      requires_compute_segment_ ? std::string("compute") : std::string("main");
   tt_exact_cb_use_events_.push_back(TTExactCBUseEvent(
       String("exact_cb_use_" + std::to_string(tt_exact_cb_use_events_.size())),
       virtual_value->name, virtual_value_index, String(kernel_name),
@@ -902,10 +900,7 @@ void PlanTTKernelABI::RecordLoopCarriedExactCBLifecycle(
   }
   if (!has_loop_use) {
     const std::string kernel_name =
-        !current_segment_kind_.empty()
-            ? current_segment_kind_
-            : (requires_compute_segment_ ? std::string("compute")
-                                         : std::string("main"));
+        requires_compute_segment_ ? std::string("compute") : std::string("main");
     tt_exact_cb_use_events_.push_back(TTExactCBUseEvent(
         String("exact_cb_use_" + std::to_string(tt_exact_cb_use_events_.size())),
         virtual_value->name, virtual_value_index, String(kernel_name),

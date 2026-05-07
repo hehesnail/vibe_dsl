@@ -820,7 +820,7 @@ Stmt PlanTTKernelABI::GenerateMatmulSequence(const CallNode* op,
         RecordTiledCBLiveFormAliases(logical_gemm_c_buffer, live_value.cb_id);
       }
     }
-    return MaybeWrapComputeSegment(body);
+    return RecordComputeSegmentStmt(body);
   }
   const bool publish_live_form_cb =
       preserve_out_local_state && BufferUsesTiledCBLiveForm(gemm_c_buffer_);
@@ -898,7 +898,7 @@ Stmt PlanTTKernelABI::GenerateMatmulSequence(const CallNode* op,
       MarkLocalOnlyLiveFormAliases(materialize_dst);
     }
   }
-  return MaybeWrapComputeSegment(SeqStmt::Flatten(stmts));
+  return RecordComputeSegmentStmt(SeqStmt::Flatten(stmts));
 }
 
 Stmt PlanTTKernelABI::GenerateMatmulSequenceForOutputRequirement(int out_req_index,
@@ -1064,7 +1064,7 @@ Stmt PlanTTKernelABI::GenerateAddFragmentSequence(const Buffer& dst,
   InvalidateLastFragmentFillValue(dst);
   const Buffer physical_dst = ResolvePhysicalComputeBuffer(dst);
   const Buffer physical_src = ResolvePhysicalComputeBuffer(src);
-  return MaybeWrapComputeSegment(MakeBlackholeCall(
+  return RecordComputeSegmentStmt(MakeBlackholeCall(
       blackhole_add_fragment(), {physical_dst->data, physical_src->data, num_elements}));
 }
 
@@ -1080,7 +1080,7 @@ Stmt PlanTTKernelABI::GenerateAddFragmentFromCBFrontSequence(const Buffer& dst,
          "add_fragment_from_cb_front destination "
       << dst_buffer_name;
   const Buffer physical_dst = ResolvePhysicalComputeBuffer(dst);
-  return MaybeWrapComputeSegment(MakeBlackholeCall(
+  return RecordComputeSegmentStmt(MakeBlackholeCall(
       blackhole_add_fragment_from_cb_front(),
       {physical_dst->data, IntImm32(src_cb_id), num_elements}));
 }
@@ -1336,7 +1336,7 @@ Stmt PlanTTKernelABI::GenerateMergeFragmentTilesSequence(const Buffer& dst,
     stmts.push_back(MakeBlackholeCall(
         blackhole_cb_push_back(), {IntImm32(materialized_cast_cb_id), IntImm32(num_c_tiles)}));
   }
-  return MaybeWrapComputeSegment(SeqStmt::Flatten(stmts));
+  return RecordComputeSegmentStmt(SeqStmt::Flatten(stmts));
 }
 
 Stmt PlanTTKernelABI::GenerateMatmulSequenceWithPartialReload(int out_req_index,

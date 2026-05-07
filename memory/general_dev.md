@@ -2617,12 +2617,21 @@ cd <当前 checkout 或 worktree>/tilelang_repo
 - 2026-05-06 Blackhole segment body ownership:
   Segment membership is not a leaf-reader responsibility.  If source/codegen
   needs per-segment TIR, project the selected body through the generic
-  `TTKernel` / executable segment record before stripping
-  `blackhole.segment_kind`.  Runtime/codegen may materialize a segment
+  `TTKernel` / executable segment record, not through a TIR marker attr.
+  Runtime/codegen may materialize a segment
   `PrimFunc` from that body, but must not recover membership by reading final
   markers, scanning neighboring builtins, or defaulting ambiguous statements.
   Unmarked retained compute-input pops should be wrapped as compute segment
   statements at the generation point, not inferred during leaf extraction.
+- 2026-05-07 Blackhole marker-free segment extraction:
+  After deleting `blackhole.segment_kind`, record only concrete side-effect
+  leaves for a segment and reconstruct lexical wrappers from the current
+  lowered body.  Wrapper statements such as `Allocate`, `DeclBuffer`, loops,
+  lets, attrs, and branches are transparent during leaf recording; extraction
+  keeps them only when selected leaves still use their bindings.  Do not use a
+  stale TTKernel seed body as a lossy replacement for the current lowered
+  function body: if a wrapper-contained producer leaf is missed, later compute
+  consumers can wait on a physical CB page with no visible producer.
 - 2026-05-06 Blackhole transport accessor segment ownership:
   Transport lowering should register accessor records under the segment
   selected by the ABI resolver, not by hardcoding `fused_dataflow` in each

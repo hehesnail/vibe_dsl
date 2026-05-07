@@ -1228,7 +1228,7 @@ Stmt PlanTTKernelABI::GenerateRowReductionSequence(const RowReductionMatch& matc
   if (!materialize_loop_carried) {
     body = AttachExactOutputLiveFormMarker(live_form_dst, out, body);
   }
-  return MaybeWrapComputeSegment(body);
+  return RecordComputeSegmentStmt(body);
 }
 
 Stmt PlanTTKernelABI::GenerateGuardMaskApplySequence(
@@ -1299,10 +1299,7 @@ Stmt PlanTTKernelABI::GenerateGuardMaskApplySequence(
       blackhole_cb_push_back(), {IntImm32(mask_cb_id), IntImm32(1)}));
   Stmt reader_body =
       WrapActiveThreadSinglePublication(SeqStmt::Flatten(reader_stmts));
-  Stmt reader = AttrStmt(StringImm("blackhole.segment_kind"),
-                         "blackhole.segment_kind",
-                         StringImm("reader"),
-                         reader_body);
+  Stmt reader = RecordSegmentStmtIfNeeded("reader", reader_body);
 
   std::vector<Stmt> compute_stmts;
   MarkFutureLiveExactCBRequirementsOverlapWith(out.cb_id, out.num_tiles,
@@ -1347,7 +1344,7 @@ Stmt PlanTTKernelABI::GenerateGuardMaskApplySequence(
 
   Stmt compute = SeqStmt::Flatten(compute_stmts);
   compute = AttachExactOutputLiveFormMarker(match.dst, out, compute);
-  compute = MaybeWrapComputeSegment(compute);
+  compute = RecordComputeSegmentStmt(compute);
   std::vector<Stmt> combined{reader, compute};
   return SeqStmt::Flatten(combined);
 }
@@ -1404,7 +1401,7 @@ Stmt PlanTTKernelABI::GenerateFillTileSequence(const Buffer& dst, const PrimExpr
   }
   RecordExactComputeOpPlan("fill", "fill_tile",
                            {{"output", dst, "identity"}});
-  return MaybeWrapComputeSegment(MakeBlackholeCall(
+  return RecordComputeSegmentStmt(MakeBlackholeCall(
       tir::builtin::blackhole_fill_fragment(),
       {physical_dst.defined() ? physical_dst->data : dst->data, num_elements, value}));
 }
@@ -1544,7 +1541,7 @@ Stmt PlanTTKernelABI::GenerateBinaryMaxTileSequence(const Buffer& dst, const Buf
   if (!materialize_local_state) {
     body = AttachExactOutputLiveFormMarker(dst, out, body);
   }
-  return MaybeWrapComputeSegment(body);
+  return RecordComputeSegmentStmt(body);
 }
 
 Stmt PlanTTKernelABI::GenerateBinaryTileSequence(const Buffer& dst,
@@ -1751,7 +1748,7 @@ Stmt PlanTTKernelABI::GenerateBinaryTileSequence(const Buffer& dst,
     if (!materialize_loop_carried) {
       body = AttachExactOutputLiveFormMarker(dst, out, body);
     }
-    return MaybeWrapComputeSegment(body);
+    return RecordComputeSegmentStmt(body);
   }
   const int compute_output_cb_id =
       mirror_loop_carried_transport_output ? loop_carried_transport_publication.cb_id
@@ -1901,7 +1898,7 @@ Stmt PlanTTKernelABI::GenerateBinaryTileSequence(const Buffer& dst,
   if (!materialize_loop_carried) {
     body = AttachExactOutputLiveFormMarker(dst, out, body);
   }
-  return MaybeWrapComputeSegment(body);
+  return RecordComputeSegmentStmt(body);
 }
 
 Stmt PlanTTKernelABI::GenerateBroadcastColsBinaryTileSequence(
@@ -2009,7 +2006,7 @@ Stmt PlanTTKernelABI::GenerateBroadcastColsBinaryTileSequence(
   if (!materialize_local_state) {
     body = AttachExactOutputLiveFormMarker(dst, out, body);
   }
-  return MaybeWrapComputeSegment(body);
+  return RecordComputeSegmentStmt(body);
 }
 
 Stmt PlanTTKernelABI::GenerateUnaryTileSequence(
@@ -2071,7 +2068,7 @@ Stmt PlanTTKernelABI::GenerateUnaryTileSequence(
   if (!materialize_loop_carried) {
     body = AttachExactOutputLiveFormMarker(output, out, body);
   }
-  return MaybeWrapComputeSegment(body);
+  return RecordComputeSegmentStmt(body);
 }
 
 }  // namespace tl

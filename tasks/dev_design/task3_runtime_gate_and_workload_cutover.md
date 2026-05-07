@@ -47,7 +47,7 @@ Allowed inputs:
 Forbidden inputs:
 
 - `blackhole.copy_semantics`
-- `blackhole.segment_kind` after final projection
+- `blackhole.segment_kind` as an active lowering or leaf-reader protocol
 - lowering facts or helper bags
 - payload fallbacks
 - implicit buffer-role recovery
@@ -93,8 +93,9 @@ Missing maps or arrays are errors, not empty defaults.
 Segment body ownership is part of the kernel record.  Final leaf readers may
 materialize a segment `PrimFunc` from that explicit body, but they must not
 read `blackhole.segment_kind`, scan neighboring builtins, or infer segment
-membership from the final function body.  The marker is allowed only as
-pass-local lowering mechanics before projection.
+membership from the final function body.  The marker is not an active protocol
+surface; segment bodies must arrive from the `TTProgram -> ExecutableSpec`
+projection.
 
 Per-work arg specs have one owner for nontrivial dynamic values:
 `value_source=value_expr` plus the serialized TIR expression.  Leaf readers

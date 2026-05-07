@@ -24,7 +24,7 @@
 | T6 `topk` | Complete | Existing TIR value/index selection runs through direct runtime for fp32 and bf16 values with exact `int32` indices.  The old limited typed compute-region emitter is deleted; codegen consumes executable reduction records through a `reduce_dim`-parameterized channel lowering and CB requirement mappings without topk/selection schema or raw host-pointer fallback. |
 | T7 Exact-CB / materialization primitives | Complete | Exact-CB materialization, publication, consumer binding, GEMM post-merge materialization, and seq64 bf16 flash-attn exact-CB partial combine pass `BlackholeModule` TT-Sim correctness. |
 | T7.5 Exact-CB liveness / allocation cutover | Complete | Covered exact-CB resident tiles use typed lifecycle, allocation, release events, latest-producer validation, storage-format validation, and fail-closed loop-carried/full-tile gates. |
-| P0 TTProgram target execution contract hardening | Complete | `TTProgram` is the current target-facing execution contract for covered P0 surfaces: CB queue events, exact-CB lifecycle, semaphore bindings, remote core descriptors, launch association, runtime/per-work ABI, buffer/materialization records, and resource/admission facts are typed owner truth and projected once to `ExecutableSpec`; runtime/codegen/source guards reject body/source/name recovery. |
+| P0 TTProgram target execution contract hardening | Complete | `TTProgram` is the current target-facing execution contract for covered P0 surfaces: CB queue events, exact-CB lifecycle, segment/kernel bodies, semaphore bindings, remote core descriptors, launch association, runtime/per-work ABI, buffer/materialization records, and resource/admission facts are typed owner truth and projected once to `ExecutableSpec`; runtime/codegen/source guards reject body/source/name recovery. |
 | T8 Irregular work domains / indexed access | Complete | Indexed, sparse, ragged, paged, segmented, and T9.1 grouped-GEMM feed paths execute through generic `AccessRegion` + `value_expr` bindings.  Buffer-bound per-work specs carry explicit `AccessRegion` evidence, indexed lookups fail closed on missing structural matches, and broadened segmented/paged/ragged/indexed copy shapes pass direct-runtime gates. |
 | T9 Workload first paths | In progress | T9.1 pre-grouped MoE/routed GEMM, T9.2 full paged GQA decode, T9.3 dual-score MLA GEMM, T9.3 full paged MLA decode, T9.4 sparse/ragged GQA decode, and T9.5 chunk recurrence / scan have bf16 direct-runtime correctness.  T9.6 is queued. |
 | T10 Distributed production variants | Queued | Mesh placement, CCL, NoC/multicast/global scheduling, distributed workload correctness, and production partial-K reduction remain future TT target-realization work. |
@@ -57,8 +57,9 @@
   requirement indices and executable physical `cb_id`s.  `requirement_names`
   and CB-name suffixes are not protocol.
 - Segment bodies are projected records.  Final leaf readers must consume
-  those records and must not scan `blackhole.segment_kind` or infer segment
-  membership from the final function body.
+  those records and must not scan final TIR or infer segment membership from
+  builtin neighborhoods.  `blackhole.segment_kind` is not an active lowering
+  protocol; active lowering source is guarded against reintroducing it.
 - Remote synchronization endpoints are explicit `TTRemoteCoreDescriptorSpec`
   / `KernelSpec.remote_core_descriptors` records.  `logical_core_noc_x/y`
   runtime args bind ABI values and must reference a matching descriptor; they

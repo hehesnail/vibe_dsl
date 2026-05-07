@@ -19,7 +19,8 @@ namespace {
 
 TTProgram WithStagedCBAndComputeOpPlans(const TTProgram& program,
                                         ffi::Array<TTCBPlan> cb_plans,
-                                        ffi::Array<TTComputeOpPlan> compute_op_plans) {
+                                        ffi::Array<TTComputeOpPlan> compute_op_plans,
+                                        ffi::Array<TTKernel> kernel_seeds) {
   return TTProgram(program->entry_name, program->member_func, program->mesh_plans,
                    program->buffer_distribution_plans,
                    program->tensor_memory_config_plans,
@@ -28,7 +29,7 @@ TTProgram WithStagedCBAndComputeOpPlans(const TTProgram& program,
                    program->block_plans,
                    program->kernel_plans, std::move(compute_op_plans),
                    program->transport_plans, program->sync_plans,
-                   program->abi_plans, program->execution_plans, program->kernels,
+                   program->abi_plans, program->execution_plans, std::move(kernel_seeds),
                    program->core_groups, std::move(cb_plans), program->semaphore_plans,
                    program->compute_sync_plans, program->dst_layout_plans,
                    program->live_form_plans, program->materialization_plans,
@@ -58,7 +59,8 @@ tvm::transform::Pass SelectBlackholeTTMetalBuiltins() {
           WithAttr(std::move(selected), attr::kTLTTProgram,
                    WithStagedCBAndComputeOpPlans(staged_program.value(),
                                                  selector.GetStagedCBPlans(),
-                                                 selector.GetTTComputeOpPlans()));
+                                                 selector.GetTTComputeOpPlans(),
+                                                 selector.GetTTKernels()));
       selected = WithAttr(std::move(selected), kTLBlackholeTTMetalBuiltinSelection, Bool(true));
       updated->Add(gvar, selected, true);
     }

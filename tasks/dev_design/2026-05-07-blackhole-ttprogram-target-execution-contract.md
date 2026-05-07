@@ -133,6 +133,12 @@ Completed slice:
   records.  The remaining segment-body walk in the Blackhole build path is
   validation-only: it checks that semaphore/remote builtins consume the
   projected schema and rejects literal or body-recovered endpoints.
+- `blackhole.segment_kind` is no longer an active lowering protocol, including
+  as a pass-local marker exception.  Segment identity is recorded while
+  lowering builds concrete reader/compute/writer leaves, then materialized as
+  staged `TTKernel` bodies on `TTProgram` and projected once into
+  `ExecutableSpec` segment records.  The final TIR and active lowering source
+  are guarded against reintroducing the marker string.
 
 ### P0.3 Execution Event / Admission Spine
 
@@ -146,8 +152,8 @@ decision.
 The current P0 spine is:
 
 - physical CB FIFO events:
-  `TTKernel` body + `TTCBPlan` requirement ownership ->
-  `KernelSpec.queue_events`;
+  explicitly recorded `TTKernel` segment bodies + `TTCBPlan` requirement
+  ownership -> `KernelSpec.queue_events`;
 - exact-CB lifecycle and storage legality:
   `TTExactCB*` records plus `TTCBPlan` ->
   `ValidateTTProgram` and executable queue/lifecycle gates;

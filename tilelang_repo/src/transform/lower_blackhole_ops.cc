@@ -39,6 +39,7 @@
 #include "runtime/thread_storage_scope.h"
 #include <tvm/arith/analyzer.h>
 #include <tvm/node/structural_equal.h>
+#include <tvm/tir/analysis.h>
 #include <tvm/tir/builtin.h>
 #include <tvm/tir/expr.h>
 #include <tvm/tir/op.h>
@@ -216,12 +217,6 @@ static CBDepthEffect AnalyzeCBDepthEffect(const tir::Stmt& stmt,
     return effect;
   }
   if (const auto* attr = stmt.as<tir::AttrStmtNode>()) {
-    if (attr->attr_key == "blackhole.segment_kind") {
-      if (const auto* kind = attr->value.as<StringImmNode>()) {
-        return AnalyzeCBDepthEffect(attr->body, num_requirements, requested_segment_kind,
-                                    default_segment_kind, kind->value);
-      }
-    }
     return AnalyzeCBDepthEffect(attr->body, num_requirements, requested_segment_kind,
                                 default_segment_kind, active_segment_kind);
   }
@@ -941,13 +936,6 @@ static bool HasComputeSegmentRequirement(const Stmt& body) {
   bool found = false;
   tir::PostOrderVisit(body, [&](const ObjectRef& node) {
     if (const auto* attr = node.as<AttrStmtNode>()) {
-      if (attr->attr_key == "blackhole.segment_kind") {
-        if (const auto* kind = attr->value.as<StringImmNode>()) {
-          if (kind->value == "compute") {
-            found = true;
-          }
-        }
-      }
       return;
     }
     if (const auto* call = node.as<CallNode>()) {
@@ -1067,20 +1055,6 @@ static Array<Integer> ExtractStaticShape(const Buffer& buffer) {
     }
   }
   return shape;
-}
-
-static Stmt StripSegmentKindMarkers(const Stmt& body) {
-  class SegmentMarkerStripper : public tir::StmtMutator {
-   public:
-    Stmt VisitStmt_(const AttrStmtNode* op) final {
-      if (op->attr_key == "blackhole.segment_kind") {
-        return VisitStmt(op->body);
-      }
-      return tir::StmtMutator::VisitStmt_(op);
-    }
-  };
-
-  return SegmentMarkerStripper()(body);
 }
 
 static Array<PrimExpr> FindBlackholeAccAllocationExtents(
@@ -1366,27 +1340,6 @@ static Stmt RewrapMissingBlackholeAccDefinitions(
                     definition.condition, body, definition.annotations);
   }
   return body;
-}
-
-static Stmt WrapSegmentStmtIfNeeded(const std::string& current_segment_kind,
-                                    const std::string& segment_kind,
-                                    const Stmt& stmt) {
-  if (!stmt.defined() || !current_segment_kind.empty() || segment_kind == "fused_dataflow") {
-    return stmt;
-  }
-  auto wrap_one = [&](const Stmt& inner) {
-    return AttrStmt(StringImm("blackhole.segment_kind"), "blackhole.segment_kind",
-                    StringImm(segment_kind), inner);
-  };
-  if (const auto* seq = stmt.as<SeqStmtNode>()) {
-    ffi::Array<Stmt> wrapped;
-    wrapped.reserve(seq->seq.size());
-    for (const Stmt& child : seq->seq) {
-      wrapped.push_back(wrap_one(child));
-    }
-    return tir::SeqStmt(wrapped);
-  }
-  return wrap_one(stmt);
 }
 
 // Helper to get storage scope from buffer
@@ -1862,6 +1815,262 @@ static Stmt PruneDeadFragmentFillsAfterExactCBPublication(const Stmt& body) {
 
 PlanTTKernelABI::PlanTTKernelABI() : next_requirement_index_(0) {}
 
+Stmt PlanTTKernelABI::RecordSegmentStmtIfNeeded(const std::string& segment_kind,
+                                                const Stmt& stmt) {
+  if (!stmt.defined() || segment_kind.empty() ||
+      segment_kind == "fused_dataflow" || IsNoOpStmt(stmt)) {
+    return stmt;
+  }
+  if (recorded_segment_nodes_by_kind_.find(segment_kind) ==
+          recorded_segment_nodes_by_kind_.end() &&
+      seeded_segment_bodies_by_kind_.find(segment_kind) ==
+          seeded_segment_bodies_by_kind_.end()) {
+    recorded_segment_kind_order_.push_back(segment_kind);
+  }
+  auto& nodes = recorded_segment_nodes_by_kind_[segment_kind];
+  auto recorded_by_other_segment = [&](const Stmt& current) {
+    for (const auto& entry : recorded_segment_nodes_by_kind_) {
+      if (entry.first != segment_kind && entry.second.count(current.get()) != 0U) {
+        return true;
+      }
+    }
+    return false;
+  };
+  std::function<void(const Stmt&)> record_nodes = [&](const Stmt& current) {
+    if (!current.defined() || IsNoOpStmt(current)) {
+      return;
+    }
+    if (const auto* seq = current.as<SeqStmtNode>()) {
+      for (const Stmt& child : seq->seq) {
+        record_nodes(child);
+      }
+      return;
+    }
+    if (const auto* attr = current.as<AttrStmtNode>()) {
+      record_nodes(attr->body);
+      return;
+    }
+    if (const auto* loop = current.as<ForNode>()) {
+      record_nodes(loop->body);
+      return;
+    }
+    if (const auto* branch = current.as<IfThenElseNode>()) {
+      record_nodes(branch->then_case);
+      if (branch->else_case.defined()) {
+        record_nodes(branch->else_case.value());
+      }
+      return;
+    }
+    if (const auto* let = current.as<LetStmtNode>()) {
+      record_nodes(let->body);
+      return;
+    }
+    if (const auto* alloc = current.as<AllocateNode>()) {
+      record_nodes(alloc->body);
+      return;
+    }
+    if (const auto* decl = current.as<DeclBufferNode>()) {
+      record_nodes(decl->body);
+      return;
+    }
+    if (recorded_by_other_segment(current)) {
+      return;
+    }
+    if (current.as<EvaluateNode>() || current.as<BufferStoreNode>()) {
+      nodes.insert(current.get());
+    }
+  };
+  record_nodes(stmt);
+  return stmt;
+}
+
+Stmt PlanTTKernelABI::RecordComputeSegmentStmt(const Stmt& stmt) {
+  return RecordSegmentStmtIfNeeded("compute", stmt);
+}
+
+std::unordered_map<std::string, Stmt> PlanTTKernelABI::BuildRecordedSegmentBodies() const {
+  std::unordered_map<std::string, Stmt> bodies;
+  for (const std::string& kind : recorded_segment_kind_order_) {
+    std::vector<Stmt> stmts;
+    auto materialized = materialized_segment_bodies_by_kind_.find(kind);
+    if (materialized != materialized_segment_bodies_by_kind_.end() &&
+        !IsNoOpStmt(materialized->second)) {
+      stmts.push_back(materialized->second);
+    } else {
+      auto seeded = seeded_segment_bodies_by_kind_.find(kind);
+      if (seeded != seeded_segment_bodies_by_kind_.end() && !IsNoOpStmt(seeded->second)) {
+        stmts.push_back(seeded->second);
+      }
+    }
+    if (stmts.empty()) {
+      continue;
+    }
+    Stmt body = SeqStmt::Flatten(stmts);
+    body = RewriteRetainedStreamInputMatmulTileOffsetsForRequirements(
+        body, cb_requirements_);
+    bodies.emplace(kind, body);
+  }
+  return bodies;
+}
+
+static std::unordered_map<std::string, Stmt> ExtractRecordedSegmentBodiesFromBody(
+    const Stmt& body,
+    const std::vector<std::string>& segment_order,
+    const std::unordered_map<std::string, std::unordered_set<const tir::StmtNode*>>& nodes_by_kind) {
+  class Extractor final : public tir::StmtMutator {
+   public:
+    explicit Extractor(const std::unordered_set<const tir::StmtNode*>& selected)
+        : selected_(selected) {}
+
+    Stmt VisitStmt(const Stmt& stmt) final {
+      if (!stmt.defined()) {
+        return stmt;
+      }
+      if (keep_all_ || selected_.count(stmt.get()) != 0U) {
+        const bool previous_keep_all = keep_all_;
+        keep_all_ = true;
+        Stmt result = tir::StmtMutator::VisitStmt(stmt);
+        keep_all_ = previous_keep_all;
+        return result;
+      }
+      return tir::StmtMutator::VisitStmt(stmt);
+    }
+
+    Stmt VisitStmt_(const AttrStmtNode* op) final {
+      Stmt body = this->VisitStmt(op->body);
+      if (IsNoOpStmt(body)) {
+        return Evaluate(IntImm(DataType::Int(32), 0));
+      }
+      if (body.same_as(op->body)) {
+        return GetRef<Stmt>(op);
+      }
+      return AttrStmt(op->node, op->attr_key, op->value, body);
+    }
+
+    Stmt VisitStmt_(const SeqStmtNode* op) final {
+      ffi::Array<Stmt> seq;
+      seq.reserve(op->seq.size());
+      for (const Stmt& stmt : op->seq) {
+        Stmt rewritten = this->VisitStmt(stmt);
+        if (!IsNoOpStmt(rewritten)) {
+          seq.push_back(rewritten);
+        }
+      }
+      if (seq.empty()) {
+        return Evaluate(IntImm(DataType::Int(32), 0));
+      }
+      if (seq.size() == 1) {
+        return seq[0];
+      }
+      return SeqStmt(seq);
+    }
+
+    Stmt VisitStmt_(const EvaluateNode* op) final {
+      if (keep_all_) {
+        return GetRef<Stmt>(op);
+      }
+      return Evaluate(IntImm(DataType::Int(32), 0));
+    }
+
+    Stmt VisitStmt_(const BufferStoreNode* op) final {
+      if (keep_all_) {
+        return GetRef<Stmt>(op);
+      }
+      return Evaluate(IntImm(DataType::Int(32), 0));
+    }
+
+    Stmt VisitStmt_(const AllocateNode* op) final {
+      Stmt body = this->VisitStmt(op->body);
+      if (IsNoOpStmt(body)) {
+        return Evaluate(IntImm(DataType::Int(32), 0));
+      }
+      if (!tir::UsesVar(body, [buffer_var = op->buffer_var.get()](const tir::VarNode* var) {
+            return var == buffer_var;
+          })) {
+        return body;
+      }
+      if (body.same_as(op->body)) {
+        return GetRef<Stmt>(op);
+      }
+      return Allocate(op->buffer_var, op->dtype, op->extents,
+                      op->condition, body, op->annotations, op->span);
+    }
+
+    Stmt VisitStmt_(const DeclBufferNode* op) final {
+      Stmt body = this->VisitStmt(op->body);
+      if (IsNoOpStmt(body)) {
+        return Evaluate(IntImm(DataType::Int(32), 0));
+      }
+      if (!tir::UsesVar(body, [buffer_data = op->buffer->data.get()](const tir::VarNode* var) {
+            return var == buffer_data;
+          })) {
+        return body;
+      }
+      if (body.same_as(op->body)) {
+        return GetRef<Stmt>(op);
+      }
+      return DeclBuffer(op->buffer, body);
+    }
+
+    Stmt VisitStmt_(const ForNode* op) final {
+      Stmt body = this->VisitStmt(op->body);
+      if (IsNoOpStmt(body)) {
+        return Evaluate(IntImm(DataType::Int(32), 0));
+      }
+      if (body.same_as(op->body)) {
+        return GetRef<Stmt>(op);
+      }
+      return For(op->loop_var, op->min, op->extent, op->kind, body,
+                 op->thread_binding, op->annotations, std::nullopt, op->span);
+    }
+
+    Stmt VisitStmt_(const IfThenElseNode* op) final {
+      Stmt then_case = this->VisitStmt(op->then_case);
+      Stmt else_case =
+          op->else_case.defined() ? this->VisitStmt(op->else_case.value()) : Stmt();
+      const bool then_noop = IsNoOpStmt(then_case);
+      const bool else_noop = !else_case.defined() || IsNoOpStmt(else_case);
+      if (then_noop && else_noop) {
+        return Evaluate(IntImm(DataType::Int(32), 0));
+      }
+      if (then_case.same_as(op->then_case) &&
+          ((!op->else_case.defined() && !else_case.defined()) ||
+           (op->else_case.defined() && else_case.same_as(op->else_case.value())))) {
+        return GetRef<Stmt>(op);
+      }
+      return tir::IfThenElse(op->condition, then_case, else_case, op->span);
+    }
+
+    Stmt VisitStmt_(const LetStmtNode* op) final {
+      Stmt body = this->VisitStmt(op->body);
+      if (IsNoOpStmt(body)) {
+        return Evaluate(IntImm(DataType::Int(32), 0));
+      }
+      if (body.same_as(op->body)) {
+        return GetRef<Stmt>(op);
+      }
+      return LetStmt(op->var, op->value, body, op->span);
+    }
+
+   private:
+    const std::unordered_set<const tir::StmtNode*>& selected_;
+    bool keep_all_{false};
+  };
+
+  std::unordered_map<std::string, Stmt> bodies;
+  for (const std::string& kind : segment_order) {
+    auto nodes = nodes_by_kind.find(kind);
+    if (nodes == nodes_by_kind.end() || nodes->second.empty()) {
+      continue;
+    }
+    Stmt segment_body = Extractor(nodes->second)(body);
+    if (!IsNoOpStmt(segment_body)) {
+      bodies.emplace(kind, segment_body);
+    }
+  }
+  return bodies;
+}
+
 PrimFunc PlanTTKernelABI::SelectComputeBuiltins(const PrimFunc& func) {
   current_func_ = func;
   buffer_to_req_.clear();
@@ -1893,7 +2102,10 @@ PrimFunc PlanTTKernelABI::SelectComputeBuiltins(const PrimFunc& func) {
   last_fragment_fill_value_by_buffer_identity_.clear();
   last_fragment_fill_value_by_data_.clear();
   LoadPhysicalComputeBufferBindings(func);
-  current_segment_kind_.clear();
+  recorded_segment_kind_order_.clear();
+  recorded_segment_nodes_by_kind_.clear();
+  seeded_segment_bodies_by_kind_.clear();
+  materialized_segment_bodies_by_kind_.clear();
   thread_index_vars_.clear();
   thread_index_var_names_.clear();
   thread_index_var_static_extents_.clear();
@@ -1964,11 +2176,14 @@ PrimFunc PlanTTKernelABI::SelectComputeBuiltins(const PrimFunc& func) {
 
   PrimFunc selected = func;
   Stmt selected_body = VisitStmt(func->body);
+  materialized_segment_bodies_by_kind_ = ExtractRecordedSegmentBodiesFromBody(
+      selected_body, recorded_segment_kind_order_, recorded_segment_nodes_by_kind_);
   selected_body = RewrapMissingBlackholeAccDefinitions(
       func->body, selected_body, logical_tile_layout_specs_by_buffer_);
   selected.CopyOnWrite()->body = selected_body;
   UpdateCBRequirementDepthsFromLoweredBody(
       &cb_requirements_, selected->body, gemm_a_buffer_name_.empty() ? "fused_dataflow" : "compute");
+  StoreRecordedSegmentKernelSeeds();
   select_compute_builtins_only_ = false;
   return selected;
 }
@@ -2299,7 +2514,10 @@ PrimFunc PlanTTKernelABI::Transform(const PrimFunc& func) {
       }
     }
   });
-  current_segment_kind_.clear();
+  recorded_segment_kind_order_.clear();
+  recorded_segment_nodes_by_kind_.clear();
+  seeded_segment_bodies_by_kind_.clear();
+  materialized_segment_bodies_by_kind_.clear();
   read_accessor_slots_.clear();
   write_accessor_slots_.clear();
   gemm_a_buffer_ = Buffer();
@@ -2361,6 +2579,7 @@ PrimFunc PlanTTKernelABI::Transform(const PrimFunc& func) {
   }
   LoadSeededCBRequirements(func);
   LoadSeededComputeOpPlans(func);
+  LoadSeededSegmentBodies(func);
   auto maybe_spatial_plan = func->GetAttr<SpatialPlan>(attr::kTLSpatialPlan);
   ICHECK(maybe_spatial_plan)
       << "PlanTTKernelABI requires tl.spatial_plan; run BuildSpatialPlan before lowering";
@@ -2370,7 +2589,8 @@ PrimFunc PlanTTKernelABI::Transform(const PrimFunc& func) {
       BuildLoweringSupportFactsFromAnalysis(func);
   LoadLogicalBufferShapes(func, lowering_support_facts, maybe_spatial_plan.value());
   ValidateComputePipelineLegalityFromBody(func->body);
-  requires_compute_segment_ = HasComputeSegmentRequirement(func->body);
+  requires_compute_segment_ = HasComputeSegmentRequirement(func->body) ||
+                              seeded_segment_bodies_by_kind_.count("compute") != 0U;
   LoadLogicalTileLayoutSpecs(maybe_spatial_plan.value());
   buffer_materialization_facts_by_target_buffer_ =
       BuildBufferMaterializationFactMap(
@@ -2469,14 +2689,16 @@ PrimFunc PlanTTKernelABI::Transform(const PrimFunc& func) {
     maybe_insert(fact.c_buffer);
   }
 
-  // Transform the function body. Segment markers remain pass-local mechanics
-  // until we have derived TTProgram slice metadata and CB depth.
-  Stmt body_with_segment_markers = VisitStmt(func->body);
-  UpdateCBRequirementDepthsFromLoweredBody(&cb_requirements_, body_with_segment_markers,
+  // Transform the function body while recording per-segment fragments in the
+  // builder fields.  Segment identity does not enter TIR.
+  Stmt lowered_body = VisitStmt(func->body);
+  materialized_segment_bodies_by_kind_ = ExtractRecordedSegmentBodiesFromBody(
+      lowered_body, recorded_segment_kind_order_, recorded_segment_nodes_by_kind_);
+  UpdateCBRequirementDepthsFromLoweredBody(&cb_requirements_, lowered_body,
                                            gemm_a_buffer_name_.empty() ? "fused_dataflow"
                                                                        : "compute");
-  body_with_segment_markers =
-      RewriteRetainedStreamInputMatmulTileOffsetsForRequirements(body_with_segment_markers,
+  lowered_body =
+      RewriteRetainedStreamInputMatmulTileOffsetsForRequirements(lowered_body,
                                                                  cb_requirements_);
   std::vector<std::string> unresolved_unsupported_ops;
   std::unordered_set<std::string> unresolved_unsupported_seen;
@@ -2487,35 +2709,34 @@ PrimFunc PlanTTKernelABI::Transform(const PrimFunc& func) {
   };
   for (const std::string& op_name : expected_unsupported_ops) {
     if (op_name == "broadcast" &&
-        HasResidualScalarLoadBroadcast(body_with_segment_markers)) {
+        HasResidualScalarLoadBroadcast(lowered_body)) {
       push_unresolved("broadcast");
       continue;
     }
-    if (op_name == "fill" && HasResidualFragmentFill(body_with_segment_markers)) {
+    if (op_name == "fill" && HasResidualFragmentFill(lowered_body)) {
       push_unresolved("fill");
       continue;
     }
-    if (op_name == "max" && HasResidualFragmentMax(body_with_segment_markers)) {
+    if (op_name == "max" && HasResidualFragmentMax(lowered_body)) {
       push_unresolved("max");
       continue;
     }
-    if (op_name == "add" && HasResidualFragmentAdd(body_with_segment_markers)) {
+    if (op_name == "add" && HasResidualFragmentAdd(lowered_body)) {
       push_unresolved("add");
       continue;
     }
-    if (op_name == "cast" && HasResidualFragmentCast(body_with_segment_markers)) {
+    if (op_name == "cast" && HasResidualFragmentCast(lowered_body)) {
       push_unresolved("cast");
       continue;
     }
   }
-  // Store TTProgram slice metadata while pass-local segment markers still exist.
+  // Store TTProgram slice metadata from the explicit segment builder.
   PrimFunc staged_func = func;
-  staged_func.CopyOnWrite()->body = body_with_segment_markers;
+  staged_func.CopyOnWrite()->body = lowered_body;
   StoreSegmentPlan(staged_func);
 
-  // Create the final function body without cross-pass segment markers.
   PrimFunc new_func = func;
-  Stmt final_body = StripSegmentKindMarkers(body_with_segment_markers);
+  Stmt final_body = lowered_body;
   final_body = RewrapMissingBlackholeAccDefinitions(
       func->body, final_body, logical_tile_layout_specs_by_buffer_);
   final_body = PruneDeadBlackholeAccFragmentFillsAndDefinitions(final_body);
@@ -2525,7 +2746,7 @@ PrimFunc PlanTTKernelABI::Transform(const PrimFunc& func) {
   RejectUnsupportedComputeOps(unresolved_unsupported_ops);
 
   if (unresolved_unsupported_ops.empty()) {
-    ValidateNoResidualComputeRegionStores(body_with_segment_markers);
+    ValidateNoResidualComputeRegionStores(lowered_body);
   }
 
   return new_func;
@@ -2849,7 +3070,7 @@ void PlanTTKernelABI::RejectUnsupportedComputeOps(const std::vector<std::string>
 Stmt PlanTTKernelABI::GenerateClearSequence(const CallNode* op) {
   // Clear operation: tile_regs_acquire() to zero DST registers
   // In full implementation, would also zero-fill
-  return MaybeWrapComputeSegment(MakeBlackholeCall(blackhole_tile_regs_acquire(), {}));
+  return RecordComputeSegmentStmt(MakeBlackholeCall(blackhole_tile_regs_acquire(), {}));
 }
 
 namespace {
@@ -3560,18 +3781,6 @@ Stmt PlanTTKernelABI::VisitStmt_(const AttrStmtNode* op) {
       return SeqStmt::Flatten(loop_suffix);
     }
     return lowered_loop;
-  }
-  if (op->attr_key == "blackhole.segment_kind") {
-    std::string previous_segment_kind = current_segment_kind_;
-    if (const auto* kind = op->value.as<StringImmNode>()) {
-      current_segment_kind_ = kind->value;
-    }
-    Stmt body = VisitStmt(op->body);
-    current_segment_kind_ = previous_segment_kind;
-    if (body.same_as(op->body)) {
-      return GetRef<Stmt>(op);
-    }
-    return AttrStmt(op->node, op->attr_key, op->value, body);
   }
   return StmtExprMutator::VisitStmt_(op);
 }
@@ -5217,7 +5426,7 @@ Stmt PlanTTKernelABI::InitializeLoopCarriedExactLiveForms(
   if (stmts.empty()) {
     return Stmt();
   }
-  return MaybeWrapComputeSegment(SeqStmt::Flatten(stmts));
+  return RecordComputeSegmentStmt(SeqStmt::Flatten(stmts));
 }
 
 bool PlanTTKernelABI::IsActiveLoopCarriedBuffer(const Buffer& buffer) const {

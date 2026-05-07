@@ -3195,6 +3195,35 @@
     current TT-Sim run, so direct GEMM correctness was not used as completion
     evidence for this checkpoint.
 
+### Marker-free segment recording dropped `DeclBuffer`-wrapped producers
+
+- **症状**:
+  - After removing `blackhole.segment_kind` from active lowering, the seq64
+    flash-attention exact-CB path failed the physical queue gate before
+    runtime execution:
+    `physical CB queue wait_front exceeds visible pages in main_kernel_compute`.
+  - The lowered function body still contained the first row-reduction producer
+    sequence, but the staged compute `TTKernel` seed started at later state
+    fills and then consumed the reduction CB without that producer.
+- **根因**:
+  - Marker-free recording tracked concrete `Evaluate` / `BufferStore` leaves,
+    but treated `DeclBuffer` as an opaque statement.  Row-reduction producers
+    were wrapped in `Allocate(DeclBuffer(...))`, so the recorder skipped the
+    nested leaves and the extracted segment body lost the CB producer.
+- **修法**:
+  - Treat `DeclBuffer` as a transparent wrapper during segment leaf recording.
+  - Teach the segment-body extractor to reconstruct `DeclBuffer` only when the
+    selected child leaves still use the declared buffer data var.
+  - Keep the fix structural: no state-CB pruning, no queue-gate relaxation,
+    and no marker attr reintroduction.
+- **验证**:
+  - `cmake --build build -j32` passed.
+  - The segment-kind source guard passed.
+  - Focused seq64 T7 direct-runtime selector passed after previously failing
+    at queue admission.
+  - Current P0/typed guards, T8 copy runtime selectors, and T7/T9 workload
+    runtime selectors passed.
+
 ### T6 value/index direct runtime hung after enqueue from unresolved CB identities and BRISC lane overpublish
 
 - **症状**:

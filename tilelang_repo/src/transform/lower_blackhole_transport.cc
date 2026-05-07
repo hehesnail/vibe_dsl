@@ -175,27 +175,6 @@ int CeilDivToInt(int64_t value, int64_t divisor) {
   return static_cast<int>((value + divisor - 1) / divisor);
 }
 
-Stmt WrapSegmentStmtIfNeeded(const std::string& current_segment_kind,
-                             const std::string& segment_kind,
-                             const Stmt& stmt) {
-  if (!stmt.defined() || !current_segment_kind.empty() || segment_kind == "fused_dataflow") {
-    return stmt;
-  }
-  auto wrap_one = [&](const Stmt& inner) {
-    return AttrStmt(StringImm("blackhole.segment_kind"), "blackhole.segment_kind",
-                    StringImm(segment_kind), inner);
-  };
-  if (const auto* seq = stmt.as<SeqStmtNode>()) {
-    ffi::Array<Stmt> wrapped;
-    wrapped.reserve(seq->seq.size());
-    for (const Stmt& child : seq->seq) {
-      wrapped.push_back(wrap_one(child));
-    }
-    return tir::SeqStmt(wrapped);
-  }
-  return wrap_one(stmt);
-}
-
 static void ValidateStagedStickCopyPageAlignedOffset(arith::Analyzer* analyzer,
                                                      const PrimExpr& transport_col,
                                                      int64_t page_cols) {
@@ -1450,8 +1429,7 @@ Stmt PlanTTKernelABI::GenerateCopySequence(const BufferStoreNode* op,
         stmts.push_back(MakeBlackholeCall(
             blackhole_cb_push_back(), {IntImm32(cb_id), IntImm32(1)}));
         RecordTiledCBLiveFormAliases(op->buffer, cb_id);
-        return WrapSegmentStmtIfNeeded(current_segment_kind_, segment_kind,
-                                       SeqStmt::Flatten(stmts));
+        return RecordSegmentStmtIfNeeded(segment_kind, SeqStmt::Flatten(stmts));
       }
       // Staged DRAM -> shared copies should be collapsed at loop granularity.
       return GetRef<Stmt>(op);
@@ -1506,8 +1484,7 @@ Stmt PlanTTKernelABI::GenerateCopySequence(const BufferStoreNode* op,
       stmts.push_back(MakeBlackholeCall(
           blackhole_cb_pop_front(), {IntImm32(src_cb_id), IntImm32(1)}));
 
-      return WrapSegmentStmtIfNeeded(current_segment_kind_, segment_kind,
-                                     SeqStmt::Flatten(stmts));
+      return RecordSegmentStmtIfNeeded(segment_kind, SeqStmt::Flatten(stmts));
     }
 
     case CopyDirection::kCBToDram: {
@@ -1633,8 +1610,7 @@ Stmt PlanTTKernelABI::GenerateCopySequence(const BufferStoreNode* op,
         if (!(live_rank1_vector_output && !active_serial_loop_vars_.empty())) {
           stmts.push_back(make_pop());
         }
-        Stmt writer = WrapSegmentStmtIfNeeded(current_segment_kind_, segment_kind,
-                                              SeqStmt::Flatten(stmts));
+        Stmt writer = RecordSegmentStmtIfNeeded(segment_kind, SeqStmt::Flatten(stmts));
         if (loop_carried_publication.defined()) {
           std::vector<Stmt> publication_then_writer{loop_carried_publication, writer};
           return SeqStmt::Flatten(publication_then_writer);
@@ -1852,7 +1828,7 @@ std::pair<int, Stmt> PlanTTKernelABI::CreateLoopCarriedTransportPublication(
   }
   stmts.push_back(MakeBlackholeCall(blackhole_cb_push_back(),
                                     {IntImm32(publication.cb_id), IntImm32(page_count)}));
-  return {publication.cb_id, MaybeWrapComputeSegment(SeqStmt::Flatten(stmts))};
+  return {publication.cb_id, RecordComputeSegmentStmt(SeqStmt::Flatten(stmts))};
 }
 
 Stmt PlanTTKernelABI::GenerateCopySequence(const BufferStoreNode* op,
@@ -1865,7 +1841,7 @@ Stmt PlanTTKernelABI::GenerateCopySequence(const BufferStoreNode* op,
 
   std::vector<Stmt> stmts;
   auto maybe_wrap_segment_stmt = [&](const std::string& segment_kind, Stmt stmt) -> Stmt {
-    return WrapSegmentStmtIfNeeded(current_segment_kind_, segment_kind, stmt);
+    return RecordSegmentStmtIfNeeded(segment_kind, stmt);
   };
   switch (direction) {
     case CopyDirection::kDramToCB: {
@@ -2050,7 +2026,7 @@ Stmt PlanTTKernelABI::GenerateStagedCopyLoopSequence(
 
   std::vector<Stmt> stmts;
   auto maybe_wrap_segment_stmt = [&](Stmt stmt) -> Stmt {
-    return WrapSegmentStmtIfNeeded(current_segment_kind_, segment_kind, stmt);
+    return RecordSegmentStmtIfNeeded(segment_kind, stmt);
   };
   auto make_tile_index = [&](int subtile_row, int subtile_col) -> PrimExpr {
     PrimExpr tile_index = base_tile_index;
@@ -2494,8 +2470,7 @@ Stmt PlanTTKernelABI::GenerateStagedCopyLoopSequence(
       Stmt materialize_stmt =
           MaterializeExactTiledCBToLocalBuffer(op->buffer, live_value,
                                                /*pop_front=*/true);
-      materialize_stmt =
-          WrapSegmentStmtIfNeeded(current_segment_kind_, "compute", materialize_stmt);
+      materialize_stmt = RecordComputeSegmentStmt(materialize_stmt);
       ClearTiledCBLiveFormAliases(op->buffer);
       InvalidateLastFragmentFillValue(op->buffer);
       Array<Stmt> joined{reader_stmt, materialize_stmt};

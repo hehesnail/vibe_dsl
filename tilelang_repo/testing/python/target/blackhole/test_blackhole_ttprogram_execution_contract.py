@@ -64,3 +64,16 @@ def test_projection_does_not_recover_remote_descriptors_from_runtime_args():
     source = _repo_src_path("target", "tt_program_projection.h").read_text(encoding="utf-8")
 
     assert "EncodeRemoteCoreDescriptorsFromRuntimeArgs" not in source
+
+
+def test_segment_kind_marker_is_not_active_lowering_protocol():
+    forbidden = "blackhole" + ".segment_kind"
+    active_sources = sorted(_repo_src_path("transform").glob("lower_blackhole*"))
+
+    offenders = [
+        str(path.relative_to(_repo_src_path()))
+        for path in active_sources
+        if forbidden in path.read_text(encoding="utf-8")
+    ]
+
+    assert offenders == []

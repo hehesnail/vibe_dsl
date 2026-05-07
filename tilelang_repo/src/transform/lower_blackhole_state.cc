@@ -375,9 +375,7 @@ int64_t PlanTTKernelABI::EnsureExactCBLiveFormPlan(
   const int64_t live_form_index = static_cast<int64_t>(tt_live_form_plans_.size());
   const std::string name = "live_form_exact_cb_" + SanitizeExactCBNameComponent(logical_value);
   const std::string kernel_name =
-      !current_segment_kind_.empty()
-          ? current_segment_kind_
-          : (requires_compute_segment_ ? std::string("compute") : std::string("main"));
+      requires_compute_segment_ ? std::string("compute") : std::string("main");
   const int64_t physical_extent =
       value.num_elements > 0 ? value.num_elements : int64_t{32 * 32};
   tt_live_form_plans_.push_back(TTLiveFormPlan(
@@ -492,19 +490,6 @@ int64_t PlanTTKernelABI::EnsureExactCBAllocation(
       std::max<int>(release_program_point, 0), String(release_reason)));
   tt_exact_cb_allocation_index_by_key_[key] = allocation_index;
   return allocation_index;
-}
-
-Stmt PlanTTKernelABI::MaybeWrapComputeSegment(const Stmt& stmt) const {
-  if (current_segment_kind_ == "compute") {
-    return stmt;
-  }
-  if (const auto* attr = stmt.as<tir::AttrStmtNode>()) {
-    if (attr->attr_key == "blackhole.segment_kind") {
-      return stmt;
-    }
-  }
-  return AttrStmt(StringImm("blackhole.segment_kind"), "blackhole.segment_kind",
-                  StringImm("compute"), stmt);
 }
 
 const Map<String, Any>* PlanTTKernelABI::FindLogicalTileLayoutSpec(const Buffer& buffer) const {
@@ -644,9 +629,7 @@ void PlanTTKernelABI::RecordFragmentCastMaterializationPlans(
     return;
   }
   const std::string kernel_name =
-      !current_segment_kind_.empty()
-          ? current_segment_kind_
-          : (requires_compute_segment_ ? std::string("compute") : std::string("main"));
+      requires_compute_segment_ ? std::string("compute") : std::string("main");
   int64_t logical_element_count =
       fact.logical_element_count > 0
           ? fact.logical_element_count
@@ -2261,7 +2244,7 @@ int PlanTTKernelABI::ReserveSerialLoopRetainedComputeInputOffset(
 }
 
 Stmt PlanTTKernelABI::BuildSerialLoopRetainedInputPops(
-    const std::map<int, int>& pop_pages_by_requirement_index) const {
+    const std::map<int, int>& pop_pages_by_requirement_index) {
   if (pop_pages_by_requirement_index.empty()) {
     return Stmt();
   }
@@ -2275,7 +2258,7 @@ Stmt PlanTTKernelABI::BuildSerialLoopRetainedInputPops(
                                      {IntImm(DataType::Int(32), requirement_index),
                                       IntImm(DataType::Int(32), pages)}));
   }
-  return MaybeWrapComputeSegment(SeqStmt::Flatten(pops));
+  return RecordComputeSegmentStmt(SeqStmt::Flatten(pops));
 }
 
 void PlanTTKernelABI::RecordSerialLoopTerminalTransportPublication(const Stmt& stmt) {
