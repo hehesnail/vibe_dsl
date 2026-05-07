@@ -3443,6 +3443,27 @@
   - TT-Sim direct-runtime selectors for page-addressed copy and sharded T3
     bf16 execution, plus the tvm_ffi export host-shim selector, passed.
 
+### Runtime recovered materialization shape facts from device bodies
+
+- **症状**:
+  - Buffer materialization and multidimensional per-work descriptor admission
+    in `rt_mod_blackhole.cc` used `CollectStaticBufferInfo` to scan device
+    `PrimFunc` `buffer_map` and final bodies for buffer load/store shapes.
+- **根因**:
+  - The executable already carried tensor memory-config logical shapes, but
+    runtime still treated the device body as a second source of materialization
+    rank/dtype truth for host-axis-order and descriptor gates.
+- **修法**:
+  - Delete the body/buffer-map scanner and derive a local
+    `buffer -> logical_shape` map from
+    `ExecutableSpec.tensor_memory_config_plans`.
+  - Make conflicting logical shapes for one executable subject fail closed.
+- **验证**:
+  - Added a source guard that `CollectStaticBufferInfo` stays deleted.
+  - `cmake --build build -j32` passed.
+  - TT-Sim selectors for host shim export, page-addressed copy, and sharded T3
+    bf16 direct runtime passed.
+
 ## 3. 环境问题速查
 
 | 问题 | 解决 |

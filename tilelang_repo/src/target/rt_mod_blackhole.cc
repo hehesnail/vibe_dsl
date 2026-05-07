@@ -1773,68 +1773,23 @@ static std::vector<PerWorkArgSpec> ExtractPerWorkArgSpecs(const tir::PrimFunc& f
   return AggregateSegmentPerWorkArgSpecs(segment_plan);
 }
 
-struct StaticBufferInfo {
-  std::vector<int64_t> shape;
-  DLDataType dtype{};
-};
+using BufferLogicalShapeMap =
+    std::unordered_map<std::string, std::vector<int64_t>>;
 
-static bool TryExtractStaticBufferInfo(const tir::Buffer& buffer, StaticBufferInfo* info) {
-  if (!buffer.defined() || buffer->shape.empty()) {
-    return false;
-  }
-  std::vector<int64_t> shape;
-  shape.reserve(buffer->shape.size());
-  for (const PrimExpr& extent : buffer->shape) {
-    const auto* int_imm = extent.as<IntImmNode>();
-    if (int_imm == nullptr || int_imm->value <= 0) {
-      return false;
+static BufferLogicalShapeMap CollectTensorLogicalShapesByBuffer(
+    const ExecutableSpec& spec) {
+  BufferLogicalShapeMap by_buffer;
+  for (const auto& plan : spec.tensor_memory_config_plans) {
+    if (plan.subject.empty() || plan.logical_shape.empty()) {
+      continue;
     }
-    shape.push_back(int_imm->value);
+    auto [it, inserted] = by_buffer.emplace(plan.subject, plan.logical_shape);
+    ICHECK(inserted || it->second == plan.logical_shape)
+        << "Blackhole executable tensor_memory_config_plans require one "
+        << "logical_shape per subject; conflicting shape for "
+        << plan.subject;
   }
-  info->shape = std::move(shape);
-  info->dtype = buffer->dtype;
-  return true;
-}
-
-static void RecordStaticBufferInfo(std::unordered_map<std::string, StaticBufferInfo>* by_name,
-                                   const std::unordered_set<std::string>& target_buffers,
-                                   const tir::Buffer& buffer) {
-  if (!buffer.defined() || buffer->name.empty()) {
-    return;
-  }
-  if (!target_buffers.empty() && !target_buffers.count(buffer->name)) {
-    return;
-  }
-  StaticBufferInfo info;
-  if (!TryExtractStaticBufferInfo(buffer, &info)) {
-    return;
-  }
-  auto [it, inserted] = by_name->emplace(buffer->name, std::move(info));
-  if (inserted) {
-    return;
-  }
-  if (it->second.shape != info.shape || it->second.dtype.code != info.dtype.code ||
-      it->second.dtype.bits != info.dtype.bits || it->second.dtype.lanes != info.dtype.lanes) {
-    return;
-  }
-}
-
-static std::unordered_map<std::string, StaticBufferInfo> CollectStaticBufferInfo(
-    const tir::PrimFunc& f, const std::unordered_set<std::string>& target_buffers) {
-  std::unordered_map<std::string, StaticBufferInfo> by_name;
-  for (const auto& kv : f->buffer_map) {
-    RecordStaticBufferInfo(&by_name, target_buffers, kv.second);
-  }
-  tir::PostOrderVisit(f->body, [&](const ObjectRef& node) {
-    if (const auto* load = node.as<tir::BufferLoadNode>()) {
-      RecordStaticBufferInfo(&by_name, target_buffers, load->buffer);
-      return;
-    }
-    if (const auto* store = node.as<tir::BufferStoreNode>()) {
-      RecordStaticBufferInfo(&by_name, target_buffers, store->buffer);
-    }
-  });
-  return by_name;
+  return by_buffer;
 }
 
 static uint32_t GetTotalLogicalWorkItems(const CorePlan& core_plan) {
@@ -1843,26 +1798,6 @@ static uint32_t GetTotalLogicalWorkItems(const CorePlan& core_plan) {
     total += packet.work_count;
   }
   return std::max<uint32_t>(1, total);
-}
-
-static std::unordered_set<std::string> CollectMaterializedBufferNames(const ExecutableSpec& spec) {
-  std::unordered_set<std::string> buffers;
-  auto record = [&](const std::string& buffer) {
-    if (!buffer.empty()) {
-      buffers.insert(buffer);
-    }
-  };
-  for (const auto& kernel : spec.kernels) {
-    for (const auto& accessor : kernel.accessors) {
-      record(accessor.buffer);
-    }
-    for (const auto& compile_time_arg_spec : kernel.compile_time_arg_specs) {
-      if (!compile_time_arg_spec.layout.empty() && !compile_time_arg_spec.memory_space.empty()) {
-        record(compile_time_arg_spec.buffer);
-      }
-    }
-  }
-  return buffers;
 }
 
 struct SegmentInfo {
@@ -1886,7 +1821,7 @@ struct SegmentInfo {
 };
 
 static void PopulateBufferMaterializationSpecs(
-    const std::unordered_map<std::string, StaticBufferInfo>& buffer_info_by_name,
+    const BufferLogicalShapeMap& logical_shape_by_buffer,
     ExecutableSpec* spec);
 
 static std::vector<RemoteCoreDescriptorSpec> ExtractRemoteCoreDescriptorsFromArray(
@@ -2660,9 +2595,9 @@ static void ValidateKernelCommunicationProtocolSchema(const tir::PrimFunc& func,
 
 static bool MaterializationNeedsExplicitPerWorkAccessDescriptor(
     const BufferMaterializationSpec& materialization,
-    const std::unordered_map<std::string, StaticBufferInfo>& buffer_info_by_name) {
-  auto it = buffer_info_by_name.find(materialization.buffer);
-  if (it != buffer_info_by_name.end() && it->second.shape.size() > 2) {
+    const BufferLogicalShapeMap& logical_shape_by_buffer) {
+  auto it = logical_shape_by_buffer.find(materialization.buffer);
+  if (it != logical_shape_by_buffer.end() && it->second.size() > 2) {
     return true;
   }
   if (materialization.host_axis_order.size() > 2) {
@@ -2686,7 +2621,7 @@ static void AppendDirectRuntimeUnsupportedReason(ExecutableSpec* spec,
 }
 
 static void EnforceExplicitPerWorkAccessDescriptorGate(
-    const std::unordered_map<std::string, StaticBufferInfo>& buffer_info_by_name,
+    const BufferLogicalShapeMap& logical_shape_by_buffer,
     ExecutableSpec* spec) {
   ICHECK(spec != nullptr);
   const uint32_t total_logical_work_items = GetTotalLogicalWorkItems(spec->core_plan);
@@ -2698,7 +2633,7 @@ static void EnforceExplicitPerWorkAccessDescriptorGate(
       spec->buffer_materializations.begin(), spec->buffer_materializations.end(),
       [&](const BufferMaterializationSpec& materialization) {
         return MaterializationNeedsExplicitPerWorkAccessDescriptor(materialization,
-                                                                   buffer_info_by_name);
+                                                                   logical_shape_by_buffer);
       });
   if (!has_multidim_materialized_buffer) {
     return;
@@ -3435,31 +3370,21 @@ static void EnforceProjectedReshardAdmissionGate(ExecutableSpec* spec) {
 
 static bool BufferMaterializationRequiresExplicitHostAxisOrder(
     const BufferMaterializationSpec& materialization,
-    const std::unordered_map<std::string, StaticBufferInfo>& buffer_info_by_name) {
+    const BufferLogicalShapeMap& logical_shape_by_buffer) {
   if (materialization.layout != "interleaved" ||
       materialization.memory_space != "dram" ||
       materialization.transport_page_size_bytes == 0) {
     return false;
   }
-  auto info_it = buffer_info_by_name.find(materialization.buffer);
-  if (info_it == buffer_info_by_name.end()) {
-    return materialization.transport_page_size_bytes >= 32U * 32U * 2U;
-  }
-  const StaticBufferInfo& info = info_it->second;
-  if (info.shape.size() < 2 || info.dtype.bits == 0 || info.dtype.lanes == 0) {
+  auto shape_it = logical_shape_by_buffer.find(materialization.buffer);
+  if (shape_it != logical_shape_by_buffer.end() && shape_it->second.size() < 2) {
     return false;
   }
-  const uint32_t element_size_bytes =
-      static_cast<uint32_t>((info.dtype.bits * info.dtype.lanes + 7) / 8);
-  if (element_size_bytes == 0U) {
-    return false;
-  }
-  const uint32_t full_tile_bytes = 32U * 32U * element_size_bytes;
-  return materialization.transport_page_size_bytes == full_tile_bytes;
+  return materialization.transport_page_size_bytes >= 32U * 32U * 2U;
 }
 
 static void PopulateBufferMaterializationSpecs(
-    const std::unordered_map<std::string, StaticBufferInfo>& buffer_info_by_name,
+    const BufferLogicalShapeMap& logical_shape_by_buffer,
     ExecutableSpec* spec) {
   std::unordered_map<std::string, BufferMaterializationSpec> by_buffer;
   std::vector<std::string> order;
@@ -3580,7 +3505,7 @@ static void PopulateBufferMaterializationSpecs(
         ChooseBufferMaterializationPageSize(*spec, buffer_name);
     if (materialization.host_axis_order.empty()) {
       ICHECK(!BufferMaterializationRequiresExplicitHostAxisOrder(
-          materialization, buffer_info_by_name))
+          materialization, logical_shape_by_buffer))
           << "Blackhole buffer materialization requires explicit host_axis_order for buffer "
           << materialization.buffer;
     }
@@ -3899,12 +3824,12 @@ ffi::Module BuildTileLangBlackhole(IRModule mod, Target target) {
     }
     PopulateKernelSpecsForDeviceFunc(kv.second, kv.first, target, /*kernel_code_only=*/false,
                                      &spec_it->second);
-    const auto buffer_info =
-        CollectStaticBufferInfo(kv.second, CollectMaterializedBufferNames(spec_it->second));
-    PopulateBufferMaterializationSpecs(buffer_info, &spec_it->second);
+    const auto logical_shape_by_buffer =
+        CollectTensorLogicalShapesByBuffer(spec_it->second);
+    PopulateBufferMaterializationSpecs(logical_shape_by_buffer, &spec_it->second);
     EnforceBufferDistributionAddressContractGate(&spec_it->second);
     EnforceProjectedReshardAdmissionGate(&spec_it->second);
-    EnforceExplicitPerWorkAccessDescriptorGate(buffer_info, &spec_it->second);
+    EnforceExplicitPerWorkAccessDescriptorGate(logical_shape_by_buffer, &spec_it->second);
     EnforceTypedDstCbAccumulationGate(&spec_it->second);
     EnforceExactLiveFormMultiPageRepublishGate(&spec_it->second);
     EnforceExplicitBufferRoleSchemaGate(&spec_it->second);
@@ -4015,12 +3940,12 @@ ffi::Module BuildTileLangBlackholeWithoutHost(IRModule mod, Target target) {
     }
     PopulateKernelSpecsForDeviceFunc(kv.second, kv.first, target, /*kernel_code_only=*/true,
                                      &spec_it->second);
-    const auto buffer_info =
-        CollectStaticBufferInfo(kv.second, CollectMaterializedBufferNames(spec_it->second));
-    PopulateBufferMaterializationSpecs(buffer_info, &spec_it->second);
+    const auto logical_shape_by_buffer =
+        CollectTensorLogicalShapesByBuffer(spec_it->second);
+    PopulateBufferMaterializationSpecs(logical_shape_by_buffer, &spec_it->second);
     EnforceBufferDistributionAddressContractGate(&spec_it->second);
     EnforceProjectedReshardAdmissionGate(&spec_it->second);
-    EnforceExplicitPerWorkAccessDescriptorGate(buffer_info, &spec_it->second);
+    EnforceExplicitPerWorkAccessDescriptorGate(logical_shape_by_buffer, &spec_it->second);
     EnforceTypedDstCbAccumulationGate(&spec_it->second);
     EnforceExactLiveFormMultiPageRepublishGate(&spec_it->second);
     EnforceExplicitBufferRoleSchemaGate(&spec_it->second);

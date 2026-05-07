@@ -2840,3 +2840,10 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   one Blackhole device kernel for the current module contract; do not scan the
   packed host TIR body for `tvm_call_packed` string callees to recover the
   association.
+- 2026-05-07 runtime materialization shape ownership:
+  Runtime materialization and admission gates must use projected executable
+  shape facts, not device-body buffer discovery.  For Blackhole, the durable
+  source is `ExecutableSpec.tensor_memory_config_plans[*].logical_shape`
+  projected from `TTProgram`; runtime may build local lookup maps from that
+  schema but must not rescan `PrimFunc` bodies or `buffer_map` to recover
+  static buffer rank/dtype semantics.

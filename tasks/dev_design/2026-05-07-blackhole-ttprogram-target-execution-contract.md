@@ -108,11 +108,16 @@ Completed slice:
   Multiple Blackhole device launches from one host entry fail closed because
   the current runtime module contract admits a single host-to-device
   association.
+- Runtime buffer materialization and multidimensional per-work descriptor
+  admission no longer scan device `PrimFunc` bodies or buffer maps to rebuild
+  static buffer shape/dtype facts.  They consume projected
+  `ExecutableSpec.tensor_memory_config_plans[*].logical_shape` records,
+  requiring conflicts to fail closed at the executable schema boundary.
 
-Remaining audit targets include reduction-region codegen body analysis,
-runtime static-buffer discovery, and remote sync validation.  Each must be
-classified as either local validation mechanics or execution owner truth that
-must move into typed `TTProgram` / `ExecutableSpec` records.
+Remaining audit targets include reduction-region codegen body analysis and
+remote sync validation.  Each must be classified as either local validation
+mechanics or execution owner truth that must move into typed `TTProgram` /
+`ExecutableSpec` records.
 
 ### P0.3 Execution Event / Admission Spine
 

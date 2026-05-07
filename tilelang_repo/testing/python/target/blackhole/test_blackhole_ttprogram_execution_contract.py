@@ -45,3 +45,9 @@ def test_runtime_does_not_recover_host_launch_from_body_scan():
     source = _repo_src_path("target", "rt_mod_blackhole.cc").read_text(encoding="utf-8")
 
     assert "FindLaunchedKernelSymbol" not in source
+
+
+def test_runtime_does_not_recover_static_buffer_info_from_device_body():
+    source = _repo_src_path("target", "rt_mod_blackhole.cc").read_text(encoding="utf-8")
+
+    assert "CollectStaticBufferInfo" not in source
