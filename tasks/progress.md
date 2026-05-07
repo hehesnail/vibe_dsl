@@ -24,7 +24,7 @@
 | T6 `topk` | Complete | Existing TIR value/index selection runs through direct runtime for fp32 and bf16 values with exact `int32` indices.  The old limited typed compute-region emitter is deleted; codegen consumes executable reduction records through a `reduce_dim`-parameterized channel lowering and CB requirement mappings without topk/selection schema or raw host-pointer fallback. |
 | T7 Exact-CB / materialization primitives | Complete | Exact-CB materialization, publication, consumer binding, GEMM post-merge materialization, and seq64 bf16 flash-attn exact-CB partial combine pass `BlackholeModule` TT-Sim correctness. |
 | T7.5 Exact-CB liveness / allocation cutover | Complete | Covered exact-CB resident tiles use typed lifecycle, allocation, release events, latest-producer validation, storage-format validation, and fail-closed loop-carried/full-tile gates. |
-| P0 TTProgram target execution contract hardening | In progress | Parent architecture task: make `TTProgram` the stable target-facing execution contract and delete runtime/codegen semantic recovery.  P0.1 CB queue event ownership is complete: queue events are projected at `TTProgram -> ExecutableSpec`, runtime parses `KernelSpec.queue_events` only, and the old source/body queue-event scanner is deleted. |
+| P0 TTProgram target execution contract hardening | In progress | Parent architecture task: make `TTProgram` the stable target-facing execution contract and delete runtime/codegen semantic recovery.  P0.1 CB queue event ownership is complete.  P0.2 has one completed slice: codegen runtime buffer address binding consumes projected `ExecutableSpec.runtime_args[].buffer` records and no longer scans final TIR bodies to rediscover Blackhole builtin buffer handles. |
 | T8 Irregular work domains / indexed access | Complete | Indexed, sparse, ragged, paged, segmented, and T9.1 grouped-GEMM feed paths execute through generic `AccessRegion` + `value_expr` bindings.  Buffer-bound per-work specs carry explicit `AccessRegion` evidence, indexed lookups fail closed on missing structural matches, and broadened segmented/paged/ragged/indexed copy shapes pass direct-runtime gates. |
 | T9 Workload first paths | In progress | T9.1 pre-grouped MoE/routed GEMM, T9.2 full paged GQA decode, T9.3 dual-score MLA GEMM, T9.3 full paged MLA decode, T9.4 sparse/ragged GQA decode, and T9.5 chunk recurrence / scan have bf16 direct-runtime correctness.  T9.6 is queued. |
 | T10 Distributed production variants | Queued | Mesh placement, CCL, NoC/multicast/global scheduling, distributed workload correctness, and production partial-K reduction remain future TT target-realization work. |
@@ -93,10 +93,14 @@
   complete; projected `KernelSpec.queue_events` replaced runtime body/source
   recovery.
 - P0.2 remaining semantic recovery audit:
-  inspect runtime/codegen/executable readers for execution facts recovered
-  from source text, final body scans, runtime-arg names/positions, workload
-  branches, helper maps, or fallback defaults; promote real owner truth into
-  `TTProgram` / `ExecutableSpec` or delete stale paths.
+  in progress.  Completed slice: codegen runtime buffer address binding now
+  consumes projected `ExecutableSpec.runtime_args[].buffer` records and no
+  longer scans final TIR bodies for `tl.blackhole.*_to_cb` / `*_from_cb`
+  handle recovery.  Continue inspecting runtime/codegen/executable readers for
+  execution facts recovered from source text, final body scans, runtime-arg
+  names/positions, workload branches, helper maps, or fallback defaults;
+  promote real owner truth into `TTProgram` / `ExecutableSpec` or delete stale
+  paths.
 - P0.3 execution event / admission spine:
   centralize shared ordering/admission facts as typed `TTProgram` owner truth
   and project them once for leaf consumers.
@@ -134,9 +138,9 @@ Current active baseline:
 
 - Compile: `cmake --build build -j32`.
 - Protocol/source guards:
-  typed tile-CB queue verifier, completed T8 indexed/ragged/paged/segmented
-  projection selectors, T9 workload projection selectors, and deleted-schema
-  guards.
+  typed tile-CB queue verifier, TTProgram execution-contract source guards,
+  completed T8 indexed/ragged/paged/segmented projection selectors, T9
+  workload projection selectors, and deleted-schema guards.
 - Direct-runtime correctness:
   active admitted T7/T8/T9 positive paths run through `BlackholeModule` with
   the repository TT-Sim bf16 baseline where tensor values are involved.

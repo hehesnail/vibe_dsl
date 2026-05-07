@@ -3396,6 +3396,28 @@
   - Added a source guard that fails if runtime body-recovery helpers return.
   - The typed tile-CB verifier suite passed with structured event projection.
 
+### Codegen recovered runtime buffer bindings from final TIR bodies
+
+- **症状**:
+  - `CodeGenBlackhole::EmitRuntimeArgLoads` scanned the final TIR body for
+    `BufferLoad` / `BufferStore` and `tl.blackhole.read_*_to_cb` /
+    `write_*_from_cb` calls to repopulate runtime-backed buffer handle
+    mappings after packed-entrypoint lowering.
+- **根因**:
+  - The executable runtime arg schema already carried the exact bound buffer,
+    but codegen still treated the final leaf body as a second owner for buffer
+    ABI semantics when formal params or `buffer_map` were unavailable.
+- **修法**:
+  - Make projected `ExecutableSpec.runtime_args[].buffer` the primary binding
+    source.  Codegen records the explicit buffer-name mapping unconditionally
+    and only adds pointer-keyed bindings when the current function signature or
+    `buffer_map` directly exposes the same handle.
+- **验证**:
+  - Added a source guard for the deleted body-recovery strings.
+  - `cmake --build build -j32` passed.
+  - TT-Sim direct-runtime selectors for page-addressed copy and sharded T3
+    bf16 execution passed with the repository setup.
+
 ## 3. 环境问题速查
 
 | 问题 | 解决 |

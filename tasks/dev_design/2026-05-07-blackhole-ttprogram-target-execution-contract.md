@@ -76,7 +76,7 @@ old runtime source/body queue-event scanner is deleted.
 
 ### P0.2 Remaining Semantic Recovery Audit
 
-Status: next.
+Status: in progress.
 
 Audit runtime/codegen/executable readers for target execution facts still
 recovered from:
@@ -90,6 +90,22 @@ recovered from:
 
 Each finding must either be deleted as stale or promoted to typed
 `TTProgram` / `ExecutableSpec` owner truth before the parent task can close.
+
+Completed slice:
+
+- Codegen runtime buffer address binding no longer scans the final TIR body to
+  rediscover buffers used by `tl.blackhole.*_to_cb` / `*_from_cb` builtins.
+  Packed-entrypoint buffer address args are bound from projected
+  `ExecutableSpec.runtime_args[].buffer` records.  Codegen may still add a
+  pointer-keyed fast binding when the function signature or `buffer_map`
+  directly exposes the same buffer handle, but that is no longer a recovery
+  requirement.
+
+Remaining audit targets include reduction-region codegen body analysis,
+runtime static-buffer discovery, host launch/kernel association, and remote
+sync validation.  Each must be classified as either local validation mechanics
+or execution owner truth that must move into typed `TTProgram` /
+`ExecutableSpec` records.
 
 ### P0.3 Execution Event / Admission Spine
 

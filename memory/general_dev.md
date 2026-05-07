@@ -2824,3 +2824,12 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   path was deleted; the board must preserve the distinction between the
   long-running `TTProgram` target execution contract hardening task and slices
   such as CB queue-event ownership.
+- 2026-05-07 codegen runtime buffer binding ownership:
+  Runtime buffer address args for Blackhole builtins are owned by projected
+  `ExecutableSpec.runtime_args[].buffer` records, not by a late scan of the
+  final TIR body.  Packed entrypoints may lose original formal handle params
+  and `buffer_map`, so codegen should bind by the explicit buffer-name record
+  first and only add pointer-keyed mappings when the signature already exposes
+  the same buffer handle.  Do not reintroduce body scans over
+  `tl.blackhole.read_*_to_cb` / `write_*_from_cb` calls to recover ABI
+  semantics.

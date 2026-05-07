@@ -2108,61 +2108,6 @@ void CodeGenBlackhole::EmitRuntimeArgLoads(const tvm::tir::PrimFunc &f) {
     buffer_vars_by_name[buffer->name] = buffer->data.get();
     record_handle_dtype(buffer->data.get(), buffer->dtype);
   }
-  // Packed Blackhole entrypoints can arrive after MakePackedAPI, where the
-  // public function params are no longer the original A/B handles and
-  // buffer_map may be empty.  Recover exact runtime-backed buffer vars from the
-  // actual TIR body so builtins like read_tile_to_cb(A, ...) still bind.
-  tir::PostOrderVisit(f->body, [&](const tvm::runtime::ObjectRef &node) {
-    if (const auto *store = node.as<tvm::tir::BufferStoreNode>()) {
-      buffer_vars_by_name[store->buffer->name] = store->buffer->data.get();
-      record_handle_dtype(store->buffer->data.get(), store->buffer->dtype);
-      if (const auto *load = store->value.as<tvm::tir::BufferLoadNode>()) {
-        buffer_vars_by_name[load->buffer->name] = load->buffer->data.get();
-        record_handle_dtype(load->buffer->data.get(), load->buffer->dtype);
-      }
-      return;
-    }
-    if (const auto *load = node.as<tvm::tir::BufferLoadNode>()) {
-      buffer_vars_by_name[load->buffer->name] = load->buffer->data.get();
-      record_handle_dtype(load->buffer->data.get(), load->buffer->dtype);
-      return;
-    }
-    const auto *call = node.as<tvm::tir::CallNode>();
-    if (!call || !call->op->IsInstance<tvm::OpNode>()) {
-      return;
-    }
-    tvm::Op call_op = Downcast<tvm::Op>(call->op);
-    const std::string op_name = call_op->name;
-    if (op_name == "tl.blackhole.read_tile_to_cb") {
-      if (const auto *buffer_var = call->args[0].as<tvm::tir::VarNode>()) {
-        buffer_vars_by_name[buffer_var->name_hint] = buffer_var;
-        record_handle_dtype(buffer_var);
-      }
-      return;
-    }
-    if (op_name == "tl.blackhole.read_page_to_cb" ||
-        op_name == "tl.blackhole.read_bcast_cols_to_cb") {
-      if (const auto *buffer_var = call->args[0].as<tvm::tir::VarNode>()) {
-        buffer_vars_by_name[buffer_var->name_hint] = buffer_var;
-        record_handle_dtype(buffer_var);
-      }
-      return;
-    }
-    if (op_name == "tl.blackhole.write_tile_from_cb") {
-      if (const auto *buffer_var = call->args[1].as<tvm::tir::VarNode>()) {
-        buffer_vars_by_name[buffer_var->name_hint] = buffer_var;
-        record_handle_dtype(buffer_var);
-      }
-      return;
-    }
-    if (op_name == "tl.blackhole.write_page_from_cb") {
-      if (const auto *buffer_var = call->args[1].as<tvm::tir::VarNode>()) {
-        buffer_vars_by_name[buffer_var->name_hint] = buffer_var;
-        record_handle_dtype(buffer_var);
-      }
-    }
-  });
-
   int arg_idx = 0;
   for (const auto &item : runtime_args) {
     auto arg_info = item.as<tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any>>().value_or(
@@ -2198,23 +2143,21 @@ void CodeGenBlackhole::EmitRuntimeArgLoads(const tvm::tir::PrimFunc &f) {
       ICHECK(!bound_buffer_name.empty())
           << "Blackhole codegen requires non-empty buffer binding for runtime arg "
           << arg_name << " kind=" << arg_kind;
-      auto var_it = buffer_vars_by_name.find(bound_buffer_name);
-      ICHECK(var_it != buffer_vars_by_name.end())
-          << "Blackhole codegen requires runtime arg " << arg_name << " kind=" << arg_kind
-          << " buffer=" << bound_buffer_name
-          << " to match a formal/TIR buffer identity";
-      auto [var_binding_it, var_inserted] =
-          buffer_runtime_arg_map_.emplace(var_it->second, arg_name);
-      ICHECK(var_inserted || var_binding_it->second == arg_name)
-          << "Blackhole codegen buffer " << bound_buffer_name
-          << " has conflicting runtime arg bindings " << var_binding_it->second
-          << " and " << arg_name;
       auto [name_binding_it, name_inserted] =
           buffer_runtime_arg_map_by_name_.emplace(bound_buffer_name, arg_name);
       ICHECK(name_inserted || name_binding_it->second == arg_name)
           << "Blackhole codegen buffer " << bound_buffer_name
           << " has conflicting runtime arg name bindings " << name_binding_it->second
           << " and " << arg_name;
+      auto var_it = buffer_vars_by_name.find(bound_buffer_name);
+      if (var_it != buffer_vars_by_name.end()) {
+        auto [var_binding_it, var_inserted] =
+            buffer_runtime_arg_map_.emplace(var_it->second, arg_name);
+        ICHECK(var_inserted || var_binding_it->second == arg_name)
+            << "Blackhole codegen buffer " << bound_buffer_name
+            << " has conflicting runtime arg bindings " << var_binding_it->second
+            << " and " << arg_name;
+      }
     }
     ++arg_idx;
   }
