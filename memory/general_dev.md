@@ -2817,3 +2817,10 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   publications that feed tile compute; a pure copy with reader and writer in
   the same thread loop must keep the paired source and sink events at the same
   execution grain.
+- 2026-05-07 task accounting for architecture hardening:
+  When a broad architecture objective is being cut into implementation
+  slices, track the parent task as `In progress` and record each completed
+  slice separately.  Do not mark the parent complete just because one recovery
+  path was deleted; the board must preserve the distinction between the
+  long-running `TTProgram` target execution contract hardening task and slices
+  such as CB queue-event ownership.

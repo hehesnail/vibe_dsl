@@ -41,6 +41,7 @@
 | `2026-05-05-blackhole-exact-cb-liveness-allocation.md` | Exact-CB virtual value liveness、loop-carried lifetime、physical CB allocation、release-event cutover contract。 |
 | `2026-05-05-blackhole-t8-irregular-indexed-access.md` | T8 irregular work domains、ragged predicates、indexed access evidence, and per-work descriptor cutover contract。 |
 | `2026-05-05-blackhole-t9-workload-first.md` | T9 workload-first direct-runtime checkpoints, starting with pre-grouped GEMM over TIR-derived non-uniform token ranges。 |
+| `2026-05-07-blackhole-ttprogram-target-execution-contract.md` | Active parent task for hardening `TTProgram` into the target-facing execution contract; tracks completed slices versus remaining semantic-recovery cleanup。 |
 | `2026-05-07-blackhole-typed-tile-cb-queue-verifier.md` | TTProgram-scoped typed tile-value / physical CB queue verifier for current admitted T7/T9 exact-CB and compute-local CB paths。 |
 | `blackhole_first_principles_protocol_audit.md` | Historical fake/legacy protocol audit table。 |
 

@@ -8,7 +8,7 @@
 ## Status
 
 - Date: `2026-05-07`
-- Active lane: `T9 Workload first paths`
+- Active lane: `P0 TTProgram target execution contract hardening`
 - Main chain:
   `Normalized Tile TIR -> SpatialPlan -> TTProgram -> ExecutableSpec`
 
@@ -24,7 +24,7 @@
 | T6 `topk` | Complete | Existing TIR value/index selection runs through direct runtime for fp32 and bf16 values with exact `int32` indices.  The old limited typed compute-region emitter is deleted; codegen consumes executable reduction records through a `reduce_dim`-parameterized channel lowering and CB requirement mappings without topk/selection schema or raw host-pointer fallback. |
 | T7 Exact-CB / materialization primitives | Complete | Exact-CB materialization, publication, consumer binding, GEMM post-merge materialization, and seq64 bf16 flash-attn exact-CB partial combine pass `BlackholeModule` TT-Sim correctness. |
 | T7.5 Exact-CB liveness / allocation cutover | Complete | Covered exact-CB resident tiles use typed lifecycle, allocation, release events, latest-producer validation, storage-format validation, and fail-closed loop-carried/full-tile gates. |
-| P0 TTProgram CB queue event ownership | Complete | Physical CB queue events are projected at the `TTProgram -> ExecutableSpec` boundary from `TTKernel` / `TTCBPlan` owner truth.  Runtime parses `KernelSpec.queue_events` only; the old source/body queue-event scanner is deleted. |
+| P0 TTProgram target execution contract hardening | In progress | Parent architecture task: make `TTProgram` the stable target-facing execution contract and delete runtime/codegen semantic recovery.  P0.1 CB queue event ownership is complete: queue events are projected at `TTProgram -> ExecutableSpec`, runtime parses `KernelSpec.queue_events` only, and the old source/body queue-event scanner is deleted. |
 | T8 Irregular work domains / indexed access | Complete | Indexed, sparse, ragged, paged, segmented, and T9.1 grouped-GEMM feed paths execute through generic `AccessRegion` + `value_expr` bindings.  Buffer-bound per-work specs carry explicit `AccessRegion` evidence, indexed lookups fail closed on missing structural matches, and broadened segmented/paged/ragged/indexed copy shapes pass direct-runtime gates. |
 | T9 Workload first paths | In progress | T9.1 pre-grouped MoE/routed GEMM, T9.2 full paged GQA decode, T9.3 dual-score MLA GEMM, T9.3 full paged MLA decode, T9.4 sparse/ragged GQA decode, and T9.5 chunk recurrence / scan have bf16 direct-runtime correctness.  T9.6 is queued. |
 | T10 Distributed production variants | Queued | Mesh placement, CCL, NoC/multicast/global scheduling, distributed workload correctness, and production partial-K reduction remain future TT target-realization work. |
@@ -86,6 +86,20 @@
   terminal publish and loop-carried input exact-CB backedge publish.
 
 ## Next Work Queue
+
+### P0: TTProgram Target Execution Contract Hardening
+
+- P0.1 CB queue event ownership:
+  complete; projected `KernelSpec.queue_events` replaced runtime body/source
+  recovery.
+- P0.2 remaining semantic recovery audit:
+  inspect runtime/codegen/executable readers for execution facts recovered
+  from source text, final body scans, runtime-arg names/positions, workload
+  branches, helper maps, or fallback defaults; promote real owner truth into
+  `TTProgram` / `ExecutableSpec` or delete stale paths.
+- P0.3 execution event / admission spine:
+  centralize shared ordering/admission facts as typed `TTProgram` owner truth
+  and project them once for leaf consumers.
 
 ### P1: T9 Workload-First Paths
 
