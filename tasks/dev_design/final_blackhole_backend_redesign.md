@@ -187,6 +187,20 @@ Owns TT-specific physical realization:
 - resource demand and resource pressure reports
 - launch / execution plans
 
+`TTProgram` is the target-facing execution contract for Blackhole in the same
+architectural sense that a low-level GPU IR is the stable handoff to hardware
+codegen: it is not target-independent algorithm semantics, and it is not a
+runtime helper bag.  It owns device execution protocol facts that leaf
+consumers need to be deterministic: kernel roles, physical CB identities,
+queue publication/consumption events, semaphore endpoints, launch ordering,
+ABI bindings, resource pressure, and explicit unsupported reasons.
+
+For CB FIFOs, the owner truth is the typed TT kernel plus `TTCBPlan`
+allocation/binding records.  Projection may serialize that truth into
+`KernelSpec.queue_events`, but runtime/codegen must not reconstruct the event
+trace by scanning generated source, final function bodies, buffer names, or
+neighboring builtin sequences.
+
 Does not own:
 
 - target-independent dataflow semantics
@@ -204,6 +218,7 @@ Owns leaf projection and backend admission:
 - executable schema and entry identity
 - projected kernel / segment records
 - projected buffers, CBs, semaphores, runtime args, accessors
+- projected physical CB queue events
 - backend admission results
 - runtime-module build inputs for `BlackholeModule` or codegen/export
 
@@ -212,7 +227,7 @@ Does not own:
 - target planning
 - compute legality
 - resource allocation
-- semantic recovery from source text or builtin sequences
+- semantic recovery from source text, final TIR bodies, or builtin sequences
 
 Exit invariant:
 leaf consumers can either execute/build the spec directly or fail closed with

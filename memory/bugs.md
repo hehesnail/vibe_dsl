@@ -3375,6 +3375,27 @@
     repository TT-Sim bf16 setup.
   - The full T9.5 chunk-scan file reported `2 passed`.
 
+### CB queue events drifted back into runtime body recovery
+
+- **症状**:
+  - The protocol docs said `KernelSpec.queue_events` were structured
+    executable facts, but `rt_mod_blackhole.cc` still rebuilt them by scanning
+    segment-body TIR during runtime-module construction.
+- **根因**:
+  - The TTProgram projection carried kernel bodies but had not serialized the
+    CB FIFO event trace at the `TTProgram -> ExecutableSpec` boundary, leaving
+    runtime as a second owner of queue semantics.
+- **修法**:
+  - Project `cb_reserve_back`, `cb_push_back`, `cb_wait_front`, and
+    `cb_pop_front` into segment `queue_events` from `TTKernel.body` and
+    `TTCBPlan.requirement_indices` during executable materialization.
+  - Make runtime parse only the projected event array and delete the
+    `MatchCBQueueEventCall` / `ExtractCBQueueEvents` /
+    `BuildCBRequirementIndexRemap` body-scanner path.
+- **验证**:
+  - Added a source guard that fails if runtime body-recovery helpers return.
+  - The typed tile-CB verifier suite passed with structured event projection.
+
 ## 3. 环境问题速查
 
 | 问题 | 解决 |

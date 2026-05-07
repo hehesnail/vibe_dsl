@@ -85,6 +85,7 @@ Required:
 - semaphore bindings
 - remote core descriptors for synchronization endpoints
 - typed compute operation records
+- structured physical CB queue events
 
 Leaf readers must require these fields.
 Missing maps or arrays are errors, not empty defaults.
@@ -111,6 +112,13 @@ leaf builtin, but the endpoint object must already be projected as a
 `remote_core_descriptors` segment/kernel record.  Leaf readers may validate
 that the runtime args agree with that object; they must not reconstruct the
 descriptor from the arg pair when the explicit record is missing.
+
+Physical CB queue events follow the same boundary.  `KernelSpec.queue_events`
+is the serialized execution trace projected from validated `TTProgram`
+kernels and `TTCBPlan` bindings.  Leaf admission may replay those events to
+validate FIFO capacity and visibility, but it must not scan generated source
+or reconstruct queue events from segment-body TIR after the executable
+projection is already materialized.
 
 ### Buffer Identity
 
@@ -194,6 +202,11 @@ Leaf codegen may resolve a requirement index through
 when that mapping is missing or ambiguous.  It must not recover a CB from a
 buffer suffix, data-format channel guess, CB config name, or runtime
 observation.
+
+Queue-event replay consumes only physical `cb_id` and positive page counts
+from `KernelSpec.queue_events`.  Requirement-index remapping is completed at
+the `TTProgram -> ExecutableSpec` projection boundary, not in the runtime
+module.
 
 The executable sharded fields intentionally mirror TT-Metal's split between
 memory-layout strategy and `ShardSpec` orientation:

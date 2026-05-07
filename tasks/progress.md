@@ -68,8 +68,9 @@
   workload skips.  `ValidateTTProgram` owns latest exact-CB producer,
   release-reason, storage-format, page-size, and unique CB-requirement-owner
   checks.  `KernelSpec.queue_events` now carries structured physical CB queue
-  events, and the executable queue gate replays those records rather than
-  parsing generated source text.
+  events projected at the `TTProgram -> ExecutableSpec` boundary, and the
+  executable queue gate replays those records rather than parsing generated
+  source text or rescanning segment-body TIR.
 - T8 value-expression bindings suppress fused-dataflow default tile-origin
   runtime args through projected `TTPerWorkArgSpec` evidence and
   non-synthesized arg kinds, not by classifying runtime arg identities such as

@@ -1882,109 +1882,9 @@ struct SegmentInfo {
   std::vector<AccessorSpec> accessors;
   std::vector<SemaphoreBindingSpec> semaphore_bindings;
   std::vector<RemoteCoreDescriptorSpec> remote_core_descriptors;
+  std::vector<CBQueueEventSpec> queue_events;
   Stmt body;
 };
-
-static bool MatchCBQueueEventCall(const tir::CallNode* call,
-                                  std::string* kind) {
-  if (call == nullptr || kind == nullptr) {
-    return false;
-  }
-  auto matches = [&](const Op& op, const char* op_name,
-                     const char* event_kind) {
-    if (call->op.same_as(op)) {
-      *kind = event_kind;
-      return true;
-    }
-    if (const auto* op_node = call->op.as<OpNode>()) {
-      if (op_node->name == op_name) {
-        *kind = event_kind;
-        return true;
-      }
-    }
-    return false;
-  };
-  return matches(tir::builtin::blackhole_cb_reserve_back(),
-                 "tl.blackhole.cb_reserve_back", "reserve_back") ||
-         matches(tir::builtin::blackhole_cb_push_back(),
-                 "tl.blackhole.cb_push_back", "push_back") ||
-         matches(tir::builtin::blackhole_cb_wait_front(),
-                 "tl.blackhole.cb_wait_front", "wait_front") ||
-         matches(tir::builtin::blackhole_cb_pop_front(),
-                 "tl.blackhole.cb_pop_front", "pop_front");
-}
-
-static bool TryReadUInt32Imm(const PrimExpr& expr, uint32_t* value) {
-  if (value == nullptr) {
-    return false;
-  }
-  const auto* imm = expr.as<tir::IntImmNode>();
-  if (imm == nullptr || imm->value < 0 ||
-      imm->value > std::numeric_limits<uint32_t>::max()) {
-    return false;
-  }
-  *value = static_cast<uint32_t>(imm->value);
-  return true;
-}
-
-static std::unordered_map<uint32_t, uint32_t> BuildCBRequirementIndexRemap(
-    const std::vector<CBConfig>& cb_configs) {
-  std::unordered_map<uint32_t, uint32_t> physical_cb_by_requirement_index;
-  for (const CBConfig& config : cb_configs) {
-    for (int64_t requirement_index : config.requirement_indices) {
-      if (requirement_index < 0 ||
-          requirement_index > std::numeric_limits<uint32_t>::max()) {
-        continue;
-      }
-      physical_cb_by_requirement_index.emplace(
-          static_cast<uint32_t>(requirement_index), config.cb_id);
-    }
-  }
-  return physical_cb_by_requirement_index;
-}
-
-static std::vector<CBQueueEventSpec> ExtractCBQueueEvents(
-    const Stmt& body,
-    const std::unordered_map<uint32_t, uint32_t>& physical_cb_by_requirement_index) {
-  std::vector<CBQueueEventSpec> events;
-  if (!body.defined()) {
-    return events;
-  }
-
-  class Collector final : public tir::StmtExprVisitor {
-   public:
-    Collector(std::vector<CBQueueEventSpec>* events,
-              const std::unordered_map<uint32_t, uint32_t>& physical_cb_by_requirement_index)
-        : events_(events),
-          physical_cb_by_requirement_index_(physical_cb_by_requirement_index) {}
-
-    void Collect(const Stmt& stmt) { VisitStmt(stmt); }
-
-    void VisitExpr_(const tir::CallNode* call) final {
-      std::string kind;
-      if (MatchCBQueueEventCall(call, &kind) && call->args.size() >= 2U) {
-        uint32_t cb_id = 0;
-        uint32_t pages = 0;
-        if (TryReadUInt32Imm(call->args[0], &cb_id) &&
-            TryReadUInt32Imm(call->args[1], &pages)) {
-          auto remap_it = physical_cb_by_requirement_index_.find(cb_id);
-          if (remap_it != physical_cb_by_requirement_index_.end()) {
-            cb_id = remap_it->second;
-          }
-          events_->push_back({kind, cb_id, pages});
-        }
-      }
-      tir::StmtExprVisitor::VisitExpr_(call);
-    }
-
-   private:
-    std::vector<CBQueueEventSpec>* events_;
-    const std::unordered_map<uint32_t, uint32_t>& physical_cb_by_requirement_index_;
-  };
-
-  Collector(&events, physical_cb_by_requirement_index).Collect(body);
-  return events;
-}
 
 static void PopulateBufferMaterializationSpecs(
     const std::unordered_map<std::string, StaticBufferInfo>& buffer_info_by_name,
@@ -2027,6 +1927,49 @@ static std::vector<RemoteCoreDescriptorSpec> ExtractRemoteCoreDescriptorsFromArr
   return descriptors;
 }
 
+static std::vector<CBQueueEventSpec> ReadCBQueueEventsFromArray(
+    const ffi::Array<ffi::Any>& items) {
+  std::vector<CBQueueEventSpec> events;
+  events.reserve(items.size());
+  for (const auto& item : items) {
+    auto event_info = RequireMap(item, "Blackhole executable queue_events item");
+    CBQueueEventSpec event;
+    if (auto v = event_info.Get("kind")) {
+      event.kind = Downcast<String>(v.value());
+    }
+    ICHECK(!event.kind.empty())
+        << "Blackhole executable queue_events item requires kind";
+    ICHECK(event.kind == "reserve_back" || event.kind == "push_back" ||
+           event.kind == "wait_front" || event.kind == "pop_front")
+        << "Blackhole executable queue_events item has invalid kind "
+        << event.kind;
+    ICHECK(event_info.Get("cb_id"))
+        << "Blackhole executable queue_events item " << event.kind
+        << " requires cb_id";
+    ICHECK(event_info.Get("pages"))
+        << "Blackhole executable queue_events item " << event.kind
+        << " requires pages";
+    const int64_t cb_id = Downcast<Integer>(event_info.Get("cb_id").value()).IntValue();
+    const int64_t pages = Downcast<Integer>(event_info.Get("pages").value()).IntValue();
+    ICHECK_GE(cb_id, 0)
+        << "Blackhole executable queue_events item " << event.kind
+        << " requires non-negative cb_id";
+    ICHECK_LE(cb_id, std::numeric_limits<uint32_t>::max())
+        << "Blackhole executable queue_events item " << event.kind
+        << " cb_id exceeds uint32";
+    ICHECK_GT(pages, 0)
+        << "Blackhole executable queue_events item " << event.kind
+        << " requires positive pages";
+    ICHECK_LE(pages, std::numeric_limits<uint32_t>::max())
+        << "Blackhole executable queue_events item " << event.kind
+        << " pages exceeds uint32";
+    event.cb_id = static_cast<uint32_t>(cb_id);
+    event.pages = static_cast<uint32_t>(pages);
+    events.push_back(std::move(event));
+  }
+  return events;
+}
+
 static std::vector<SegmentInfo> ExtractSegmentPlan(const tir::PrimFunc& f, ExecutableSpec* spec) {
   std::vector<SegmentInfo> segments_out;
   auto segments = RequireExecutableArrayField(
@@ -2058,6 +2001,10 @@ static std::vector<SegmentInfo> ExtractSegmentPlan(const tir::PrimFunc& f, Execu
     if (auto v = segment.Get("remote_core_descriptors")) {
       info.remote_core_descriptors =
           ExtractRemoteCoreDescriptorsFromArray(Downcast<ffi::Array<ffi::Any>>(v.value()));
+    }
+    if (auto v = segment.Get("queue_events")) {
+      info.queue_events =
+          ReadCBQueueEventsFromArray(Downcast<ffi::Array<ffi::Any>>(v.value()));
     }
     if (auto v = segment.Get("common_runtime_args")) {
       info.common_runtime_args =
@@ -3776,8 +3723,6 @@ static void PopulateKernelSpecsForDeviceFunc(const tir::PrimFunc& f,
                                              ExecutableSpec* spec) {
   spec->kernels.clear();
   std::vector<SegmentInfo> segments = ExtractSegmentPlan(f, spec);
-  const std::unordered_map<uint32_t, uint32_t> physical_cb_by_requirement_index =
-      BuildCBRequirementIndexRemap(spec->cb_configs);
   ICHECK(!segments.empty())
       << "Blackhole build requires non-empty executable segment truth on device PrimFunc "
       << func_name;
@@ -3807,8 +3752,7 @@ static void PopulateKernelSpecsForDeviceFunc(const tir::PrimFunc& f,
     kernel.compute_ops = segment.compute_ops;
     kernel.accessors = segment.accessors;
     kernel.semaphore_bindings = segment.semaphore_bindings;
-    kernel.queue_events = ExtractCBQueueEvents(
-        segment_func->body, physical_cb_by_requirement_index);
+    kernel.queue_events = segment.queue_events;
     ValidateKernelRuntimeArgSchema(kernel, func_name);
     ValidateKernelExplicitPerWorkBindingSchema(spec->core_plan, kernel, func_name);
     ValidateKernelCommunicationProtocolSchema(segment_func, kernel, *spec);

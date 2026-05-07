@@ -8,7 +8,9 @@
 #define TVM_TL_TARGET_TT_PROGRAM_PROJECTION_H_
 
 #include <tvm/ir/expr.h>
+#include <tvm/ir/op.h>
 #include <tvm/tir/function.h>
+#include <tvm/tir/stmt_functor.h>
 
 #include "../transform/common/blackhole_runtime_arg_schema.h"
 #include "../transform/common/companion_base.h"
@@ -99,6 +101,105 @@ inline Array<Any> EncodeCBPlans(const Array<TTCBPlan> &cb_plans) {
     encoded.push_back(item);
   }
   return encoded;
+}
+
+inline std::unordered_map<int64_t, int64_t>
+BuildPhysicalCBIdByRequirementIndex(const Array<TTCBPlan> &cb_plans) {
+  std::unordered_map<int64_t, int64_t> physical_cb_by_requirement_index;
+  for (const TTCBPlan &cb : cb_plans) {
+    ICHECK_GE(cb->cb_id, 0)
+        << "TTProgram CB queue projection requires physical cb_id for "
+        << cb->name;
+    for (const Integer &requirement_index : cb->requirement_indices) {
+      const int64_t index = requirement_index.IntValue();
+      ICHECK_GE(index, 0)
+          << "TTProgram CB queue projection requires non-negative "
+             "requirement index for "
+          << cb->name;
+      physical_cb_by_requirement_index.emplace(index, cb->cb_id);
+    }
+  }
+  return physical_cb_by_requirement_index;
+}
+
+inline bool TryGetPhysicalCBQueueEventKind(const tir::CallNode *call,
+                                           std::string *kind) {
+  if (call == nullptr || kind == nullptr) {
+    return false;
+  }
+  const auto *op_node = call->op.as<OpNode>();
+  if (op_node == nullptr) {
+    return false;
+  }
+  const std::string &name = op_node->name;
+  if (name == "tl.blackhole.cb_reserve_back") {
+    *kind = "reserve_back";
+    return true;
+  }
+  if (name == "tl.blackhole.cb_push_back") {
+    *kind = "push_back";
+    return true;
+  }
+  if (name == "tl.blackhole.cb_wait_front") {
+    *kind = "wait_front";
+    return true;
+  }
+  if (name == "tl.blackhole.cb_pop_front") {
+    *kind = "pop_front";
+    return true;
+  }
+  return false;
+}
+
+inline bool TryReadNonNegativeIntImm(const PrimExpr &expr, int64_t *value) {
+  if (value == nullptr) {
+    return false;
+  }
+  const auto *imm = expr.as<tir::IntImmNode>();
+  if (imm == nullptr || imm->value < 0) {
+    return false;
+  }
+  *value = imm->value;
+  return true;
+}
+
+inline Array<Any> ProjectPhysicalCBQueueEventsFromTTKernel(
+    const TTKernel &kernel, const Array<TTCBPlan> &cb_plans) {
+  Array<Any> events;
+  if (!kernel->body.defined()) {
+    return events;
+  }
+
+  const std::unordered_map<int64_t, int64_t> physical_cb_by_requirement_index =
+      BuildPhysicalCBIdByRequirementIndex(cb_plans);
+  tir::PostOrderVisit(kernel->body, [&](const ObjectRef &node) {
+    const auto *call = node.as<tir::CallNode>();
+    std::string kind;
+    if (!TryGetPhysicalCBQueueEventKind(call, &kind)) {
+      return;
+    }
+    ICHECK_GE(call->args.size(), 2U)
+        << "TTProgram CB queue event projection requires cb_id/pages args";
+    int64_t cb_id = -1;
+    int64_t pages = 0;
+    ICHECK(TryReadNonNegativeIntImm(call->args[0], &cb_id))
+        << "TTProgram CB queue event projection requires static cb_id";
+    ICHECK(TryReadNonNegativeIntImm(call->args[1], &pages) && pages > 0)
+        << "TTProgram CB queue event projection requires positive static "
+           "page count";
+
+    auto remap_it = physical_cb_by_requirement_index.find(cb_id);
+    if (remap_it != physical_cb_by_requirement_index.end()) {
+      cb_id = remap_it->second;
+    }
+
+    Map<String, Any> event;
+    event.Set("kind", String(kind));
+    event.Set("cb_id", Integer(cb_id));
+    event.Set("pages", Integer(pages));
+    events.push_back(event);
+  });
+  return events;
 }
 
 inline Array<Any> EncodeMeshPlans(const Array<TTMeshPlan> &mesh_plans) {
@@ -1089,6 +1190,11 @@ inline Array<Any> EncodeSegmentPlan(const TTProgram &program) {
     }
     if (kernel->body.defined()) {
       segment.Set(tt_program_segment_key::kBody, kernel->body);
+    }
+    Array<Any> queue_events =
+        ProjectPhysicalCBQueueEventsFromTTKernel(kernel, program->cb_plans);
+    if (!queue_events.empty()) {
+      segment.Set("queue_events", queue_events);
     }
     Array<Any> compute_ops;
     for (const TTComputeOpPlan &plan : program->compute_op_plans) {

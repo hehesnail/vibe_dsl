@@ -199,6 +199,16 @@ pointer, the allocation must carry an explicit TIR annotation pointing at the
 CB requirement index; consumer code must not infer that permission from buffer
 names or `TTCBPlan.name`.
 
+Physical CB queue ordering is part of the TTProgram execution contract.
+The owner truth is the structured TT kernel body after TT planning together
+with `TTCBPlan` requirement-index ownership.  The `TTProgram ->
+ExecutableSpec` projection must turn `cb_reserve_back`, `cb_push_back`,
+`cb_wait_front`, and `cb_pop_front` into structured physical
+`queue_events`, remapping requirement indices through `TTCBPlan` before leaf
+runtime/codegen consumption.  Runtime leaf readers may parse the projected
+array; they must not rescan kernel source or reconstructed segment bodies to
+recover queue order.
+
 Transport emitters do not own segment semantics.  They may ask the ABI /
 segment resolver which kernel segment a concrete read/write sequence belongs
 to, but they must not hard-code `fused_dataflow` as a recovery fallback when

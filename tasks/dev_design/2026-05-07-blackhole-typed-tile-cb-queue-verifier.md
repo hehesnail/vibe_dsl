@@ -44,8 +44,8 @@ Add a TTProgram-owned typed verifier for the admitted tile-CB surface:
 ```text
 TTProgram typed tile/exact-CB records
   + physical CB plan
-  + projected kernel CB event bodies
-  -> typed tile-CB event trace
+  + TT kernel leaf CB event sequence
+  -> projected physical queue_events
   -> verifier
   -> validated ExecutableSpec / typed admission reject
 ```
@@ -78,11 +78,12 @@ Owns the facts being verified:
 - `TTExactCBReleaseEvent`
 - `TTCBPlan`
 - compute operand CB requirement bindings
-- projected executable kernel records that contain physical leaf CB queue calls
+- TT kernel records that contain structured leaf CB queue calls
 
-The verifier may build pass-local indexing structures and an event trace, but
-those structures are derived analysis.  They are not persisted as public
-protocol unless a later task promotes them into explicit `TTProgram` fields.
+The verifier/projection may build pass-local indexing structures and an event
+trace from those owner records.  The durable leaf projection is
+`KernelSpec.queue_events`; it is derived from TTProgram facts exactly once at
+the `TTProgram -> ExecutableSpec` boundary, not recovered again by runtime.
 
 ### ExecutableSpec
 
@@ -92,6 +93,10 @@ If the verifier finds a contradiction, admission must fail before runtime can
 recover behavior from names, source text, or observations.  The physical queue
 checker consumes `KernelSpec.queue_events`, which are projected from leaf CB
 queue calls after physical CB allocation/remapping.
+
+Runtime and codegen readers may parse the projected event array.  They must
+not rescan generated source, final function body TIR, or neighboring builtin
+sequences to rebuild the queue trace.
 
 ## Verifier Invariants
 
@@ -168,7 +173,7 @@ For every exact-CB allocation and consumer binding:
      CB-requirement ownership invariants.
    - `KernelSpec.queue_events` carries structured physical queue events for
      each projected kernel; the executable admission gate replays those records
-     instead of parsing generated source.
+     instead of parsing generated source or rescanning segment-body TIR.
 3. Run validation after CB allocation/remapping and before runtime execution.
 4. Remove or demote any existing local source checks that duplicate owner truth
    for the covered paths.  Python source checks may remain as regression
@@ -199,7 +204,7 @@ This task is complete only when:
 - current T7/T9 positive runtime gates still pass;
 - the verifier covers latest-producer, release, queue, and storage-format
   invariants for the admitted surface;
-- the source-regex executable queue extractor is deleted and admission consumes
+- the source/body executable queue extractor is deleted and admission consumes
   structured physical queue-event records from `KernelSpec`;
 - docs, progress, and memory reflect the new boundary;
 - no new side channel, payload, or workload-specific schema is introduced.

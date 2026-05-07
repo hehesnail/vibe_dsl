@@ -2745,11 +2745,13 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   must agree with the virtual value data format and page size; release reasons
   must be from the typed lifecycle set; and each CB requirement index must have
   a single `TTCBPlan` owner.  Physical CB queue replay now consumes
-  `KernelSpec.queue_events`, not generated source text.  Queue events are
-  projected from final leaf TIR and must remap requirement indices through
-  `ExecutableSpec.cb_configs[*].requirement_indices -> cb_id`; raw
-  `TTKernel.body` can still contain pre-final requirement-index forms and is
-  not the final physical queue trace.  When replaying a compute kernel, do not
+  `KernelSpec.queue_events`, not generated source text or a runtime-side
+  scan of reconstructed segment bodies.  Queue events are projected at the
+  `TTProgram -> ExecutableSpec` boundary from TT kernel leaf CB calls and must
+  remap requirement indices through
+  `TTCBPlan.requirement_indices -> physical cb_id`; raw `TTKernel.body` can
+  still contain pre-final requirement-index forms and is not the final
+  runtime queue trace.  When replaying a compute kernel, do not
   assume only `role=input` can be prefilled: derive externally produced CBs
   from projected non-compute `cb_push_back` events and still bound
   `wait_front` / `pop_front` by the physical CB capacity.  Writer-visible

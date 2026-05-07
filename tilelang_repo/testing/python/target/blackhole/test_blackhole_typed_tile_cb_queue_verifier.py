@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 
 import tilelang
@@ -216,6 +218,19 @@ def test_structured_writer_queue_events_consume_all_output_pages():
 
     assert any(wait_pages_by_cb.values())
     assert pop_pages_by_cb == wait_pages_by_cb
+
+
+def test_runtime_does_not_recover_queue_events_from_kernel_body():
+    source = (
+        Path(__file__).resolve().parents[4]
+        / "src"
+        / "target"
+        / "rt_mod_blackhole.cc"
+    ).read_text(encoding="utf-8")
+
+    assert "MatchCBQueueEventCall" not in source
+    assert "ExtractCBQueueEvents" not in source
+    assert "BuildCBRequirementIndexRemap" not in source
 
 
 def test_typed_tile_cb_verifier_rejects_duplicate_requirement_owner(seq64_artifact):
