@@ -29,7 +29,6 @@
 #include <tvm/node/serialization.h>
 #include <tvm/target/codegen.h>
 #include <tvm/tir/analysis.h>
-#include <tvm/tir/builtin.h>
 #include <tvm/tir/stmt_functor.h>
 
 #include <algorithm>
@@ -3765,26 +3764,28 @@ static void PopulateKernelSpecsForDeviceFunc(const tir::PrimFunc& f,
   }
 }
 
-static std::string FindLaunchedKernelSymbol(
+static std::string GetExplicitLaunchedKernelSymbol(
     const tir::PrimFunc& f,
-    const std::unordered_set<std::string>& device_kernel_symbols) {
+    const std::unordered_set<std::string>& device_kernel_symbols,
+    const std::string& host_name) {
+  auto launched_symbols = f->GetAttr<ffi::Array<String>>(
+      tvm::tl::attr::kTLLaunchedKernelSymbols);
+  if (!launched_symbols) {
+    return "";
+  }
   std::string kernel_symbol;
-  tir::PostOrderVisit(f->body, [&](const ObjectRef& node) {
-    if (!kernel_symbol.empty()) {
-      return;
+  for (const String& item : launched_symbols.value()) {
+    const std::string candidate = item;
+    if (device_kernel_symbols.count(candidate) == 0U) {
+      continue;
     }
-    const auto* call = node.as<tir::CallNode>();
-    if (!call || !call->op.same_as(tir::builtin::tvm_call_packed()) ||
-        call->args.empty()) {
-      return;
-    }
-    if (const auto* callee = call->args[0].as<StringImmNode>()) {
-      std::string name = callee->value;
-      if (device_kernel_symbols.count(name)) {
-        kernel_symbol = std::move(name);
-      }
-    }
-  });
+    ICHECK(kernel_symbol.empty() || kernel_symbol == candidate)
+        << "Blackhole host entry " << host_name
+        << " launches multiple Blackhole device kernels through "
+        << tvm::tl::attr::kTLLaunchedKernelSymbols
+        << "; runtime requires a single explicit host->device association";
+    kernel_symbol = candidate;
+  }
   return kernel_symbol;
 }
 
@@ -3820,8 +3821,8 @@ static std::unordered_map<std::string, ExecutableSpec> ExtractBlackholeFuncInfo(
   }
 
   for (const auto& kv : host_entries) {
-    const std::string launched_kernel =
-        FindLaunchedKernelSymbol(kv.second, device_kernel_symbols);
+    const std::string launched_kernel = GetExplicitLaunchedKernelSymbol(
+        kv.second, device_kernel_symbols, kv.first);
     if (launched_kernel.empty()) {
       continue;
     }
@@ -3883,7 +3884,8 @@ ffi::Module BuildTileLangBlackhole(IRModule mod, Target target) {
     auto f = Downcast<tir::PrimFunc>(kv.second);
     if (IsBlackholeHostEntry(f)) {
       const std::string host_name = GetPrimFuncName(gvar, f);
-      const std::string launched_kernel = FindLaunchedKernelSymbol(f, device_kernel_symbols);
+      const std::string launched_kernel =
+          GetExplicitLaunchedKernelSymbol(f, device_kernel_symbols, host_name);
       if (!launched_kernel.empty()) {
         host_to_device.emplace(host_name, launched_kernel);
       }
@@ -3999,7 +4001,8 @@ ffi::Module BuildTileLangBlackholeWithoutHost(IRModule mod, Target target) {
     auto f = Downcast<tir::PrimFunc>(kv.second);
     if (IsBlackholeHostEntry(f)) {
       const std::string host_name = GetPrimFuncName(gvar, f);
-      const std::string launched_kernel = FindLaunchedKernelSymbol(f, device_kernel_symbols);
+      const std::string launched_kernel =
+          GetExplicitLaunchedKernelSymbol(f, device_kernel_symbols, host_name);
       if (!launched_kernel.empty()) {
         host_to_device.emplace(host_name, launched_kernel);
       }

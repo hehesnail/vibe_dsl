@@ -2833,3 +2833,10 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   the same buffer handle.  Do not reintroduce body scans over
   `tl.blackhole.read_*_to_cb` / `write_*_from_cb` calls to recover ABI
   semantics.
+- 2026-05-07 host launch association ownership:
+  Host-to-device kernel association must be an explicit IR attr emitted when
+  `LowerDeviceKernelLaunch` rewrites cross-target calls.  Blackhole runtime
+  should read `tl.launched_kernel_symbols` and validate that it names exactly
+  one Blackhole device kernel for the current module contract; do not scan the
+  packed host TIR body for `tvm_call_packed` string callees to recover the
+  association.

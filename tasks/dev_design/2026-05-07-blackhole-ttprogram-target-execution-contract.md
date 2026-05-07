@@ -100,12 +100,19 @@ Completed slice:
   pointer-keyed fast binding when the function signature or `buffer_map`
   directly exposes the same buffer handle, but that is no longer a recovery
   requirement.
+- Host launch to device kernel association no longer scans the packed host
+  TIR body for `tvm_call_packed` string callees.  `LowerDeviceKernelLaunch`
+  records launched kernel symbols in the explicit
+  `tl.launched_kernel_symbols` IR attr, and Blackhole runtime consumes that
+  attr to copy projected device `ExecutableSpec` records onto the host entry.
+  Multiple Blackhole device launches from one host entry fail closed because
+  the current runtime module contract admits a single host-to-device
+  association.
 
 Remaining audit targets include reduction-region codegen body analysis,
-runtime static-buffer discovery, host launch/kernel association, and remote
-sync validation.  Each must be classified as either local validation mechanics
-or execution owner truth that must move into typed `TTProgram` /
-`ExecutableSpec` records.
+runtime static-buffer discovery, and remote sync validation.  Each must be
+classified as either local validation mechanics or execution owner truth that
+must move into typed `TTProgram` / `ExecutableSpec` records.
 
 ### P0.3 Execution Event / Admission Spine
 

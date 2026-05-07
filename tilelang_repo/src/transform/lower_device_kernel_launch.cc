@@ -30,6 +30,7 @@
 #include <tvm/tir/transform.h>
 
 #include "runtime/thread_storage_scope.h"
+#include "common/companion_base.h"
 #include "tir/transforms/ir_utils.h"
 
 namespace tvm {
@@ -235,13 +236,21 @@ public:
     auto it = device_info_map_.find(gvar.get());
     ICHECK(it != device_info_map_.end());
     current_target_ = it->second.target;
+    current_launched_kernel_symbols_ = Array<String>();
+    current_launched_kernel_symbol_set_.clear();
 
     auto body = VisitStmt(func->body);
     if (!body.same_as(func->body)) {
       func.CopyOnWrite()->body = body;
     }
+    if (!current_launched_kernel_symbols_.empty()) {
+      func = WithAttr(std::move(func), attr::kTLLaunchedKernelSymbols,
+                      current_launched_kernel_symbols_);
+    }
 
     current_target_ = std::nullopt;
+    current_launched_kernel_symbols_ = Array<String>();
+    current_launched_kernel_symbol_set_.clear();
     return func;
   }
 
@@ -362,6 +371,10 @@ private:
     }();
 
     device_kernel_launch_.insert(gvar);
+    const std::string launched_kernel_symbol = dev_info.global_symbol;
+    if (current_launched_kernel_symbol_set_.insert(launched_kernel_symbol).second) {
+      current_launched_kernel_symbols_.push_back(dev_info.global_symbol);
+    }
 
     Array<PrimExpr> call_args;
     call_args.push_back(StringImm(dev_info.global_symbol));
@@ -378,6 +391,8 @@ private:
   }
 
   Optional<Target> current_target_;
+  Array<String> current_launched_kernel_symbols_;
+  std::unordered_set<std::string> current_launched_kernel_symbol_set_;
   std::unordered_map<const GlobalVarNode *, KernelInfo> device_info_map_;
   std::unordered_set<const GlobalVarNode *> device_kernel_launch_;
   std::unordered_set<const GlobalVarNode *> extern_function_call_;

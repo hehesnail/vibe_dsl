@@ -3418,6 +3418,31 @@
   - TT-Sim direct-runtime selectors for page-addressed copy and sharded T3
     bf16 execution passed with the repository setup.
 
+### Runtime recovered host launch association from packed host bodies
+
+- **症状**:
+  - `rt_mod_blackhole.cc` mapped host entries to device executable specs by
+    scanning packed host TIR for `tvm_call_packed` string callees that matched
+    Blackhole device kernel symbols.
+- **根因**:
+  - `LowerDeviceKernelLaunch` knew the cross-target launch target when it
+    rewrote the call, but it only encoded that target as a call argument in the
+    rewritten host body.  Runtime then became a second semantic owner by
+    reading the lowered body shape.
+- **修法**:
+  - Record launched kernel symbols as the explicit `tl.launched_kernel_symbols`
+    IR attr on the host PrimFunc during `LowerDeviceKernelLaunch`.
+  - Make Blackhole runtime consume the attr and fail closed if one host entry
+    names multiple Blackhole device kernels under the current single-association
+    module contract.
+- **验证**:
+  - Added a structural test that the host PrimFunc carries
+    `tl.launched_kernel_symbols == ["main_kernel"]` for a staged copy kernel.
+  - Added a source guard that `FindLaunchedKernelSymbol` stays deleted.
+  - `cmake --build build -j32` passed.
+  - TT-Sim direct-runtime selectors for page-addressed copy and sharded T3
+    bf16 execution, plus the tvm_ffi export host-shim selector, passed.
+
 ## 3. 环境问题速查
 
 | 问题 | 解决 |

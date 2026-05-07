@@ -19,6 +19,7 @@ constexpr const char* kTLSpatialPlan = "tl.spatial_plan";
 constexpr const char* kTLSpatialPlanValidated = "tl.spatial_plan_validated";
 constexpr const char* kTLTTProgram = "tl.tt_program";
 constexpr const char* kTLBlackholeExecutable = "tl.blackhole_executable";
+constexpr const char* kTLLaunchedKernelSymbols = "tl.launched_kernel_symbols";
 constexpr const char* kTLTTSemaphorePlans = "tl.tt_semaphore_plans";
 constexpr const char* kTLTTHardwareModel = "tl.tt_hardware_model";
 }  // namespace attr
