@@ -95,15 +95,6 @@
 
 ### P2: T9 Workload-First Paths
 
-- T9.2 paged GQA decode:
-  keep the admitted source/spec and direct-runtime correctness on generic
-  page-table and ragged `value_expr` bindings; broaden shapes only through
-  TIR-derived indexed/ragged evidence.
-- T9.3 paged MLA decode:
-  keep the admitted page-table/ragged bindings, retained latent-KV lifetime,
-  dual-score GEMM correctness, and full paged MLA decode direct-runtime
-  correctness.  Broader MLA variants must keep the additive score chain
-  generic and typed rather than adding a workload-specific side path.
 - T9.5 chunk recurrence / scan:
   represent multi-chunk loop-carried state and device state-buffer lifetime
   through typed lifecycle/allocation records before runtime execution.
@@ -134,48 +125,23 @@ Every active implementation task uses these gates:
 | TT-Sim correctness | Runtime correctness uses the repository TT-Sim setup and bf16 baseline when tensor values are involved. |
 | Unsupported reason | Unsupported forms fail closed with typed diagnostics before source/runtime guessing. |
 
-Current verified baseline:
+Current active baseline:
 
-- T8 consumer-side cleanup: `cmake --build build -j32` passed; source/spec
-  selectors covering deleted prefix classification, explicit value-expression
-  suppression, indexed/ragged/paged/segmented projection, and structured
-  2-tile output-CB queue order reported `14 passed`; TT-Sim direct-runtime
-  selectors covering indexed, sparse, ragged, segmented, and paged copies
-  reported `11 passed`.
-- Latest schema cleanup: `cmake --build build -j32` passed; focused selectors
-  covering the source guard, block-indexed projection, stick page-addressed
-  projection, direct runtime, and missing-page-metadata typed reject reported
-  `5 passed`.
-- Page-addressed cleanup baseline: source/schema selectors covering
-  block-indexed, 2D indexed, ragged, segmented, and stick page-addressed
-  transport reported `8 passed`; direct-runtime selectors covered stick copy,
-  missing-page-metadata typed reject, and T9 page-addressed QK/AV flash micro
-  paths.
-- T6 completion baseline: `cmake --build build -j32` passed; focused source /
-  schema selectors covering typed compute records, CB operand links, deleted
-  limited emitter, row-specific codegen guard, and raw-pointer absence
-  reported `4 passed`; direct-runtime TT-Sim gates pass for fp32 single-work,
-  fp32 multi-work, and bf16 values with exact `int32` indices.
-- Typed tile-CB verifier baseline: `cmake --build build -j32` passed;
-  `test_blackhole_typed_tile_cb_queue_verifier.py` reported `9 passed`,
-  covering duplicate CB-requirement ownership, exact-CB data-format mismatch,
-  invalid release reasons, structured `KernelSpec.queue_events`, invalid
-  constant physical queue events, and writer output-CB wait/pop balance.
-- Leaf simulator-gate cleanup: the unused multi-block exact-CB republish
-  runtime gate was deleted, and the old standalone fill/typecast PACR branch
-  was replaced by a generic compute-only terminal-publish simulator gate.
-  The focused typecast-publish selector reported `1 passed, 1 skipped`.
-- T7/T9 current runtime baseline: focused TT-Sim runtime selectors reported
-  `16 passed`, covering T3 sharded elementwise/reduce mix, T3 serialized
-  reshard and page-addressed copy, T7 seq64 MHA exact-CB partial combine,
-  T9 page-addressed QK page1, T9 page-addressed AV page1, T9.2 full paged
-  GQA decode, T9.3 dual-score MLA GEMM, T9.3 full paged MLA decode, and
-  T9.1 grouped GEMM.  Extended seq still carries the narrower loop-carried
-  exact-CB PACR typed simulator reason.
-- T9.4 sparse/ragged GQA baseline: source/spec projection selector covering
-  `BlockIndices` sparse-block bindings, `ValidRows` per-entry ragged bounds,
-  raw-table-load absence, and compute-compatible K/V CBs reported `1 passed`;
-  bf16 TT-Sim direct-runtime correctness selector reported `1 passed`.
+- Compile: `cmake --build build -j32`.
+- Protocol/source guards:
+  typed tile-CB queue verifier, T8 indexed/ragged/paged/segmented projection
+  selectors, T9 workload projection selectors, and deleted-schema guards.
+- Direct-runtime correctness:
+  active admitted T7/T8/T9 positive paths run through `BlackholeModule` with
+  the repository TT-Sim bf16 baseline where tensor values are involved.
+- Typed unsupported coverage:
+  malformed schema, missing page/address metadata, invalid exact-CB lifecycle,
+  and current simulator capability boundaries fail closed before source or
+  runtime guessing.
+- Current known simulator boundary:
+  extended-sequence loop-carried exact-CB backedge publish remains gated by the
+  typed PACR reason until T9.5/T9.6 introduce the needed lifecycle/runtime
+  protocol.
 
-Detailed historical checkpoint logs belong in git history and `memory/`, not
-in this file.
+Historical checkpoint logs, exact selector counts, and patch notes belong in
+git history and `memory/`, not in this file.
