@@ -1,127 +1,183 @@
 # Blackhole Architecture And Progress Overview
 
-## Role
+## Purpose
 
-This document is a compact natural-language overview of the current Blackhole
-backend architecture and completion state.  It is intended for project
-orientation and for generating an external architecture/progress illustration.
+This document is a natural-language brief for explaining the current
+TileLang Blackhole backend architecture and for generating an external
+architecture/progress illustration.
 
-The authoritative design remains
-`tasks/dev_design/final_blackhole_backend_redesign.md`.
-The live execution board remains `tasks/progress.md`.
+The authoritative design is
+`tasks/dev_design/final_blackhole_backend_redesign.md`.  The live execution
+board is `tasks/progress.md`.  This file should not become another design
+contract or progress log.
 
 ## Image Brief
 
-Show the project as a compiler pipeline that has moved away from fragile late
-matchers and toward an explicit four-layer IR contract.  The main horizontal
-flow is:
+Draw the backend as a compiler pipeline that has moved from fragile late
+recovery to an explicit IR-first execution contract.
+
+The main path should read as:
 
 `Normalized Tile TIR -> SpatialPlan -> TTProgram -> ExecutableSpec -> Blackhole runtime/codegen`.
 
-The visual should emphasize that semantics move forward through typed
-representations and validators.  Runtime and codegen sit at the far right as
-leaf consumers.  They consume the executable projection and do not look back
-into source text, final TIR bodies, names, argument positions, or builtin
-neighborhoods to recover missing planning facts.
+The middle of the image should not be empty.  Between the layer boxes, show a
+thin "pass belt" that explains how the implementation moves facts forward:
+spatial analysis builds and validates `SpatialPlan`; TT planning passes fill
+`TTProgram`; one projection pass materializes `ExecutableSpec`; leaf runtime
+and codegen only consume that projection.
 
-## Architecture Summary
+The visual contrast should be clear: the bright main path carries typed owner
+truth, while faded retired side channels sit below it as discarded routes:
+generated source scans, final TIR body scans, name/argument-position recovery,
+payloads, fact bags, helper maps, workload-shaped schemas, and fallback
+defaults.
 
-The root problem was that target execution semantics escaped the IR chain.
-Earlier implementations could make individual cases pass by carrying hidden
-truth through attrs, helper maps, payloads, naming conventions, body scans, or
-runtime fallbacks.  That did not scale to complex frontend workloads.
+## Architecture Story
 
-The current architecture makes each stage own one level of meaning:
+The original failure mode was not a single missing case.  It was that target
+execution semantics escaped the IR chain.  Some cases worked because later
+passes or runtime code could rediscover enough information from names, builtin
+neighborhoods, argument order, helper attrs, or source text.  That breaks down
+as soon as frontend workloads become irregular, fused, paged, split, or
+loop-carried.
 
-`Normalized Tile TIR` owns authored algorithmic structure, explicit tile ops,
-buffer loads/stores, predicates, loops, access expressions, and leaf TT-Metal
-compute normalization when the primitive can be expressed.
+The current architecture treats the compiler as a sequence of explicit
+contracts.
 
-`SpatialPlan` owns target-independent virtual spatial and dataflow semantics:
-execution units, dataflow/carry/reduction/broadcast/join relations, logical
-live values, materialization boundaries, access-region evidence, and validated
-hints.
+`Normalized Tile TIR` is still the authored program shape.  It owns loops,
+predicates, buffer reads and writes, explicit tile operations, access
+expressions, and the normalized TT-Metal leaf compute surface when the compute
+can legally be represented.
 
-`TTProgram` owns Blackhole target realization.  This is the stable target
-execution contract: hardware model facts, placement, core groups, kernel
-roles, buffer distributions, compute op plans, CB plans, semaphore and sync
-plans, runtime/per-work ABI, launch ordering, resource pressure, exact-CB
-lifecycle, and typed kernel queue events.
+`SpatialPlan` is the target-independent virtual spatial/dataflow program.  It
+owns execution units, access regions, closure boundaries, dataflow edges,
+dependence components, phase plans, live values, live-value edges,
+materialization boundaries, layout evidence, and tensor placement intent.
 
-`ExecutableSpec` owns the leaf projection and backend admission contract.
-Runtime and codegen consume this representation directly.  If the spec lacks a
-required record, leaf readers fail closed with a typed reason instead of
-reconstructing planner semantics.
+`TTProgram` is the Blackhole target execution contract.  It owns the hardware
+realization: mesh and core groups, block plans, kernel records, compute op
+plans, live-form and materialization plans, physical CB allocation, exact-CB
+lifecycle, transport plans, semaphore and remote sync plans, buffer
+distribution, tensor memory config, sharding and placement records, runtime
+ABI, per-work ABI, launch/execution plans, resource pressure, and typed kernel
+queue events.
 
-## Contract Spine
+`ExecutableSpec` is the leaf projection and admission schema.  It is produced
+from `TTProgram` once, then read by source generation, direct runtime, module
+serialization, and TT-Sim validation.  If a required executable record is
+missing, the backend should reject the program with a typed reason instead of
+rebuilding planner semantics from source or final TIR.
 
-The most important current contract is that `TTProgram` is the target-facing
-execution contract.  Physical CB queue order is represented by
-`TTKernel.queue_events`, then projected to `KernelSpec.queue_events`.
-Exact-CB lifecycle is represented by typed virtual values, use events, live
-intervals, allocations, and release events.  Remote synchronization endpoints
-are represented by explicit remote core descriptor records.  Per-work dynamic
-values are represented by generic `TTPerWorkArgSpec` records with
-`value_source=value_expr` and optional `AccessRegion` evidence.
+## Current Pass Flow
 
-The retired surfaces are part of the story: generated source text, final-body
-scans, `blackhole.segment_kind`, top-level payloads, facts bags, workload-shaped
-schemas, runtime-arg name prefixes, CB-name suffixes, and fallback defaults are
-not current protocol.
+The pass names are implementation details, not durable architecture
+boundaries.  They are still important for the diagram because they explain how
+the current code gets from one representation to the next.
 
-## Completion State
+Before the Blackhole-specific chain, the generic TileLang lowering path
+canonicalizes device-private resources and normalizes Blackhole tile compute.
+`NormalizeBlackholeTileCompute` and
+`ValidateBlackholeTileComputeNormalized` make local tile compute explicit and
+reject scalar compute-buffer residue that cannot be represented as a stable
+leaf compute primitive.
 
-The foundation lanes are complete.  Buffer ABI, leaf compute/GEMM, tensor
-placement and sharding, external accessors, topk value/index selection,
-materialization, exact-CB lifecycle, and current non-workload direct-runtime
-paths all use typed records or fail closed.
+The `SpatialPlan` section starts with `BuildSpatialPlan`.  That pass walks the
+current normalized TIR, collects executable statements and closure candidates,
+derives access regions and dataflow, computes phase and materialization
+boundaries, and attaches `tl.spatial_plan`.  `ValidateSpatialPlan` is the
+first fail-closed gate: downstream TT planning should see a validated spatial
+program, not a bundle of opportunistic analysis facts.  `SplitBlackholeKernel`
+remains as a historical normalization hook; it no longer emits segment-kind
+markers as cross-pass protocol.
 
-The P0 target execution contract hardening lane is complete.  Covered target
-execution facts are now represented by `TTProgram` typed fields or objects and
-projected once into `ExecutableSpec`.  Source/runtime/codegen recovery from
-body, source, names, or argument positions is guarded against.
+The `TTProgram` section is a staged target-planning belt.  `PlanTTBlocks`
+anchors hardware model, mesh, core-group, block-plan, and resource-demand
+facts.  `SelectBlackholeTTMetalBuiltins` chooses the exact TT-Metal builtin
+surface before compute planning.  `PlanTTCompute` creates typed kernel records
+and compute-facing owner truth: kernel plans, kernel bodies, staged CB
+requirements, ABI plans, live-form records, materialization records, consumer
+bindings, exact-CB virtual values, exact-CB use events, live intervals,
+allocations, release events, and compute op plans.
 
-The T8 irregular/indexed access lane is complete.  Indexed, sparse, ragged,
-paged, segmented, and grouped-feed access patterns use generic TIR-derived
-`AccessRegion` plus `value_expr` evidence.  Workload-shaped fields such as
-`index_table_*`, `row_start`, `row_count`, or `page_index` are not public
-schema.
+`PlanTTTransport` then turns staged CB requirements into physical CB
+allocation and transport truth.  It rewrites CB requirement indices to final
+physical `cb_id`s, refreshes the typed `TTKernel.queue_events`, remaps
+materialization / exact-CB / compute operand references to the physical CB
+plans, and builds transport plans from `SpatialPlan`.  This is the stage that
+prevents runtime/codegen from needing to infer queue behavior from generated
+source text.
 
-The active lane is P1 / T9 workload-first paths.  T9.1 through T9.5 are
-admitted on the current bf16 direct-runtime surfaces: grouped GEMM, paged GQA,
-paged MLA, sparse/ragged GQA, and chunk recurrence / scan.  The active boundary
-is T9.6 multi-block flash decode, where split blocks must use explicit exact-CB
-publish/consume and partial-combine contracts.
+`PlanTTSync` adds compute synchronization and semaphore plans.  `PlanTTABI`
+adds the runtime-facing data ABI: destination layout, buffer distribution,
+tensor memory config, accessor specs, sharding contracts, placement
+resolution, and reshard plans.  `PlanTTExecution` adds execution and wave
+launch plans.  `BuildTTProgram` is the sealing step: it requires the staged
+slices to exist and line up, then strips temporary intermediate attrs so the
+remaining public target contract is `TTProgram`.  `ValidateTTProgram` checks
+that the target execution contract is internally consistent with
+`SpatialPlan` and the Blackhole hardware model.
 
-The queued lane is P2 / T10 distributed production.  Mesh placement,
-collectives, NoC/multicast/global scheduling, distributed workload correctness,
-and production partial-K reduction remain future target-realization work.
+The executable section is intentionally narrower.  `MaterializeBlackholeExecutable`
+projects `TTProgram` into the `tl.blackhole_executable` map with schema
+version, source marker, mesh plans, buffer distributions, tensor memory
+configs, placement records, compute ops, segment records, CB configs, core
+plan, semaphore plan, live/materialization/exact-CB records, and resource
+reports.  Runtime and codegen leaf readers use `ExecutableSpec` / `KernelSpec`
+records such as runtime args, common runtime args, per-work args, accessors,
+semaphore bindings, remote core descriptors, compute ops, launch specs, and
+queue events.
 
-## Suggested Visual Emphasis
+At the far right, `BlackholeModule`, code generation, direct host runtime, and
+TT-Sim correctness gates are consumers.  They may validate executable schema
+and reject unsupported forms, but they should not become planners.
 
-Use a clean layered compiler diagram.  The left side should feel like
-high-level program meaning, the middle like typed planning, and the right side
-like executable runtime admission.  The strongest visual contrast should be
-between the bright main contract path and faded retired side channels.
+## What The Diagram Should Emphasize
 
-The completed lanes can be shown as solid completed bands beneath the main
-pipeline: Foundation, P0, and T8.  The active lane should be highlighted at
-P1 / T9.6 multi-block flash decode.  The future lane should sit further right
-or below as P2 / T10 distributed production.
+Make the four representation layers visually larger than the pass names.  The
+passes should look like conveyors, gates, or annotations between layers.  The
+reason is architectural: passes can be renamed, split, or merged, but the
+stable contracts are `SpatialPlan`, `TTProgram`, and `ExecutableSpec`.
 
-If the illustration uses callouts, the key callouts should be:
+Show validators as gates on the main path:
+`ValidateBlackholeTileComputeNormalized`, `ValidateSpatialPlan`,
+`ValidateTTProgram`, and executable admission checks.  The gates should imply
+fail-closed behavior: missing target facts are errors, not invitations for
+runtime recovery.
 
-- IR-first owner truth.
-- Validators fail closed before source/runtime emission.
-- `TTProgram` is the Blackhole target execution contract.
-- `ExecutableSpec` is a leaf projection, not a recovery pass.
-- Runtime/codegen do not scan source or final TIR to rebuild planner facts.
+Show `TTProgram` as the heaviest middle object.  It is the PTX-like target
+execution contract for this backend: not final source text, but the stable
+description of how the program should execute on Blackhole.
+
+Show `ExecutableSpec` as a projection, not a second planner.  It should look
+like a typed manifest handed to runtime/codegen.
+
+## Progress Summary
+
+Progress should be a small legend, not the body of the diagram.
+
+Completed: foundation work, P0 target execution contract hardening, and T8
+irregular/indexed access are complete for the current admitted surface.  These
+lanes removed the major source/body/name recovery paths and moved covered
+facts into typed `TTProgram -> ExecutableSpec` records.
+
+Active: P1 / T9 workload-first expansion is in progress.  The current active
+boundary is T9.6 multi-block flash decode, where split blocks need explicit
+exact-CB publish/consume and partial-combine contracts.
+
+Queued: P2 / T10 distributed production remains future work: typed
+multi-device placement, collectives, NoC/multicast/global scheduling, and
+production partial-K reduction.
+
+Do not draw the progress state as a long checklist of every admitted case.
+The diagram should show direction and maturity: solid completed base lanes,
+one highlighted active T9.6 lane, and one queued distributed-production lane.
 
 ## Short Caption
 
-TileLang Blackhole backend is converging on an explicit compiler contract:
-Normalized Tile TIR captures algorithmic tile semantics, SpatialPlan captures
-virtual dataflow, TTProgram captures Blackhole execution protocol, and
-ExecutableSpec feeds runtime/codegen.  Completed foundation, P0, and T8 lanes
-have removed major recovery paths; current work is T9.6 multi-block flash
-decode, with distributed production variants queued for T10.
+TileLang Blackhole is converging on an explicit compiler contract.  Normalized
+Tile TIR captures program structure, `SpatialPlan` captures virtual dataflow,
+`TTProgram` captures Blackhole execution protocol, and `ExecutableSpec` feeds
+runtime/codegen.  The middle passes are now supposed to move typed facts
+forward and validate them, not leave holes for leaf recovery.  Current progress
+has completed the foundation, P0 contract hardening, and T8 irregular access;
+the active frontier is T9.6 multi-block flash decode.
