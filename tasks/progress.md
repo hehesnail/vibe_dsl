@@ -14,20 +14,13 @@
 
 ## Current Board
 
-| Task | State | Current boundary |
+| Lane | State | Current boundary |
 | --- | --- | --- |
-| T1 Buffer address ABI | Complete | Runtime consumes typed interleaved DRAM, page-addressed interleaved DRAM, and staged-copy resident L1 records. |
-| T2 Leaf compute / GEMM baseline | Complete | Admitted non-flash leaf families and current-placement GEMM run through `BlackholeModule` or fail closed with typed reasons. |
-| T3 Tensor/value sharding and explicit reshard | Complete | `T.MemoryConfig`, placement intents, tensor memory-config plans, op sharding contracts, placement resolution, and first `interleaved_to_sharded` conversion are typed and projected. |
-| T4 External accessor / runtime ABI | Complete | External `interleaved_accessor_cta` and `sharded_accessor_cta` records cover interleaved DRAM, page-addressed interleaved DRAM, and static sharded L1. |
-| T5 Sharded GEMM / layout variants | Complete | Static external sharded-L1 GEMM is correct for single-core, 2x2, 110-core many-core, all-bf16, and current K-sharded partial-sum paths. |
-| T6 `topk` | Complete | Existing TIR value/index selection runs through direct runtime for fp32 and bf16 values with exact `int32` indices.  The old limited typed compute-region emitter is deleted; codegen consumes executable reduction records through a `reduce_dim`-parameterized channel lowering and CB requirement mappings without topk/selection schema or raw host-pointer fallback. |
-| T7 Exact-CB / materialization primitives | Complete | Exact-CB materialization, publication, consumer binding, GEMM post-merge materialization, and seq64 bf16 flash-attn exact-CB partial combine pass `BlackholeModule` TT-Sim correctness. |
-| T7.5 Exact-CB liveness / allocation cutover | Complete | Covered exact-CB resident tiles use typed lifecycle, allocation, release events, latest-producer validation, storage-format validation, and fail-closed loop-carried/full-tile gates. |
-| P0 TTProgram target execution contract hardening | Complete | `TTProgram` is the current target-facing execution contract for covered P0 surfaces: CB queue events, exact-CB lifecycle, segment/kernel bodies, semaphore bindings, remote core descriptors, launch association, runtime/per-work ABI, buffer/materialization records, and resource/admission facts are typed owner truth and projected once to `ExecutableSpec`; runtime/codegen/source guards reject body/source/name recovery. |
-| T8 Irregular work domains / indexed access | Complete | Indexed, sparse, ragged, paged, segmented, and T9.1 grouped-GEMM feed paths execute through generic `AccessRegion` + `value_expr` bindings.  Buffer-bound per-work specs carry explicit `AccessRegion` evidence, indexed lookups fail closed on missing structural matches, and broadened segmented/paged/ragged/indexed copy shapes pass direct-runtime gates. |
-| T9 Workload first paths | In progress | T9.1 pre-grouped MoE/routed GEMM, T9.2 full paged GQA decode, T9.3 dual-score MLA GEMM, T9.3 full paged MLA decode, T9.4 sparse/ragged GQA decode, and T9.5 chunk recurrence / scan have bf16 direct-runtime correctness.  T9.6 is queued. |
-| T10 Distributed production variants | Queued | Mesh placement, CCL, NoC/multicast/global scheduling, distributed workload correctness, and production partial-K reduction remain future TT target-realization work. |
+| Foundation `T1-T7.5` | Complete | Buffer ABI, leaf compute/GEMM, sharding/materialization, exact-CB lifecycle, and admitted non-workload direct-runtime paths use typed `TTProgram -> ExecutableSpec` records or fail closed. |
+| `P0` target execution contract | Complete | Covered execution facts are owned by `TTProgram` typed fields/objects and projected once to `ExecutableSpec`; leaf consumers reject source/body/name recovery. |
+| `T8` irregular/indexed access | Complete | Indexed, sparse, ragged, paged, segmented, and grouped-feed paths use generic `AccessRegion` plus `value_expr` evidence. |
+| `P1 / T9` workload-first paths | In progress | T9.1-T9.5 are admitted on current bf16 direct-runtime surfaces.  Active boundary is T9.6 multi-block flash decode. |
+| `P2 / T10` distributed production | Queued | Mesh placement, CCL, NoC/multicast/global scheduling, and production partial-K reduction remain future TT target-realization work. |
 
 ## Current Protocol Snapshot
 
@@ -91,18 +84,12 @@
 
 ## Next Work Queue
 
-### P0: TTProgram Target Execution Contract Hardening
-
-Complete.  Follow-up work must not reopen retired body/source/name recovery
-surfaces; new Blackhole execution facts must enter the explicit
-`TTProgram -> ExecutableSpec` contract or fail closed.
-
-### P1: T9 Workload-First Paths
+### Active
 
 - T9.6 multi-block flash decode:
   admit bf16 split blocks with exact-CB publish/consume and partial combine.
 
-### P2: T10 Distributed Production
+### Queued
 
 - Add typed mesh / multi-device placement before distributed runtime movement.
 - Add CCL contracts for all-gather, reduce-scatter, and all-to-all.
@@ -112,6 +99,14 @@ surfaces; new Blackhole execution facts must enter the explicit
   typed production reducer protocol: reducer ownership, partial-C scratch
   placement and lifetime, semaphore IDs, remote NOC routes, transport choice,
   accumulation order, and final writer timing.
+
+### Standing Guardrails
+
+- Do not reopen retired body/source/name recovery surfaces.
+- New Blackhole execution facts must enter the explicit
+  `TTProgram -> ExecutableSpec` contract or fail closed.
+- Workload labels are witnesses only; generic IR evidence remains the owner
+  truth.
 
 ## Verification Baseline
 
@@ -126,29 +121,19 @@ Every active implementation task uses these gates:
 | TT-Sim correctness | Runtime correctness uses the repository TT-Sim setup and bf16 baseline when tensor values are involved. |
 | Unsupported reason | Unsupported forms fail closed with typed diagnostics before source/runtime guessing. |
 
-Current active baseline:
+Current baseline:
 
 - Compile: `cmake --build build -j32`.
 - Protocol/source guards:
   typed tile-CB queue verifier, TTProgram execution-contract source guards,
-  completed T8 indexed/ragged/paged/segmented projection selectors, T9
-  workload projection selectors, and deleted-schema guards.
+  T8/T9 projection selectors, and deleted-schema guards.
 - Direct-runtime correctness:
-  active admitted T7/T8/T9 positive paths run through `BlackholeModule` with
-  the repository TT-Sim bf16 baseline where tensor values are involved.
+  admitted T7/T8/T9 positive paths run through `BlackholeModule` with the
+  repository TT-Sim bf16 baseline where tensor values are involved.
 - Typed unsupported coverage:
   malformed schema, missing page/address metadata, invalid exact-CB lifecycle,
   and current simulator capability boundaries fail closed before source or
   runtime guessing.
-- Current known simulator boundary:
-  the first T9.5 three-chunk recurrence slice is admitted through typed
-  ping-pong state CBs plus a separate writer publication CB.  Broader dynamic
-  or extended loop-carried exact-CB recurrence remains future work and must
-  still fail closed until it has equivalent typed lifecycle/runtime evidence.
-- Current known non-T8 source/spec failure:
-  the full copy-pipeline suite still reaches the flash bridge granularity gate
-  at `merge_fragment_tiles` destination `acc_o`; that is a T9 exact-CB /
-  materialization follow-up, not part of the completed T8 copy cleanup gates.
 
 Historical checkpoint logs, exact selector counts, and patch notes belong in
 git history and `memory/`, not in this file.

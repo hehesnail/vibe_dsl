@@ -15,7 +15,7 @@ Normalized Tile TIR
   -> ExecutableSpec
 ```
 
-Current execution status lives in `tasks/progress.md`.
+Current execution status and next work live in `tasks/progress.md`.
 
 ## Problem
 
@@ -31,8 +31,8 @@ placement/lifecycle records.
 
 ## Goal
 
-Each T9 checkpoint must run through `BlackholeModule` direct runtime and
-compare against a host reference.  A checkpoint is admitted only when:
+Each T9 slice must run through `BlackholeModule` direct runtime and compare
+against a host reference.  A slice is admitted only when:
 
 - workload evidence is present in ordinary TIR;
 - the evidence lowers through `SpatialPlan`, `TTProgram`, and
@@ -41,29 +41,26 @@ compare against a host reference.  A checkpoint is admitted only when:
   positions, or generated source text;
 - unsupported workload variants fail closed before source/runtime guessing.
 
-## Current Status
+## Current Surface
 
-- T9.1 pre-grouped MoE/routed grouped GEMM has bf16 direct-runtime correctness
-  through ordinary TIR-derived segmented A bindings and typed
+Admitted T9 surfaces are ordinary TIR-derived witnesses, not workload
+protocols:
+
+- T9.1 pre-grouped MoE/routed grouped GEMM: segmented A bindings plus typed
   materialization/lifecycle records.
-- T9.3 dual-score MLA GEMM has bf16 direct-runtime correctness through
-  explicit `Q_nope @ KV_latent^T` plus `Q_pe @ K_pe^T` score accumulation,
-  with the accumulator kept on a compute-local live-form CB until the final
-  output publish.
-- T9.2 paged GQA has source/spec admission, page-addressed QK/AV micro
-  runtime coverage, and full online-softmax bf16 direct-runtime correctness.
-- T9.3 full paged MLA decode keeps source/spec admission through generic
-  page-table/ragged `value_expr` bindings, explicit score GEMMs, retained
-  latent-KV lifetime, and the existing flash partial-combine path, and now
-  has full online-softmax bf16 direct-runtime correctness.
-- T9.4 sparse/ragged GQA decode has bf16 direct-runtime correctness through
-  ordinary TIR-derived sparse block-list bindings, independent per-entry
-  valid-row bounds, and the existing online-softmax flash partial-combine
-  path.
-- T9.5 chunk recurrence/scan has bf16 direct-runtime correctness through a
-  typed loop-carried exact-CB lifecycle, ping-pong state CBs, and a separate
-  writer publication CB for per-chunk `Output` plus final `StateOut`.
-- T9.6 multi-block flash decode is queued.
+- T9.2 paged GQA: generic page-table/ragged `value_expr` bindings, typed
+  page-addressed K/V materialization, and online-softmax flash partial
+  combine.
+- T9.3 paged MLA: explicit dual-score GEMM accumulation, retained latent-KV
+  lifetime, and full online-softmax decode.
+- T9.4 sparse/ragged GQA: sparse block-list bindings, independent per-entry
+  valid-row bounds, and the existing online-softmax partial-combine path.
+- T9.5 chunk recurrence/scan: typed loop-carried exact-CB lifecycle,
+  ping-pong state CBs, and a separate writer publication CB for per-chunk
+  `Output` plus final `StateOut`.
+
+The active P1 boundary is T9.6 multi-block flash decode: split blocks with
+exact-CB publish/consume and partial combine.
 
 ## Non-Goals
 
@@ -282,12 +279,21 @@ ragged-bound semantics.  If sparse-block/ragged evidence cannot feed the
 existing flash compute path, the backend must reject with a typed reason
 before source/runtime guessing.
 
-## Later T9 Checkpoints
+## T9.6 Multi-Block Flash Decode
 
-- T9.6 multi-block flash decode: split blocks with exact-CB
-  publish/consume and partial combine.
+This is the active T9 boundary.
 
-Each later checkpoint must define its own narrow admitted shape and direct
+The first admitted shape must stay narrow:
+
+- bf16 inputs and output;
+- explicit split-block TIR, not a frontend multi-block flash op;
+- typed exact-CB state publication and consumption across split blocks;
+- partial-combine source/runtime path projected from existing TTProgram
+  records;
+- fail-closed admission for dynamic split scheduling or distributed producer
+  handoff until those have typed owner truth.
+
+Every later T9 expansion must define its own narrow admitted shape and direct
 runtime correctness gate before broadening.
 
 ## T9.5 Chunk Recurrence / Scan
@@ -348,7 +354,7 @@ Unsupported forms must fail closed before source/runtime guessing:
 - lifecycle/allocation pressure that cannot be admitted by typed CB records;
 - runtime/simulator capability boundaries after source/spec admission.
 
-## Validation Plan
+## Validation Contract
 
 Structure/source:
 

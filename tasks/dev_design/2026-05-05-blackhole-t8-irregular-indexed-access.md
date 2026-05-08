@@ -15,7 +15,7 @@ Normalized Tile TIR
   -> ExecutableSpec
 ```
 
-Current execution status lives in `tasks/progress.md`.
+Current execution status and next work live in `tasks/progress.md`.
 
 ## Problem
 
@@ -281,7 +281,7 @@ identity from structural `value_expr` equality plus the matched
 `AccessRegion.index_exprs` / `predicate_exprs`, with literal `k` represented
 as `constant:k`.
 
-## Validation Plan
+## Validation Contract
 
 Structure:
 
@@ -303,8 +303,8 @@ Runtime:
 
 - existing grid-indexed copy direct runtime remains green and proves that
   projected per-work bindings drive source/runtime addressing.
-- segmented/ragged/table-indexed direct runtime cases are required before T8
-  can be marked complete.
+- segmented/ragged/table-indexed direct runtime cases remain covered as
+  admitted witnesses.
 
 Unsupported diagnostics:
 
@@ -314,10 +314,10 @@ Unsupported diagnostics:
 - binding exists but runtime cannot execute the shape:
   `admission_blocked` or typed simulator boundary.
 
-## Current Status
+## Current Contract
 
 T8 has completed the generic evidence chain for the current backend boundary.
-The current owner truth is:
+The owner truth is:
 
 - `AccessRegion` records concrete access `index_exprs`, participating
   loop/launch variables, guarded predicate kind, and concrete
@@ -345,7 +345,7 @@ The current owner truth is:
   `SegmentOffsets[bx, k]` and `SegmentCounts[bx, k]` do not collapse into one
   runtime arg.
 
-Admitted positive surfaces include:
+Admitted positive witness families include:
 
 - grid-indexed direct-runtime copy;
 - one-dimensional and two-dimensional table-indexed staged copy;
@@ -359,7 +359,7 @@ Admitted positive surfaces include:
   `SegmentOffsets` / `SegmentCounts` range pairs;
 - the T9.1 grouped-GEMM segmented-A feed path.
 
-Deleted or forbidden protocol surfaces remain deleted:
+Deleted or forbidden protocol surfaces:
 
 - `value_source=index_table`, `index_buffer`, `index_value_scale`,
   `index_table_shape`, and `index_table_index_sources`;
@@ -373,32 +373,12 @@ Deleted or forbidden protocol surfaces remain deleted:
 - ABI consumer-side access-region recovery helpers such as
   `inferred_access_kind_for_spec` and `attach_access_region_evidence`;
 - indexed `AccessRegion` first-match fallbacks that ignore structural
-  `index_exprs`.
-
-The latest cleanup deleted the remaining fused-dataflow ABI consumer-side
-`per_work_value*` prefix classifier.  Explicit generic value-expression
-bindings now suppress fallback input tile defaults even when their runtime arg
-kind is not a legacy prefix.  The same validation slice also caught a CB
-lifecycle regression: writer-visible output CBs must not receive generic
-retained-front pre-drain rewrites, because the capacity-aware reserve rewrite
-already owns real pressure and premature output pops destroy FIFO order.
-
-The final T8 cleanup also removed the remaining consumer-side access-region
-reconstruction path.  ABI lowering now creates each buffer-bound per-work spec
-with explicit read/write access context, `ValidateTTProgram` checks that
-evidence, and indexed lookup fails closed when the current TIR-derived
-structural indices do not match a SpatialPlan region.  The broadened runtime
-gate includes three independent segmented ranges in one work item, plus the
-existing sparse, ragged, paged, and indexed copy cases.
-
-Known residual outside T8: the full copy-pipeline suite still exposes a flash
-bridge granularity guard at `merge_fragment_tiles` destination `acc_o`.  That is
-a T9 exact-CB / materialization follow-up and must not be used to reopen T8
-copy-side fallback schema.
+  `index_exprs`;
+- consumer-side access-region reconstruction in ABI/runtime readers.
 
 ## Completion Criteria
 
-T8 is implemented when:
+T8 remains complete while:
 
 - segmented/grouped, ragged, and indexed-block evidence are derived from TIR
   structure, not workload names;
@@ -406,7 +386,7 @@ T8 is implemented when:
   evidence;
 - validators reject missing or inconsistent indexed evidence;
 - source/runtime addressing consumes the projected bindings;
-- at least one admitted positive path in each T8 family has direct-runtime
-  correctness or a typed simulator capability boundary after source/spec
-  admission;
+- admitted positive paths in each T8 family have direct-runtime correctness
+  or a typed simulator capability boundary after source/spec admission;
+- no consumer-side name/prefix/default fallback is reintroduced.
 - docs, progress, and memory reflect the boundary.

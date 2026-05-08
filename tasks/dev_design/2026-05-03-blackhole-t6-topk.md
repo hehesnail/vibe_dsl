@@ -2,7 +2,8 @@
 
 ## Role
 
-This document defines the active task-level boundary for T6 `topk`.
+This document defines the task-level contract for the admitted T6 `topk`
+surface.
 It is not a second overall design document.  The durable chain remains:
 
 ```text
@@ -12,7 +13,7 @@ Normalized Tile TIR
   -> ExecutableSpec
 ```
 
-Current execution status remains in `tasks/progress.md`.
+Current execution status and next work live in `tasks/progress.md`.
 
 ## Goal
 
@@ -55,7 +56,7 @@ it is part of the GEMM/softmax compute chain, and standalone bf16 reduction is
 also admissible once the emitted scaler fill/pack sequence initializes
 PACK/UNPACK format state correctly.
 
-## Current Status
+## Current Contract
 
 T6 is complete for the admitted existing-TIR axis-1 value/index selection
 shape.

@@ -2885,3 +2885,10 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   contract is `TTKernel.queue_events`.  If an allocation or lowering pass
   rewrites leaf CB calls, refresh the typed event field at that pass boundary
   and keep runtime/codegen readers on `KernelSpec.queue_events`.
+- 2026-05-08 progress/doc split discipline:
+  Keep `tasks/progress.md` as an execution board: current lane, active
+  boundary, next queue, protocol snapshot, and verification gates.  Do not
+  use it for completed selector counts, patch notes, checkpoint narratives, or
+  implementation inventory.  Active design docs should state durable contracts
+  and regression criteria; historical details belong in git history or
+  `memory/`.

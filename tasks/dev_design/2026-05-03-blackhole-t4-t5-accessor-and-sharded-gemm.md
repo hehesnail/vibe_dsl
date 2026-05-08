@@ -2,9 +2,8 @@
 
 ## Role
 
-This document defines the active task-level boundary for T4 external
-accessor/runtime ABI expansion and the dependent T5 sharded GEMM/layout
-variants.
+This document defines the task-level contract for T4 external accessor/runtime
+ABI expansion and the dependent T5 sharded GEMM/layout variants.
 
 It is not a second overall design document.  The durable chain remains:
 
@@ -15,7 +14,7 @@ Normalized Tile TIR
   -> ExecutableSpec
 ```
 
-Current execution status remains in `tasks/progress.md`.
+Current execution status and next work live in `tasks/progress.md`.
 
 ## T4 Goal
 

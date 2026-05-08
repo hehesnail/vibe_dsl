@@ -16,7 +16,7 @@ Normalized Tile TIR
   -> ExecutableSpec
 ```
 
-Current execution status lives in `tasks/progress.md`.
+Current execution status and next work live in `tasks/progress.md`.
 
 ## Problem
 
@@ -58,9 +58,10 @@ owners.
 
 - No new `TileCBIR`, fifth representation layer, payload, or helper bag.
 - No `SpatialPlan` rewrite in this task.
-- No T9.4 sparse attention, T9.5 scan, T9.6 multi-block flash, or T10
-  distributed expansion.
 - No workload-specific verifier branches for GQA, MLA, or flash-attn.
+- No workload-specific expansion path for sparse, scan, multi-block flash, or
+  distributed variants.  Later admitted workloads reuse these invariants or
+  add generic typed owner truth first.
 - No source-text or TTKernel-body recovery as owner truth.  Leaf CB queue calls
   that cross the `TTProgram -> ExecutableSpec` boundary are represented by
   `TTKernel.queue_events` and then projected directly into
@@ -161,28 +162,19 @@ For every exact-CB allocation and consumer binding:
 - a compute op operand bound to a CB requirement must resolve to exactly one
   physical `TTCBPlan`.
 
-## Integration Plan
+## Integration Contract
 
-1. Add structure tests that mutate projected metadata and prove the verifier
-   rejects:
-   - premature exact-CB release before a later use;
-   - unknown or ambiguous CB requirement bindings;
-   - compute-local `wait_front` or `pop_front` beyond visible pages;
-   - reserve beyond physical CB capacity;
-   - exact-CB data-format mismatch.
-2. Implement private C++ validation in the `TTProgram -> ExecutableSpec`
-   boundary:
-   - `ValidateTTProgram` validates exact-CB producer, release, storage, and
-     CB-requirement ownership invariants.
-   - `KernelSpec.queue_events` carries structured physical queue events for
-     each projected kernel; the executable admission gate replays those records
-     instead of parsing generated source or rescanning segment-body TIR.
-3. Run validation after CB allocation/remapping and before runtime execution.
-4. Remove or demote any existing local source checks that duplicate owner truth
-   for the covered paths.  Python source checks may remain as regression
-   witnesses, but they cannot be the verifier input.
-5. Keep T7 seq64, T9.2 full paged GQA, and T9.3 full paged MLA as positive
-   bf16 direct-runtime correctness gates.
+- `ValidateTTProgram` validates exact-CB producer, release, storage, and
+  CB-requirement ownership invariants before executable materialization.
+- `TTKernel.queue_events` is refreshed after physical CB allocation/remapping.
+  `KernelSpec.queue_events` is then projected from that typed field and the
+  physical `TTCBPlan` mapping.
+- The executable admission gate replays projected queue events.  It must not
+  parse generated source or segment-body TIR.
+- Local source checks may remain as regression witnesses only; they cannot be
+  the verifier input.
+- Positive runtime gates must keep admitted T7/T9 workload shapes as witnesses,
+  not as verifier-specific schema.
 
 ## Validation
 
@@ -190,24 +182,26 @@ Required:
 
 - C++ build: `cmake --build build -j32`.
 - Focused structural pytest selectors proving typed rejects.
-- Focused TT-Sim direct-runtime correctness selectors covering:
+- Focused TT-Sim direct-runtime correctness selectors covering current
+  admitted T7/T9 witnesses, including:
   - T7 seq64 MHA exact-CB partial combine;
-  - T9 page-addressed QK page1;
-  - T9 page-addressed AV page1;
+  - T9 page-addressed QK/AV page-addressing;
   - T9.2 full paged GQA decode;
+  - T9.4 sparse/ragged GQA decode;
+  - T9.5 chunk recurrence / scan;
   - T9.3 dual-score MLA GEMM;
   - T9.3 full paged MLA decode;
   - T9.1 grouped GEMM.
 
-## Completion Criteria
+## Regression Criteria
 
-This task is complete only when:
+This contract stays satisfied only while:
 
 - verifier failures occur before source/runtime recovery;
-- current T7/T9 positive runtime gates still pass;
+- current admitted T7/T9 positive runtime gates still pass;
 - the verifier covers latest-producer, release, queue, and storage-format
   invariants for the admitted surface;
-- the source/body executable queue extractor is deleted and admission consumes
+- projection consumes `TTKernel.queue_events`, and admission consumes
   structured physical queue-event records from `KernelSpec`;
 - docs, progress, and memory reflect the new boundary;
 - no new side channel, payload, or workload-specific schema is introduced.

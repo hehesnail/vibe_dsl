@@ -12,7 +12,7 @@
 4. `task2_ttprogram_companion_cutover.md`
 5. `task3_runtime_gate_and_workload_cutover.md`
 6. `../progress.md`
-7. Active design docs listed below
+7. Current and supporting design docs listed below
 
 ## Core Contracts
 
@@ -24,26 +24,34 @@
 | `task2_ttprogram_companion_cutover.md` | `TTProgram` 表示层合同；定义 TT-specific target realization。 |
 | `task3_runtime_gate_and_workload_cutover.md` | `ExecutableSpec` / leaf reader 合同；定义 leaf projection、backend admission、runtime-module build 边界。 |
 
-## Active Design Docs
+## Current Design Docs
 
 | Document | Role |
 | --- | --- |
-| `2026-04-23-blackhole-live-form-materialization-admission.md` | Live-form / materialization support surface。 |
-| `2026-04-27-blackhole-tile-compute-preservation.md` | Tile compute preservation and explicit leaf normalization boundary。 |
-| `2026-04-27-blackhole-post-preservation-pass-shrink.md` | Post-preservation implementation responsibility split rules。 |
-| `2026-04-28-blackhole-lower-tile-op-normalizer-dedup.md` | `LowerTileOp` / Blackhole normalizer boundary。 |
-| `2026-04-28-blackhole-algorithmic-generalization.md` | `AccessRegion` / dependence graph / `LiveValueSSA` / TT live-form solver contract。 |
-| `2026-04-28-blackhole-tile-compute-legalizer-dag-covering.md` | `TileComputeDAG` legalizer / covering contract。 |
-| `2026-04-29-blackhole-resource-planning-roadmap.md` | Resource planning roadmap；CB/L1 admission、core placement、buffer distribution、later NoC work。 |
-| `2026-05-02-blackhole-tensor-sharding-and-reshard.md` | Tensor/value sharding and explicit reshard design；separates TTNN-style `MemoryConfig` intent from low-level `TTBufferDistributionPlan` address ABI。 |
-| `2026-05-03-blackhole-t4-t5-accessor-and-sharded-gemm.md` | T4 external accessor/runtime ABI expansion and dependent T5 sharded GEMM/layout boundary。 |
-| `2026-05-03-blackhole-t6-topk.md` | T6 standalone value/index selection boundary。 |
-| `2026-05-05-blackhole-exact-cb-liveness-allocation.md` | Exact-CB virtual value liveness、loop-carried lifetime、physical CB allocation、release-event cutover contract。 |
-| `2026-05-05-blackhole-t8-irregular-indexed-access.md` | T8 irregular work domains、ragged predicates、indexed access evidence, and per-work descriptor cutover contract。 |
-| `2026-05-05-blackhole-t9-workload-first.md` | T9 workload-first direct-runtime checkpoints, starting with pre-grouped GEMM over TIR-derived non-uniform token ranges。 |
-| `2026-05-07-blackhole-ttprogram-target-execution-contract.md` | Active parent task for hardening `TTProgram` into the target-facing execution contract; tracks completed slices versus remaining semantic-recovery cleanup。 |
-| `2026-05-07-blackhole-typed-tile-cb-queue-verifier.md` | TTProgram-scoped typed tile-value / physical CB queue verifier for current admitted T7/T9 exact-CB and compute-local CB paths。 |
-| `blackhole_first_principles_protocol_audit.md` | Historical fake/legacy protocol audit table。 |
+| `2026-05-05-blackhole-t9-workload-first.md` | Current P1 workload-first lane.  Workload names are witnesses; TIR evidence and typed contracts remain owner truth. |
+| `2026-04-29-blackhole-resource-planning-roadmap.md` | Resource planning and later P2/T10 expansion boundary: CB/L1 pressure, placement, buffer distribution, and future NoC work. |
+
+## Supporting Contracts
+
+These documents remain valid contract references for current work, but they
+are not live task boards.
+
+| Document | Role |
+| --- | --- |
+| `2026-04-23-blackhole-live-form-materialization-admission.md` | Live-form / materialization admission surface. |
+| `2026-04-27-blackhole-tile-compute-preservation.md` | Tile compute preservation and explicit leaf normalization boundary. |
+| `2026-04-27-blackhole-post-preservation-pass-shrink.md` | Post-preservation implementation responsibility split rules. |
+| `2026-04-28-blackhole-lower-tile-op-normalizer-dedup.md` | `LowerTileOp` / Blackhole normalizer boundary. |
+| `2026-04-28-blackhole-algorithmic-generalization.md` | `AccessRegion` / dependence graph / `LiveValueSSA` / TT live-form solver contract. |
+| `2026-04-28-blackhole-tile-compute-legalizer-dag-covering.md` | `TileComputeDAG` legalizer / covering contract. |
+| `2026-05-02-blackhole-tensor-sharding-and-reshard.md` | Tensor/value sharding and explicit reshard design; separates TTNN-style `MemoryConfig` intent from low-level `TTBufferDistributionPlan` address ABI. |
+| `2026-05-03-blackhole-t4-t5-accessor-and-sharded-gemm.md` | External accessor/runtime ABI and sharded GEMM/layout boundary. |
+| `2026-05-03-blackhole-t6-topk.md` | Standalone value/index selection boundary. |
+| `2026-05-05-blackhole-exact-cb-liveness-allocation.md` | Exact-CB virtual-value liveness, loop-carried lifetime, physical CB allocation, and release-event contract. |
+| `2026-05-05-blackhole-t8-irregular-indexed-access.md` | Irregular work domains, ragged predicates, indexed access evidence, and per-work descriptor contract. |
+| `2026-05-07-blackhole-ttprogram-target-execution-contract.md` | Standing `TTProgram` target execution contract and retired recovery-surface guardrails. |
+| `2026-05-07-blackhole-typed-tile-cb-queue-verifier.md` | TTProgram-scoped tile-value / physical CB queue verifier contract. |
+| `blackhole_first_principles_protocol_audit.md` | Historical fake/legacy protocol audit table. |
 
 ## Stable Architecture Skeleton
 

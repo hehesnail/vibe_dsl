@@ -15,7 +15,7 @@ Normalized Tile TIR
   -> ExecutableSpec
 ```
 
-Current execution status lives in `tasks/progress.md`.
+Current execution status and next work live in `tasks/progress.md`.
 
 ## Problem
 
@@ -421,14 +421,14 @@ Failures must be typed:
 
 Plain `unsupported` and source/runtime best effort are forbidden.
 
-## Validation Plan
+## Validation Contract
 
 ### Structure
 
-- Add TTProgram construction tests for exact-CB lifecycle objects.
-- Add validator rejects for missing producer, missing use, missing loop
+- TTProgram construction tests cover exact-CB lifecycle objects.
+- Validator negative tests cover missing producer, missing use, missing loop
   backedge, premature release, and interfering intervals sharing a CB.
-- Add projection tests proving lifecycle-driven `TTCBPlan` lifetime fields and
+- Projection tests prove lifecycle-driven `TTCBPlan` lifetime fields and
   release events are present.
 
 ### Source
@@ -465,57 +465,31 @@ Required negative gates:
 - full-tile consumer with only slice/local-fragment coverage rejects before
   source/runtime.
 
-2026-05-05 checkpoint status:
+## Current Contract
 
-- TTProgram and ExecutableSpec now carry exact-CB virtual values, use events,
-  live intervals, allocations, and release events for the covered flash
-  loop-carried surface.
-- The old loop-carried cb/buffer twin maps and completed-state recovery set
-  were removed from active source lowering.  Loop-carried source rendering now
-  uses one `LoopCarriedExactCBState` cursor, and every write to that cursor
-  goes through the lifecycle-record helper.
-- Seq128, seq256, and seq512 bf16 MHA source/spec gates prove the loop-carried
-  exact-CB records for `acc_o` and the matching allocation/release records.
-  Current TT-Sim direct runtime is fail-closed with a typed simulator reason
-  when loop-carried input exact-CB backedge release would hit
-  `tensix_execute_pacr: count=1`.
-- Seq64 remains the positive direct-runtime correctness gate; the simulator
-  gate is intentionally scoped to loop-carried input exact-CB backedge release,
-  so accumulator-only loop state is not rejected.
-- Borrowed exact-input last-use release decisions are driven by the
-  allocator/release surface instead of local source helper decisions.
-- 2026-05-05 follow-up: borrowed exact-input last-use rendering no longer
-  calls `ShouldReleaseBorrowedExactInputAfterUse` or passes a local
-  `should_release` boolean into release-event recording.  The source renderer
-  consumes an optional typed release event produced through a release-policy
-  helper.  Temporary owned exact inputs can still render a local consume pop
-  when no cross-boundary live value exists; cross-boundary exact-CB
-  materialization pops are not allowed to use that fallback.
-- 2026-05-05 follow-up: validator rejects loop-carried exact-CB values whose
-  live interval lacks live-in/live-out evidence, and rejects overlapping
-  exact-CB virtual intervals that share one physical CB.  The interference
-  gate exposed a real positive-path bug: virtual intervals inherited merged
-  CB-requirement lifetime begin points, so later exact-CB versions on the same
-  requirement looked live from program point 0.  The interval builder now uses
-  producer/use evidence for virtual-value begin/end, and `PlanTTCBAlloc`
-  incorporates exact-CB interval bounds into requirement lifetime before
-  assigning physical CB IDs.
-- 2026-05-05 completion follow-up: exact-CB materialization with
-  `pop_front=true` now requires a typed `TTExactCBReleaseEvent` and fails
-  closed if release lookup cannot resolve the materialized logical live value.
-  Loop-carried exact-CB output materialization binds the destination buffer's
-  logical identity before release lookup, so it does not fall back to an
-  ephemeral local buffer identity.  `ValidateTTProgram` also rejects a
-  full-logical-tile consumer bound to a `thread_distributed_slice` live form.
-- 2026-05-05 completion verification: the T7.5 selector reported
-  `10 passed, 3 skipped`.  The three skips remain the typed TT-Sim
-  `tensix_execute_pacr: count=1` capability boundary for seq128/256/512 after
-  source/spec admission; seq64 remains the positive direct-runtime correctness
-  gate.
+- `TTProgram` and `ExecutableSpec` carry exact-CB virtual values, use events,
+  live intervals, allocations, and release events for covered exact-CB
+  surfaces.
+- Loop-carried exact-CB source rendering consumes typed lifecycle state.  It
+  must not recover completed state from cb/buffer twin maps or local
+  completion sets.
+- Borrowed exact-input release decisions are driven by typed release events.
+  Cross-boundary exact-CB materialization pops require a resolved
+  `TTExactCBReleaseEvent`; temporary local consume pops are allowed only when
+  no cross-boundary live value exists.
+- Virtual-value interval begin/end points come from producer/use evidence, not
+  merged CB-requirement lifetime defaults.  `PlanTTCBAlloc` incorporates
+  exact-CB interval bounds before physical CB assignment.
+- A full-logical-tile consumer must bind a full-logical exact-CB live form.
+  Partial local fragments and `thread_distributed_slice` live forms are not
+  valid substitutes.
+- Extended loop-carried exact-CB recurrence remains admitted only when the
+  source/spec lifecycle evidence is complete and runtime support is proven or
+  fails closed with a typed simulator capability reason.
 
 ## Completion Criteria
 
-This design is implemented only when:
+This contract stays satisfied while:
 
 - exact-CB lifecycle is represented in typed TTProgram fields or objects;
 - `TTCBPlan` lifetime and release behavior come from liveness/allocation;
