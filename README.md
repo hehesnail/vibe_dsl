@@ -44,8 +44,8 @@ source text、最终 TIR body、名字、参数位置、builtin 邻接关系或 
   `tasks/progress.md`
 - Design index:
   `tasks/dev_design/README.md`
-- Architecture/progress overview for external explanation or image generation:
-  `tasks/blackhole_architecture_progress_overview.md`
+- Architecture design overview for external explanation or image generation:
+  `tasks/blackhole_architecture_design_overview.md`
 - Root-cause design:
   `tasks/dev_design/task0_ir_layering_root_cause.md`
 - Stable experience and bug memory:
@@ -115,8 +115,8 @@ not a current validation target.
 - Do not add a second overall design document.
 - Keep current execution state only in `tasks/progress.md`.
 - Keep design docs as contracts, not chronological notebooks.
-- Keep architecture/progress summaries concise and point them back to the
-  authoritative design/progress files.
+- Keep architecture design summaries concise and point them back to the
+  authoritative design files.
 - Put durable lessons in `memory/`.
 - If docs and code diverge, update the relevant design/status first, then
   continue implementation.
