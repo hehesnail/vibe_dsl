@@ -1,0 +1,383 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="3840" height="2160" viewBox="0 0 3840 2160">
+<defs><marker id="arrow" markerWidth="14" markerHeight="14" refX="12" refY="7" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L14,7 L0,14 z" fill="#1557C0" /></marker></defs>
+<rect width="3840" height="2160" fill="white"/>
+<text x="70" y="95" text-anchor="start" style="font-family:Noto Sans CJK SC, Noto Sans CJK JP, DejaVu Sans, Arial, sans-serif;font-size:72px;fill:#E86A1E;font-weight:900;">
+<tspan x="70" dy="0">Worked Example: Paged / Ragged Attention Decode</tspan>
+</text>
+<text x="72" y="155" text-anchor="start" style="font-family:Noto Sans CJK SC, Noto Sans CJK JP, DejaVu Sans, Arial, sans-serif;font-size:35px;fill:#1F2937;font-weight:500;">
+<tspan x="72" dy="0">大字矢量版：同一个 workload 如何从算法语义逐层收敛为 Blackhole / TT-Metal 可执行协议</tspan>
+</text>
+<rect x="70.0" y="245" width="896.5" height="1810" rx="28" fill="white" stroke="#E86A1E" stroke-width="5" opacity="1"/>
+<circle cx="128.0" cy="303" r="42" fill="#E86A1E" stroke="white" stroke-width="5"/>
+<text x="128.0" y="319" text-anchor="middle" style="font-family:Noto Sans CJK SC, Noto Sans CJK JP, DejaVu Sans, Arial, sans-serif;font-size:45px;fill:white;font-weight:900;">
+<tspan x="128.0" dy="0">1</tspan>
+</text>
+<text x="190.0" y="300" text-anchor="start" style="font-family:Noto Sans CJK SC, Noto Sans CJK JP, DejaVu Sans, Arial, sans-serif;font-size:39px;fill:#E86A1E;font-weight:900;">
+<tspan x="190.0" dy="0">Normalized Tile TIR</tspan>
+</text>
+<text x="190.0" y="350" text-anchor="start" style="font-family:Noto Sans CJK SC, Noto Sans CJK JP, DejaVu Sans, Arial, sans-serif;font-size:30px;fill:#1F2937;font-weight:600;">
+<tspan x="190.0" dy="0">算法语义层</tspan>
+</text>
+<rect x="1004.5" y="245" width="896.5" height="1810" rx="28" fill="white" stroke="#087C88" stroke-width="5" opacity="1"/>
+<circle cx="1062.5" cy="303" r="42" fill="#087C88" stroke="white" stroke-width="5"/>
+<text x="1062.5" y="319" text-anchor="middle" style="font-family:Noto Sans CJK SC, Noto Sans CJK JP, DejaVu Sans, Arial, sans-serif;font-size:45px;fill:white;font-weight:900;">
+<tspan x="1062.5" dy="0">2</tspan>
+</text>
+<text x="1124.5" y="300" text-anchor="start" style="font-family:Noto Sans CJK SC, Noto Sans CJK JP, DejaVu Sans, Arial, sans-serif;font-size:39px;fill:#087C88;font-weight:900;">
+<tspan x="1124.5" dy="0">SpatialPlan</tspan>
+</text>
+<text x="1124.5" y="350" text-anchor="start" style="font-family:Noto Sans CJK SC, Noto Sans CJK JP, DejaVu Sans, Arial, sans-serif;font-size:30px;fill:#1F2937;font-weight:600;">
+<tspan x="1124.5" dy="0">空间 / 数据流层</tspan>
+</text>
+<rect x="1939.0" y="245" width="896.5" height="1810" rx="28" fill="white" stroke="#1557C0" stroke-width="5" opacity="1"/>
+<circle cx="1997.0" cy="303" r="42" fill="#1557C0" stroke="white" stroke-width="5"/>
+<text x="1997.0" y="319" text-anchor="middle" style="font-family:Noto Sans CJK SC, Noto Sans CJK JP, DejaVu Sans, Arial, sans-serif;font-size:45px;fill:white;font-weight:900;">
+<tspan x="1997.0" dy="0">3</tspan>
+</text>
+<text x="2059.0" y="300" text-anchor="start" style="font-family:Noto Sans CJK SC, Noto Sans CJK JP, DejaVu Sans, Arial, sans-serif;font-size:39px;fill:#1557C0;font-weight:900;">
+<tspan x="2059.0" dy="0">TTProgram</tspan>
+</text>
+<text x="2059.0" y="350" text-anchor="start" style="font-family:Noto Sans CJK SC, Noto Sans CJK JP, DejaVu Sans, Arial, sans-serif;font-size:30px;fill:#1F2937;font-weight:600;">
+<tspan x="2059.0" dy="0">硬件执行契约层</tspan>
+</text>
+<rect x="2873.5" y="245" width="896.5" height="1810" rx="28" fill="white" stroke="#087C88" stroke-width="5" opacity="1"/>
+<circle cx="2931.5" cy="303" r="42" fill="#087C88" stroke="white" stroke-width="5"/>
+<text x="2931.5" y="319" text-anchor="middle" style="font-family:Noto Sans CJK SC, Noto Sans CJK JP, DejaVu Sans, Arial, sans-serif;font-size:45px;fill:white;font-weight:900;">
+<tspan x="2931.5" dy="0">4</tspan>
+</text>
+<text x="2993.5" y="300" text-anchor="start" style="font-family:Noto Sans CJK SC, Noto Sans CJK JP, DejaVu Sans, Arial, sans-serif;font-size:39px;fill:#087C88;font-weight:900;">
+<tspan x="2993.5" dy="0">ExecutableSpec / Runtime</tspan>
+</text>
+<text x="2993.5" y="350" text-anchor="start" style="font-family:Noto Sans CJK SC, Noto Sans CJK JP, DejaVu Sans, Arial, sans-serif;font-size:30px;fill:#1F2937;font-weight:600;">
+<tspan x="2993.5" dy="0">落地执行层</tspan>
+</text>
+<rect x="115" y="400" width="806.5" height="190" rx="18" fill="#FFF8F2" stroke="#E86A1E" stroke-width="3" opacity="1"/>
+<text x="143" y="442" text-anchor="start" style="font-family:Noto Sans CJK SC, Noto Sans CJK JP, DejaVu Sans, Arial, sans-serif;font-size:31px;fill:#E86A1E;font-weight:900;">
+<tspan x="143" dy="0">输入与索引证据</tspan>
+</text>
+<text x="143" y="488" text-anchor="start" style="font-family:Noto Sans CJK SC, Noto Sans CJK JP, DejaVu Sans, Arial, sans-serif;font-size:29px;fill:#1F2937;font-weight:600;">
+<tspan x="143" dy="0">Q / paged K cache / paged V cache</tspan>
+<tspan x="143" dy="40">page table / cache seq lens / output</tspan>
+</text>
+<rect x="115" y="625" width="806.5" height="190" rx="18" fill="#FFF8F2" stroke="#E86A1E" stroke-width="3" opacity="1"/>
+<text x="143" y="667" text-anchor="start" style="font-family:Noto Sans CJK SC, Noto Sans CJK JP, DejaVu Sans, Arial, sans-serif;font-size:31px;fill:#E86A1E;font-weight:900;">
+<tspan x="143" dy="0">仍然是算法语义</tspan>
+</text>
+<text x="143" y="713" text-anchor="start" style="font-family:Noto Sans CJK SC, Noto Sans CJK JP, DejaVu Sans, Arial, sans-serif;font-size:29px;fill:#1F2937;font-weight:600;">
+<tspan x="143" dy="0">page-table lookup 是 index expression</tspan>
+<tspan x="143" dy="40">ragged valid-row 是 predicate</tspan>
+</text>
+<text x="140" y="885" text-anchor="start" style="font-family:Noto Sans CJK SC, Noto Sans CJK JP, DejaVu Sans, Arial, sans-serif;font-size:31px;fill:#1557C0;font-weight:900;">
+<tspan x="140" dy="0">Paged K/V pages in DRAM</tspan>
+</text>
+<rect x="160" y="930" width="38" height="32" rx="5" fill="#DAE8FF" stroke="#1557C0" stroke-width="2" opacity="1"/>
+<rect x="218" y="930" width="38" height="32" rx="5" fill="#DAE8FF" stroke="#1557C0" stroke-width="2" opacity="1"/>
+<rect x="276" y="930" width="38" height="32" rx="5" fill="#DAE8FF" stroke="#1557C0" stroke-width="2" opacity="1"/>
+<rect x="334" y="930" width="38" height="32" rx="5" fill="#DAE8FF" stroke="#1557C0" stroke-width="2" opacity="1"/>
+<rect x="392" y="930" width="38" height="32" rx="5" fill="#DAE8FF" stroke="#1557C0" stroke-width="2" opacity="1"/>
+<rect x="450" y="930" width="38" height="32" rx="5" fill="#DAE8FF" stroke="#1557C0" stroke-width="2" opacity="1"/>
+<rect x="508" y="930" width="38" height="32" rx="5" fill="#DAE8FF" stroke="#1557C0" stroke-width="2" opacity="1"/>
+<rect x="160" y="978" width="38" height="32" rx="5" fill="#DAE8FF" stroke="#1557C0" stroke-width="2" opacity="1"/>
+<rect x="218" y="978" width="38" height="32" rx="5" fill="#DAE8FF" stroke="#1557C0" stroke-width="2" opacity="1"/>
+<rect x="276" y="978" width="38" height="32" rx="5" fill="#DAE8FF" stroke="#1557C0" stroke-width="2" opacity="1"/>
+<rect x="334" y="978" width="38" height="32" rx="5" fill="#DAE8FF" stroke="#1557C0" stroke-width="2" opacity="1"/>
+<rect x="392" y="978" width="38" height="32" rx="5" fill="#DAE8FF" stroke="#1557C0" stroke-width="2" opacity="1"/>
+<rect x="450" y="978" width="38" height="32" rx="5" fill="#DAE8FF" stroke="#1557C0" stroke-width="2" opacity="1"/>
+<rect x="508" y="978" width="38" height="32" rx="5" fill="#DAE8FF" stroke="#1557C0" stroke-width="2" opacity="1"/>
+<rect x="160" y="1026" width="38" height="32" rx="5" fill="#DAE8FF" stroke="#1557C0" stroke-width="2" opacity="1"/>
+<rect x="218" y="1026" width="38" height="32" rx="5" fill="#DAE8FF" stroke="#1557C0" stroke-width="2" opacity="1"/>
+<rect x="276" y="1026" width="38" height="32" rx="5" fill="#DAE8FF" stroke="#1557C0" stroke-width="2" opacity="1"/>
+<rect x="334" y="1026" width="38" height="32" rx="5" fill="#DAE8FF" stroke="#1557C0" stroke-width="2" opacity="1"/>
+<rect x="392" y="1026" width="38" height="32" rx="5" fill="#DAE8FF" stroke="#1557C0" stroke-width="2" opacity="1"/>
+<rect x="450" y="1026" width="38" height="32" rx="5" fill="#DAE8FF" stroke="#1557C0" stroke-width="2" opacity="1"/>
+<rect x="508" y="1026" width="38" height="32" rx="5" fill="#DAE8FF" stroke="#1557C0" stroke-width="2" opacity="1"/>
+<rect x="160" y="1074" width="38" height="32" rx="5" fill="#DAE8FF" stroke="#1557C0" stroke-width="2" opacity="1"/>
+<rect x="218" y="1074" width="38" height="32" rx="5" fill="#DAE8FF" stroke="#1557C0" stroke-width="2" opacity="1"/>
+<rect x="276" y="1074" width="38" height="32" rx="5" fill="#DAE8FF" stroke="#1557C0" stroke-width="2" opacity="1"/>
+<rect x="334" y="1074" width="38" height="32" rx="5" fill="#DAE8FF" stroke="#1557C0" stroke-width="2" opacity="1"/>
+<rect x="392" y="1074" width="38" height="32" rx="5" fill="#DAE8FF" stroke="#1557C0" stroke-width="2" opacity="1"/>
+<rect x="450" y="1074" width="38" height="32" rx="5" fill="#DAE8FF" stroke="#1557C0" stroke-width="2" opacity="1"/>
+<rect x="508" y="1074" width="38" height="32" rx="5" fill="#DAE8FF" stroke="#1557C0" stroke-width="2" opacity="1"/>
+<rect x="160" y="1122" width="38" height="32" rx="5" fill="#DAE8FF" stroke="#1557C0" stroke-width="2" opacity="1"/>
+<rect x="218" y="1122" width="38" height="32" rx="5" fill="#DAE8FF" stroke="#1557C0" stroke-width="2" opacity="1"/>
+<rect x="276" y="1122" width="38" height="32" rx="5" fill="#DAE8FF" stroke="#1557C0" stroke-width="2" opacity="1"/>
+<rect x="334" y="1122" width="38" height="32" rx="5" fill="#DAE8FF" stroke="#1557C0" stroke-width="2" opacity="1"/>
+<rect x="392" y="1122" width="38" height="32" rx="5" fill="#DAE8FF" stroke="#1557C0" stroke-width="2" opacity="1"/>
+<rect x="450" y="1122" width="38" height="32" rx="5" fill="#DAE8FF" stroke="#1557C0" stroke-width="2" opacity="1"/>
+<rect x="508" y="1122" width="38" height="32" rx="5" fill="#DAE8FF" stroke="#1557C0" stroke-width="2" opacity="1"/>
+<rect x="625" y="905" width="250" height="130" rx="18" fill="#FFF8F2" stroke="#E86A1E" stroke-width="3" opacity="1"/>
+<text x="750" y="947" text-anchor="middle" style="font-family:Noto Sans CJK SC, Noto Sans CJK JP, DejaVu Sans, Arial, sans-serif;font-size:27px;fill:#1F2937;font-weight:700;">
+<tspan x="750" dy="0">page_table</tspan>
+<tspan x="750" dy="36">(seq, page)</tspan>
+<tspan x="750" dy="36">→ physical page</tspan>
+</text>
+<line x1="615" y1="990" x2="545" y2="990" stroke="#E86A1E" stroke-width="5" marker-end="url(#arrow)" stroke-linecap="round"/>
+<text x="140" y="1245" text-anchor="start" style="font-family:Noto Sans CJK SC, Noto Sans CJK JP, DejaVu Sans, Arial, sans-serif;font-size:33px;fill:#E86A1E;font-weight:900;">
+<tspan x="140" dy="0">显式 tile compute</tspan>
+</text>
+<rect x="140" y="1305" width="756.5" height="105" rx="18" fill="#FFF4EA" stroke="#E86A1E" stroke-width="3" opacity="1"/>
+<text x="170" y="1347" text-anchor="start" style="font-family:Noto Sans CJK SC, Noto Sans CJK JP, DejaVu Sans, Arial, sans-serif;font-size:30px;fill:#E86A1E;font-weight:900;">
+<tspan x="170" dy="0">Score GEMM</tspan>
+</text>
+<text x="170" y="1387" text-anchor="start" style="font-family:Noto Sans CJK SC, Noto Sans CJK JP, DejaVu Sans, Arial, sans-serif;font-size:27px;fill:#1F2937;font-weight:600;">
+<tspan x="170" dy="0">Q x K^T + mask</tspan>
+</text>
+<rect x="140" y="1450" width="756.5" height="105" rx="18" fill="#FFF4EA" stroke="#E86A1E" stroke-width="3" opacity="1"/>
+<text x="170" y="1492" text-anchor="start" style="font-family:Noto Sans CJK SC, Noto Sans CJK JP, DejaVu Sans, Arial, sans-serif;font-size:30px;fill:#E86A1E;font-weight:900;">
+<tspan x="170" dy="0">Online softmax</tspan>
+</text>
+<text x="170" y="1532" text-anchor="start" style="font-family:Noto Sans CJK SC, Noto Sans CJK JP, DejaVu Sans, Arial, sans-serif;font-size:27px;fill:#1F2937;font-weight:600;">
+<tspan x="170" dy="0">running max / logsum</tspan>
+</text>
+<rect x="140" y="1595" width="756.5" height="105" rx="18" fill="#FFF4EA" stroke="#E86A1E" stroke-width="3" opacity="1"/>
+<text x="170" y="1637" text-anchor="start" style="font-family:Noto Sans CJK SC, Noto Sans CJK JP, DejaVu Sans, Arial, sans-serif;font-size:30px;fill:#E86A1E;font-weight:900;">
+<tspan x="170" dy="0">Value accumulation</tspan>
+</text>
+<text x="170" y="1677" text-anchor="start" style="font-family:Noto Sans CJK SC, Noto Sans CJK JP, DejaVu Sans, Arial, sans-serif;font-size:27px;fill:#1F2937;font-weight:600;">
+<tspan x="170" dy="0">partial output += alpha * V</tspan>
+</text>
+<rect x="1049.5" y="400" width="806.5" height="160" rx="18" fill="#F2FBFC" stroke="#087C88" stroke-width="3" opacity="1"/>
+<text x="1077.5" y="442" text-anchor="start" style="font-family:Noto Sans CJK SC, Noto Sans CJK JP, DejaVu Sans, Arial, sans-serif;font-size:31px;fill:#087C88;font-weight:900;">
+<tspan x="1077.5" dy="0">执行单元</tspan>
+</text>
+<text x="1077.5" y="488" text-anchor="start" style="font-family:Noto Sans CJK SC, Noto Sans CJK JP, DejaVu Sans, Arial, sans-serif;font-size:29px;fill:#1F2937;font-weight:600;">
+<tspan x="1077.5" dy="0">Page reader / score-softmax</tspan>
+<tspan x="1077.5" dy="40">value accumulation / writer</tspan>
+</text>
+<rect x="1064.5" y="655" width="110" height="100" rx="18" fill="#F2FBFC" stroke="#087C88" stroke-width="4" opacity="1"/>
+<text x="1119.5" y="694" text-anchor="middle" style="font-family:Noto Sans CJK SC, Noto Sans CJK JP, DejaVu Sans, Arial, sans-serif;font-size:23px;fill:#087C88;font-weight:900;">
+<tspan x="1119.5" dy="0">Page</tspan>
+<tspan x="1119.5" dy="30">select</tspan>
+</text>
+<line x1="1182.5" y1="705" x2="1202.5" y2="705" stroke="#087C88" stroke-width="5" marker-end="url(#arrow)" stroke-linecap="round"/>
+<rect x="1212.5" y="655" width="150" height="100" rx="18" fill="#F2FBFC" stroke="#087C88" stroke-width="4" opacity="1"/>
+<text x="1287.5" y="694" text-anchor="middle" style="font-family:Noto Sans CJK SC, Noto Sans CJK JP, DejaVu Sans, Arial, sans-serif;font-size:23px;fill:#087C88;font-weight:900;">
+<tspan x="1287.5" dy="0">K/V</tspan>
+<tspan x="1287.5" dy="30">materialize</tspan>
+</text>
+<line x1="1370.5" y1="705" x2="1390.5" y2="705" stroke="#087C88" stroke-width="5" marker-end="url(#arrow)" stroke-linecap="round"/>
+<rect x="1400.5" y="655" width="145" height="100" rx="18" fill="#F2FBFC" stroke="#087C88" stroke-width="4" opacity="1"/>
+<text x="1473.0" y="694" text-anchor="middle" style="font-family:Noto Sans CJK SC, Noto Sans CJK JP, DejaVu Sans, Arial, sans-serif;font-size:23px;fill:#087C88;font-weight:900;">
+<tspan x="1473.0" dy="0">Score</tspan>
+<tspan x="1473.0" dy="30">softmax</tspan>
+</text>
+<line x1="1553.5" y1="705" x2="1573.5" y2="705" stroke="#087C88" stroke-width="5" marker-end="url(#arrow)" stroke-linecap="round"/>
+<rect x="1583.5" y="655" width="135" height="100" rx="18" fill="#F2FBFC" stroke="#087C88" stroke-width="4" opacity="1"/>
+<text x="1651.0" y="694" text-anchor="middle" style="font-family:Noto Sans CJK SC, Noto Sans CJK JP, DejaVu Sans, Arial, sans-serif;font-size:23px;fill:#087C88;font-weight:900;">
+<tspan x="1651.0" dy="0">Value</tspan>
+<tspan x="1651.0" dy="30">accum</tspan>
+</text>
+<line x1="1726.5" y1="705" x2="1746.5" y2="705" stroke="#087C88" stroke-width="5" marker-end="url(#arrow)" stroke-linecap="round"/>
+<rect x="1756.5" y="655" width="130" height="100" rx="18" fill="#F2FBFC" stroke="#087C88" stroke-width="4" opacity="1"/>
+<text x="1821.5" y="694" text-anchor="middle" style="font-family:Noto Sans CJK SC, Noto Sans CJK JP, DejaVu Sans, Arial, sans-serif;font-size:23px;fill:#087C88;font-weight:900;">
+<tspan x="1821.5" dy="0">Output</tspan>
+<tspan x="1821.5" dy="30">write</tspan>
+</text>
+<rect x="1049.5" y="835" width="806.5" height="210" rx="18" fill="#F2FBFC" stroke="#087C88" stroke-width="3" opacity="1"/>
+<text x="1077.5" y="877" text-anchor="start" style="font-family:Noto Sans CJK SC, Noto Sans CJK JP, DejaVu Sans, Arial, sans-serif;font-size:31px;fill:#087C88;font-weight:900;">
+<tspan x="1077.5" dy="0">数据流边</tspan>
+</text>
+<text x="1077.5" y="923" text-anchor="start" style="font-family:Noto Sans CJK SC, Noto Sans CJK JP, DejaVu Sans, Arial, sans-serif;font-size:29px;fill:#1F2937;font-weight:600;">
+<tspan x="1077.5" dy="0">page selection → K/V materialization</tspan>
+<tspan x="1077.5" dy="40">predicate evidence → valid-row bounds</tspan>
+</text>
+<rect x="1049.5" y="1080" width="806.5" height="250" rx="18" fill="#FFF6EF" stroke="#E86A1E" stroke-width="3" opacity="1"/>
+<text x="1077.5" y="1122" text-anchor="start" style="font-family:Noto Sans CJK SC, Noto Sans CJK JP, DejaVu Sans, Arial, sans-serif;font-size:31px;fill:#E86A1E;font-weight:900;">
+<tspan x="1077.5" dy="0">跨页 carry edges</tspan>
+</text>
+<text x="1077.5" y="1168" text-anchor="start" style="font-family:Noto Sans CJK SC, Noto Sans CJK JP, DejaVu Sans, Arial, sans-serif;font-size:31px;fill:#1F2937;font-weight:600;">
+<tspan x="1077.5" dy="0">running_max</tspan>
+<tspan x="1077.5" dy="43">logsum_exp</tspan>
+<tspan x="1077.5" dy="43">partial_output</tspan>
+</text>
+<rect x="1049.5" y="1380" width="806.5" height="230" rx="18" fill="#F2FBFC" stroke="#087C88" stroke-width="3" opacity="1"/>
+<text x="1077.5" y="1422" text-anchor="start" style="font-family:Noto Sans CJK SC, Noto Sans CJK JP, DejaVu Sans, Arial, sans-serif;font-size:31px;fill:#087C88;font-weight:900;">
+<tspan x="1077.5" dy="0">物化边界</tspan>
+</text>
+<text x="1077.5" y="1468" text-anchor="start" style="font-family:Noto Sans CJK SC, Noto Sans CJK JP, DejaVu Sans, Arial, sans-serif;font-size:31px;fill:#1F2937;font-weight:600;">
+<tspan x="1077.5" dy="0">DRAM-backed page data</tspan>
+<tspan x="1077.5" dy="43">→ compute-ready live forms</tspan>
+</text>
+<rect x="1074.5" y="1675" width="756.5" height="170" rx="20" fill="#F8FAFC" stroke="#CBD5E1" stroke-width="3" opacity="1"/>
+<text x="1452.75" y="1743" text-anchor="middle" style="font-family:Noto Sans CJK SC, Noto Sans CJK JP, DejaVu Sans, Arial, sans-serif;font-size:27px;fill:#1F2937;font-weight:700;">
+<tspan x="1452.75" dy="0">此层不决定 physical CB ID、core coordinate、runtime arg slot；</tspan>
+<tspan x="1452.75" dy="43">只冻结目标无关的数据流与生命周期。</tspan>
+</text>
+<rect x="1984.0" y="400" width="806.5" height="165" rx="18" fill="#F4F8FF" stroke="#1557C0" stroke-width="3" opacity="1"/>
+<text x="2012.0" y="442" text-anchor="start" style="font-family:Noto Sans CJK SC, Noto Sans CJK JP, DejaVu Sans, Arial, sans-serif;font-size:31px;fill:#1557C0;font-weight:900;">
+<tspan x="2012.0" dy="0">工作分片</tspan>
+</text>
+<text x="2012.0" y="488" text-anchor="start" style="font-family:Noto Sans CJK SC, Noto Sans CJK JP, DejaVu Sans, Arial, sans-serif;font-size:29px;fill:#1F2937;font-weight:600;">
+<tspan x="2012.0" dy="0">work packets：sequence / head / page range</tspan>
+</text>
+<text x="2009.0" y="640" text-anchor="start" style="font-family:Noto Sans CJK SC, Noto Sans CJK JP, DejaVu Sans, Arial, sans-serif;font-size:33px;fill:#1557C0;font-weight:900;">
+<tspan x="2009.0" dy="0">Kernel records</tspan>
+</text>
+<rect x="2009.0" y="680" width="756.5" height="95" rx="18" fill="#F4F8FF" stroke="#1557C0" stroke-width="3" opacity="1"/>
+<text x="2044.0" y="720" text-anchor="start" style="font-family:Noto Sans CJK SC, Noto Sans CJK JP, DejaVu Sans, Arial, sans-serif;font-size:31px;fill:#1557C0;font-weight:900;">
+<tspan x="2044.0" dy="0">Reader</tspan>
+</text>
+<text x="2239.0" y="720" text-anchor="start" style="font-family:Noto Sans CJK SC, Noto Sans CJK JP, DejaVu Sans, Arial, sans-serif;font-size:26px;fill:#1F2937;font-weight:600;">
+<tspan x="2239.0" dy="0">selected K/V pages → CB</tspan>
+</text>
+<rect x="2009.0" y="810" width="756.5" height="95" rx="18" fill="#F4F8FF" stroke="#1557C0" stroke-width="3" opacity="1"/>
+<text x="2044.0" y="850" text-anchor="start" style="font-family:Noto Sans CJK SC, Noto Sans CJK JP, DejaVu Sans, Arial, sans-serif;font-size:31px;fill:#1557C0;font-weight:900;">
+<tspan x="2044.0" dy="0">Compute</tspan>
+</text>
+<text x="2239.0" y="850" text-anchor="start" style="font-family:Noto Sans CJK SC, Noto Sans CJK JP, DejaVu Sans, Arial, sans-serif;font-size:26px;fill:#1F2937;font-weight:600;">
+<tspan x="2239.0" dy="0">score + softmax + value accum</tspan>
+</text>
+<rect x="2009.0" y="940" width="756.5" height="95" rx="18" fill="#F4F8FF" stroke="#1557C0" stroke-width="3" opacity="1"/>
+<text x="2044.0" y="980" text-anchor="start" style="font-family:Noto Sans CJK SC, Noto Sans CJK JP, DejaVu Sans, Arial, sans-serif;font-size:31px;fill:#1557C0;font-weight:900;">
+<tspan x="2044.0" dy="0">Writer</tspan>
+</text>
+<text x="2239.0" y="980" text-anchor="start" style="font-family:Noto Sans CJK SC, Noto Sans CJK JP, DejaVu Sans, Arial, sans-serif;font-size:26px;fill:#1F2937;font-weight:600;">
+<tspan x="2239.0" dy="0">flush final output</tspan>
+</text>
+<text x="2009.0" y="1105" text-anchor="start" style="font-family:Noto Sans CJK SC, Noto Sans CJK JP, DejaVu Sans, Arial, sans-serif;font-size:33px;fill:#1557C0;font-weight:900;">
+<tspan x="2009.0" dy="0">CB plans + queue events</tspan>
+</text>
+<rect x="2009.0" y="1155" width="756.5" height="375" rx="18" fill="white" stroke="#1557C0" stroke-width="3" opacity="1"/>
+<text x="2039.0" y="1203" text-anchor="start" style="font-family:Noto Sans CJK SC, Noto Sans CJK JP, DejaVu Sans, Arial, sans-serif;font-size:27px;fill:#1557C0;font-weight:900;">
+<tspan x="2039.0" dy="0">CB</tspan>
+</text>
+<text x="2229.0" y="1203" text-anchor="start" style="font-family:Noto Sans CJK SC, Noto Sans CJK JP, DejaVu Sans, Arial, sans-serif;font-size:27px;fill:#1557C0;font-weight:900;">
+<tspan x="2229.0" dy="0">Role</tspan>
+</text>
+<text x="2439.0" y="1203" text-anchor="start" style="font-family:Noto Sans CJK SC, Noto Sans CJK JP, DejaVu Sans, Arial, sans-serif;font-size:27px;fill:#1557C0;font-weight:900;">
+<tspan x="2439.0" dy="0">Producer → Consumer</tspan>
+</text>
+<line x1="2009.0" y1="1225" x2="2765.5" y2="1225" stroke="#BFD2F5" stroke-width="2" stroke-linecap="round"/>
+<text x="2039.0" y="1265" text-anchor="start" style="font-family:Noto Sans CJK SC, Noto Sans CJK JP, DejaVu Sans, Arial, sans-serif;font-size:24px;fill:#1F2937;font-weight:650;">
+<tspan x="2039.0" dy="0">CB0 Q</tspan>
+</text>
+<text x="2229.0" y="1265" text-anchor="start" style="font-family:Noto Sans CJK SC, Noto Sans CJK JP, DejaVu Sans, Arial, sans-serif;font-size:24px;fill:#1F2937;font-weight:650;">
+<tspan x="2229.0" dy="0">input</tspan>
+</text>
+<text x="2439.0" y="1265" text-anchor="start" style="font-family:Noto Sans CJK SC, Noto Sans CJK JP, DejaVu Sans, Arial, sans-serif;font-size:24px;fill:#1F2937;font-weight:650;">
+<tspan x="2439.0" dy="0">Reader → Compute</tspan>
+</text>
+<line x1="2009.0" y1="1283" x2="2765.5" y2="1283" stroke="#BFD2F5" stroke-width="2" stroke-linecap="round"/>
+<text x="2039.0" y="1323" text-anchor="start" style="font-family:Noto Sans CJK SC, Noto Sans CJK JP, DejaVu Sans, Arial, sans-serif;font-size:24px;fill:#1F2937;font-weight:650;">
+<tspan x="2039.0" dy="0">CB1 K</tspan>
+</text>
+<text x="2229.0" y="1323" text-anchor="start" style="font-family:Noto Sans CJK SC, Noto Sans CJK JP, DejaVu Sans, Arial, sans-serif;font-size:24px;fill:#1F2937;font-weight:650;">
+<tspan x="2229.0" dy="0">input</tspan>
+</text>
+<text x="2439.0" y="1323" text-anchor="start" style="font-family:Noto Sans CJK SC, Noto Sans CJK JP, DejaVu Sans, Arial, sans-serif;font-size:24px;fill:#1F2937;font-weight:650;">
+<tspan x="2439.0" dy="0">Reader → Compute</tspan>
+</text>
+<line x1="2009.0" y1="1341" x2="2765.5" y2="1341" stroke="#BFD2F5" stroke-width="2" stroke-linecap="round"/>
+<text x="2039.0" y="1381" text-anchor="start" style="font-family:Noto Sans CJK SC, Noto Sans CJK JP, DejaVu Sans, Arial, sans-serif;font-size:24px;fill:#1F2937;font-weight:650;">
+<tspan x="2039.0" dy="0">CB2 V</tspan>
+</text>
+<text x="2229.0" y="1381" text-anchor="start" style="font-family:Noto Sans CJK SC, Noto Sans CJK JP, DejaVu Sans, Arial, sans-serif;font-size:24px;fill:#1F2937;font-weight:650;">
+<tspan x="2229.0" dy="0">input</tspan>
+</text>
+<text x="2439.0" y="1381" text-anchor="start" style="font-family:Noto Sans CJK SC, Noto Sans CJK JP, DejaVu Sans, Arial, sans-serif;font-size:24px;fill:#1F2937;font-weight:650;">
+<tspan x="2439.0" dy="0">Reader → Compute</tspan>
+</text>
+<line x1="2009.0" y1="1399" x2="2765.5" y2="1399" stroke="#BFD2F5" stroke-width="2" stroke-linecap="round"/>
+<text x="2039.0" y="1439" text-anchor="start" style="font-family:Noto Sans CJK SC, Noto Sans CJK JP, DejaVu Sans, Arial, sans-serif;font-size:24px;fill:#1F2937;font-weight:650;">
+<tspan x="2039.0" dy="0">CB3 state</tspan>
+</text>
+<text x="2229.0" y="1439" text-anchor="start" style="font-family:Noto Sans CJK SC, Noto Sans CJK JP, DejaVu Sans, Arial, sans-serif;font-size:24px;fill:#1F2937;font-weight:650;">
+<tspan x="2229.0" dy="0">state</tspan>
+</text>
+<text x="2439.0" y="1439" text-anchor="start" style="font-family:Noto Sans CJK SC, Noto Sans CJK JP, DejaVu Sans, Arial, sans-serif;font-size:24px;fill:#1F2937;font-weight:650;">
+<tspan x="2439.0" dy="0">Compute → Compute</tspan>
+</text>
+<line x1="2009.0" y1="1457" x2="2765.5" y2="1457" stroke="#BFD2F5" stroke-width="2" stroke-linecap="round"/>
+<text x="2039.0" y="1497" text-anchor="start" style="font-family:Noto Sans CJK SC, Noto Sans CJK JP, DejaVu Sans, Arial, sans-serif;font-size:24px;fill:#1F2937;font-weight:650;">
+<tspan x="2039.0" dy="0">CB4 output</tspan>
+</text>
+<text x="2229.0" y="1497" text-anchor="start" style="font-family:Noto Sans CJK SC, Noto Sans CJK JP, DejaVu Sans, Arial, sans-serif;font-size:24px;fill:#1F2937;font-weight:650;">
+<tspan x="2229.0" dy="0">output</tspan>
+</text>
+<text x="2439.0" y="1497" text-anchor="start" style="font-family:Noto Sans CJK SC, Noto Sans CJK JP, DejaVu Sans, Arial, sans-serif;font-size:24px;fill:#1F2937;font-weight:650;">
+<tspan x="2439.0" dy="0">Compute → Writer</tspan>
+</text>
+<rect x="1984.0" y="1575" width="806.5" height="250" rx="18" fill="#F4F8FF" stroke="#1557C0" stroke-width="3" opacity="1"/>
+<text x="2012.0" y="1617" text-anchor="start" style="font-family:Noto Sans CJK SC, Noto Sans CJK JP, DejaVu Sans, Arial, sans-serif;font-size:31px;fill:#1557C0;font-weight:900;">
+<tspan x="2012.0" dy="0">同时冻结</tspan>
+</text>
+<text x="2012.0" y="1663" text-anchor="start" style="font-family:Noto Sans CJK SC, Noto Sans CJK JP, DejaVu Sans, Arial, sans-serif;font-size:28px;fill:#1F2937;font-weight:600;">
+<tspan x="2012.0" dy="0">transport / accessor plan</tspan>
+<tspan x="2012.0" dy="39">sync / semaphore plan</tspan>
+<tspan x="2012.0" dy="39">per-work ABI：page_start / valid-row bounds</tspan>
+<tspan x="2012.0" dy="39">resource admission</tspan>
+</text>
+<rect x="2918.5" y="400" width="806.5" height="210" rx="18" fill="#F2FBFC" stroke="#087C88" stroke-width="3" opacity="1"/>
+<text x="2946.5" y="442" text-anchor="start" style="font-family:Noto Sans CJK SC, Noto Sans CJK JP, DejaVu Sans, Arial, sans-serif;font-size:31px;fill:#087C88;font-weight:900;">
+<tspan x="2946.5" dy="0">ExecutableSpec 是 typed manifest</tspan>
+</text>
+<text x="2946.5" y="488" text-anchor="start" style="font-family:Noto Sans CJK SC, Noto Sans CJK JP, DejaVu Sans, Arial, sans-serif;font-size:29px;fill:#1F2937;font-weight:600;">
+<tspan x="2946.5" dy="0">kernel specs / runtime args / accessors</tspan>
+<tspan x="2946.5" dy="40">CB configs / queue events / core mapping</tspan>
+</text>
+<text x="2943.5" y="685" text-anchor="start" style="font-family:Noto Sans CJK SC, Noto Sans CJK JP, DejaVu Sans, Arial, sans-serif;font-size:34px;fill:#087C88;font-weight:900;">
+<tspan x="2943.5" dy="0">Runtime Execution</tspan>
+</text>
+<circle cx="2965.5" cy="762" r="31" fill="#087C88" stroke="white" stroke-width="4"/>
+<text x="2965.5" y="774" text-anchor="middle" style="font-family:Noto Sans CJK SC, Noto Sans CJK JP, DejaVu Sans, Arial, sans-serif;font-size:30px;fill:white;font-weight:900;">
+<tspan x="2965.5" dy="0">1</tspan>
+</text>
+<text x="3013.5" y="760" text-anchor="start" style="font-family:Noto Sans CJK SC, Noto Sans CJK JP, DejaVu Sans, Arial, sans-serif;font-size:32px;fill:#087C88;font-weight:900;">
+<tspan x="3013.5" dy="0">1 初始化</tspan>
+</text>
+<text x="3013.5" y="812" text-anchor="start" style="font-family:Noto Sans CJK SC, Noto Sans CJK JP, DejaVu Sans, Arial, sans-serif;font-size:27px;fill:#1F2937;font-weight:600;">
+<tspan x="3013.5" dy="0">create buffers / CBs / kernels；分配 per-core args</tspan>
+</text>
+<circle cx="2965.5" cy="952" r="31" fill="#087C88" stroke="white" stroke-width="4"/>
+<text x="2965.5" y="964" text-anchor="middle" style="font-family:Noto Sans CJK SC, Noto Sans CJK JP, DejaVu Sans, Arial, sans-serif;font-size:30px;fill:white;font-weight:900;">
+<tspan x="2965.5" dy="0">2</tspan>
+</text>
+<text x="3013.5" y="950" text-anchor="start" style="font-family:Noto Sans CJK SC, Noto Sans CJK JP, DejaVu Sans, Arial, sans-serif;font-size:32px;fill:#087C88;font-weight:900;">
+<tspan x="3013.5" dy="0">2 Reader</tspan>
+</text>
+<text x="3013.5" y="1002" text-anchor="start" style="font-family:Noto Sans CJK SC, Noto Sans CJK JP, DejaVu Sans, Arial, sans-serif;font-size:27px;fill:#1F2937;font-weight:600;">
+<tspan x="3013.5" dy="0">按 page_start / npages 读取选中 K/V pages 到 CB</tspan>
+</text>
+<circle cx="2965.5" cy="1142" r="31" fill="#087C88" stroke="white" stroke-width="4"/>
+<text x="2965.5" y="1154" text-anchor="middle" style="font-family:Noto Sans CJK SC, Noto Sans CJK JP, DejaVu Sans, Arial, sans-serif;font-size:30px;fill:white;font-weight:900;">
+<tspan x="2965.5" dy="0">3</tspan>
+</text>
+<text x="3013.5" y="1140" text-anchor="start" style="font-family:Noto Sans CJK SC, Noto Sans CJK JP, DejaVu Sans, Arial, sans-serif;font-size:32px;fill:#087C88;font-weight:900;">
+<tspan x="3013.5" dy="0">3 Compute</tspan>
+</text>
+<text x="3013.5" y="1192" text-anchor="start" style="font-family:Noto Sans CJK SC, Noto Sans CJK JP, DejaVu Sans, Arial, sans-serif;font-size:27px;fill:#1F2937;font-weight:600;">
+<tspan x="3013.5" dy="0">执行 score GEMM → online softmax → value accumulation</tspan>
+</text>
+<circle cx="2965.5" cy="1332" r="31" fill="#087C88" stroke="white" stroke-width="4"/>
+<text x="2965.5" y="1344" text-anchor="middle" style="font-family:Noto Sans CJK SC, Noto Sans CJK JP, DejaVu Sans, Arial, sans-serif;font-size:30px;fill:white;font-weight:900;">
+<tspan x="2965.5" dy="0">4</tspan>
+</text>
+<text x="3013.5" y="1330" text-anchor="start" style="font-family:Noto Sans CJK SC, Noto Sans CJK JP, DejaVu Sans, Arial, sans-serif;font-size:32px;fill:#087C88;font-weight:900;">
+<tspan x="3013.5" dy="0">4 Writer</tspan>
+</text>
+<text x="3013.5" y="1382" text-anchor="start" style="font-family:Noto Sans CJK SC, Noto Sans CJK JP, DejaVu Sans, Arial, sans-serif;font-size:27px;fill:#1F2937;font-weight:600;">
+<tspan x="3013.5" dy="0">消费 output CB，写回 DRAM / output buffer</tspan>
+</text>
+<circle cx="2965.5" cy="1522" r="31" fill="#087C88" stroke="white" stroke-width="4"/>
+<text x="2965.5" y="1534" text-anchor="middle" style="font-family:Noto Sans CJK SC, Noto Sans CJK JP, DejaVu Sans, Arial, sans-serif;font-size:30px;fill:white;font-weight:900;">
+<tspan x="2965.5" dy="0">5</tspan>
+</text>
+<text x="3013.5" y="1520" text-anchor="start" style="font-family:Noto Sans CJK SC, Noto Sans CJK JP, DejaVu Sans, Arial, sans-serif;font-size:32px;fill:#087C88;font-weight:900;">
+<tspan x="3013.5" dy="0">5 Admit / Reject</tspan>
+</text>
+<text x="3013.5" y="1572" text-anchor="start" style="font-family:Noto Sans CJK SC, Noto Sans CJK JP, DejaVu Sans, Arial, sans-serif;font-size:27px;fill:#1F2937;font-weight:600;">
+<tspan x="3013.5" dy="0">schema、资源、CB lifecycle 不完整则提前失败</tspan>
+</text>
+<rect x="2918.5" y="1760" width="806.5" height="195" rx="20" fill="#FFF8F2" stroke="#E86A1E" stroke-width="3" opacity="1"/>
+<text x="2948.5" y="1815" text-anchor="start" style="font-family:Noto Sans CJK SC, Noto Sans CJK JP, DejaVu Sans, Arial, sans-serif;font-size:33px;fill:#E86A1E;font-weight:900;">
+<tspan x="2948.5" dy="0">关键约束</tspan>
+</text>
+<text x="2948.5" y="1865" text-anchor="start" style="font-family:Noto Sans CJK SC, Noto Sans CJK JP, DejaVu Sans, Arial, sans-serif;font-size:29px;fill:#1F2937;font-weight:700;">
+<tspan x="2948.5" dy="0">runtime / codegen 只消费 manifest；</tspan>
+<tspan x="2948.5" dy="43">不从变量名、源码形状或生成源码中猜测协议。</tspan>
+</text>
+<rect x="70" y="2075" width="3700" height="45" rx="14" fill="#F8FAFC" stroke="#CBD5E1" stroke-width="2" opacity="1"/>
+<text x="1920.0" y="2107" text-anchor="middle" style="font-family:Noto Sans CJK SC, Noto Sans CJK JP, DejaVu Sans, Arial, sans-serif;font-size:26px;fill:#667085;font-weight:600;">
+<tspan x="1920.0" dy="0">All labels are real SVG text. Open the SVG for unlimited zoom.</tspan>
+</text>
+</svg>

@@ -18,7 +18,9 @@ source text、最终 TIR body、名字、参数位置、builtin 邻接关系或 
 
 ## Architecture
 
-![Blackhole backend architecture](tasks/arch.png)
+![Blackhole backend architecture](tasks/tilelang_blackhole_backend_architecture_large_text_v2.svg)
+
+![Blackhole paged attention example](tasks/tilelang_blackhole_backend_paged_attention_example_large_text_v2.svg)
 
 ## Current Status
 
