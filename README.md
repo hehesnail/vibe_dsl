@@ -16,6 +16,10 @@ Normalized Tile TIR
 Runtime 和 codegen 只消费 `ExecutableSpec` 的 leaf projection；它们不应该再从
 source text、最终 TIR body、名字、参数位置、builtin 邻接关系或 runtime 观察中恢复语义。
 
+## Architecture
+
+![Blackhole backend architecture](tasks/arch.png)
+
 ## Current Status
 
 当前状态只以 `tasks/progress.md` 为准。简要读法：
