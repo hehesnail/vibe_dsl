@@ -200,17 +200,18 @@ CB requirement index; consumer code must not infer that permission from buffer
 names or `TTCBPlan.name`.
 
 Physical CB queue ordering is part of the TTProgram execution contract.
-The owner truth is the structured `TTKernel` segment body recorded by TT
-planning together with `TTCBPlan` requirement-index ownership.  Segment bodies
-are not carried by TIR marker attrs: lowering records concrete segment leaves,
-reconstructs needed lexical wrappers such as loops, allocations, and buffer
-declarations from the current lowered body, and stores those bodies as staged
-`TTKernel` records.  The `TTProgram -> ExecutableSpec` projection must turn
-`cb_reserve_back`, `cb_push_back`, `cb_wait_front`, and `cb_pop_front` into
-structured physical `queue_events`, remapping requirement indices through
-`TTCBPlan` before leaf runtime/codegen consumption.  Runtime leaf readers may
-parse the projected array; they must not rescan kernel source, final TIR, or
-reconstructed segment bodies to recover queue order or segment membership.
+The owner truth is typed `TTKernel.queue_events` together with `TTCBPlan`
+requirement-index ownership.  Segment bodies are not carried by TIR marker
+attrs: lowering records concrete segment leaves, reconstructs needed lexical
+wrappers such as loops, allocations, and buffer declarations from the current
+lowered body, and stores those bodies as staged `TTKernel` records for source
+materialization.  Allocation-time body rewrites must also refresh
+`TTKernel.queue_events`; after that point the `TTProgram -> ExecutableSpec`
+projection must read the typed queue-event field, remap requirement indices
+through `TTCBPlan`, and emit structured physical `queue_events` before leaf
+runtime/codegen consumption.  Runtime leaf readers may parse the projected
+array; they must not rescan kernel source, final TIR, or reconstructed segment
+bodies to recover queue order or segment membership.
 
 Transport emitters do not own segment semantics.  They may ask the ABI /
 segment resolver which kernel segment a concrete read/write sequence belongs

@@ -1020,6 +1020,10 @@ static void BuildTTKernelAndABISeeds(const Array<Any> &segment_plan,
         DecodeSemaphoreBindingSpecs(segment.Get("semaphore_bindings"));
     Array<TTRemoteCoreDescriptorSpec> remote_core_descriptors =
         DecodeRemoteCoreDescriptorSpecs(segment.Get("remote_core_descriptors"));
+    Array<TTKernelQueueEvent> queue_events =
+        segment.Get("queue_events")
+            ? Downcast<Array<TTKernelQueueEvent>>(segment.Get("queue_events").value())
+            : Array<TTKernelQueueEvent>();
     TTKernelLaunchSpec launch_spec =
         segment.Get("launch_spec")
             ? Downcast<TTKernelLaunchSpec>(segment.Get("launch_spec").value())
@@ -1048,7 +1052,7 @@ static void BuildTTKernelAndABISeeds(const Array<Any> &segment_plan,
                                   remote_core_descriptors));
     kernels.push_back(TTKernel(kernel_name, kernel_kind, core_type, index,
                                launch_spec, compute_config,
-                               per_work_arg_specs, body));
+                               per_work_arg_specs, body, queue_events));
     ++index;
   }
   *kernels_out = kernels;
@@ -1140,7 +1144,8 @@ void PlanTTKernelABI::LoadSeededSegmentBodies(const PrimFunc &func) {
       recorded_segment_kind_order_.push_back(kind);
     }
     seeded_segment_bodies_by_kind_[kind] = kernel->body;
-    RecordSegmentStmtIfNeeded(kind, kernel->body);
+    seeded_queue_events_by_kind_[kind] = kernel->queue_events;
+    RecordSegmentStmtIfNeeded(kind, kernel->body, /*record_queue_events=*/false);
     if (kind == "compute") {
       seed_leaves_by_kind[kind] = CollectSegmentLeafStmts(kernel->body);
     }
@@ -1199,7 +1204,8 @@ void PlanTTKernelABI::StoreRecordedSegmentKernelSeeds() {
     tt_kernels_.push_back(TTKernel(
         String(kind), String(kind), String(CoreTypeForSegmentKind(kind)),
         /*abi_plan_index=*/-1, MakeLaunchSpec(CoreTypeForSegmentKind(kind), "", ""),
-        MakeEmptyComputeConfig(), Array<TTPerWorkArgSpec>{}, body_it->second));
+        MakeEmptyComputeConfig(), Array<TTPerWorkArgSpec>{}, body_it->second,
+        BuildRecordedSegmentQueueEvents(kind)));
   }
 }
 
@@ -1267,6 +1273,11 @@ void PlanTTKernelABI::StoreSegmentPlan(PrimFunc &func) {
       ICHECK(body_it != segment_bodies.end())
           << "PlanTTKernelABI requires a body for segment " << kind;
       kernel.Set(tt_program_segment_key::kBody, body_it->second);
+      Array<TTKernelQueueEvent> queue_events =
+          BuildRecordedSegmentQueueEvents(kind);
+      if (!queue_events.empty()) {
+        kernel.Set("queue_events", queue_events);
+      }
       if (!indexed_per_work_runtime_args_.empty()) {
         Array<Any> runtime_args;
         const bool appended_indexed =

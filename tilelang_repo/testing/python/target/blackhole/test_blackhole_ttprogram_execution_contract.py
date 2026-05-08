@@ -77,3 +77,10 @@ def test_segment_kind_marker_is_not_active_lowering_protocol():
     ]
 
     assert offenders == []
+
+
+def test_queue_events_are_not_projected_by_parsing_tt_kernel_body():
+    source = _repo_src_path("target", "tt_program_projection.h").read_text(encoding="utf-8")
+
+    assert "TryGetPhysicalCBQueueEventKind" not in source
+    assert "ProjectPhysicalCBQueueEventsFromTTKernel" not in source

@@ -357,7 +357,8 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
 
   /*! \brief Record a segment-local lowered statement without writing a TIR marker. */
   tvm::tir::Stmt RecordSegmentStmtIfNeeded(const std::string& segment_kind,
-                                           const tvm::tir::Stmt& stmt);
+                                           const tvm::tir::Stmt& stmt,
+                                           bool record_queue_events = true);
 
   /*! \brief Record a compute-segment lowered statement without writing a TIR marker. */
   tvm::tir::Stmt RecordComputeSegmentStmt(const tvm::tir::Stmt& stmt);
@@ -367,6 +368,10 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
 
   /*! \brief Build concrete segment bodies from seeded and newly-recorded fragments. */
   std::unordered_map<std::string, tvm::tir::Stmt> BuildRecordedSegmentBodies() const;
+
+  /*! \brief Build typed physical CB queue events recorded for a segment. */
+  tvm::ffi::Array<TTKernelQueueEvent> BuildRecordedSegmentQueueEvents(
+      const std::string& segment_kind) const;
 
   /*! \brief Store per-segment accessor descriptors for dataflow kernels */
   void StoreAccessorDescriptors(tvm::tir::PrimFunc& func);
@@ -1130,6 +1135,10 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
       recorded_segment_nodes_by_kind_;
   std::unordered_map<std::string, tvm::tir::Stmt> seeded_segment_bodies_by_kind_;
   std::unordered_map<std::string, tvm::tir::Stmt> materialized_segment_bodies_by_kind_;
+  std::unordered_map<std::string, tvm::ffi::Array<TTKernelQueueEvent>>
+      seeded_queue_events_by_kind_;
+  std::unordered_map<std::string, std::vector<TTKernelQueueEvent>>
+      recorded_queue_events_by_kind_;
   std::unordered_map<std::string, int> read_accessor_slots_;
   std::unordered_map<std::string, int> write_accessor_slots_;
   std::unordered_map<std::string, int> fused_dataflow_accessor_slots_;

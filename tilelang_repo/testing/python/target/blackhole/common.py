@@ -720,12 +720,22 @@ def rebuild_tt_kernel(
     compute_config=None,
     per_work_arg_specs=None,
     body=None,
+    queue_events=None,
 ):
     """Rebuild a TTKernel with optional field overrides."""
     resolved_body = getattr(kernel, "body", None) if body is None else body
-    make_tt_kernel = tilelang.tvm.get_global_func(
-        "tl.TTKernelWithBody" if resolved_body is not None and str(resolved_body) else "tl.TTKernel"
+    resolved_queue_events = (
+        getattr(kernel, "queue_events", []) if queue_events is None else queue_events
     )
+    has_body = resolved_body is not None and str(resolved_body)
+    make_tt_kernel_name = (
+        "tl.TTKernelWithBodyAndQueueEvents"
+        if has_body
+        else "tl.TTKernelWithQueueEvents"
+        if resolved_queue_events
+        else "tl.TTKernel"
+    )
+    make_tt_kernel = tilelang.tvm.get_global_func(make_tt_kernel_name)
     common_args = [
         str(kernel.name) if name is None else name,
         str(kernel.kind) if kind is None else kind,
@@ -739,8 +749,25 @@ def rebuild_tt_kernel(
             else per_work_arg_specs
         ),
     ]
-    if resolved_body is not None and str(resolved_body):
-        return make_tt_kernel(*common_args, resolved_body)
+    if has_body or resolved_queue_events:
+        make_tt_queue_event = tilelang.tvm.get_global_func("tl.TTKernelQueueEvent")
+    if has_body:
+        return make_tt_kernel(
+            *common_args,
+            resolved_body,
+            [
+                make_tt_queue_event(str(event.kind), int(event.cb_id), int(event.pages))
+                for event in resolved_queue_events
+            ],
+        )
+    if resolved_queue_events:
+        return make_tt_kernel(
+            *common_args,
+            [
+                make_tt_queue_event(str(event.kind), int(event.cb_id), int(event.pages))
+                for event in resolved_queue_events
+            ],
+        )
     return make_tt_kernel(
         *common_args,
     )

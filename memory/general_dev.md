@@ -2762,8 +2762,8 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   a single `TTCBPlan` owner.  Physical CB queue replay now consumes
   `KernelSpec.queue_events`, not generated source text or a runtime-side
   scan of reconstructed segment bodies.  Queue events are projected at the
-  `TTProgram -> ExecutableSpec` boundary from TT kernel leaf CB calls and must
-  remap requirement indices through
+  `TTProgram -> ExecutableSpec` boundary from typed `TTKernel.queue_events`
+  and must remap requirement indices through
   `TTCBPlan.requirement_indices -> physical cb_id`; raw `TTKernel.body` can
   still contain pre-final requirement-index forms and is not the final
   runtime queue trace.  When replaying a compute kernel, do not
@@ -2878,3 +2878,10 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   derived from current TIR thread vars.  The P0.3 execution spine now keeps
   the shared owner truth in typed `TTProgram` records and projects the
   executable FIFO trace once.
+- 2026-05-08 TTKernel queue-event owner truth:
+  Do not make `TTProgram -> ExecutableSpec` projection parse `TTKernel.body`
+  to recover FIFO events.  `TTKernel.body` is a source-materialization witness
+  and can be mutated by tests or later body rewrites; the durable queue
+  contract is `TTKernel.queue_events`.  If an allocation or lowering pass
+  rewrites leaf CB calls, refresh the typed event field at that pass boundary
+  and keep runtime/codegen readers on `KernelSpec.queue_events`.

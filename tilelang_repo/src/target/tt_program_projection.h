@@ -8,9 +8,7 @@
 #define TVM_TL_TARGET_TT_PROGRAM_PROJECTION_H_
 
 #include <tvm/ir/expr.h>
-#include <tvm/ir/op.h>
 #include <tvm/tir/function.h>
-#include <tvm/tir/stmt_functor.h>
 
 #include "../transform/common/blackhole_runtime_arg_schema.h"
 #include "../transform/common/companion_base.h"
@@ -122,71 +120,29 @@ BuildPhysicalCBIdByRequirementIndex(const Array<TTCBPlan> &cb_plans) {
   return physical_cb_by_requirement_index;
 }
 
-inline bool TryGetPhysicalCBQueueEventKind(const tir::CallNode *call,
-                                           std::string *kind) {
-  if (call == nullptr || kind == nullptr) {
-    return false;
-  }
-  const auto *op_node = call->op.as<OpNode>();
-  if (op_node == nullptr) {
-    return false;
-  }
-  const std::string &name = op_node->name;
-  if (name == "tl.blackhole.cb_reserve_back") {
-    *kind = "reserve_back";
-    return true;
-  }
-  if (name == "tl.blackhole.cb_push_back") {
-    *kind = "push_back";
-    return true;
-  }
-  if (name == "tl.blackhole.cb_wait_front") {
-    *kind = "wait_front";
-    return true;
-  }
-  if (name == "tl.blackhole.cb_pop_front") {
-    *kind = "pop_front";
-    return true;
-  }
-  return false;
+inline bool IsValidKernelQueueEventKind(const ffi::String &kind) {
+  return kind == "reserve_back" || kind == "push_back" ||
+         kind == "wait_front" || kind == "pop_front";
 }
 
-inline bool TryReadNonNegativeIntImm(const PrimExpr &expr, int64_t *value) {
-  if (value == nullptr) {
-    return false;
-  }
-  const auto *imm = expr.as<tir::IntImmNode>();
-  if (imm == nullptr || imm->value < 0) {
-    return false;
-  }
-  *value = imm->value;
-  return true;
-}
-
-inline Array<Any> ProjectPhysicalCBQueueEventsFromTTKernel(
+inline Array<Any> EncodeTTKernelQueueEvents(
     const TTKernel &kernel, const Array<TTCBPlan> &cb_plans) {
   Array<Any> events;
-  if (!kernel->body.defined()) {
+  if (kernel->queue_events.empty()) {
     return events;
   }
 
   const std::unordered_map<int64_t, int64_t> physical_cb_by_requirement_index =
       BuildPhysicalCBIdByRequirementIndex(cb_plans);
-  tir::PostOrderVisit(kernel->body, [&](const ObjectRef &node) {
-    const auto *call = node.as<tir::CallNode>();
-    std::string kind;
-    if (!TryGetPhysicalCBQueueEventKind(call, &kind)) {
-      return;
-    }
-    ICHECK_GE(call->args.size(), 2U)
-        << "TTProgram CB queue event projection requires cb_id/pages args";
-    int64_t cb_id = -1;
-    int64_t pages = 0;
-    ICHECK(TryReadNonNegativeIntImm(call->args[0], &cb_id))
-        << "TTProgram CB queue event projection requires static cb_id";
-    ICHECK(TryReadNonNegativeIntImm(call->args[1], &pages) && pages > 0)
-        << "TTProgram CB queue event projection requires positive static "
-           "page count";
+  for (const TTKernelQueueEvent &queue_event : kernel->queue_events) {
+    ICHECK(IsValidKernelQueueEventKind(queue_event->kind))
+        << "TTProgram CB queue event projection found invalid event kind "
+        << queue_event->kind;
+    int64_t cb_id = queue_event->cb_id;
+    ICHECK_GE(cb_id, 0)
+        << "TTProgram CB queue event projection requires non-negative cb_id";
+    ICHECK_GT(queue_event->pages, 0)
+        << "TTProgram CB queue event projection requires positive page count";
 
     auto remap_it = physical_cb_by_requirement_index.find(cb_id);
     if (remap_it != physical_cb_by_requirement_index.end()) {
@@ -194,11 +150,11 @@ inline Array<Any> ProjectPhysicalCBQueueEventsFromTTKernel(
     }
 
     Map<String, Any> event;
-    event.Set("kind", String(kind));
+    event.Set("kind", queue_event->kind);
     event.Set("cb_id", Integer(cb_id));
-    event.Set("pages", Integer(pages));
+    event.Set("pages", Integer(queue_event->pages));
     events.push_back(event);
-  });
+  }
   return events;
 }
 
@@ -1234,7 +1190,7 @@ inline Array<Any> EncodeSegmentPlan(const TTProgram &program) {
       segment.Set(tt_program_segment_key::kBody, kernel->body);
     }
     Array<Any> queue_events =
-        ProjectPhysicalCBQueueEventsFromTTKernel(kernel, program->cb_plans);
+        EncodeTTKernelQueueEvents(kernel, program->cb_plans);
     if (!queue_events.empty()) {
       segment.Set("queue_events", queue_events);
     }

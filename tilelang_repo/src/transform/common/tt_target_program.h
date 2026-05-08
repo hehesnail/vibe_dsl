@@ -665,6 +665,24 @@ public:
                                              TTPerWorkArgSpecNode);
 };
 
+class TTKernelQueueEventNode : public Object {
+public:
+  ffi::String kind;
+  int64_t cb_id = -1;
+  int64_t pages = 0;
+
+  static void RegisterReflection();
+  TVM_FFI_DECLARE_OBJECT_INFO_FINAL("tl.TTKernelQueueEvent",
+                                    TTKernelQueueEventNode, Object);
+};
+
+class TTKernelQueueEvent : public ObjectRef {
+public:
+  TVM_DLL TTKernelQueueEvent(ffi::String kind, int64_t cb_id, int64_t pages);
+  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(TTKernelQueueEvent, ObjectRef,
+                                             TTKernelQueueEventNode);
+};
+
 class TTKernelNode : public Object {
 public:
   ffi::String name;
@@ -675,6 +693,7 @@ public:
   TTKernelComputeConfig compute_config;
   ffi::Array<TTPerWorkArgSpec> per_work_arg_specs;
   tir::Stmt body;
+  ffi::Array<TTKernelQueueEvent> queue_events;
 
   static void RegisterReflection();
   TVM_FFI_DECLARE_OBJECT_INFO_FINAL("tl.TTKernel", TTKernelNode, Object);
@@ -686,7 +705,8 @@ public:
                    int64_t abi_plan_index, TTKernelLaunchSpec launch_spec,
                    TTKernelComputeConfig compute_config,
                    ffi::Array<TTPerWorkArgSpec> per_work_arg_specs,
-                   tir::Stmt body = tir::Stmt());
+                   tir::Stmt body = tir::Stmt(),
+                   ffi::Array<TTKernelQueueEvent> queue_events = {});
   TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(TTKernel, ObjectRef, TTKernelNode);
 };
 

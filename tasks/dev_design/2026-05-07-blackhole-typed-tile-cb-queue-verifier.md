@@ -44,7 +44,7 @@ Add a TTProgram-owned typed verifier for the admitted tile-CB surface:
 ```text
 TTProgram typed tile/exact-CB records
   + physical CB plan
-  + TT kernel leaf CB event sequence
+  + TT kernel typed leaf CB queue events
   -> projected physical queue_events
   -> verifier
   -> validated ExecutableSpec / typed admission reject
@@ -61,9 +61,11 @@ owners.
 - No T9.4 sparse attention, T9.5 scan, T9.6 multi-block flash, or T10
   distributed expansion.
 - No workload-specific verifier branches for GQA, MLA, or flash-attn.
-- No source-text recovery as owner truth.  Projected leaf CB queue calls are
-  represented directly in `KernelSpec.queue_events`; source text may remain
-  only as a regression witness, not as an admission extractor.
+- No source-text or TTKernel-body recovery as owner truth.  Leaf CB queue calls
+  that cross the `TTProgram -> ExecutableSpec` boundary are represented by
+  `TTKernel.queue_events` and then projected directly into
+  `KernelSpec.queue_events`; source/body text may remain only as a
+  materialization and regression witness, not as an admission extractor.
 
 ## Representation Boundary
 
@@ -78,12 +80,13 @@ Owns the facts being verified:
 - `TTExactCBReleaseEvent`
 - `TTCBPlan`
 - compute operand CB requirement bindings
-- TT kernel records that contain structured leaf CB queue calls
+- `TTKernel.queue_events` records containing typed leaf CB queue events
 
 The verifier/projection may build pass-local indexing structures and an event
 trace from those owner records.  The durable leaf projection is
 `KernelSpec.queue_events`; it is derived from TTProgram facts exactly once at
-the `TTProgram -> ExecutableSpec` boundary, not recovered again by runtime.
+the `TTProgram -> ExecutableSpec` boundary, not recovered again by projection
+from `TTKernel.body` or by runtime from source/body text.
 
 ### ExecutableSpec
 
@@ -91,8 +94,8 @@ Consumes only validated projection.
 
 If the verifier finds a contradiction, admission must fail before runtime can
 recover behavior from names, source text, or observations.  The physical queue
-checker consumes `KernelSpec.queue_events`, which are projected from leaf CB
-queue calls after physical CB allocation/remapping.
+checker consumes `KernelSpec.queue_events`, which are projected from typed
+`TTKernel.queue_events` after physical CB allocation/remapping.
 
 Runtime and codegen readers may parse the projected event array.  They must
 not rescan generated source, final function body TIR, or neighboring builtin

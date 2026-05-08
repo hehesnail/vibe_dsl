@@ -891,14 +891,33 @@ void TTKernelNode::RegisterReflection() {
       .def_ro("launch_spec", &TTKernelNode::launch_spec)
       .def_ro("compute_config", &TTKernelNode::compute_config)
       .def_ro("per_work_arg_specs", &TTKernelNode::per_work_arg_specs)
-      .def_ro("body", &TTKernelNode::body);
+      .def_ro("body", &TTKernelNode::body)
+      .def_ro("queue_events", &TTKernelNode::queue_events);
+}
+
+void TTKernelQueueEventNode::RegisterReflection() {
+  namespace refl = tvm::ffi::reflection;
+  refl::ObjectDef<TTKernelQueueEventNode>()
+      .def_ro("kind", &TTKernelQueueEventNode::kind)
+      .def_ro("cb_id", &TTKernelQueueEventNode::cb_id)
+      .def_ro("pages", &TTKernelQueueEventNode::pages);
+}
+
+TTKernelQueueEvent::TTKernelQueueEvent(ffi::String kind, int64_t cb_id,
+                                       int64_t pages) {
+  auto n = ffi::make_object<TTKernelQueueEventNode>();
+  n->kind = std::move(kind);
+  n->cb_id = cb_id;
+  n->pages = pages;
+  data_ = std::move(n);
 }
 
 TTKernel::TTKernel(ffi::String name, ffi::String kind, ffi::String core_type,
                    int64_t abi_plan_index, TTKernelLaunchSpec launch_spec,
                    TTKernelComputeConfig compute_config,
                    ffi::Array<TTPerWorkArgSpec> per_work_arg_specs,
-                   tir::Stmt body) {
+                   tir::Stmt body,
+                   ffi::Array<TTKernelQueueEvent> queue_events) {
   auto n = ffi::make_object<TTKernelNode>();
   n->name = std::move(name);
   n->kind = std::move(kind);
@@ -908,6 +927,7 @@ TTKernel::TTKernel(ffi::String name, ffi::String kind, ffi::String core_type,
   n->compute_config = std::move(compute_config);
   n->per_work_arg_specs = std::move(per_work_arg_specs);
   n->body = std::move(body);
+  n->queue_events = std::move(queue_events);
   data_ = std::move(n);
 }
 
@@ -1747,6 +1767,7 @@ TVM_FFI_STATIC_INIT_BLOCK() {
   RegisterNodeReflection<TTKernelNamedCompileArgNode>();
   RegisterNodeReflection<TTKernelComputeConfigNode>();
   RegisterNodeReflection<TTPerWorkArgSpecNode>();
+  RegisterNodeReflection<TTKernelQueueEventNode>();
   RegisterNodeReflection<TTKernelNode>();
   RegisterNodeReflection<TTCoreGroupNode>();
   RegisterNodeReflection<TTCBPlanNode>();
@@ -2122,6 +2143,23 @@ TVM_FFI_STATIC_INIT_BLOCK() {
                         std::move(compute_config),
                         std::move(per_work_arg_specs));
       });
+  refl::GlobalDef().def("tl.TTKernelQueueEvent",
+                        [](ffi::String kind, int64_t cb_id, int64_t pages) {
+                          return TTKernelQueueEvent(std::move(kind), cb_id, pages);
+                        });
+  refl::GlobalDef().def(
+      "tl.TTKernelWithQueueEvents",
+      [](ffi::String name, ffi::String kind, ffi::String core_type,
+         int64_t abi_plan_index, TTKernelLaunchSpec launch_spec,
+         TTKernelComputeConfig compute_config,
+         ffi::Array<TTPerWorkArgSpec> per_work_arg_specs,
+         ffi::Array<TTKernelQueueEvent> queue_events) {
+        return TTKernel(std::move(name), std::move(kind), std::move(core_type),
+                        abi_plan_index, std::move(launch_spec),
+                        std::move(compute_config),
+                        std::move(per_work_arg_specs), tir::Stmt(),
+                        std::move(queue_events));
+      });
   refl::GlobalDef().def(
       "tl.TTKernelWithBody",
       [](ffi::String name, ffi::String kind, ffi::String core_type,
@@ -2132,6 +2170,19 @@ TVM_FFI_STATIC_INIT_BLOCK() {
                         abi_plan_index, std::move(launch_spec),
                         std::move(compute_config),
                         std::move(per_work_arg_specs), std::move(body));
+      });
+  refl::GlobalDef().def(
+      "tl.TTKernelWithBodyAndQueueEvents",
+      [](ffi::String name, ffi::String kind, ffi::String core_type,
+         int64_t abi_plan_index, TTKernelLaunchSpec launch_spec,
+         TTKernelComputeConfig compute_config,
+         ffi::Array<TTPerWorkArgSpec> per_work_arg_specs, tir::Stmt body,
+         ffi::Array<TTKernelQueueEvent> queue_events) {
+        return TTKernel(std::move(name), std::move(kind), std::move(core_type),
+                        abi_plan_index, std::move(launch_spec),
+                        std::move(compute_config),
+                        std::move(per_work_arg_specs), std::move(body),
+                        std::move(queue_events));
       });
   refl::GlobalDef().def(
       "tl.TTCoreGroup",

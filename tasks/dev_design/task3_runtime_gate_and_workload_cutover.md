@@ -118,11 +118,11 @@ The executable projection gets those endpoint records from explicit
 runtime args during projection.
 
 Physical CB queue events follow the same boundary.  `KernelSpec.queue_events`
-is the serialized execution trace projected from validated `TTProgram`
-kernels and `TTCBPlan` bindings.  Leaf admission may replay those events to
-validate FIFO capacity and visibility, but it must not scan generated source
-or reconstruct queue events from segment-body TIR after the executable
-projection is already materialized.
+is the serialized execution trace projected from validated
+`TTKernel.queue_events` and `TTCBPlan` bindings.  Leaf admission may replay
+those events to validate FIFO capacity and visibility, but it must not scan
+generated source or reconstruct queue events from segment-body TIR after the
+executable projection is already materialized.
 
 ### Buffer Identity
 

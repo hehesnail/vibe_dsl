@@ -140,6 +140,17 @@ def _append_compute_cb_event(tt_program, op_name, cb_id, pages):
     return rebuild_tt_program(tt_program, kernels=kernels)
 
 
+def _append_compute_typed_cb_event(tt_program, event_kind, cb_id, pages):
+    make_queue_event = tvm.get_global_func("tl.TTKernelQueueEvent")
+    kernels = []
+    for kernel in tt_program.kernels:
+        queue_events = list(getattr(kernel, "queue_events", []))
+        if str(kernel.kind) == "compute" and str(kernel.core_type) == "trisc":
+            queue_events.append(make_queue_event(event_kind, cb_id, pages))
+        kernels.append(rebuild_tt_kernel(kernel, queue_events=queue_events))
+    return rebuild_tt_program(tt_program, kernels=kernels)
+
+
 def _metadata_from_artifact(artifact):
     rebuilt = _rebuild_codegen_module_with_tt_program(artifact)
     return rebuilt.get_function_metadata("main")
@@ -231,6 +242,33 @@ def test_runtime_does_not_recover_queue_events_from_kernel_body():
     assert "MatchCBQueueEventCall" not in source
     assert "ExtractCBQueueEvents" not in source
     assert "BuildCBRequirementIndexRemap" not in source
+
+
+def test_projection_does_not_recover_queue_events_from_tt_kernel_body(seq64_artifact):
+    baseline = _metadata_from_artifact(seq64_artifact)
+    baseline_compute = next(
+        kernel
+        for kernel in baseline["kernels"]
+        if str(kernel["kind"]) == "compute" and str(kernel["core_type"]) == "trisc"
+    )
+    baseline_events = list(baseline_compute.get("queue_events", []))
+    assert baseline_events
+
+    def append_body_only_queue_event(tt_program):
+        return _append_compute_cb_event(tt_program, "cb_reserve_back", 63, 1)
+
+    rebuilt = _rebuild_codegen_module_with_tt_program(
+        seq64_artifact,
+        tt_program_mutator=append_body_only_queue_event,
+    )
+    metadata = rebuilt.get_function_metadata("main")
+    compute_kernel = next(
+        kernel
+        for kernel in metadata["kernels"]
+        if str(kernel["kind"]) == "compute" and str(kernel["core_type"]) == "trisc"
+    )
+
+    assert list(compute_kernel.get("queue_events", [])) == baseline_events
 
 
 def test_typed_tile_cb_verifier_rejects_duplicate_requirement_owner(seq64_artifact):
@@ -347,9 +385,13 @@ def test_typed_tile_cb_verifier_rejects_invalid_compute_queue_event(seq64_artifa
             for plan in tt_program.cb_plans
             if str(plan.resource_class) != "input"
         )
-        return _append_compute_cb_event(
+        return _append_compute_typed_cb_event(
             tt_program,
-            op_name,
+            {
+                "cb_wait_front": "wait_front",
+                "cb_pop_front": "pop_front",
+                "cb_reserve_back": "reserve_back",
+            }[op_name],
             int(cb_plan.cb_id),
             int(cb_plan.num_pages) + 1,
         )

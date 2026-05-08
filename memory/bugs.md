@@ -3432,20 +3432,27 @@
 - **症状**:
   - The protocol docs said `KernelSpec.queue_events` were structured
     executable facts, but `rt_mod_blackhole.cc` still rebuilt them by scanning
-    segment-body TIR during runtime-module construction.
+    segment-body TIR during runtime-module construction; later, projection
+    still parsed `TTKernel.body`, so body-only mutations could change the
+    executable queue trace.
 - **根因**:
-  - The TTProgram projection carried kernel bodies but had not serialized the
-    CB FIFO event trace at the `TTProgram -> ExecutableSpec` boundary, leaving
-    runtime as a second owner of queue semantics.
+  - The TTProgram projection carried kernel bodies before it had a typed
+    `TTKernel.queue_events` contract.  That left runtime, and then projection
+    itself, as secondary owners of queue semantics.
 - **修法**:
-  - Project `cb_reserve_back`, `cb_push_back`, `cb_wait_front`, and
-    `cb_pop_front` into segment `queue_events` from `TTKernel.body` and
-    `TTCBPlan.requirement_indices` during executable materialization.
+  - Record `cb_reserve_back`, `cb_push_back`, `cb_wait_front`, and
+    `cb_pop_front` into `TTKernel.queue_events`; refresh that typed field after
+    allocation-time kernel-body rewrites; project executable segment
+    `queue_events` only from `TTKernel.queue_events` plus
+    `TTCBPlan.requirement_indices`.
   - Make runtime parse only the projected event array and delete the
-    `MatchCBQueueEventCall` / `ExtractCBQueueEvents` /
-    `BuildCBRequirementIndexRemap` body-scanner path.
+    runtime/projection body-scanner paths.
 - **验证**:
   - Added a source guard that fails if runtime body-recovery helpers return.
+  - Added a projection source guard that fails if queue events are projected by
+    parsing `TTKernel.body`.
+  - Added a behavior regression where appending a body-only CB queue call to a
+    compute `TTKernel.body` does not change projected `KernelSpec.queue_events`.
   - The typed tile-CB verifier suite passed with structured event projection.
 
 ### Codegen recovered runtime buffer bindings from final TIR bodies

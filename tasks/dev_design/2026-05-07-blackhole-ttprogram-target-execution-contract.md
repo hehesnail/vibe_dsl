@@ -70,9 +70,11 @@ already visible to leaf consumers:
 Status: complete.
 
 `TTProgram -> ExecutableSpec` projection now derives structured physical
-`KernelSpec.queue_events` from `TTKernel` leaf CB calls and `TTCBPlan`
-requirement-index ownership.  Runtime parses that projected array only.  The
-old runtime source/body queue-event scanner is deleted.
+`KernelSpec.queue_events` from typed `TTKernel.queue_events` and `TTCBPlan`
+requirement-index ownership.  `TTKernel.body` remains the materialized leaf
+body used by source emission and local allocation-time rewrites, but it is not
+the projection owner truth.  Runtime parses the projected array only.  The old
+runtime/source/body queue-event scanners are deleted.
 
 ### P0.2 Remaining Semantic Recovery Audit
 
@@ -152,8 +154,8 @@ decision.
 The current P0 spine is:
 
 - physical CB FIFO events:
-  explicitly recorded `TTKernel` segment bodies + `TTCBPlan` requirement
-  ownership -> `KernelSpec.queue_events`;
+  typed `TTKernel.queue_events` + `TTCBPlan` requirement ownership ->
+  `KernelSpec.queue_events`;
 - exact-CB lifecycle and storage legality:
   `TTExactCB*` records plus `TTCBPlan` ->
   `ValidateTTProgram` and executable queue/lifecycle gates;

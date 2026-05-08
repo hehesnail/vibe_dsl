@@ -1388,6 +1388,74 @@ void CollectCBQueueEvents(const tir::Stmt& stmt, const PhysicalCBQueueView& queu
   Collector(queue_view, events).Collect(stmt);
 }
 
+const char* TTKernelQueueEventKindName(const tir::CallNode* op) {
+  if (IsBlackholeOp(op, "tl.blackhole.cb_wait_front")) {
+    return "wait_front";
+  }
+  if (IsBlackholeOp(op, "tl.blackhole.cb_push_back")) {
+    return "push_back";
+  }
+  if (IsBlackholeOp(op, "tl.blackhole.cb_pop_front")) {
+    return "pop_front";
+  }
+  if (IsBlackholeOp(op, "tl.blackhole.cb_reserve_back")) {
+    return "reserve_back";
+  }
+  return nullptr;
+}
+
+bool TryReadNonNegativeIntImm(const PrimExpr& expr, int64_t* value) {
+  ICHECK(value != nullptr);
+  const auto* imm = expr.as<IntImmNode>();
+  if (imm == nullptr || imm->value < 0) {
+    return false;
+  }
+  *value = imm->value;
+  return true;
+}
+
+Array<TTKernelQueueEvent> CollectTTKernelQueueEventsFromBody(
+    const tir::Stmt& body) {
+  Array<TTKernelQueueEvent> events;
+  if (!body.defined()) {
+    return events;
+  }
+  class Collector final : public tir::StmtExprVisitor {
+   public:
+    explicit Collector(Array<TTKernelQueueEvent>* events)
+        : events_(events) {}
+
+    using tir::StmtExprVisitor::VisitExpr_;
+
+    void Collect(const tir::Stmt& stmt) { VisitStmt(stmt); }
+
+    void VisitExpr_(const tir::CallNode* op) final {
+      const char* kind = TTKernelQueueEventKindName(op);
+      if (kind != nullptr) {
+        ICHECK_GE(op->args.size(), 2U)
+            << "PlanTTCBAlloc typed CB queue event record requires "
+               "cb_id/pages args";
+        int64_t cb_id = -1;
+        int64_t pages = 0;
+        ICHECK(TryReadNonNegativeIntImm(op->args[0], &cb_id))
+            << "PlanTTCBAlloc typed CB queue event record requires static "
+               "cb_id";
+        ICHECK(TryReadNonNegativeIntImm(op->args[1], &pages) && pages > 0)
+            << "PlanTTCBAlloc typed CB queue event record requires positive "
+               "static page count";
+        events_->push_back(TTKernelQueueEvent(String(kind), cb_id, pages));
+      }
+      tir::StmtExprVisitor::VisitExpr_(op);
+    }
+
+   private:
+    Array<TTKernelQueueEvent>* events_;
+  };
+
+  Collector(&events).Collect(body);
+  return events;
+}
+
 tir::Stmt RetainLocalCBFrontForFutureWaits(
     const tir::Stmt& body, const std::vector<CBConfig>& configs,
     const std::unordered_map<int, int>& cb_id_by_requirement_index = {}) {
@@ -2104,11 +2172,16 @@ tvm::ffi::Array<TTKernel> PlanTTCBAlloc::RewriteKernelBodies(
     const tvm::ffi::Array<TTKernel>& kernels) const {
   tvm::ffi::Array<TTKernel> rewritten;
   for (const TTKernel& kernel : kernels) {
+    tir::Stmt rewritten_body = RewriteBodyWithFinalCBAllocation(kernel->body);
+    Array<TTKernelQueueEvent> queue_events = kernel->queue_events;
+    if (rewritten_body.defined()) {
+      queue_events = CollectTTKernelQueueEventsFromBody(rewritten_body);
+    }
     rewritten.push_back(TTKernel(kernel->name, kernel->kind, kernel->core_type,
                                  kernel->abi_plan_index, kernel->launch_spec,
                                  kernel->compute_config,
                                  kernel->per_work_arg_specs,
-                                 RewriteBodyWithFinalCBAllocation(kernel->body)));
+                                 rewritten_body, queue_events));
   }
   return rewritten;
 }
