@@ -267,11 +267,13 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
     tvm::tir::Buffer dst;
     tvm::tir::Buffer src;
     tvm::tir::Buffer cast_src;
+    tvm::PrimExpr cast_src_offset;
     tvm::PrimExpr dst_offset_elements;
     tvm::PrimExpr num_elements;
     tvm::PrimExpr row_width;
     tvm::tir::Stmt lowered_loop_body;
     bool wrap_src_allocation = false;
+    bool emit_outer_loop = true;
   };
 
   /*! \brief CB configuration from function attributes */

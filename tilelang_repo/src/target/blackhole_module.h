@@ -1151,6 +1151,7 @@ struct ExecutableSpec {
   std::vector<ExactCBAllocationSpec> exact_cb_allocations;
   std::vector<ExactCBReleaseEventSpec> exact_cb_release_events;
   std::vector<std::string> direct_runtime_unsupported_reasons;
+  std::vector<std::string> launched_device_entries;
 
   // TVM runtime invocation metadata retained during Stage 0.
   std::vector<std::string> tvm_arg_names;
@@ -1221,6 +1222,9 @@ struct ExecutableSpec {
     if (!direct_runtime_unsupported_reasons.empty()) {
       writer->WriteObjectKeyValue("direct_runtime_unsupported_reasons",
                                   direct_runtime_unsupported_reasons);
+    }
+    if (!launched_device_entries.empty()) {
+      writer->WriteObjectKeyValue("launched_device_entries", launched_device_entries);
     }
     if (!tvm_arg_names.empty()) {
       writer->WriteObjectKeyValue("tvm_arg_names", tvm_arg_names);
@@ -1302,6 +1306,8 @@ class BlackholeModuleNode : public ffi::ModuleObj {
                      const std::vector<RuntimeTensorBinding>& buffer_args,
                      const std::vector<uint32_t>& scalar_args,
                      const std::vector<std::string>& output_names);
+
+  const ExecutableSpec* LookupExecutableSpec(const std::string& func_name) const;
 
  private:
   // Function information map

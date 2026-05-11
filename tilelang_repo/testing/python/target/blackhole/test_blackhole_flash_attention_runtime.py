@@ -758,6 +758,183 @@ def seq_qk_gemm_kernel(
     return main
 
 
+def split_block_flash_decode_kernel(
+    *,
+    batch=1,
+    heads=32,
+    groups=1,
+    num_split=2,
+    seqlen_kv=64,
+    block_N=32,
+    block_H=32,
+    dim=32,
+):
+    """Ordinary TIR split-block flash decode witness for the first T9.6 slice."""
+    assert batch == 1
+    assert groups == 1
+    assert heads == block_H
+    assert num_split == 2
+    assert seqlen_kv == num_split * block_N
+    dtype = T.bfloat16
+    accum_dtype = T.float32
+    scale = (1.0 / dim) ** 0.5 * 1.44269504
+
+    @T.prim_func
+    def main(
+        Q: T.Tensor((batch, heads, dim), dtype),
+        K: T.Tensor((batch, seqlen_kv, groups, dim), dtype),
+        V: T.Tensor((batch, seqlen_kv, groups, dim), dtype),
+        SplitMax: T.Tensor((num_split, batch, heads, dim), dtype),
+        SplitDenom: T.Tensor((num_split, batch, heads, dim), dtype),
+        OutputPartial: T.Tensor((num_split, batch, heads, dim), dtype),
+        Output: T.Tensor((batch, heads, dim), dtype),
+    ):
+        with T.Kernel(batch, heads // block_H, num_split, threads=128) as (bx, by, bz):
+            Q_shared = T.alloc_shared((block_H, dim), dtype)
+            K_shared = T.alloc_shared((block_N, dim), dtype)
+            V_shared = T.alloc_shared((block_N, dim), dtype)
+            O_shared = T.alloc_shared((block_H, dim), dtype)
+            acc_s = T.alloc_fragment((block_H, block_N), accum_dtype)
+            acc_s_cast = T.alloc_fragment((block_H, block_N), dtype)
+            acc_o = T.alloc_fragment((block_H, dim), accum_dtype)
+            split_max_out = T.alloc_fragment((block_H, dim), dtype)
+            split_denom_out = T.alloc_fragment((block_H, dim), dtype)
+            scores_max = T.alloc_fragment((block_H,), accum_dtype)
+            scores_max_prev = T.alloc_fragment((block_H,), accum_dtype)
+            scores_scale = T.alloc_fragment((block_H,), accum_dtype)
+            scores_sum = T.alloc_fragment((block_H,), accum_dtype)
+            logsum = T.alloc_fragment((block_H,), accum_dtype)
+
+            bid = bx
+            hid = by
+            sid = bz
+            kv_head = T.int32(0)
+
+            T.copy(Q[bid, hid * block_H : hid * block_H + block_H, :], Q_shared)
+            T.fill(acc_o, 0)
+            T.fill(logsum, 0)
+            T.fill(scores_max, -T.infinity(accum_dtype))
+
+            split_start = (seqlen_kv // num_split) * sid
+            T.copy(
+                K[bid, split_start : split_start + block_N, kv_head, :],
+                K_shared,
+            )
+            T.fill(acc_s, 0)
+            T.gemm(
+                Q_shared,
+                K_shared,
+                acc_s,
+                transpose_B=True,
+                policy=T.GemmWarpPolicy.FullRow,
+            )
+            T.copy(scores_max, scores_max_prev)
+            T.fill(scores_max, -T.infinity(accum_dtype))
+            T.reduce_max(acc_s, scores_max, dim=1, clear=False)
+            for i in T.Parallel(block_H):
+                scores_max[i] = T.max(scores_max[i], scores_max_prev[i])
+            for i in T.Parallel(block_H):
+                scores_scale[i] = T.exp2(scores_max_prev[i] * scale - scores_max[i] * scale)
+            for i, j in T.Parallel(block_H, block_N):
+                acc_s[i, j] = T.exp2(acc_s[i, j] * scale - scores_max[i] * scale)
+            T.reduce_sum(acc_s, scores_sum, dim=1)
+            for i in T.Parallel(block_H):
+                logsum[i] = logsum[i] * scores_scale[i] + scores_sum[i]
+            T.copy(acc_s, acc_s_cast)
+            T.copy(
+                V[bid, split_start : split_start + block_N, kv_head, :],
+                V_shared,
+            )
+            T.gemm(acc_s_cast, V_shared, acc_o, policy=T.GemmWarpPolicy.FullRow)
+            for i, j in T.Parallel(block_H, dim):
+                acc_o[i, j] /= logsum[i]
+            T.copy(acc_o, O_shared)
+            T.copy(
+                O_shared,
+                OutputPartial[sid, bid, hid * block_H : hid * block_H + block_H, :],
+            )
+            for i, j in T.Parallel(block_H, dim):
+                split_max_out[i, j] = scores_max[i] * scale
+            for i, j in T.Parallel(block_H, dim):
+                split_denom_out[i, j] = logsum[i]
+            T.copy(
+                split_max_out,
+                SplitMax[sid, bid, hid * block_H : hid * block_H + block_H, :],
+            )
+            T.copy(
+                split_denom_out,
+                SplitDenom[sid, bid, hid * block_H : hid * block_H + block_H, :],
+            )
+
+        with T.Kernel(batch, threads=128) as bz:
+            partial_o = T.alloc_fragment((block_H, dim), dtype)
+            output_acc = T.alloc_fragment((block_H, dim), dtype)
+            output_shared = T.alloc_shared((block_H, dim), dtype)
+            split_max_tile = T.alloc_fragment((block_H, dim), dtype)
+            split_denom_tile = T.alloc_fragment((block_H, dim), dtype)
+            global_max = T.alloc_fragment((block_H, dim), dtype)
+            global_denom = T.alloc_fragment((block_H, dim), dtype)
+            split_weight = T.alloc_fragment((block_H, dim), dtype)
+            scale_tile = T.alloc_fragment((block_H, dim), dtype)
+
+            T.clear(output_acc)
+            T.clear(global_denom)
+            T.copy(SplitMax[0, bz, 0:block_H, :], global_max)
+            T.copy(SplitMax[1, bz, 0:block_H, :], split_max_tile)
+            for i, j in T.Parallel(block_H, dim):
+                global_max[i, j] = T.max(global_max[i, j], split_max_tile[i, j])
+            T.copy(SplitMax[0, bz, 0:block_H, :], split_max_tile)
+            T.copy(SplitDenom[0, bz, 0:block_H, :], split_denom_tile)
+            for i, j in T.Parallel(block_H, dim):
+                split_weight[i, j] = T.exp2(split_max_tile[i, j] - global_max[i, j])
+            for i, j in T.Parallel(block_H, dim):
+                split_weight[i, j] *= split_denom_tile[i, j]
+            for i, j in T.Parallel(block_H, dim):
+                global_denom[i, j] += split_weight[i, j]
+            T.copy(SplitMax[1, bz, 0:block_H, :], split_max_tile)
+            T.copy(SplitDenom[1, bz, 0:block_H, :], split_denom_tile)
+            for i, j in T.Parallel(block_H, dim):
+                split_weight[i, j] = T.exp2(split_max_tile[i, j] - global_max[i, j])
+            for i, j in T.Parallel(block_H, dim):
+                split_weight[i, j] *= split_denom_tile[i, j]
+            for i, j in T.Parallel(block_H, dim):
+                global_denom[i, j] += split_weight[i, j]
+
+            T.copy(OutputPartial[0, bz, 0:block_H, :], partial_o)
+            T.copy(SplitMax[0, bz, 0:block_H, :], split_max_tile)
+            T.copy(SplitDenom[0, bz, 0:block_H, :], split_denom_tile)
+            for i, j in T.Parallel(block_H, dim):
+                split_weight[i, j] = T.exp2(split_max_tile[i, j] - global_max[i, j])
+            for i, j in T.Parallel(block_H, dim):
+                split_weight[i, j] *= split_denom_tile[i, j]
+            for i, j in T.Parallel(block_H, dim):
+                scale_tile[i, j] = split_weight[i, j] / global_denom[i, j]
+            for i, j in T.Parallel(block_H, dim):
+                output_acc[i, j] += partial_o[i, j] * scale_tile[i, j]
+            T.copy(OutputPartial[1, bz, 0:block_H, :], partial_o)
+            T.copy(SplitMax[1, bz, 0:block_H, :], split_max_tile)
+            T.copy(SplitDenom[1, bz, 0:block_H, :], split_denom_tile)
+            for i, j in T.Parallel(block_H, dim):
+                split_weight[i, j] = T.exp2(split_max_tile[i, j] - global_max[i, j])
+            for i, j in T.Parallel(block_H, dim):
+                split_weight[i, j] *= split_denom_tile[i, j]
+            for i, j in T.Parallel(block_H, dim):
+                scale_tile[i, j] = split_weight[i, j] / global_denom[i, j]
+            for i, j in T.Parallel(block_H, dim):
+                output_acc[i, j] += partial_o[i, j] * scale_tile[i, j]
+            T.copy(output_acc, output_shared)
+            T.copy(output_shared, Output[bz, 0:block_H, :])
+
+    return main
+
+
+def _split_block_flash_decode_reference(q, k, v):
+    dim = q.shape[-1]
+    scores = torch.matmul(q[0].float(), k[0, :, 0, :].float().T) * (dim ** -0.5)
+    probs = torch.softmax(scores, dim=-1)
+    return torch.matmul(probs, v[0, :, 0, :].float()).to(q.dtype).reshape_as(q)
+
+
 def _lower_blackhole_flash_attention_metadata(kernel):
     target = Target("blackhole")
     with target:
@@ -2694,6 +2871,65 @@ def test_blackhole_t9_paged_mla_decode_bf16_direct_runtime():
         atol=5e-2,
         rtol=5e-2,
         failure_message="Blackhole T9 paged MLA decode bf16 direct runtime mismatch",
+    )
+
+
+def test_blackhole_t9_split_block_flash_decode_bf16_direct_runtime():
+    can_run, msg = check_blackhole_direct_execution_requirements()
+    if not can_run:
+        pytest.skip(f"Blackhole requirements not met: {msg}")
+
+    batch = 1
+    heads = 32
+    groups = 1
+    num_split = 2
+    seqlen_kv = 64
+    block_N = 32
+    dim = 32
+
+    torch.manual_seed(0)
+    q = torch.randn(batch, heads, dim, dtype=BLACKHOLE_FLASH_ATTENTION_TORCH_DTYPE)
+    k = torch.randn(batch, seqlen_kv, groups, dim, dtype=BLACKHOLE_FLASH_ATTENTION_TORCH_DTYPE)
+    v = torch.randn(batch, seqlen_kv, groups, dim, dtype=BLACKHOLE_FLASH_ATTENTION_TORCH_DTYPE)
+    split_max = torch.zeros(num_split, batch, heads, dim, dtype=torch.bfloat16)
+    split_denom = torch.zeros(num_split, batch, heads, dim, dtype=torch.bfloat16)
+    output_partial = torch.zeros(
+        num_split,
+        batch,
+        heads,
+        dim,
+        dtype=BLACKHOLE_FLASH_ATTENTION_TORCH_DTYPE,
+    )
+    out = torch.zeros(batch, heads, dim, dtype=BLACKHOLE_FLASH_ATTENTION_TORCH_DTYPE)
+
+    kernel = split_block_flash_decode_kernel(
+        batch=batch,
+        heads=heads,
+        groups=groups,
+        num_split=num_split,
+        seqlen_kv=seqlen_kv,
+        block_N=block_N,
+        dim=dim,
+    )
+    artifact, metadata = _lower_blackhole_flash_attention_metadata(kernel)
+    assert [str(reason) for reason in metadata.get("direct_runtime_unsupported_reasons", [])] == []
+    assert len(metadata["kernels"]) >= 2
+    assert any(
+        str(spec.get("buffer", "")) == "OutputPartial"
+        for kernel_spec in metadata["kernels"]
+        for spec in kernel_spec.get("runtime_args", [])
+        + kernel_spec.get("common_runtime_args", [])
+        + kernel_spec.get("per_work_arg_specs", [])
+    )
+    artifact.codegen_mod["main"](q, k, v, split_max, split_denom, output_partial, out)
+
+    ref = _split_block_flash_decode_reference(q, k, v)
+    assert_tensors_close_or_dump(
+        out,
+        ref,
+        atol=5e-2,
+        rtol=5e-2,
+        failure_message="Blackhole T9.6 split-block flash decode bf16 direct runtime mismatch",
     )
 
 

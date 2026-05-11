@@ -634,7 +634,6 @@ bool EmitBinaryMaxTileIfMatched(const TileComputeRewriteContext& ctx,
 bool EmitAddRootTileComputeIfMatched(const TileComputeRewriteContext& ctx,
                                      TileComputeRewriteMatch* match,
                                      TileComputeIRBuilder* builder) {
-  (void)builder;
   auto match_ordered_fma = [&](const PrimExpr& mul_expr,
                                const PrimExpr& add_expr) -> bool {
     const auto* mul = mul_expr.as<MulNode>();
@@ -667,10 +666,72 @@ bool EmitAddRootTileComputeIfMatched(const TileComputeRewriteContext& ctx,
     }
     return false;
   };
+  auto match_ordered_scaled_add = [&](const PrimExpr& mul_expr,
+                                      const PrimExpr& add_expr) -> bool {
+    PrimExpr stripped_mul_expr = mul_expr;
+    if (const auto* cast = mul_expr.as<CastNode>()) {
+      stripped_mul_expr = cast->value;
+    }
+    const auto* mul = stripped_mul_expr.as<MulNode>();
+    if (!mul ||
+        !MatchLoadFromBuffer(add_expr, ctx.store->buffer,
+                             ctx.identity_indices)) {
+      return false;
+    }
+    auto emit_scaled_add = [&](const PrimExpr& value_expr,
+                               const PrimExpr& scale_expr) -> bool {
+      Buffer value;
+      Buffer scale;
+      bool needs_typecast = false;
+      const PrimExpr* load_expr = &value_expr;
+      if (const auto* cast = value_expr.as<CastNode>()) {
+        load_expr = &cast->value;
+        needs_typecast = true;
+      }
+      if (!MatchIdentityLoad(*load_expr, ctx, &value) ||
+          SameBufferStorage(value, ctx.store->buffer)) {
+        return false;
+      }
+      const PrimExpr* scale_load_expr = &scale_expr;
+      if (const auto* cast = scale_expr.as<CastNode>()) {
+        scale_load_expr = &cast->value;
+      }
+      const bool scale_is_identity = MatchIdentityLoad(*scale_load_expr, ctx, &scale);
+      const bool scale_is_broadcast =
+          !scale_is_identity && MatchBroadcastColsLoad(*scale_load_expr, ctx, &scale);
+      if ((!scale_is_identity && !scale_is_broadcast) ||
+          SameBufferStorage(scale, ctx.store->buffer)) {
+        return false;
+      }
+      Buffer scaled_value = builder->TempLike(ctx.store->buffer, "_scaled_add");
+      match->temp_buffers.push_back(scaled_value);
+      match->AddUnary(needs_typecast ||
+                              value->dtype != scaled_value->dtype
+                          ? blackhole_tile_compute_schema::kTypecastTile
+                          : blackhole_tile_compute_schema::kCopyTile,
+                      value, scaled_value, ctx.num_elements);
+      if (scale_is_identity) {
+        match->AddInplaceBinary(blackhole_tile_compute_schema::kMulTiles,
+                                scaled_value, scale, ctx.num_elements);
+      } else {
+        match->AddBroadcastColsBinary(
+            blackhole_tile_compute_schema::kMulTilesBcastCols, scaled_value,
+            scale, ctx.num_elements, EffectiveRowWidth(ctx));
+      }
+      match->AddInplaceBinary(blackhole_tile_compute_schema::kAddTiles,
+                              ctx.store->buffer, scaled_value,
+                              ctx.num_elements);
+      return true;
+    };
+    return emit_scaled_add(mul->a, mul->b) ||
+           emit_scaled_add(mul->b, mul->a);
+  };
   const auto* add = ctx.store->value.as<AddNode>();
   return add &&
          (match_ordered_fma(add->a, add->b) ||
           match_ordered_fma(add->b, add->a) ||
+          match_ordered_scaled_add(add->a, add->b) ||
+          match_ordered_scaled_add(add->b, add->a) ||
           EmitStandaloneBinaryIfMatched(
               ctx, match, add->a, add->b,
               blackhole_tile_compute_schema::kAddTiles,
@@ -791,8 +852,53 @@ bool EmitMulRootTileComputeIfMatched(const TileComputeRewriteContext& ctx,
               ctx, match, mul->a, mul->b,
               blackhole_tile_compute_schema::kMulTiles,
               blackhole_tile_compute_schema::kMulTilesBcastCols) ||
-          match_ordered_broadcast(mul->a, mul->b) ||
-          match_ordered_broadcast(mul->b, mul->a));
+	         match_ordered_broadcast(mul->a, mul->b) ||
+	         match_ordered_broadcast(mul->b, mul->a));
+}
+
+bool EmitBroadcastColsRootIfMatched(const TileComputeRewriteContext& ctx,
+                                    TileComputeRewriteMatch* match,
+                                    TileComputeIRBuilder* builder) {
+  (void)builder;
+  auto match_scaled_broadcast = [&](const PrimExpr& value_expr,
+                                    PrimExpr* scale,
+                                    Buffer* broadcast) -> bool {
+    PrimExpr expr = value_expr;
+    if (const auto* cast = value_expr.as<CastNode>()) {
+      expr = cast->value;
+    }
+    if (MatchBroadcastColsLoad(expr, ctx, broadcast)) {
+      *scale = make_const(expr.dtype(), 1.0);
+      return true;
+    }
+    const auto* mul = expr.as<MulNode>();
+    if (!mul) {
+      return false;
+    }
+    if (MatchBroadcastColsLoad(mul->a, ctx, broadcast) &&
+        IsLiteralScalarValue(mul->b)) {
+      *scale = mul->b;
+      return true;
+    }
+    if (MatchBroadcastColsLoad(mul->b, ctx, broadcast) &&
+        IsLiteralScalarValue(mul->a)) {
+      *scale = mul->a;
+      return true;
+    }
+    return false;
+  };
+
+  Buffer broadcast;
+  PrimExpr scale;
+  if (!match_scaled_broadcast(ctx.store->value, &scale, &broadcast)) {
+    return false;
+  }
+  match->AddFill(ctx.store->buffer, scale,
+                 BufferElementCount(ctx.store->buffer, ctx.num_elements));
+  match->AddBroadcastColsBinary(
+      blackhole_tile_compute_schema::kMulTilesBcastCols,
+      ctx.store->buffer, broadcast, ctx.num_elements, EffectiveRowWidth(ctx));
+  return true;
 }
 
 bool EmitDivRootTileComputeIfMatched(const TileComputeRewriteContext& ctx,
@@ -895,6 +1001,10 @@ Stmt NormalizeBlackholeTileComputeStore(const BufferStoreNode* store,
     return stmt;
   }
   if (Stmt stmt = render_if_matched(EmitMulRootTileComputeIfMatched);
+      stmt.defined()) {
+    return stmt;
+  }
+  if (Stmt stmt = render_if_matched(EmitBroadcastColsRootIfMatched);
       stmt.defined()) {
     return stmt;
   }

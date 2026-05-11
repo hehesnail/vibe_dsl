@@ -28,8 +28,8 @@
 
 | Document | Role |
 | --- | --- |
-| `2026-05-05-blackhole-t9-workload-first.md` | Current P1 workload-first lane.  Workload names are witnesses; TIR evidence and typed contracts remain owner truth. |
-| `2026-04-29-blackhole-resource-planning-roadmap.md` | Resource planning and later P2/T10 expansion boundary: CB/L1 pressure, placement, buffer distribution, and future NoC work. |
+| `2026-05-05-blackhole-t9-workload-first.md` | Completed P1 workload-first contract.  Workload names are witnesses; TIR evidence and typed contracts remain owner truth. |
+| `2026-04-29-blackhole-resource-planning-roadmap.md` | Next P2/T10 expansion boundary: CB/L1 pressure, placement, buffer distribution, and future NoC work. |
 
 ## Supporting Contracts
 

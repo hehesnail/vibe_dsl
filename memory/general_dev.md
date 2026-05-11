@@ -2892,3 +2892,15 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   implementation inventory.  Active design docs should state durable contracts
   and regression criteria; historical details belong in git history or
   `memory/`.
+- 2026-05-11 terminal exact/live-CB publication:
+  A terminal local-to-CB slice can be a witness for a complete exact/live CB
+  value rather than the owner of the value.  When source and destination
+  logical tile shapes match and the live CB has a full-tile publication,
+  materialization should republish from the live CB instead of reconstructing
+  from a local fragment that may not be materialized on the current path.
+- 2026-05-11 retained stream-input tile offsets:
+  Retained-front GEMM tile offset rewriting should only advance tile reads
+  after a wait observes already-retained front pages.  An initial multi-page
+  logical wait over several one-page stream pushes still reads logical tile
+  indices from zero; treating the wait depth itself as retained history shifts
+  the GEMM inputs.

@@ -1560,9 +1560,16 @@ Stmt PlanTTKernelABI::GenerateBinaryTileSequence(const Buffer& dst,
   ExactTiledCBValue loop_carried_transport_publication;
   ExactTiledCBValue loop_carried_alternate_state;
   ExactTiledCBValue loop_carried_second_alternate_state;
+  const FutureBufferUses dst_future_uses =
+      ClassifyFutureBufferUses(dst, current_lowering_order_index_);
+  const bool materialize_active_loop_carried_output =
+      ShouldMaterializeLoopCarriedExactOutput(dst);
   const bool mirror_loop_carried_transport_output =
       out.num_tiles == 1 && IsActiveLoopCarriedExactCBValue(out) &&
-      IsActiveLoopCarriedTransportPublicationValue(out);
+      (IsActiveLoopCarriedTransportPublicationValue(out) ||
+       (!active_serial_loop_vars_.empty() &&
+        (dst_future_uses.has_transport_consume ||
+         materialize_active_loop_carried_output)));
   const bool inplace_loop_carried_output =
       !mirror_loop_carried_transport_output && out.num_tiles == 1 &&
       IsActiveLoopCarriedExactCBValue(out) && out.cb_id == lhs_in.cb_id;
@@ -1625,10 +1632,13 @@ Stmt PlanTTKernelABI::GenerateBinaryTileSequence(const Buffer& dst,
   if (Stmt publish_rhs = PublishExactInputToTiledCB(rhs, &rhs_in); publish_rhs.defined()) {
     stmts.push_back(publish_rhs);
   }
-  const PrimExpr final_serial_iteration =
+  PrimExpr final_serial_iteration =
       mirror_loop_carried_transport_output
           ? ActiveLoopCarriedTransportPublicationFinalPredicate(out)
           : PrimExpr();
+  if (mirror_loop_carried_transport_output && !final_serial_iteration.defined()) {
+    final_serial_iteration = BuildActiveSerialLoopFinalIterationPredicate();
+  }
   MarkFutureLiveExactCBRequirementsOverlapWith(out.cb_id, out.num_tiles,
                                                current_lowering_order_index_);
   MarkExactCBValuesOverlap({lhs_in.cb_id, rhs_in.cb_id, out.cb_id,
@@ -1678,6 +1688,36 @@ Stmt PlanTTKernelABI::GenerateBinaryTileSequence(const Buffer& dst,
           });
     };
 
+    auto append_binary_pack_two_outputs =
+        [&](std::vector<Stmt>* target, int input_state_cb_id,
+            int first_output_cb_id, int second_output_cb_id,
+            int first_reserve_pages, int second_reserve_pages,
+            int first_output_tile, int second_output_tile, int rhs_tile) {
+          ExactTileComputeEmitter branch_emit(target);
+          branch_emit.BinaryOpInitCommon(input_state_cb_id, rhs_in.cb_id,
+                                         first_output_cb_id);
+          if (first_reserve_pages > 0) {
+            branch_emit.Reserve(first_output_cb_id, first_reserve_pages);
+          }
+          if (second_reserve_pages > 0) {
+            branch_emit.Reserve(second_output_cb_id, second_reserve_pages);
+          }
+          branch_emit.Wait(input_state_cb_id, 1);
+          branch_emit.Wait(rhs_in.cb_id, rhs_tile + 1);
+          branch_emit.ReconfigDataFormat(input_state_cb_id, rhs_in.cb_id);
+          branch_emit.Append(init_op,
+                             {IntImm32(input_state_cb_id), IntImm32(rhs_in.cb_id)});
+          branch_emit.Append(blackhole_tile_regs_acquire(), {});
+          branch_emit.Append(tile_op,
+                             {IntImm32(input_state_cb_id), IntImm32(rhs_in.cb_id),
+                              IntImm32(0), IntImm32(rhs_tile), IntImm32(0)});
+          branch_emit.Append(blackhole_tile_regs_commit(), {});
+          branch_emit.Append(blackhole_tile_regs_wait(), {});
+          branch_emit.PackTile(first_output_cb_id, first_output_tile);
+          branch_emit.PackTile(second_output_cb_id, second_output_tile);
+          branch_emit.Append(blackhole_tile_regs_release(), {});
+        };
+
     auto append_pop_inputs = [&](std::vector<Stmt>* target, int input_state_cb_id,
                                  bool pop_state) {
       if (pop_state) {
@@ -1691,11 +1731,11 @@ Stmt PlanTTKernelABI::GenerateBinaryTileSequence(const Buffer& dst,
                                        bool pop_input_state,
                                        int rhs_tile) -> Stmt {
       std::vector<Stmt> branch;
-      append_binary_pack(&branch, input_state_cb_id,
-                         loop_carried_transport_publication.cb_id, 1, 0,
-                         rhs_tile);
-      append_binary_pack(&branch, input_state_cb_id, next_state_cb_id, 1, 0,
-                         rhs_tile);
+      append_binary_pack_two_outputs(
+          &branch, input_state_cb_id,
+          loop_carried_transport_publication.cb_id, next_state_cb_id,
+          /*first_reserve_pages=*/1, /*second_reserve_pages=*/1,
+          /*first_output_tile=*/0, /*second_output_tile=*/0, rhs_tile);
       append_pop_inputs(&branch, input_state_cb_id, pop_input_state);
       branch.push_back(MakeBlackholeCall(
           blackhole_cb_push_back(), {IntImm32(next_state_cb_id), IntImm32(1)}));
@@ -1742,11 +1782,25 @@ Stmt PlanTTKernelABI::GenerateBinaryTileSequence(const Buffer& dst,
         stmts.push_back(materialize);
       }
     } else {
-      RecordExactOutputLiveForm(dst, out);
+      ExactTiledCBValue backedge_state = loop_carried_second_alternate_state;
+      backedge_state.buffer = dst;
+      if (backedge_state.live_identity.empty()) {
+        backedge_state.live_identity = out.live_identity.empty()
+                                           ? BufferIdentityName(dst)
+                                           : out.live_identity;
+      }
+      RecordExactOutputLiveForm(dst, backedge_state);
     }
     Stmt body = SeqStmt::Flatten(stmts);
     if (!materialize_loop_carried) {
-      body = AttachExactOutputLiveFormMarker(dst, out, body);
+      ExactTiledCBValue backedge_state = loop_carried_second_alternate_state;
+      backedge_state.buffer = dst;
+      if (backedge_state.live_identity.empty()) {
+        backedge_state.live_identity = out.live_identity.empty()
+                                           ? BufferIdentityName(dst)
+                                           : out.live_identity;
+      }
+      body = AttachExactOutputLiveFormMarker(dst, backedge_state, body);
     }
     return RecordComputeSegmentStmt(body);
   }
@@ -1927,6 +1981,13 @@ Stmt PlanTTKernelABI::GenerateBroadcastColsBinaryTileSequence(
   }
   const auto [logical_rows, logical_cols] = GetLogicalMatrixShape(dst);
   const bool materialize_loop_carried = ShouldMaterializeLoopCarriedExactOutput(dst);
+  const FutureBufferUses future_output_uses =
+      ClassifyFutureBufferUses(dst, current_lowering_order_index_);
+  const bool materialize_future_local_reference =
+      !materialize_loop_carried &&
+      future_output_uses.has_reference &&
+      !future_output_uses.has_compute_consume &&
+      !future_output_uses.has_transport_consume;
   const bool materialize_completed_loop_carried_before_rewrite =
       !materialize_loop_carried && IsCompletedLoopCarriedBuffer(dst) && logical_rows > 1 &&
       logical_cols > 1 &&
@@ -1980,20 +2041,25 @@ Stmt PlanTTKernelABI::GenerateBroadcastColsBinaryTileSequence(
   }
   emit.Push(out.cb_id, out.num_tiles);
   const bool materialize_local_state =
-      materialize_loop_carried || materialize_completed_loop_carried_before_rewrite;
+      materialize_loop_carried || materialize_completed_loop_carried_before_rewrite ||
+      materialize_future_local_reference;
   if (materialize_local_state) {
     Stmt materialize =
         materialize_loop_carried
             ? MaterializeLoopCarriedExactOutput(dst, out)
             : [&]() {
-                InvalidateLastFragmentFillValue(dst);
-                ClearSelectedSourceLiveProducer(dst);
-                ClearTiledCBLiveFormAliases(dst);
-                MarkLocalOnlyLiveFormAliases(dst);
-                Stmt local_materialize =
-                    MaterializeExactTiledCBToLocalBuffer(dst, out, /*pop_front=*/true);
-                ClearTiledCBLiveFormAliases(dst);
-                MarkLocalOnlyLiveFormAliases(dst);
+                if (!materialize_future_local_reference) {
+                  InvalidateLastFragmentFillValue(dst);
+                  ClearSelectedSourceLiveProducer(dst);
+                  ClearTiledCBLiveFormAliases(dst);
+                  MarkLocalOnlyLiveFormAliases(dst);
+                }
+                Stmt local_materialize = MaterializeExactTiledCBToLocalBuffer(
+                    dst, out, /*pop_front=*/!materialize_future_local_reference);
+                if (!materialize_future_local_reference) {
+                  ClearTiledCBLiveFormAliases(dst);
+                  MarkLocalOnlyLiveFormAliases(dst);
+                }
                 return local_materialize;
               }();
     if (materialize.defined()) {

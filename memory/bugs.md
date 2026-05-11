@@ -3574,6 +3574,46 @@
     copies, full T8 indexed/ragged/paged/segmented copy gates, and the active
     T7/T9 workload group passed.
 
+### Terminal flash decode publication repacked from a stale local fragment
+
+- **症状**:
+  - Paged and split-block flash decode direct runtime produced an all-zero
+    final output even though the intermediate exact/live CB value held the
+    expected partial-combine result.
+- **根因**:
+  - Final local-to-CB publication treated a slice-shaped local fragment as the
+    value owner and repacked from that local storage.  On this path the local
+    fragment was only a witness for the terminal value; the actual complete
+    tile was available through the exact/live CB lifecycle.
+- **修法**:
+  - Allow terminal local-to-CB slice lowering to republish from a matching
+    full-tile exact/live CB when the logical matrix shape and element count
+    match the destination publication.
+- **验证**:
+  - `cmake --build build -j32` passed.
+  - T7 paged decode and T9.6 split-block flash decode bf16 direct-runtime
+    selectors passed under the repository TT-Sim setup.
+
+### Retained stream input rewrite offset the first grouped GEMM wait
+
+- **症状**:
+  - Grouped GEMM direct runtime produced wrong rows after compute source
+    generation rewrote `matmul_tiles` to read logical tile indices `3..6`
+    after the first `cb_wait_front(cb, 4)`.
+- **根因**:
+  - The retained stream-input rewrite interpreted the initial multi-page
+    logical wait depth as retained front history.  For grouped GEMM the four
+    pages are the first logical GEMM input event, so tile reads must start at
+    zero.
+- **修法**:
+  - Only advance the active event base when a wait observes previously retained
+    front pages.  Initial absolute-depth waits with no retained base keep tile
+    reads at logical index zero.
+- **验证**:
+  - `cmake --build build -j32` passed.
+  - The grouped GEMM bf16 direct-runtime selector passed under the repository
+    TT-Sim setup.
+
 ## 3. 环境问题速查
 
 | 问题 | 解决 |

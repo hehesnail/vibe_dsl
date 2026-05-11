@@ -97,19 +97,23 @@ CoreAssignment PlanTTCoreGroups::AnalyzeGrid(const PrimFunc& func) {
     void VisitStmt_(const AttrStmtNode* op) final {
       if (op->attr_key == tir::attr::thread_extent) {
         IterVar iv = Downcast<IterVar>(op->node);
-        std::string name = iv->var->name_hint;
+        const std::string thread_tag = iv->thread_tag;
+        const std::string name = iv->var->name_hint;
         auto extent = as_const_int(iv->dom->extent);
         if (!extent) {
           StmtExprVisitor::VisitStmt_(op);
           return;
         }
-        if (name == "blockIdx.x" || name == "bx") {
+        if (thread_tag == "blockIdx.x" || name == "blockIdx.x" ||
+            name == "bx") {
           grid_x = static_cast<int>(*extent);
           found_grid = true;
-        } else if (name == "blockIdx.y" || name == "by") {
+        } else if (thread_tag == "blockIdx.y" || name == "blockIdx.y" ||
+                   name == "by") {
           grid_y = static_cast<int>(*extent);
           found_grid = true;
-        } else if (name == "blockIdx.z" || name == "bz") {
+        } else if (thread_tag == "blockIdx.z" || name == "blockIdx.z" ||
+                   name == "bz") {
           grid_z = static_cast<int>(*extent);
           found_grid = true;
         }

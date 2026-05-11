@@ -395,8 +395,6 @@ int64_t PlanTTKernelABI::EnsureExactCBVirtualValue(
       value.cb_id >= static_cast<int>(cb_requirements_.size())) {
     return -1;
   }
-  const std::string key =
-      logical_value + "|" + std::to_string(value.cb_id) + "|" + value.live_identity;
   auto extend_interval_to_current_use = [&](int64_t virtual_index) {
     if (current_order_index < 0) {
       return;
@@ -417,11 +415,6 @@ int64_t PlanTTKernelABI::EnsureExactCBVirtualValue(
       return;
     }
   };
-  auto cached = tt_exact_cb_virtual_index_by_key_.find(key);
-  if (cached != tt_exact_cb_virtual_index_by_key_.end()) {
-    extend_interval_to_current_use(cached->second);
-    return cached->second;
-  }
   const int64_t live_form_index = EnsureExactCBLiveFormPlan(logical_value, value);
   if (live_form_index < 0) {
     return -1;
@@ -431,11 +424,30 @@ int64_t PlanTTKernelABI::EnsureExactCBVirtualValue(
   const CBRequirement& req = cb_requirements_.at(value.cb_id);
   const int resolved_producer_order = ResolveBorrowedExactInputProducerOrder(value);
   const int producer_order =
-      resolved_producer_order >= 0 ? resolved_producer_order : req.lifetime_begin;
-  const std::string lifetime_kind =
+      resolved_producer_order >= 0
+          ? resolved_producer_order
+          : (current_order_index >= 0 ? current_order_index : req.lifetime_begin);
+  std::string lifetime_kind =
       spatial_lifetime_kind_by_subject_.count(logical_value)
           ? spatial_lifetime_kind_by_subject_.at(logical_value)
           : std::string("multi_event");
+  if (lifetime_kind == "loop_carried" && !IsActiveLoopCarriedExactCBValue(value)) {
+    // Spatial lifetime is subject-level evidence.  Reused scratch buffers can
+    // carry that subject label while the concrete exact-CB value is overwritten
+    // before use in the current loop, so require active loop-carried value
+    // evidence before marking the physical exact-CB record loop-carried.
+    lifetime_kind = "multi_event";
+  }
+  std::string key =
+      logical_value + "|" + std::to_string(value.cb_id) + "|" + value.live_identity;
+  if (lifetime_kind != "loop_carried") {
+    key += "|producer_order:" + std::to_string(std::max(producer_order, 0));
+  }
+  auto cached = tt_exact_cb_virtual_index_by_key_.find(key);
+  if (cached != tt_exact_cb_virtual_index_by_key_.end()) {
+    extend_interval_to_current_use(cached->second);
+    return cached->second;
+  }
   const std::string loop_role = lifetime_kind == "loop_carried" ? "loop_carried" : "none";
   const int64_t virtual_index = static_cast<int64_t>(tt_exact_cb_virtual_values_.size());
   const std::string name =

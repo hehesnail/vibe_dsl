@@ -1174,39 +1174,46 @@ static Stmt RewrapMissingBlackholeAccDefinitions(
     definition.has_lexical_allocation = true;
     bind_definition_key(definition_index, allocate->buffer_var.get(), storage_key);
   };
-  tir::PostOrderVisit(original_body, [&](const ObjectRef& node) {
-    if (const auto* block = node.as<tir::BlockNode>()) {
-      for (const Buffer& buffer : block->alloc_buffers) {
-        remember_buffer(buffer);
-      }
+  auto collect_definitions = [&](const Stmt& body) {
+    if (!body.defined()) {
       return;
     }
-    if (const auto* decl = node.as<tir::DeclBufferNode>()) {
-      remember_buffer(decl->buffer);
-      return;
-    }
-    if (const auto* store = node.as<tir::BufferStoreNode>()) {
-      remember_buffer(store->buffer);
-      return;
-    }
-    if (const auto* load = node.as<tir::BufferLoadNode>()) {
-      remember_buffer(load->buffer);
-      return;
-    }
-    if (const auto* call = node.as<tir::CallNode>()) {
-      for (const PrimExpr& arg : call->args) {
-        if (!IsBufferLikeExpr(arg)) {
-          continue;
+    tir::PostOrderVisit(body, [&](const ObjectRef& node) {
+      if (const auto* block = node.as<tir::BlockNode>()) {
+        for (const Buffer& buffer : block->alloc_buffers) {
+          remember_buffer(buffer);
         }
-        BufferRegion region = NormalizeToBufferRegion(arg);
-        if (region.defined()) {
-          remember_buffer(region->buffer);
-        }
+        return;
       }
-      return;
-    }
-    remember_allocate(node.as<tir::AllocateNode>());
-  });
+      if (const auto* decl = node.as<tir::DeclBufferNode>()) {
+        remember_buffer(decl->buffer);
+        return;
+      }
+      if (const auto* store = node.as<tir::BufferStoreNode>()) {
+        remember_buffer(store->buffer);
+        return;
+      }
+      if (const auto* load = node.as<tir::BufferLoadNode>()) {
+        remember_buffer(load->buffer);
+        return;
+      }
+      if (const auto* call = node.as<tir::CallNode>()) {
+        for (const PrimExpr& arg : call->args) {
+          if (!IsBufferLikeExpr(arg)) {
+            continue;
+          }
+          BufferRegion region = NormalizeToBufferRegion(arg);
+          if (region.defined()) {
+            remember_buffer(region->buffer);
+          }
+        }
+        return;
+      }
+      remember_allocate(node.as<tir::AllocateNode>());
+    });
+  };
+  collect_definitions(original_body);
+  collect_definitions(rewritten_body);
   if (definitions.empty()) {
     return rewritten_body;
   }
@@ -1282,13 +1289,9 @@ static Stmt RewrapMissingBlackholeAccDefinitions(
     }
 
     void VisitStmt_(const tir::DeclBufferNode* op) final {
-      const bool is_acc_buffer =
-          op->buffer.defined() && std::string(op->buffer.scope()) == "blackhole.acc";
-      const VarNode* data = is_acc_buffer ? op->buffer->data.get() : nullptr;
-      const std::string storage_key = is_acc_buffer ? BlackholeAccStorageKey(op->buffer) : "";
-      PushBinding(data, storage_key);
+      // A DeclBuffer names a TIR buffer view; unlike Allocate, it does not
+      // give codegen a concrete storage binding for the backing handle.
       VisitStmt(op->body);
-      PopBinding(data, storage_key);
     }
 
     void VisitExpr_(const VarNode* op) final {
@@ -1969,13 +1972,16 @@ std::unordered_map<std::string, Stmt> PlanTTKernelABI::BuildRecordedSegmentBodie
         stmts.push_back(seeded->second);
       }
     }
-    if (stmts.empty()) {
-      continue;
-    }
-    Stmt body = SeqStmt::Flatten(stmts);
-    body = RewriteRetainedStreamInputMatmulTileOffsetsForRequirements(
-        body, cb_requirements_);
-    bodies.emplace(kind, body);
+	    if (stmts.empty()) {
+	      continue;
+	    }
+	    Stmt body = SeqStmt::Flatten(stmts);
+	    body = RewrapMissingBlackholeAccDefinitions(
+	        current_func_.defined() ? current_func_->body : body,
+	        body, logical_tile_layout_specs_by_buffer_);
+	    body = RewriteRetainedStreamInputMatmulTileOffsetsForRequirements(
+	        body, cb_requirements_);
+	    bodies.emplace(kind, body);
   }
   return bodies;
 }
@@ -4642,6 +4648,30 @@ Stmt PlanTTKernelABI::VisitStmt_(const SeqStmtNode* op) {
       return eval ? eval->value.as<CallNode>() : nullptr;
     };
 
+    auto unwrap_for = [](const Stmt& stmt) -> const ForNode* {
+      Stmt current = stmt;
+      while (true) {
+        if (const auto* attr = current.as<AttrStmtNode>()) {
+          current = attr->body;
+          continue;
+        }
+        if (const auto* let = current.as<LetStmtNode>()) {
+          current = let->body;
+          continue;
+        }
+        if (const auto* decl = current.as<DeclBufferNode>()) {
+          current = decl->body;
+          continue;
+        }
+        if (const auto* allocate = current.as<AllocateNode>()) {
+          current = allocate->body;
+          continue;
+        }
+        break;
+      }
+      return current.as<ForNode>();
+    };
+
     auto preserve_definition_wrappers_as_noop = [](const Stmt& stmt) -> Stmt {
       std::vector<std::function<Stmt(Stmt)>> rewrap_stack;
       bool saw_definition_wrapper = false;
@@ -5201,6 +5231,29 @@ Stmt PlanTTKernelABI::VisitStmt_(const SeqStmtNode* op) {
       preserve_definitions_or_drop(op->seq[i]);
       continue;
     }
+    if (!select_compute_builtins_only_ &&
+        i + 1 < static_cast<int>(op->seq.size())) {
+      const ForNode* cast_loop = unwrap_for(op->seq[i]);
+      const ForNode* local_to_cb_loop = unwrap_for(op->seq[i + 1]);
+      FragmentCastMatch cast_match;
+      LocalToCBSliceMatch local_to_cb_match;
+      if (cast_loop && local_to_cb_loop &&
+          MatchDirectFragmentCast(cast_loop, &cast_match) &&
+          MatchDirectLocalToCBSliceLoop(local_to_cb_loop, &local_to_cb_match) &&
+          !local_to_cb_match.emit_outer_loop &&
+          SameBufferIdentity(cast_match.dst, local_to_cb_match.src)) {
+        local_to_cb_match.cast_src = cast_match.src;
+        local_to_cb_match.cast_src_offset = cast_match.src_offset;
+        if (cast_match.row_width.defined()) {
+          local_to_cb_match.row_width = cast_match.row_width;
+        }
+        saw_copy_op_ = true;
+        rewritten.push_back(
+            GenerateLocalToCBSliceLoopSequence(local_to_cb_loop, local_to_cb_match));
+        ++i;
+        continue;
+      }
+    }
     rewritten.push_back(VisitStmt(op->seq[i]));
   }
   return SeqStmt::Flatten(rewritten);
@@ -5700,7 +5753,7 @@ Stmt PlanTTKernelABI::VisitStmt_(const ForNode* op) {
     std::vector<NestedCopyMatch> matches;
     CollectNestedCopyStores(op->body, &loop_stack, &matches);
     for (const NestedCopyMatch& match : matches) {
-      if (match.direction != CopyDirection::kCBToLocal || match.store == nullptr) {
+      if (match.store == nullptr) {
         continue;
       }
       const auto* load = GetCopyLoad(match.store);
@@ -5719,8 +5772,44 @@ Stmt PlanTTKernelABI::VisitStmt_(const ForNode* op) {
       if (!has_tile_compute_input_use) {
         continue;
       }
-      const int src_cb_id =
-          AllocateRequirementIndex(match.store->buffer, CBType::kIntermediate);
+      if (match.direction == CopyDirection::kDramToLocal) {
+        if (!IsSingleFullTileLogicalMatrix(match.store->buffer) ||
+            future_uses.has_transport_consume || future_uses.has_reference) {
+          continue;
+        }
+        const int src_cb_id =
+            AllocateRequirementIndex(match.store->buffer, CBType::kIntermediate);
+        const int tile_count =
+            std::max(1, GetLogicalBufferTileCount(match.store->buffer));
+        const int tile_bytes = kBlackholeTileRows * kBlackholeTileCols *
+                               static_cast<int>(load->buffer->dtype.bytes());
+        SetRequirementPageLayout(src_cb_id, tile_bytes, tile_count);
+        auto& req = cb_requirements_.at(src_cb_id);
+        req.data_format = DataTypeToDataFormatForBlackhole(load->buffer->dtype);
+        req.publish_pages_per_event =
+            std::max(req.publish_pages_per_event, tile_count);
+        req.consume_pages_per_event =
+            std::max(req.consume_pages_per_event, tile_count);
+        RecordTiledCBLiveFormAliases(match.store->buffer, src_cb_id);
+        continue;
+      }
+      if (match.direction != CopyDirection::kCBToLocal) {
+        continue;
+      }
+      if (future_uses.has_transport_consume || future_uses.has_reference) {
+        continue;
+      }
+      ExactTiledCBValue live_source;
+      int src_cb_id = -1;
+      if (TryCreateExactOutputLiveTiledCBValue(load->buffer, &live_source) ||
+          TryCreateLiveExactTiledCBValue(load->buffer, &live_source)) {
+        src_cb_id = live_source.cb_id;
+      } else {
+        src_cb_id = FindRequirementIndexForBuffer(load->buffer);
+      }
+      if (src_cb_id < 0 || src_cb_id >= static_cast<int>(cb_requirements_.size())) {
+        continue;
+      }
       auto& req = cb_requirements_.at(src_cb_id);
       req.lifetime_end = std::max(req.lifetime_end, next_requirement_index_);
       RecordTiledCBLiveFormAliases(match.store->buffer, src_cb_id);

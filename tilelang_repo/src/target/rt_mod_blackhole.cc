@@ -2059,21 +2059,29 @@ static void ValidateExtractedCorePlan(const CorePlan& core_plan, const std::stri
       << entry_name;
 }
 
-static ExecutableSpec ExtractExecutableSpecFromDeviceFunc(const tir::PrimFunc& f,
-                                                          const std::string& entry_name) {
-  ExecutableSpec spec;
-  spec.entry_name = entry_name;
-
+static void PopulateTVMArgMetadataFromPrimFunc(const tir::PrimFunc& f,
+                                               ExecutableSpec* spec) {
+  ICHECK(spec != nullptr);
+  spec->tvm_arg_names.clear();
+  spec->tvm_arg_types.clear();
+  spec->tvm_is_buffer_arg.clear();
   for (size_t i = 0; i < f->params.size(); ++i) {
     DLDataType dtype = f->params[i]->dtype;
     if (dtype.code == kDLBool) {
       dtype.code = kDLInt;
       dtype.bits = 32;
     }
-    spec.tvm_arg_names.push_back(f->params[i]->name_hint);
-    spec.tvm_arg_types.push_back(dtype);
-    spec.tvm_is_buffer_arg.push_back(dtype.code == kDLOpaqueHandle);
+    spec->tvm_arg_names.push_back(f->params[i]->name_hint);
+    spec->tvm_arg_types.push_back(dtype);
+    spec->tvm_is_buffer_arg.push_back(dtype.code == kDLOpaqueHandle);
   }
+}
+
+static ExecutableSpec ExtractExecutableSpecFromDeviceFunc(const tir::PrimFunc& f,
+                                                          const std::string& entry_name) {
+  ExecutableSpec spec;
+  spec.entry_name = entry_name;
+  PopulateTVMArgMetadataFromPrimFunc(f, &spec);
 
   spec.cb_configs = ExtractCBConfig(f);
   spec.core_plan = ExtractCorePlan(f);
@@ -3155,7 +3163,10 @@ static void EnforcePhysicalCBQueueEventGate(ExecutableSpec* spec) {
           ICHECK_GE(state.visible_front_pages, pages)
               << "physical CB queue wait_front exceeds visible pages in "
               << kernel.name << " for CB " << cb_id << ": front="
-              << state.visible_front_pages << " wait=" << pages;
+              << state.visible_front_pages << " wait=" << pages
+              << " role=" << cb.role
+              << " external_push="
+              << (externally_produced_cb_ids.count(cb_id) != 0U);
         }
       } else if (kind == "pop_front") {
         const bool has_external_producer =
@@ -3724,29 +3735,28 @@ static void PopulateKernelSpecsForDeviceFunc(const tir::PrimFunc& f,
   }
 }
 
-static std::string GetExplicitLaunchedKernelSymbol(
+static std::vector<std::string> GetExplicitLaunchedKernelSymbols(
     const tir::PrimFunc& f,
     const std::unordered_set<std::string>& device_kernel_symbols,
     const std::string& host_name) {
+  (void)host_name;
   auto launched_symbols = f->GetAttr<ffi::Array<String>>(
       tvm::tl::attr::kTLLaunchedKernelSymbols);
   if (!launched_symbols) {
-    return "";
+    return {};
   }
-  std::string kernel_symbol;
+  std::vector<std::string> kernel_symbols;
+  std::unordered_set<std::string> seen;
   for (const String& item : launched_symbols.value()) {
     const std::string candidate = item;
     if (device_kernel_symbols.count(candidate) == 0U) {
       continue;
     }
-    ICHECK(kernel_symbol.empty() || kernel_symbol == candidate)
-        << "Blackhole host entry " << host_name
-        << " launches multiple Blackhole device kernels through "
-        << tvm::tl::attr::kTLLaunchedKernelSymbols
-        << "; runtime requires a single explicit host->device association";
-    kernel_symbol = candidate;
+    if (seen.insert(candidate).second) {
+      kernel_symbols.push_back(candidate);
+    }
   }
-  return kernel_symbol;
+  return kernel_symbols;
 }
 
 /*!
@@ -3781,21 +3791,117 @@ static std::unordered_map<std::string, ExecutableSpec> ExtractBlackholeFuncInfo(
   }
 
   for (const auto& kv : host_entries) {
-    const std::string launched_kernel = GetExplicitLaunchedKernelSymbol(
+    const std::vector<std::string> launched_kernels = GetExplicitLaunchedKernelSymbols(
         kv.second, device_kernel_symbols, kv.first);
-    if (launched_kernel.empty()) {
+    if (launched_kernels.empty()) {
       continue;
     }
-    auto it = device_specs.find(launched_kernel);
+    auto it = device_specs.find(launched_kernels.front());
     if (it == device_specs.end()) {
       continue;
     }
     ExecutableSpec host_spec = it->second;
     host_spec.entry_name = kv.first;
+    host_spec.launched_device_entries = launched_kernels;
+    PopulateTVMArgMetadataFromPrimFunc(kv.second, &host_spec);
     fmap[kv.first] = std::move(host_spec);
   }
 
   return fmap;
+}
+
+static void PopulateHostSpecFromLaunchedDevices(
+    const std::string& host_name,
+    const std::vector<std::string>& launched_devices,
+    std::unordered_map<std::string, ExecutableSpec>* func_info_map) {
+  ICHECK(func_info_map != nullptr);
+  if (launched_devices.empty()) {
+    return;
+  }
+  auto first_device_it = func_info_map->find(launched_devices.front());
+  ICHECK(first_device_it != func_info_map->end())
+      << "Blackhole host entry " << host_name
+      << " references missing launched device executable "
+      << launched_devices.front();
+  auto host_it = func_info_map->find(host_name);
+  ExecutableSpec host_spec =
+      host_it != func_info_map->end() ? host_it->second : first_device_it->second;
+  host_spec.entry_name = host_name;
+  host_spec.launched_device_entries = launched_devices;
+  auto same_dl_type = [](DLDataType lhs, DLDataType rhs) {
+    return lhs.code == rhs.code && lhs.bits == rhs.bits && lhs.lanes == rhs.lanes;
+  };
+  std::unordered_map<std::string, size_t> host_arg_index_by_name;
+  auto append_child_tvm_arg_metadata = [&](const ExecutableSpec& child_spec) {
+    for (size_t i = 0; i < child_spec.tvm_arg_names.size(); ++i) {
+      const std::string& arg_name = child_spec.tvm_arg_names[i];
+      if (arg_name.empty()) {
+        continue;
+      }
+      ICHECK_LT(i, child_spec.tvm_arg_types.size())
+          << "Blackhole launched device executable " << child_spec.entry_name
+          << " has incomplete TVM arg type metadata for " << arg_name;
+      ICHECK_LT(i, child_spec.tvm_is_buffer_arg.size())
+          << "Blackhole launched device executable " << child_spec.entry_name
+          << " has incomplete TVM buffer arg metadata for " << arg_name;
+      auto [it, inserted] =
+          host_arg_index_by_name.emplace(arg_name, host_spec.tvm_arg_names.size());
+      if (!inserted) {
+        const size_t existing = it->second;
+        ICHECK(same_dl_type(host_spec.tvm_arg_types[existing],
+                            child_spec.tvm_arg_types[i]))
+            << "Blackhole host entry " << host_name
+            << " launches device kernels with inconsistent TVM arg type for "
+            << arg_name;
+        ICHECK_EQ(host_spec.tvm_is_buffer_arg[existing],
+                  child_spec.tvm_is_buffer_arg[i])
+            << "Blackhole host entry " << host_name
+            << " launches device kernels with inconsistent buffer role for "
+            << arg_name;
+        continue;
+      }
+      host_spec.tvm_arg_names.push_back(arg_name);
+      host_spec.tvm_arg_types.push_back(child_spec.tvm_arg_types[i]);
+      host_spec.tvm_is_buffer_arg.push_back(child_spec.tvm_is_buffer_arg[i]);
+    }
+  };
+  auto is_packed_api_formal = [](const std::string& name) {
+    return name == "self_handle" || name == "packed_args" ||
+           name == "num_packed_args" || name == "out_ret_value";
+  };
+  const bool has_host_arg_metadata =
+      !host_spec.tvm_arg_names.empty() &&
+      host_spec.tvm_arg_names.size() == host_spec.tvm_arg_types.size() &&
+      host_spec.tvm_arg_names.size() == host_spec.tvm_is_buffer_arg.size() &&
+      std::none_of(host_spec.tvm_arg_names.begin(), host_spec.tvm_arg_names.end(),
+                   is_packed_api_formal);
+  if (!has_host_arg_metadata) {
+    host_spec.tvm_arg_names.clear();
+    host_spec.tvm_arg_types.clear();
+    host_spec.tvm_is_buffer_arg.clear();
+  }
+  host_spec.kernels.clear();
+  host_spec.direct_runtime_unsupported_reasons.clear();
+  std::unordered_set<std::string> unsupported_reasons;
+  for (const std::string& device_name : launched_devices) {
+    auto device_it = func_info_map->find(device_name);
+    ICHECK(device_it != func_info_map->end())
+        << "Blackhole host entry " << host_name
+        << " references missing launched device executable " << device_name;
+    host_spec.kernels.insert(host_spec.kernels.end(),
+                             device_it->second.kernels.begin(),
+                             device_it->second.kernels.end());
+    if (!has_host_arg_metadata) {
+      append_child_tvm_arg_metadata(device_it->second);
+    }
+    for (const std::string& reason :
+         device_it->second.direct_runtime_unsupported_reasons) {
+      if (unsupported_reasons.insert(reason).second) {
+        host_spec.direct_runtime_unsupported_reasons.push_back(reason);
+      }
+    }
+  }
+  (*func_info_map)[host_name] = std::move(host_spec);
 }
 
 /*!
@@ -3812,7 +3918,7 @@ ffi::Module BuildTileLangBlackhole(IRModule mod, Target target) {
 
   auto func_info_map = ExtractBlackholeFuncInfo(mod);
   std::unordered_map<std::string, tir::PrimFunc> device_funcs;
-  std::unordered_map<std::string, std::string> host_to_device;
+  std::unordered_map<std::string, std::vector<std::string>> host_to_devices;
   std::unordered_set<std::string> device_kernel_symbols;
 
   // Create temporary directory for kernel files
@@ -3844,10 +3950,10 @@ ffi::Module BuildTileLangBlackhole(IRModule mod, Target target) {
     auto f = Downcast<tir::PrimFunc>(kv.second);
     if (IsBlackholeHostEntry(f)) {
       const std::string host_name = GetPrimFuncName(gvar, f);
-      const std::string launched_kernel =
-          GetExplicitLaunchedKernelSymbol(f, device_kernel_symbols, host_name);
-      if (!launched_kernel.empty()) {
-        host_to_device.emplace(host_name, launched_kernel);
+      const std::vector<std::string> launched_kernels =
+          GetExplicitLaunchedKernelSymbols(f, device_kernel_symbols, host_name);
+      if (!launched_kernels.empty()) {
+        host_to_devices.emplace(host_name, launched_kernels);
       }
     }
   }
@@ -3872,34 +3978,8 @@ ffi::Module BuildTileLangBlackhole(IRModule mod, Target target) {
     EnforceComputeOnlyTerminalPublishPacrSimulatorGate(&spec_it->second);
     EnforceLoopCarriedExactCBPacrSimulatorGate(&spec_it->second);
   }
-  for (const auto& kv : host_to_device) {
-    auto host_it = func_info_map.find(kv.first);
-    auto device_it = func_info_map.find(kv.second);
-    if (host_it != func_info_map.end() && device_it != func_info_map.end()) {
-      host_it->second.kernels = device_it->second.kernels;
-      host_it->second.buffer_distribution_plans =
-          device_it->second.buffer_distribution_plans;
-      host_it->second.tensor_memory_config_plans =
-          device_it->second.tensor_memory_config_plans;
-      host_it->second.reshard_plans = device_it->second.reshard_plans;
-      host_it->second.buffer_materializations = device_it->second.buffer_materializations;
-      host_it->second.live_form_plans = device_it->second.live_form_plans;
-      host_it->second.materialization_plans = device_it->second.materialization_plans;
-      host_it->second.consumer_binding_plans = device_it->second.consumer_binding_plans;
-      host_it->second.exact_cb_virtual_values =
-          device_it->second.exact_cb_virtual_values;
-      host_it->second.exact_cb_use_events =
-          device_it->second.exact_cb_use_events;
-      host_it->second.exact_cb_live_intervals =
-          device_it->second.exact_cb_live_intervals;
-      host_it->second.exact_cb_allocations =
-          device_it->second.exact_cb_allocations;
-      host_it->second.exact_cb_release_events =
-          device_it->second.exact_cb_release_events;
-      host_it->second.per_work_arg_specs = device_it->second.per_work_arg_specs;
-      host_it->second.direct_runtime_unsupported_reasons =
-          device_it->second.direct_runtime_unsupported_reasons;
-    }
+  for (const auto& kv : host_to_devices) {
+    PopulateHostSpecFromLaunchedDevices(kv.first, kv.second, &func_info_map);
   }
 
   size_t total_code_size = 0;
@@ -3929,7 +4009,7 @@ ffi::Module BuildTileLangBlackholeWithoutHost(IRModule mod, Target target) {
 
   auto func_info_map = ExtractBlackholeFuncInfo(mod);
   std::unordered_map<std::string, tir::PrimFunc> device_funcs;
-  std::unordered_map<std::string, std::string> host_to_device;
+  std::unordered_map<std::string, std::vector<std::string>> host_to_devices;
   std::unordered_set<std::string> device_kernel_symbols;
 
   // Create temporary directory for kernel files
@@ -3961,10 +4041,10 @@ ffi::Module BuildTileLangBlackholeWithoutHost(IRModule mod, Target target) {
     auto f = Downcast<tir::PrimFunc>(kv.second);
     if (IsBlackholeHostEntry(f)) {
       const std::string host_name = GetPrimFuncName(gvar, f);
-      const std::string launched_kernel =
-          GetExplicitLaunchedKernelSymbol(f, device_kernel_symbols, host_name);
-      if (!launched_kernel.empty()) {
-        host_to_device.emplace(host_name, launched_kernel);
+      const std::vector<std::string> launched_kernels =
+          GetExplicitLaunchedKernelSymbols(f, device_kernel_symbols, host_name);
+      if (!launched_kernels.empty()) {
+        host_to_devices.emplace(host_name, launched_kernels);
       }
     }
   }
@@ -3988,34 +4068,8 @@ ffi::Module BuildTileLangBlackholeWithoutHost(IRModule mod, Target target) {
     EnforceComputeOnlyTerminalPublishPacrSimulatorGate(&spec_it->second);
     EnforceLoopCarriedExactCBPacrSimulatorGate(&spec_it->second);
   }
-  for (const auto& kv : host_to_device) {
-    auto host_it = func_info_map.find(kv.first);
-    auto device_it = func_info_map.find(kv.second);
-    if (host_it != func_info_map.end() && device_it != func_info_map.end()) {
-      host_it->second.kernels = device_it->second.kernels;
-      host_it->second.buffer_distribution_plans =
-          device_it->second.buffer_distribution_plans;
-      host_it->second.tensor_memory_config_plans =
-          device_it->second.tensor_memory_config_plans;
-      host_it->second.reshard_plans = device_it->second.reshard_plans;
-      host_it->second.buffer_materializations = device_it->second.buffer_materializations;
-      host_it->second.live_form_plans = device_it->second.live_form_plans;
-      host_it->second.materialization_plans = device_it->second.materialization_plans;
-      host_it->second.consumer_binding_plans = device_it->second.consumer_binding_plans;
-      host_it->second.exact_cb_virtual_values =
-          device_it->second.exact_cb_virtual_values;
-      host_it->second.exact_cb_use_events =
-          device_it->second.exact_cb_use_events;
-      host_it->second.exact_cb_live_intervals =
-          device_it->second.exact_cb_live_intervals;
-      host_it->second.exact_cb_allocations =
-          device_it->second.exact_cb_allocations;
-      host_it->second.exact_cb_release_events =
-          device_it->second.exact_cb_release_events;
-      host_it->second.per_work_arg_specs = device_it->second.per_work_arg_specs;
-      host_it->second.direct_runtime_unsupported_reasons =
-          device_it->second.direct_runtime_unsupported_reasons;
-    }
+  for (const auto& kv : host_to_devices) {
+    PopulateHostSpecFromLaunchedDevices(kv.first, kv.second, &func_info_map);
   }
 
   return BlackholeModuleCreate(std::move(func_info_map), kernel_dir);

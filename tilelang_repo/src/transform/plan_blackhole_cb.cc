@@ -160,6 +160,9 @@ bool IsCompatibleForReuse(const CBRequirement& req, int req_index,
   if (config.role != RoleForType(req.type)) {
     return false;
   }
+  if (req.type == CBType::kInput) {
+    return false;
+  }
   if (config.page_size != req.page_size) {
     return false;
   }
@@ -1066,7 +1069,7 @@ tir::Stmt InsertPhysicalPopsBeforeBlockingReserve(
   }
   std::vector<int> capacity_pages(std::max(0, max_cb_id + 1), 0);
   for (const CBConfig& config : configs) {
-    if (config.cb_id >= 0) {
+    if (config.cb_id >= 0 && config.role != "input") {
       capacity_pages[config.cb_id] = std::max(capacity_pages[config.cb_id],
                                               std::max(1, config.num_pages));
     }
@@ -1495,7 +1498,7 @@ tir::Stmt RetainLocalCBFrontForFutureWaits(
   for (const CBConfig& config : configs) {
     if (config.cb_id >= 0 &&
         config.cb_id < static_cast<int>(can_retain_front.size()) &&
-        config.role == "output") {
+        (config.role == "input" || config.role == "output")) {
       can_retain_front[config.cb_id] = false;
     }
   }
@@ -1609,6 +1612,8 @@ tir::Stmt RewriteRetainedStreamInputMatmulTileOffsets(
   for (const CBConfig& config : configs) {
     max_cb_id = std::max(max_cb_id, config.cb_id);
   }
+  const std::vector<int> max_outstanding_pages =
+      CollectMaxPhysicalOutstandingPages(body, max_cb_id + 1);
   struct StreamInputInfo {
     bool tracked = false;
     int capacity_pages = 0;
@@ -1617,16 +1622,23 @@ tir::Stmt RewriteRetainedStreamInputMatmulTileOffsets(
   std::vector<StreamInputInfo> stream_inputs(std::max(0, max_cb_id + 1));
   for (const CBConfig& config : configs) {
     if (config.cb_id < 0 || config.cb_id >= static_cast<int>(stream_inputs.size()) ||
-        config.role != "input" || config.flow_class != CBFlowClass::kStream) {
+        config.role != "input") {
       continue;
     }
     const int event_pages = std::max(1, config.consume_pages_per_event);
-    if (config.num_pages <= event_pages) {
+    int capacity_pages = config.num_pages;
+    if (config.cb_id >= 0 &&
+        config.cb_id < static_cast<int>(max_outstanding_pages.size())) {
+      capacity_pages =
+          std::max(capacity_pages, max_outstanding_pages[config.cb_id]);
+    }
+    if (capacity_pages <= event_pages &&
+        config.requirement_indices.size() <= 1U) {
       continue;
     }
     StreamInputInfo& info = stream_inputs[config.cb_id];
     info.tracked = true;
-    info.capacity_pages = std::max(info.capacity_pages, config.num_pages);
+    info.capacity_pages = std::max(info.capacity_pages, capacity_pages);
     info.event_pages = std::max(info.event_pages, event_pages);
   }
 
@@ -1646,13 +1658,10 @@ tir::Stmt RewriteRetainedStreamInputMatmulTileOffsets(
       if (IsBlackholeOp(rewritten, "tl.blackhole.cb_wait_front")) {
         return VisitWait(rewritten, expr);
       }
-      if (IsBlackholeOp(rewritten, "tl.blackhole.matmul_tiles")) {
-        return VisitMatmulTiles(rewritten, expr);
-      }
       if (IsBlackholeOp(rewritten, "tl.blackhole.cb_pop_front")) {
         return VisitPop(rewritten, expr);
       }
-      return expr;
+      return VisitTileReadWithOffsets(rewritten, expr);
     }
 
    private:
@@ -1691,7 +1700,9 @@ tir::Stmt RewriteRetainedStreamInputMatmulTileOffsets(
       const bool wait_uses_absolute_depth =
           pages > std::max(1, stream_inputs_[cb_id].event_pages);
       active_event_base_[cb_id] =
-          wait_uses_absolute_depth ? 0 : base;
+          wait_uses_absolute_depth && base > 0
+              ? std::max(base, pages - std::max(1, stream_inputs_[cb_id].event_pages))
+              : base;
       next_tile_offset_[cb_id] =
           std::min(stream_inputs_[cb_id].capacity_pages,
                    wait_uses_absolute_depth ? std::max(base, pages) : base + pages);
@@ -1703,13 +1714,25 @@ tir::Stmt RewriteRetainedStreamInputMatmulTileOffsets(
       return tir::Call(op->dtype, op->op, args, op->annotations, op->span);
     }
 
-    PrimExpr VisitMatmulTiles(const tir::CallNode* op, const PrimExpr& expr) {
-      if (op->args.size() < 5U) {
+    PrimExpr VisitTileReadWithOffsets(const tir::CallNode* op, const PrimExpr& expr) {
+      if (op == nullptr || !op->op->IsInstance<OpNode>()) {
         return expr;
       }
+      auto is_any = [&](std::initializer_list<const char*> names) {
+        for (const char* name : names) {
+          if (IsBlackholeOp(op, name)) {
+            return true;
+          }
+        }
+        return false;
+      };
+
       Array<PrimExpr> args = op->args;
       bool changed = false;
-      auto apply_input_offset = [&](int cb_arg_pos, int tile_arg_pos) {
+      auto apply_input_offset = [&](size_t cb_arg_pos, size_t tile_arg_pos) {
+        if (args.size() <= std::max(cb_arg_pos, tile_arg_pos)) {
+          return;
+        }
         const auto* cb_id = args[cb_arg_pos].as<IntImmNode>();
         const auto* tile = args[tile_arg_pos].as<IntImmNode>();
         if (cb_id == nullptr || tile == nullptr || !IsTracked(static_cast<int>(cb_id->value))) {
@@ -1724,8 +1747,25 @@ tir::Stmt RewriteRetainedStreamInputMatmulTileOffsets(
                  tvm::IntImm(args[tile_arg_pos].dtype(), tile->value + base));
         changed = true;
       };
-      apply_input_offset(/*cb_arg_pos=*/0, /*tile_arg_pos=*/2);
-      apply_input_offset(/*cb_arg_pos=*/1, /*tile_arg_pos=*/3);
+
+      if (IsBlackholeOp(op, "tl.blackhole.copy_tile")) {
+        apply_input_offset(/*cb_arg_pos=*/0, /*tile_arg_pos=*/1);
+      } else if (is_any({"tl.blackhole.matmul_tiles", "tl.blackhole.add_tiles",
+                         "tl.blackhole.sub_tiles", "tl.blackhole.mul_tiles",
+                         "tl.blackhole.add_tiles_bcast_rows",
+                         "tl.blackhole.add_tiles_bcast_cols",
+                         "tl.blackhole.mul_tiles_bcast_rows",
+                         "tl.blackhole.mul_tiles_bcast_cols"})) {
+        apply_input_offset(/*cb_arg_pos=*/0, /*tile_arg_pos=*/2);
+        apply_input_offset(/*cb_arg_pos=*/1, /*tile_arg_pos=*/3);
+      } else if (IsBlackholeOp(op, "tl.blackhole.reduce_tile")) {
+        apply_input_offset(/*cb_arg_pos=*/0, /*tile_arg_pos=*/2);
+        apply_input_offset(/*cb_arg_pos=*/1, /*tile_arg_pos=*/3);
+      } else if (is_any({"tl.blackhole.untilize_cb_front_tile",
+                         "tl.blackhole.untilize_cb_front_tile_fragment"})) {
+        apply_input_offset(/*cb_arg_pos=*/1, /*tile_arg_pos=*/2);
+      }
+
       if (!changed) {
         return expr;
       }
@@ -2164,18 +2204,60 @@ tvm::tir::Stmt PlanTTCBAlloc::RewriteBodyWithFinalCBAllocation(
   if (!body.defined() || cb_configs_.empty()) {
     return body;
   }
-  return RetainLocalCBFrontForFutureWaits(body, cb_configs_,
-                                          cb_id_by_requirement_index_);
+  tir::Stmt rewritten = body;
+  rewritten = RewriteRetainedStreamInputMatmulTileOffsets(rewritten, cb_configs_);
+  rewritten = RetainLocalCBFrontForFutureWaits(rewritten, cb_configs_,
+                                               cb_id_by_requirement_index_);
+  return rewritten;
 }
 
 tvm::ffi::Array<TTKernel> PlanTTCBAlloc::RewriteKernelBodies(
-    const tvm::ffi::Array<TTKernel>& kernels) const {
+    const tvm::ffi::Array<TTKernel>& kernels) {
   tvm::ffi::Array<TTKernel> rewritten;
   for (const TTKernel& kernel : kernels) {
     tir::Stmt rewritten_body = RewriteBodyWithFinalCBAllocation(kernel->body);
     Array<TTKernelQueueEvent> queue_events = kernel->queue_events;
     if (rewritten_body.defined()) {
       queue_events = CollectTTKernelQueueEventsFromBody(rewritten_body);
+      int max_physical_cb_id = -1;
+      for (const CBConfig& config : cb_configs_) {
+        max_physical_cb_id = std::max(max_physical_cb_id, config.cb_id);
+      }
+      std::vector<int> front_pages(std::max(0, max_physical_cb_id + 1), 0);
+      std::vector<int> reserved_pages(std::max(0, max_physical_cb_id + 1), 0);
+      std::vector<int> max_outstanding_pages(std::max(0, max_physical_cb_id + 1), 0);
+      for (const TTKernelQueueEvent& event : queue_events) {
+        int cb_id = static_cast<int>(event->cb_id);
+        auto remap_it = cb_id_by_requirement_index_.find(cb_id);
+        if (remap_it != cb_id_by_requirement_index_.end()) {
+          cb_id = remap_it->second;
+        }
+        const int pages = static_cast<int>(event->pages);
+        if (cb_id < 0 || cb_id >= static_cast<int>(max_outstanding_pages.size()) ||
+            pages <= 0) {
+          continue;
+        }
+        const std::string kind = event->kind;
+        if (kind == "reserve_back") {
+          reserved_pages[cb_id] += pages;
+        } else if (kind == "push_back") {
+          reserved_pages[cb_id] = std::max(0, reserved_pages[cb_id] - pages);
+          front_pages[cb_id] += pages;
+        } else if (kind == "pop_front") {
+          front_pages[cb_id] = std::max(0, front_pages[cb_id] - pages);
+        }
+        max_outstanding_pages[cb_id] =
+            std::max(max_outstanding_pages[cb_id],
+                     reserved_pages[cb_id] + front_pages[cb_id]);
+      }
+      for (CBConfig& config : cb_configs_) {
+        if (config.cb_id >= 0 &&
+            config.cb_id < static_cast<int>(max_outstanding_pages.size()) &&
+            max_outstanding_pages[config.cb_id] > config.num_pages) {
+          config.num_pages = max_outstanding_pages[config.cb_id];
+          config.total_size = config.page_size * config.num_pages;
+        }
+      }
     }
     rewritten.push_back(TTKernel(kernel->name, kernel->kind, kernel->core_type,
                                  kernel->abi_plan_index, kernel->launch_spec,

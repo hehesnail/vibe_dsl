@@ -953,7 +953,6 @@ Stmt PlanTTKernelABI::GenerateMatmulSequenceForOutputRequirement(int out_req_ind
         ReserveSerialLoopRetainedComputeInputOffset(gemm_b_buffer_, gemm_b_region_key_,
                                                     in1_event_tiles);
   }
-
   // 1. Initialize MM engine
   stmts.push_back(MakeBlackholeCall(blackhole_reconfig_data_format(),
                                     {IntImm32(in0_id), IntImm32(in1_id)}));

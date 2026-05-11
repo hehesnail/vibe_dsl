@@ -27,6 +27,7 @@
 #include <tvm/arith/analyzer.h>
 
 #include <algorithm>
+#include <functional>
 #include <optional>
 #include <sstream>
 #include <string>
@@ -407,6 +408,15 @@ bool IsCBPopFrontOnlyStmt(const tvm::tir::Stmt& stmt) {
   return false;
 }
 
+bool BlackholeBuiltinNeedsThreadIndexForEmission(const std::string& builtin_name) {
+  static const std::unordered_set<std::string> kThreadIndexedBridgeBuiltins = {
+      "tilize_local_fragment_slice",
+      "tilize_cast_fragment_slice",
+      "untilize_cb_front_tile_fragment",
+  };
+  return kThreadIndexedBridgeBuiltins.count(builtin_name) != 0;
+}
+
 bool IsThreadSurvivorPopGuard(const tvm::tir::IfThenElseNode* op,
                               const tvm::tir::VarNode* thread_var,
                               const tvm::PrimExpr& thread_extent) {
@@ -452,6 +462,16 @@ bool ThreadUsesOnlySurvivorPopGuards(const tvm::tir::Stmt& stmt,
         return;
       }
       tvm::tir::StmtExprVisitor::VisitStmt_(op);
+    }
+
+    void VisitExpr_(const tvm::tir::CallNode* op) final {
+      auto builtin_name = BlackholeBuiltinName(op);
+      if (builtin_name.has_value() &&
+          BlackholeBuiltinNeedsThreadIndexForEmission(builtin_name.value())) {
+        has_disallowed_use_ = true;
+        return;
+      }
+      tvm::tir::StmtExprVisitor::VisitExpr_(op);
     }
 
     void VisitExpr_(const tvm::tir::VarNode* op) final {
@@ -658,6 +678,11 @@ bool StmtUsesVarInEmittedBody(const tvm::tir::Stmt& stmt,
       auto builtin_name = BlackholeBuiltinName(op);
       if (builtin_name.has_value() &&
           !EmitsBlackholeBuiltinForCore(builtin_name.value(), core_type_)) {
+        return;
+      }
+      if (builtin_name.has_value() &&
+          BlackholeBuiltinNeedsThreadIndexForEmission(builtin_name.value())) {
+        found_ = true;
         return;
       }
       tvm::tir::StmtExprVisitor::VisitExpr_(op);
@@ -2875,19 +2900,6 @@ void CodeGenBlackhole::VisitStmt_(const tvm::tir::AttrStmtNode *op) {
           restore_thread_var();
           return;
         } else {
-          const std::vector<ThreadEmissionPiece> pieces =
-              BuildThreadEmissionPieces(partition_body, iv->var.get(), core_type_);
-          const bool has_threaded_piece =
-              std::any_of(pieces.begin(), pieces.end(), [](const ThreadEmissionPiece& piece) {
-                return piece.uses_thread_var;
-              });
-          if (!has_threaded_piece) {
-            emit_with_thread_binding("0", partition_body);
-            restore_nested_thread_vars();
-            restore_thread_var();
-            return;
-          }
-
           auto emit_thread_loop = [&](const std::vector<tvm::tir::Stmt>& loop_body_stmts) {
             if (loop_body_stmts.empty()) {
               return;
@@ -2919,17 +2931,137 @@ void CodeGenBlackhole::VisitStmt_(const tvm::tir::AttrStmtNode *op) {
             stream << "}\n";
           };
 
-          std::vector<tvm::tir::Stmt> pending_threaded_stmts;
-          for (const auto& piece : pieces) {
-            if (piece.uses_thread_var) {
-              pending_threaded_stmts.push_back(piece.stmt);
-              continue;
+          auto emit_pieces = [&](const std::vector<ThreadEmissionPiece>& pieces) {
+            std::vector<tvm::tir::Stmt> pending_threaded_stmts;
+            for (const auto& piece : pieces) {
+              if (piece.uses_thread_var) {
+                pending_threaded_stmts.push_back(piece.stmt);
+                continue;
+              }
+              emit_thread_loop(pending_threaded_stmts);
+              pending_threaded_stmts.clear();
+              emit_with_thread_binding("0", piece.stmt);
             }
             emit_thread_loop(pending_threaded_stmts);
-            pending_threaded_stmts.clear();
-            emit_with_thread_binding("0", piece.stmt);
-          }
-          emit_thread_loop(pending_threaded_stmts);
+          };
+
+          std::function<void(const tvm::tir::Stmt&)> emit_split_stmt;
+          emit_split_stmt = [&](const tvm::tir::Stmt& stmt) {
+            if (const auto* seq = stmt.as<tvm::tir::SeqStmtNode>()) {
+              for (const tvm::tir::Stmt& child : seq->seq) {
+                emit_split_stmt(child);
+              }
+              return;
+            }
+            if (const auto* attr = stmt.as<tvm::tir::AttrStmtNode>()) {
+              emit_split_stmt(attr->body);
+              return;
+            }
+            if (const auto* decl = stmt.as<tvm::tir::DeclBufferNode>()) {
+              emit_split_stmt(decl->body);
+              return;
+            }
+            if (const auto* for_node = stmt.as<tvm::tir::ForNode>()) {
+              std::string begin_str = PrintExpr(for_node->min);
+              PrimExpr end = tvm::tir::is_zero(for_node->min)
+                                 ? for_node->extent
+                                 : arith::Analyzer().Simplify(for_node->min + for_node->extent);
+              std::string end_str = PrintExpr(end);
+              std::string step_str =
+                  for_node->step.has_value() ? PrintExpr(*for_node->step) : "";
+              PrintIndent();
+              std::string vid = AllocVarID(for_node->loop_var.get());
+              stream << "for (";
+              PrintType(for_node->loop_var.dtype(), stream);
+              stream << ' ' << vid << " = " << begin_str << "; " << vid << " < " << end_str
+                     << "; ";
+              if (step_str.empty()) {
+                stream << "++" << vid;
+              } else {
+                stream << vid << " += " << step_str;
+              }
+              stream << ") {\n";
+
+              std::optional<std::string> prev_var_id;
+              if (auto it = var_idmap_.find(for_node->loop_var.get()); it != var_idmap_.end()) {
+                prev_var_id = it->second;
+              }
+              var_idmap_[for_node->loop_var.get()] = vid;
+
+              int for_scope = BeginScope();
+              emit_split_stmt(for_node->body);
+              this->EndScope(for_scope);
+
+              if (prev_var_id) {
+                var_idmap_[for_node->loop_var.get()] = *prev_var_id;
+              } else {
+                var_idmap_.erase(for_node->loop_var.get());
+              }
+
+              PrintIndent();
+              stream << "}\n";
+              return;
+            }
+            if (const auto* alloc = stmt.as<tvm::tir::AllocateNode>()) {
+              std::string scope = GetPtrStorageScope(alloc->buffer_var);
+              alloc_storage_scope_[alloc->buffer_var.get()] = scope;
+              RegisterHandleType(alloc->buffer_var.get(), alloc->dtype);
+
+              const bool runtime_managed_storage =
+                  scope == "shared" || scope == "shared.dyn" ||
+                  scope == "shared.barrier" || scope.rfind("blackhole.cb", 0) == 0;
+              const bool compute_local_fragment_storage =
+                  scope == "blackhole.acc" && core_type_ == CoreType::kTRISC;
+              const std::optional<int> cb_requirement_index =
+                  CBRequirementIndexAnnotation(alloc);
+              const bool cb_backed_accumulator =
+                  compute_local_fragment_storage && cb_requirement_index.has_value();
+              if (runtime_managed_storage ||
+                  (scope == "blackhole.acc" && !compute_local_fragment_storage) ||
+                  cb_backed_accumulator) {
+                emit_with_thread_binding("0", stmt);
+                return;
+              }
+
+              ICHECK(!tvm::tir::is_zero(alloc->condition));
+              const size_t constant_size = alloc->ConstantAllocationSize();
+              ICHECK_GT(constant_size, 0)
+                  << "Can only handle constant size stack allocation for now";
+              std::string vid = AllocVarID(alloc->buffer_var.get());
+              PrintIndent();
+              PrintStorageScope(scope, stream);
+              PrintType(alloc->dtype, stream);
+              stream << ' ' << vid << '[' << constant_size << "];\n";
+
+              std::optional<std::string> prev_var_id;
+              if (auto it = var_idmap_.find(alloc->buffer_var.get());
+                  it != var_idmap_.end()) {
+                prev_var_id = it->second;
+              }
+              var_idmap_[alloc->buffer_var.get()] = vid;
+              emit_split_stmt(alloc->body);
+              if (prev_var_id) {
+                var_idmap_[alloc->buffer_var.get()] = *prev_var_id;
+              } else {
+                var_idmap_.erase(alloc->buffer_var.get());
+              }
+              return;
+            }
+
+            const std::vector<ThreadEmissionPiece> pieces =
+                BuildThreadEmissionPieces(stmt, iv->var.get(), core_type_);
+            const bool has_threaded_piece =
+                std::any_of(pieces.begin(), pieces.end(), [](const ThreadEmissionPiece& piece) {
+                  return piece.uses_thread_var;
+                });
+            if (!has_threaded_piece) {
+              emit_with_thread_binding("0", stmt);
+              return;
+            }
+            emit_pieces(pieces);
+          };
+
+          emit_split_stmt(partition_body);
           restore_nested_thread_vars();
           restore_thread_var();
           return;

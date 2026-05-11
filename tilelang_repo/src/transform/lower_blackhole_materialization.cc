@@ -515,11 +515,37 @@ Stmt PlanTTKernelABI::GenerateFragmentCastSequence(const FragmentCastMatch& matc
       }
       return true;
     };
+    auto try_live_source_from_requirement = [&]() -> bool {
+      const int src_req_index = FindRequirementIndexForBuffer(match.src);
+      if (src_req_index < 0 || src_req_index >= static_cast<int>(cb_requirements_.size())) {
+        return false;
+      }
+      const CBRequirement& src_req = cb_requirements_.at(src_req_index);
+      if (src_req.type == CBType::kInput || src_req.page_size <= 0) {
+        return false;
+      }
+      live_source.buffer = match.src;
+      live_source.cb_id = src_req_index;
+      live_source.borrowed_live = true;
+      live_source.live_identity = BufferIdentityName(match.src);
+      PopulateExactTiledCBValueShape(match.src, &live_source);
+      if (src_req.publish_pages_per_event > 0) {
+        live_source.num_tiles = src_req.publish_pages_per_event;
+      } else if (src_req.num_pages > 0) {
+        live_source.num_tiles = src_req.num_pages;
+      }
+      RefineExactTiledCBValueShapeFromRequirement(&live_source);
+      return true;
+    };
+    Analyzer analyzer;
+    const PrimExpr normalized_src_offset = analyzer.Simplify(match.src_offset);
+    const PrimExpr normalized_dst_offset = analyzer.Simplify(match.dst_offset);
     const bool can_republish_from_live_cb =
-        tir::is_zero(match.src_offset) && tir::is_zero(match.dst_offset) &&
+        tir::is_zero(normalized_src_offset) && tir::is_zero(normalized_dst_offset) &&
         (try_exact_source_live_by_fact() ||
          TryCreateExactOutputLiveTiledCBValue(match.src, &live_source) ||
-         TryCreateLiveExactTiledCBValue(match.src, &live_source)) &&
+         TryCreateLiveExactTiledCBValue(match.src, &live_source) ||
+         try_live_source_from_requirement()) &&
         live_source.num_tiles == num_pages;
     if (can_republish_from_live_cb && !pack_thread_direct_fill_value.defined()) {
       auto make_source_wait = [&]() {
@@ -621,6 +647,75 @@ Stmt PlanTTKernelABI::GenerateFragmentCastSequence(const FragmentCastMatch& matc
     }
     RecordTiledCBLiveFormAliases(match.dst, cb_id);
   } else if (publish_result) {
+    ExactTiledCBValue live_source;
+    Analyzer analyzer;
+    const PrimExpr normalized_src_offset = analyzer.Simplify(match.src_offset);
+    const PrimExpr normalized_dst_offset = analyzer.Simplify(match.dst_offset);
+    auto try_create_publish_live_source = [&]() -> bool {
+      if (TryCreateExactOutputLiveTiledCBValue(match.src, &live_source) ||
+          TryCreateLiveExactTiledCBValue(match.src, &live_source)) {
+        return true;
+      }
+      const int src_req_index = FindRequirementIndexForBuffer(match.src);
+      if (src_req_index < 0 || src_req_index >= static_cast<int>(cb_requirements_.size())) {
+        return false;
+      }
+      const CBRequirement& src_req = cb_requirements_.at(src_req_index);
+      if (src_req.type == CBType::kInput || src_req.page_size <= 0) {
+        return false;
+      }
+      live_source.buffer = match.src;
+      live_source.cb_id = src_req_index;
+      live_source.borrowed_live = true;
+      live_source.live_identity = BufferIdentityName(match.src);
+      PopulateExactTiledCBValueShape(match.src, &live_source);
+      if (src_req.publish_pages_per_event > 0) {
+        live_source.num_tiles = src_req.publish_pages_per_event;
+      } else if (src_req.num_pages > 0) {
+        live_source.num_tiles = src_req.num_pages;
+      }
+      RefineExactTiledCBValueShapeFromRequirement(&live_source);
+      return true;
+    };
+    const bool can_publish_from_live_cb =
+        tir::is_zero(normalized_src_offset) && tir::is_zero(normalized_dst_offset) &&
+        try_create_publish_live_source() &&
+        live_source.num_tiles == num_pages;
+    if (can_publish_from_live_cb) {
+      stmts.push_back(MakeBlackholeCall(blackhole_cb_wait_front(),
+                                        {IntImm32(live_source.cb_id),
+                                         IntImm32(live_source.num_tiles)}));
+      stmts.push_back(MakeBlackholeCall(blackhole_cb_reserve_back(),
+                                        {IntImm32(cb_id), IntImm32(num_pages)}));
+      MarkExactCBValuesOverlap({live_source.cb_id, cb_id});
+      for (int tile = 0; tile < num_pages; ++tile) {
+        stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_acquire(), {}));
+        stmts.push_back(MakeBlackholeCall(blackhole_reconfig_data_format(),
+                                          {IntImm32(live_source.cb_id),
+                                           IntImm32(live_source.cb_id)}));
+        stmts.push_back(MakeBlackholeCall(blackhole_copy_tile_to_dst_init_short(),
+                                          {IntImm32(live_source.cb_id)}));
+        stmts.push_back(MakeBlackholeCall(blackhole_copy_tile(),
+                                          {IntImm32(live_source.cb_id),
+                                           IntImm32(tile), IntImm32(0)}));
+        stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_commit(), {}));
+        stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_wait(), {}));
+        stmts.push_back(MakeBlackholeCall(blackhole_pack_reconfig_data_format(),
+                                          {IntImm32(cb_id)}));
+        stmts.push_back(MakeBlackholeCall(blackhole_pack_tile(),
+                                          {IntImm32(0), IntImm32(cb_id),
+                                           IntImm32(tile)}));
+        stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_release(), {}));
+      }
+      if (Stmt release = ReleaseExactInputAfterUse(live_source, current_order_index);
+          release.defined()) {
+        stmts.push_back(release);
+      }
+      stmts.push_back(MakeBlackholeCall(tir::builtin::blackhole_cb_push_back(),
+                                        {IntImm32(cb_id), IntImm32(num_pages)}));
+      RecordTiledCBLiveFormAliases(match.dst, cb_id);
+      return RecordComputeSegmentStmt(SeqStmt::Flatten(stmts));
+    }
     stmts.push_back(MakeBlackholeCall(blackhole_cb_reserve_back(),
                                       {IntImm32(cb_id), IntImm32(num_pages)}));
     stmts.push_back(MakeBlackholeCall(tir::builtin::blackhole_cast_fragment_slice(),
@@ -705,12 +800,15 @@ bool PlanTTKernelABI::MatchDirectLocalToCBSliceLoop(const ForNode* op,
     match->dst = store->buffer;
     match->src = load->buffer;
     match->cast_src = Buffer();
+    match->cast_src_offset = PrimExpr();
+    match->emit_outer_loop = true;
     for (const Stmt& prefix_stmt : prefix_stmts) {
       const ForNode* cast_loop = AsUnwrappedFor(prefix_stmt);
       FragmentCastMatch cast_match;
       if (cast_loop && MatchDirectFragmentCast(cast_loop, &cast_match) &&
           SameBufferIdentity(cast_match.dst, match->src)) {
         match->cast_src = cast_match.src;
+        match->cast_src_offset = cast_match.src_offset;
         break;
       }
     }
@@ -729,6 +827,14 @@ bool PlanTTKernelABI::MatchDirectLocalToCBSliceLoop(const ForNode* op,
 
   bool direct_wrapped_src_allocation = false;
   Stmt unwrapped_body = unwrap_stmt(op->body, &direct_wrapped_src_allocation);
+  if (const auto* direct_store = AsUnwrappedBufferStore(unwrapped_body)) {
+    const bool matched = build_match(direct_store, op->loop_var, op->extent,
+                                     direct_wrapped_src_allocation, {});
+    if (matched) {
+      match->emit_outer_loop = false;
+    }
+    return matched;
+  }
   if (const auto* direct_loop = AsUnwrappedFor(unwrapped_body)) {
     const auto* store = AsUnwrappedBufferStore(direct_loop->body);
     return build_match(store, direct_loop->loop_var, direct_loop->extent,
@@ -788,11 +894,35 @@ Stmt PlanTTKernelABI::GenerateLocalToCBSliceLoopSequence(const ForNode* op,
   std::vector<Stmt> stmts;
   ExactTiledCBValue live_source;
   const Buffer live_source_candidate = match.cast_src.defined() ? match.cast_src : match.src;
+  Analyzer analyzer;
+  const PrimExpr normalized_cast_src_offset =
+      match.cast_src_offset.defined() ? analyzer.Simplify(match.cast_src_offset) : IntImm32(0);
+  const PrimExpr normalized_dst_offset = analyzer.Simplify(match.dst_offset_elements);
+  const bool live_source_offsets_are_full_tile =
+      !match.cast_src.defined() ||
+      (tir::is_zero(normalized_cast_src_offset) && tir::is_zero(normalized_dst_offset));
+  const bool live_source_from_thread_sliced_cast =
+      match.cast_src.defined() && !live_source_offsets_are_full_tile && !match.emit_outer_loop;
   auto try_cast_source_live_form = [&]() {
     return TryCreateExactOutputLiveTiledCBValue(live_source_candidate, &live_source) ||
            TryCreateLiveExactTiledCBValue(live_source_candidate, &live_source);
   };
-  if (live_source_candidate.defined() && try_cast_source_live_form() &&
+  const bool has_live_source =
+      live_source_candidate.defined() && try_cast_source_live_form();
+  const auto [live_source_rows, live_source_cols] =
+      live_source_candidate.defined()
+          ? GetLogicalMatrixShape(live_source_candidate)
+          : std::pair<int64_t, int64_t>{-1, -1};
+  const auto [dst_rows, dst_cols] = GetLogicalMatrixShape(match.dst);
+  const bool live_source_matches_publication_shape =
+      match.cast_src.defined() && has_live_source &&
+      live_source_rows > 0 && live_source_cols > 0 &&
+      dst_rows > 0 && dst_cols > 0 &&
+      live_source_rows == dst_rows && live_source_cols == dst_cols &&
+      GetLogicalBufferElementCount(live_source_candidate) == total_elements;
+  if (live_source_candidate.defined() && has_live_source &&
+      (live_source_offsets_are_full_tile || live_source_from_thread_sliced_cast ||
+       live_source_matches_publication_shape) &&
       live_source.num_tiles == num_pages) {
     auto make_source_wait = [&]() {
       return MakeBlackholeCall(blackhole_cb_wait_front(),
@@ -883,16 +1013,27 @@ Stmt PlanTTKernelABI::GenerateLocalToCBSliceLoopSequence(const ForNode* op,
   stmts.push_back(MakeBlackholeCall(blackhole_cb_reserve_back(),
                                     {IntImm32(cb_id), IntImm32(num_pages)}));
   std::vector<Stmt> loop_stmts;
-  if (match.lowered_loop_body.defined()) {
+  if (match.lowered_loop_body.defined() && !match.cast_src.defined()) {
     Stmt lowered_prefix = VisitStmt(match.lowered_loop_body);
     lowered_prefix =
         LocalSliceCastSourceOffsetRewriter(match.src->data, match.dst_offset_elements)(lowered_prefix);
     loop_stmts.push_back(lowered_prefix);
   }
-  loop_stmts.push_back(
-      MakeBlackholeCall(blackhole_tilize_local_fragment_slice(),
-                        {match.src->data, IntImm32(cb_id), match.dst_offset_elements,
-                         match.num_elements, match.row_width}));
+  if (match.cast_src.defined()) {
+    const Buffer physical_cast_src = ResolvePhysicalComputeBuffer(match.cast_src);
+    const Buffer cast_src = physical_cast_src.defined() ? physical_cast_src : match.cast_src;
+    const PrimExpr cast_src_offset =
+        match.cast_src_offset.defined() ? match.cast_src_offset : match.dst_offset_elements;
+    loop_stmts.push_back(MakeBlackholeCall(
+        blackhole_tilize_cast_fragment_slice(),
+        {match.dst->data, cast_src->data, IntImm32(cb_id), match.dst_offset_elements,
+         cast_src_offset, match.num_elements, match.row_width}));
+  } else {
+    loop_stmts.push_back(
+        MakeBlackholeCall(blackhole_tilize_local_fragment_slice(),
+                          {match.src->data, IntImm32(cb_id), match.dst_offset_elements,
+                           match.num_elements, match.row_width}));
+  }
   Stmt loop_body =
       loop_stmts.size() == 1 ? loop_stmts.front() : SeqStmt::Flatten(loop_stmts);
   if (match.wrap_src_allocation) {
@@ -900,13 +1041,17 @@ Stmt PlanTTKernelABI::GenerateLocalToCBSliceLoopSequence(const ForNode* op,
     loop_body =
         tir::Allocate(match.src->data, match.src->dtype, match.src->shape, Bool(1), loop_body);
   }
-  stmts.push_back(For(op->loop_var,
-                      op->min,
-                      op->extent,
-                      op->kind,
-                      loop_body,
-                      op->thread_binding,
-                      op->annotations));
+  if (match.emit_outer_loop) {
+    stmts.push_back(For(op->loop_var,
+                        op->min,
+                        op->extent,
+                        op->kind,
+                        loop_body,
+                        op->thread_binding,
+                        op->annotations));
+  } else {
+    stmts.push_back(loop_body);
+  }
   stmts.push_back(MakeBlackholeCall(blackhole_cb_push_back(),
                                     {IntImm32(cb_id), IntImm32(num_pages)}));
   return RecordComputeSegmentStmt(SeqStmt::Flatten(stmts));

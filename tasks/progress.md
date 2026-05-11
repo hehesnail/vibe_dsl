@@ -7,8 +7,8 @@
 
 ## Status
 
-- Date: `2026-05-08`
-- Active lane: `P1 T9.6 multi-block flash decode`
+- Date: `2026-05-11`
+- Active lane: `None; next queued lane is P2 / T10 distributed production`
 - Main chain:
   `Normalized Tile TIR -> SpatialPlan -> TTProgram -> ExecutableSpec`
 
@@ -19,7 +19,7 @@
 | Foundation `T1-T7.5` | Complete | Buffer ABI, leaf compute/GEMM, sharding/materialization, exact-CB lifecycle, and admitted non-workload direct-runtime paths use typed `TTProgram -> ExecutableSpec` records or fail closed. |
 | `P0` target execution contract | Complete | Covered execution facts are owned by `TTProgram` typed fields/objects and projected once to `ExecutableSpec`; leaf consumers reject source/body/name recovery. |
 | `T8` irregular/indexed access | Complete | Indexed, sparse, ragged, paged, segmented, and grouped-feed paths use generic `AccessRegion` plus `value_expr` evidence. |
-| `P1 / T9` workload-first paths | In progress | T9.1-T9.5 are admitted on current bf16 direct-runtime surfaces.  Active boundary is T9.6 multi-block flash decode. |
+| `P1 / T9` workload-first paths | Complete | T9.1-T9.6 are admitted on current bf16 direct-runtime surfaces, including grouped GEMM, paged decode, sparse/ragged attention, chunk scan, and split-block flash decode. |
 | `P2 / T10` distributed production | Queued | Mesh placement, CCL, NoC/multicast/global scheduling, and production partial-K reduction remain future TT target-realization work. |
 
 ## Current Protocol Snapshot
@@ -79,15 +79,15 @@
   from names, arg kinds, helper state, or first same-buffer fallbacks.
 - Current simulator gates must also be typed by `ExecutableSpec` facts.  The
   old T7/T9 `t_tile_mmio_wr32` classifier is gone; remaining PACR gates are
-  limited to proven simulator capability boundaries such as compute-only
-  terminal publish and loop-carried input exact-CB backedge publish.
+  limited to proven simulator capability boundaries, and admitted T9.5/T9.6
+  paths publish through typed exact/live CB records rather than PACR skips.
 
 ## Next Work Queue
 
 ### Active
 
-- T9.6 multi-block flash decode:
-  admit bf16 split blocks with exact-CB publish/consume and partial combine.
+- None.  P1/T9 is closed on the current single-device bf16 direct-runtime
+  surfaces.
 
 ### Queued
 

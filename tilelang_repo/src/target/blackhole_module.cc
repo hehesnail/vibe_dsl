@@ -67,7 +67,7 @@ static std::string EncodeExecutableSpecMetadata(const ExecutableSpec& spec) {
 }
 
 static constexpr const char* kBlackholeModuleSerializationMagic =
-    "tilelang.blackhole.module.v4";
+    "tilelang.blackhole.module.v5";
 
 static uint64_t ReadUInt64(dmlc::Stream* stream, const char* field) {
   uint64_t value = 0;
@@ -1237,6 +1237,7 @@ static void WriteExecutableSpec(dmlc::Stream* stream, const ExecutableSpec& spec
   WriteVectorField<ExactCBReleaseEventSpec>(
       stream, spec.exact_cb_release_events, WriteExactCBReleaseEventSpec);
   WriteStringVector(stream, spec.direct_runtime_unsupported_reasons);
+  WriteStringVector(stream, spec.launched_device_entries);
   WriteStringVector(stream, spec.tvm_arg_names);
   WriteDLDataTypeVector(stream, spec.tvm_arg_types);
   WriteBoolVector(stream, spec.tvm_is_buffer_arg);
@@ -1284,6 +1285,8 @@ static ExecutableSpec ReadExecutableSpec(dmlc::Stream* stream) {
       stream, "executable.exact_cb_release_events", ReadExactCBReleaseEventSpec);
   spec.direct_runtime_unsupported_reasons = ReadStringVector(
       stream, "executable.direct_runtime_unsupported_reasons");
+  spec.launched_device_entries = ReadStringVector(
+      stream, "executable.launched_device_entries");
   spec.tvm_arg_names = ReadStringVector(stream, "executable.tvm_arg_names");
   spec.tvm_arg_types = ReadDLDataTypeVector(stream, "executable.tvm_arg_types");
   spec.tvm_is_buffer_arg = ReadBoolVector(stream, "executable.tvm_is_buffer_arg");
@@ -2576,9 +2579,16 @@ static const RuntimeTensorBinding* FindRuntimeBinding(
   return it == bindings.end() ? nullptr : &(*it);
 }
 
-static bool RequiresDirectRuntimePartialKGemmReduction(const ExecutableSpec& spec) {
+static bool RequiresDirectRuntimePartialKGemmReduction(
+    const ExecutableSpec& spec,
+    const std::vector<RuntimeTensorBinding>& buffer_args) {
   const auto gemm = GetPrimaryGemmCompute(spec);
-  return gemm.enabled && gemm.kind == "gemm" && GetRuntimeLogicalGridZ(spec) > 1;
+  if (!gemm.enabled || gemm.kind != "gemm" || GetRuntimeLogicalGridZ(spec) <= 1) {
+    return false;
+  }
+  const RuntimeTensorBinding* output_binding =
+      FindRuntimeBinding(buffer_args, gemm.c_buffer);
+  return output_binding != nullptr && output_binding->is_output;
 }
 
 static DirectRuntimeBufferState MaterializeRuntimeBuffers(
@@ -3915,6 +3925,75 @@ static std::unordered_set<std::string> CollectValueExprBufferNames(
   return names;
 }
 
+struct DirectRuntimeBufferRole {
+  bool input = false;
+  bool output = false;
+};
+
+static std::unordered_map<std::string, DirectRuntimeBufferRole>
+CollectDirectRuntimeBufferRoles(const ExecutableSpec& spec, bool allow_role_conflict) {
+  std::unordered_map<std::string, DirectRuntimeBufferRole> roles;
+  auto append_runtime_args = [&](const std::vector<KernelArgSpec>& runtime_args) {
+    for (const auto& arg : runtime_args) {
+      const bool is_input =
+          arg.kind == "input_buffer_addr32" || arg.kind == "input_buffer_addr";
+      const bool is_output =
+          arg.kind == "output_buffer_addr32" || arg.kind == "output_buffer_addr";
+      if (!is_input && !is_output) {
+        continue;
+      }
+      ICHECK(!arg.buffer.empty())
+          << "Blackhole direct runtime requires explicit buffer role schema for arg "
+          << arg.name << " kind=" << arg.kind;
+      auto& role = roles[arg.buffer];
+      role.input = role.input || is_input;
+      role.output = role.output || is_output;
+      ICHECK(allow_role_conflict || !(role.input && role.output))
+          << "Blackhole direct runtime buffer role mismatch for " << arg.buffer;
+    }
+  };
+  append_runtime_args(spec.runtime_args);
+  append_runtime_args(spec.common_runtime_args);
+  for (const auto& per_work_arg : spec.per_work_arg_specs) {
+    if (per_work_arg.value_source !=
+        tl::blackhole_runtime_arg_schema::kValueSourceValueExpr) {
+      continue;
+    }
+    ICHECK(!per_work_arg.value_expr_json.empty())
+        << "Blackhole direct runtime value_expr per-work binding requires "
+        << "generic value_expr for " << per_work_arg.arg_identity;
+    for (const std::string& buffer_name :
+         CollectValueExprBufferNames(per_work_arg.value_expr_json)) {
+      auto& role = roles[buffer_name];
+      role.input = true;
+      ICHECK(allow_role_conflict || !role.output)
+          << "Blackhole direct runtime value_expr buffer cannot also be an "
+          << "output buffer: " << buffer_name;
+    }
+  }
+  return roles;
+}
+
+static std::vector<RuntimeTensorBinding> FilterRuntimeTensorBindingsForSpec(
+    const ExecutableSpec& spec,
+    const std::vector<RuntimeTensorBinding>& buffer_args) {
+  const auto roles =
+      CollectDirectRuntimeBufferRoles(spec, /*allow_role_conflict=*/false);
+  std::vector<RuntimeTensorBinding> filtered;
+  for (const RuntimeTensorBinding& binding : buffer_args) {
+    auto role_it = roles.find(binding.name);
+    if (role_it == roles.end()) {
+      continue;
+    }
+    ICHECK(!(role_it->second.input && role_it->second.output))
+        << "Blackhole direct runtime child executable has mixed buffer role for "
+        << binding.name;
+    filtered.push_back(RuntimeTensorBinding{
+        binding.name, binding.tensor, role_it->second.output});
+  }
+  return filtered;
+}
+
 static bool TryAppendPerWorkRuntimeArg(const KernelSpec& kernel,
                                        const KernelArgSpec& arg_spec,
                                        const std::vector<PerWorkArgSpec>& per_work_arg_specs,
@@ -4384,6 +4463,15 @@ BlackholeModuleNode::BlackholeModuleNode(
   }
 }
 
+const ExecutableSpec* BlackholeModuleNode::LookupExecutableSpec(
+    const std::string& func_name) const {
+  auto it = fmap_.find(func_name);
+  if (it == fmap_.end()) {
+    return nullptr;
+  }
+  return &it->second;
+}
+
 
 ffi::Optional<ffi::Function> BlackholeModuleNode::GetFunction(const ffi::String& name) {
   ObjectPtr<Object> sptr_to_self = ffi::GetObjectPtr<Object>(this);
@@ -4480,6 +4568,26 @@ void BlackholeModuleNode::ExecuteDirect(
     LOG(FATAL) << "Function not found: " << func_name;
   }
   const ExecutableSpec& spec = fit->second;
+  if (!spec.launched_device_entries.empty()) {
+    LOG(INFO) << "Direct path: executing " << spec.launched_device_entries.size()
+              << " launched device executable(s) for " << func_name;
+    for (const std::string& child_name : spec.launched_device_entries) {
+      auto child_it = fmap_.find(child_name);
+      ICHECK(child_it != fmap_.end())
+          << "Blackhole host entry " << func_name
+          << " references missing launched device executable " << child_name;
+      std::vector<RuntimeTensorBinding> child_buffer_args =
+          FilterRuntimeTensorBindingsForSpec(child_it->second, buffer_args);
+      std::vector<std::string> child_output_names;
+      for (const RuntimeTensorBinding& binding : child_buffer_args) {
+        if (binding.is_output) {
+          child_output_names.push_back(binding.name);
+        }
+      }
+      ExecuteDirect(child_name, child_buffer_args, scalar_args, child_output_names);
+    }
+    return;
+  }
   if (spec.kernels.empty()) {
     LOG(FATAL) << "ExecutableSpec has no kernels for function: " << func_name;
   }
@@ -4565,7 +4673,7 @@ void BlackholeModuleNode::ExecuteDirect(
     }
   };
 
-  if (RequiresDirectRuntimePartialKGemmReduction(spec)) {
+  if (RequiresDirectRuntimePartialKGemmReduction(spec, buffer_args)) {
     const auto gemm = GetPrimaryGemmCompute(spec);
     ICHECK_EQ(gemm.c_tensor_dtype, "Float32")
         << "Blackhole partial-K direct GEMM device reduction currently requires float32 output tensors";
@@ -4679,44 +4787,29 @@ void BlackholeModuleNode::ExecuteDirect(
 void BlackholeWrappedFunc::operator()(ffi::PackedArgs args, ffi::Any* rv,
                                        void** void_args) const {
   // Direct runtime requires explicit schema-derived name->role bindings.
-  std::unordered_map<std::string, bool> buffer_is_output_by_name;
-  auto append_buffer_contract = [&](const std::vector<KernelArgSpec>& runtime_args) {
-    for (const auto& arg : runtime_args) {
-      const bool is_input = arg.kind == "input_buffer_addr32" || arg.kind == "input_buffer_addr";
-      const bool is_output = arg.kind == "output_buffer_addr32" || arg.kind == "output_buffer_addr";
-      if (!is_input && !is_output) {
-        continue;
-      }
-      ICHECK(!arg.buffer.empty())
-          << "Blackhole direct runtime requires explicit buffer role schema for arg "
-          << arg.name << " kind=" << arg.kind;
-      auto [it, inserted] = buffer_is_output_by_name.emplace(arg.buffer, is_output);
-      ICHECK(inserted || it->second == is_output)
-          << "Blackhole direct runtime buffer role mismatch for " << arg.buffer;
-      if (is_input) {
-        ICHECK(!is_output);
-      }
-    }
-  };
-  append_buffer_contract(info_.runtime_args);
-  append_buffer_contract(info_.common_runtime_args);
-  for (const auto& per_work_arg : info_.per_work_arg_specs) {
-    if (per_work_arg.value_source !=
-        tl::blackhole_runtime_arg_schema::kValueSourceValueExpr) {
-      continue;
-    }
-    ICHECK(!per_work_arg.value_expr_json.empty())
-        << "Blackhole direct runtime value_expr per-work binding requires "
-        << "generic value_expr for " << per_work_arg.arg_identity;
-    for (const std::string& buffer_name :
-         CollectValueExprBufferNames(per_work_arg.value_expr_json)) {
-      auto [it, inserted] = buffer_is_output_by_name.emplace(buffer_name, false);
-      ICHECK(inserted || !it->second)
-          << "Blackhole direct runtime value_expr buffer cannot also be an "
-          << "output buffer: " << buffer_name;
+  std::vector<const ExecutableSpec*> contract_specs;
+  if (info_.launched_device_entries.empty()) {
+    contract_specs.push_back(&info_);
+  } else {
+    for (const std::string& child_name : info_.launched_device_entries) {
+      const ExecutableSpec* child = m_->LookupExecutableSpec(child_name);
+      ICHECK(child != nullptr)
+          << "Blackhole host entry " << func_name_
+          << " references missing launched device executable " << child_name;
+      contract_specs.push_back(child);
     }
   }
-  ICHECK(!buffer_is_output_by_name.empty())
+  std::unordered_map<std::string, DirectRuntimeBufferRole> buffer_roles_by_name;
+  for (const ExecutableSpec* contract_spec : contract_specs) {
+    const auto spec_roles =
+        CollectDirectRuntimeBufferRoles(*contract_spec, /*allow_role_conflict=*/false);
+    for (const auto& entry : spec_roles) {
+      auto& role = buffer_roles_by_name[entry.first];
+      role.input = role.input || entry.second.input;
+      role.output = role.output || entry.second.output;
+    }
+  }
+  ICHECK(!buffer_roles_by_name.empty())
       << "Blackhole direct runtime requires explicit buffer role schema";
 
   // Collect arguments
@@ -4732,11 +4825,11 @@ void BlackholeWrappedFunc::operator()(ffi::PackedArgs args, ffi::Any* rv,
       const std::string buffer_name = info_.tvm_arg_names[i];
       ICHECK(!buffer_name.empty())
           << "Blackhole direct runtime requires formal buffer identity for arg index " << i;
-      auto role_it = buffer_is_output_by_name.find(buffer_name);
-      ICHECK(role_it != buffer_is_output_by_name.end())
+      auto role_it = buffer_roles_by_name.find(buffer_name);
+      ICHECK(role_it != buffer_roles_by_name.end())
           << "Blackhole direct runtime requires explicit buffer role binding for "
           << buffer_name;
-      bool is_out = role_it->second;
+      bool is_out = role_it->second.output;
       buffer_args.push_back(RuntimeTensorBinding{buffer_name, tensor, is_out});
       if (is_out) {
         output_names.push_back(buffer_name);

@@ -1182,6 +1182,13 @@ LogicalTileLayoutInfo DeriveThreadLocalComputeLayout(
   if (layout_shape.size() == 2U) {
     info.logical_shape.push_back(IntImm(DataType::Int(32), layout_shape[0]));
     info.logical_shape.push_back(IntImm(DataType::Int(32), layout_shape[1]));
+    const PrimExpr linear_index = thread_index * local_extent + local_index;
+    info.inverse_logical_index_exprs.push_back(
+        FloorDiv(linear_index, IntImm(DataType::Int(32), layout_shape[1])));
+    info.inverse_logical_index_exprs.push_back(
+        FloorMod(linear_index, IntImm(DataType::Int(32), layout_shape[1])));
+    info.inverse_logical_index_exprs.push_back(IntImm(DataType::Int(32), 0));
+    return info;
   } else {
     info.logical_shape.push_back(thread_extent);
     info.logical_shape.push_back(local_extent);

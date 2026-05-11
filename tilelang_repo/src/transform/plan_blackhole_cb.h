@@ -102,7 +102,7 @@ class PlanTTCBAlloc : public tvm::tir::StmtExprMutator {
 
   /*! \brief Rewrite staged TTKernel bodies with the final physical CB allocation. */
   tvm::ffi::Array<TTKernel> RewriteKernelBodies(
-      const tvm::ffi::Array<TTKernel>& kernels) const;
+      const tvm::ffi::Array<TTKernel>& kernels);
 
   /*! \brief Blackhole CB constraints */
   static constexpr int kMaxL1Size = 1572864;   // 1.5MB = 1,572,864 bytes

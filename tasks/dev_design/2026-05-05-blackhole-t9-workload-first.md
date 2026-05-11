@@ -58,9 +58,12 @@ protocols:
 - T9.5 chunk recurrence/scan: typed loop-carried exact-CB lifecycle,
   ping-pong state CBs, and a separate writer publication CB for per-chunk
   `Output` plus final `StateOut`.
+- T9.6 multi-block flash decode: split blocks with exact-CB publish/consume,
+  live-CB terminal publication, and partial combine.
 
-The active P1 boundary is T9.6 multi-block flash decode: split blocks with
-exact-CB publish/consume and partial combine.
+P1/T9 is closed on these current single-device bf16 direct-runtime surfaces.
+Distributed split scheduling and production collective behavior belong to
+P2/T10 typed placement, CCL, NoC, and reducer contracts.
 
 ## Non-Goals
 
@@ -124,6 +127,10 @@ compute-compatible tiled CB:
 The scratch CB / `copy_cb_page` step is a data-movement implementation detail
 needed to satisfy Blackhole NOC alignment while preserving the typed
 binding contract.  It is not a workload-level side channel.
+
+Retained stream-input tile offset rewriting only advances tile reads when a
+wait observes already-retained front pages.  An initial multi-page logical GEMM
+wait over several one-page pushes still reads logical tiles from index zero.
 
 ## T9.2 Paged GQA Decode
 
@@ -281,9 +288,7 @@ before source/runtime guessing.
 
 ## T9.6 Multi-Block Flash Decode
 
-This is the active T9 boundary.
-
-The first admitted shape must stay narrow:
+The first admitted shape stays narrow:
 
 - bf16 inputs and output;
 - explicit split-block TIR, not a frontend multi-block flash op;
@@ -295,6 +300,11 @@ The first admitted shape must stay narrow:
 
 Every later T9 expansion must define its own narrow admitted shape and direct
 runtime correctness gate before broadening.
+
+The admitted implementation keeps final publication on the typed live value:
+when the terminal local-to-CB slice is a witness for a complete exact/live CB
+tile with matching logical matrix shape, lowering republishes from that live CB
+instead of reconstructing the result from a local fragment.
 
 ## T9.5 Chunk Recurrence / Scan
 
@@ -406,6 +416,9 @@ Runtime:
 - T9.5 chunk scan uses three static chunk updates, nonzero initial state, a
   host reference that checks every intermediate chunk output, and a final
   `StateOut` check against the loop-exit state.
+- T9.6 split-block flash decode uses explicit split blocks, exact-CB
+  publication/consumption across blocks, partial combine, and a bf16 host
+  reference that checks the final decoded output.
 
 Unsupported diagnostics:
 
@@ -424,3 +437,7 @@ Unsupported diagnostics:
   exact-CB lifecycle cannot feed the existing flash path, the backend must
   reject with a typed admission reason rather than adding a sparse-attention
   side path.
+- if split-block exact-CB publication/consumption or terminal live-CB
+  publication cannot feed the existing flash partial-combine path, the backend
+  must reject with a typed admission reason rather than adding a multi-block
+  workload side path.
