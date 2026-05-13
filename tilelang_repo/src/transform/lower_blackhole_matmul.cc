@@ -793,14 +793,33 @@ Stmt PlanTTKernelABI::GenerateMatmulSequence(const CallNode* op,
   const int num_n_tiles = CeilDivToInt(gemm_n_, kBlackholeTileCols);
   const int num_c_tiles = num_m_tiles * num_n_tiles;
   const int64_t c_logical_elements = GetLogicalBufferElementCount(gemm_c_buffer_);
-  const bool has_initial_local_fragment_state = HasZeroFragmentFillFact(gemm_c_buffer_);
+  auto has_local_only_exact_cb_state = [&](const Buffer& buffer) {
+    if (!buffer.defined()) {
+      return false;
+    }
+    for (const std::string& identity : CollectBufferFlowIdentities(buffer)) {
+      if (!identity.empty() && local_only_live_form_buffer_identities_.count(identity) != 0U) {
+        return true;
+      }
+    }
+    return false;
+  };
+  const bool has_zero_preclear_local_fragment_state =
+      HasZeroFragmentFillFact(gemm_c_buffer_) ||
+      (logical_gemm_c_buffer.defined() && HasZeroFragmentFillFact(logical_gemm_c_buffer));
+  const bool has_typed_loop_carried_local_fragment_state =
+      has_local_only_exact_cb_state(gemm_c_buffer_) ||
+      (logical_gemm_c_buffer.defined() &&
+       has_local_only_exact_cb_state(logical_gemm_c_buffer));
   const bool can_reload_loop_carried_local_state =
-      !gemm_clear_accum_ && output_loop_carried && has_initial_local_fragment_state &&
-      preserve_out_local_state && GetStorageScope(gemm_c_buffer_) == "blackhole.acc" &&
+      !gemm_clear_accum_ && output_loop_carried &&
+      (has_zero_preclear_local_fragment_state ||
+       has_typed_loop_carried_local_fragment_state) &&
+      preserve_out_local_state && IsUnsupportedResidualLocalScope(gemm_c_buffer_) &&
       GetLogicalBufferTileCount(gemm_c_buffer_) == num_c_tiles &&
       c_logical_elements == static_cast<int64_t>(gemm_m_) * gemm_n_;
   const bool merge_with_zero_reload =
-      !gemm_clear_accum_ && has_initial_local_fragment_state && !output_loop_carried;
+      !gemm_clear_accum_ && has_zero_preclear_local_fragment_state && !output_loop_carried;
   InvalidateLastFragmentFillValue(gemm_c_buffer_);
   if (logical_gemm_c_buffer.defined()) {
     InvalidateLastFragmentFillValue(logical_gemm_c_buffer);

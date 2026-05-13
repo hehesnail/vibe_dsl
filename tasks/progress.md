@@ -75,6 +75,15 @@
   `TTProgram -> ExecutableSpec` boundary, and the executable queue gate replays
   those records rather than parsing generated source text or rescanning
   segment-body TIR.
+- Exact-CB live-form planning consumes indexed `SpatialPlan`
+  `MaterializationBoundary` evidence.  A boundary's source and target live
+  values may have different physical forms; TTProgram live-form plans must use
+  the live-form solver decision for the selected side, not a subject-level
+  cache or a default CB-materialized form.
+- Exact-output live-CB evidence is ordered by lowering program point.  A later
+  marker cannot satisfy an earlier consumer, while an explicit
+  CB-to-local untilize materialization can establish typed local loop-carried
+  state for a following `clear_accum=false` GEMM.
 - T8 value-expression bindings suppress fused-dataflow default tile-origin
   runtime args through projected `TTPerWorkArgSpec` evidence and
   non-synthesized arg kinds, not by classifying runtime arg identities such as
@@ -134,7 +143,9 @@ Current baseline:
   T8/T9 projection selectors, and deleted-schema guards.
 - Direct-runtime correctness:
   admitted T7/T8/T9 positive paths run through `BlackholeModule` with the
-  repository TT-Sim bf16 baseline where tensor values are involved.
+  repository TT-Sim bf16 baseline where tensor values are involved, including
+  the small bf16 flash-attn path and the seq64 MHA exact-CB partial-combine
+  path.
 - Typed unsupported coverage:
   malformed schema, missing page/address metadata, invalid exact-CB lifecycle,
   non-unit mesh placement, and current simulator capability boundaries

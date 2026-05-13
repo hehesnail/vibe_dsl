@@ -3614,6 +3614,37 @@
   - The grouped GEMM bf16 direct-runtime selector passed under the repository
     TT-Sim setup.
 
+### Exact-CB local state was not admitted after CB-to-local untilize
+
+- **症状**:
+  - `test_tile_compute_dag_feeds_typed_resource_pressure_report` failed in
+    `PlanTTCompute` for `acc_o` because a clear-accum=false GEMM could not
+    prove a legal loop-carried reload.
+  - The source guards for live-form solver literals and subject live-value maps
+    also failed while the state layer still owned physical-form decisions.
+- **根因**:
+  - Exact-output live-CB evidence was stored as a current map, so planning could
+    not distinguish a valid prior producer from a future marker.
+  - The CB-to-local `blackhole_untilize_cb_front_tile_fragment` event was not
+    recorded as typed local exact-CB state, so the following GEMM only accepted
+    zero-fill local state.
+  - Exact-CB virtual live-form creation collapsed a materialization boundary's
+    source and target decisions into the target CB-materialized form.
+- **修法**:
+  - Keep exact-output live-CB history by lowering order and only use the latest
+    record visible at the current program point.
+  - Record CB-to-local untilize as local exact-CB live state and allow
+    clear-accum=false GEMM reload when loop-carried evidence and shape checks
+    match.
+  - Resolve exact-CB virtual live forms through the indexed
+    `SpatialPlan` materialization boundary and select the TT live-form solver's
+    source or target decision for that boundary.
+- **验证**:
+  - `cmake --build build -j32` passed.
+  - Full `test_blackhole_spatial_ir.py` passed.
+  - Small bf16 flash-attn and seq64 MHA exact-CB partial-combine direct-runtime
+    selectors passed under the repository TT-Sim setup.
+
 ## 3. 环境问题速查
 
 | 问题 | 解决 |

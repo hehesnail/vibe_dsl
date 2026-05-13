@@ -2911,3 +2911,13 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   `ExecutableSpec.core_plan` must bind it by name/index.  Until CCL / NoC
   movement is typed, Blackhole direct runtime admits unit mesh only and must
   fail closed on non-unit mesh placements before creating a unit mesh.
+- 2026-05-13 exact-CB local live-state repair:
+  Exact-output live-CB markers are temporal evidence.  A future marker cannot
+  justify an earlier clear-accum=false GEMM reload, but an ordered
+  `blackhole_untilize_cb_front_tile_fragment` can materialize the exact-CB
+  value into local state and make that reload legal when loop-carried evidence
+  and output tile shape match.  Exact-CB virtual live forms should carry or
+  resolve the `SpatialPlan` materialization boundary index and select the
+  TT live-form solver's source or target decision for that boundary; do not
+  reintroduce subject-level live-value maps or hard-coded physical-form
+  strings in `lower_blackhole_state.cc`.

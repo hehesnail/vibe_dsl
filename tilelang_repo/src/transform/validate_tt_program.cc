@@ -1764,40 +1764,6 @@ void ValidateExactCBLifecycleRecords(
         << interval->virtual_value;
   }
 
-  for (const TTExactCBUseEvent &event : program->exact_cb_use_events) {
-    auto selected_interval_it =
-        interval_by_virtual_value_index.find(event->virtual_value_index);
-    ICHECK(selected_interval_it != interval_by_virtual_value_index.end())
-        << "TTExactCBUseEvent requires matching TTExactCBLiveInterval";
-    ICHECK_LE(selected_interval_it->second.begin_point, event->program_point)
-        << "TTExactCBUseEvent must not use a virtual value before its "
-           "producer interval begins";
-    const TTExactCBVirtualValue &selected_value =
-        program->exact_cb_virtual_values[static_cast<size_t>(
-            event->virtual_value_index)];
-    int64_t latest_begin = selected_interval_it->second.begin_point;
-    std::string latest_value = str(selected_value->name);
-    for (const auto &entry : interval_by_virtual_value_index) {
-      const int64_t candidate_index = entry.first;
-      const ExactCBIntervalRange &candidate_interval = entry.second;
-      const TTExactCBVirtualValue &candidate_value =
-          program->exact_cb_virtual_values[static_cast<size_t>(
-              candidate_index)];
-      if (candidate_value->logical_value != selected_value->logical_value ||
-          candidate_interval.begin_point > event->program_point ||
-          candidate_interval.begin_point < latest_begin) {
-        continue;
-      }
-      latest_begin = candidate_interval.begin_point;
-      latest_value = str(candidate_value->name);
-    }
-    ICHECK_EQ(selected_interval_it->second.begin_point, latest_begin)
-        << "TTExactCBUseEvent must bind the latest exact-CB producer for "
-        << selected_value->logical_value << "; selected "
-        << selected_value->name << " but latest visible value is "
-        << latest_value;
-  }
-
   std::unordered_map<std::string, int64_t> allocation_index_by_name;
   std::unordered_map<int64_t, int64_t> allocation_virtual_value_index;
   for (int64_t index = 0;
@@ -1894,6 +1860,40 @@ void ValidateExactCBLifecycleRecords(
           << " [" << rhs.begin_point << ", " << rhs.end_point
           << "] both use physical CB " << lhs.physical_cb_id;
     }
+  }
+
+  for (const TTExactCBUseEvent &event : program->exact_cb_use_events) {
+    auto selected_interval_it =
+        interval_by_virtual_value_index.find(event->virtual_value_index);
+    ICHECK(selected_interval_it != interval_by_virtual_value_index.end())
+        << "TTExactCBUseEvent requires matching TTExactCBLiveInterval";
+    ICHECK_LE(selected_interval_it->second.begin_point, event->program_point)
+        << "TTExactCBUseEvent must not use a virtual value before its "
+           "producer interval begins";
+    const TTExactCBVirtualValue &selected_value =
+        program->exact_cb_virtual_values[static_cast<size_t>(
+            event->virtual_value_index)];
+    int64_t latest_begin = selected_interval_it->second.begin_point;
+    std::string latest_value = str(selected_value->name);
+    for (const auto &entry : interval_by_virtual_value_index) {
+      const int64_t candidate_index = entry.first;
+      const ExactCBIntervalRange &candidate_interval = entry.second;
+      const TTExactCBVirtualValue &candidate_value =
+          program->exact_cb_virtual_values[static_cast<size_t>(
+              candidate_index)];
+      if (candidate_value->logical_value != selected_value->logical_value ||
+          candidate_interval.begin_point > event->program_point ||
+          candidate_interval.begin_point < latest_begin) {
+        continue;
+      }
+      latest_begin = candidate_interval.begin_point;
+      latest_value = str(candidate_value->name);
+    }
+    ICHECK_EQ(selected_interval_it->second.begin_point, latest_begin)
+        << "TTExactCBUseEvent must bind the latest exact-CB producer for "
+        << selected_value->logical_value << "; selected "
+        << selected_value->name << " but latest visible value is "
+        << latest_value;
   }
 
   for (const TTExactCBReleaseEvent &event :

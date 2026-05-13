@@ -265,6 +265,11 @@ Implementation note from the larger-shape flash checkpoint:
   a materialization fact only when loop-carried evidence comes from TIR
   read-before-write / exact-CB leaf accesses and the destination has a full
   static local state shape matching the GEMM tile set;
+- a CB-to-local untilize of an exact live value is a typed local
+  materialization event.  If it is ordered before a clear-accum=false GEMM and
+  the destination shape matches the GEMM output tile set, the GEMM may reload
+  that local state; a later exact-output marker is not valid evidence for the
+  earlier reload;
 - source codegen may CB-back a `blackhole.acc` local allocation only when the
   TTProgram CB plan projects explicit `initial_reserve_pages`.  A metadata-only
   CB config is not permission to turn a local accumulator into a CB write
@@ -483,6 +488,15 @@ Required negative gates:
 - A full-logical-tile consumer must bind a full-logical exact-CB live form.
   Partial local fragments and `thread_distributed_slice` live forms are not
   valid substitutes.
+- Exact-CB live-form plans are derived from indexed SpatialPlan
+  materialization boundaries and the TT live-form solver.  When the same
+  boundary relates a source fragment live value to a materialized target live
+  value, virtual exact-CB records must bind the solver decision for the side
+  they represent; they must not collapse source and target into one default
+  CB-materialized plan.
+- Exact-output live-CB records are temporal evidence.  Planning may use the
+  latest record at or before the current program point, and must ignore future
+  records for earlier consumers.
 - Extended loop-carried exact-CB recurrence remains admitted only when the
   source/spec lifecycle evidence is complete and runtime support is proven or
   fails closed with a typed simulator capability reason.

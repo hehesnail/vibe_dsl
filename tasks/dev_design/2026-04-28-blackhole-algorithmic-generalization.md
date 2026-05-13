@@ -127,6 +127,12 @@ Forbidden outputs:
 - hidden source-emitter instructions
 - runtime-only recovery rules
 
+The solver owns the target-specific live-form decision literals.  Callers may
+select the source-side or target-side decision for an indexed
+`MaterializationBoundary`, but must not duplicate those physical-form,
+topology, or ownership strings in lowering passes and must not rebuild
+live-value references through subject-level side maps.
+
 ## Active-Use Contract
 
 Algorithmic structures must pay rent.

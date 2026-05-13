@@ -194,43 +194,6 @@ void PlanTTKernelABI::LoadLogicalTileLayoutSpecs(const SpatialPlan& spatial_plan
 void PlanTTKernelABI::LoadSpatialLiveValueBoundaries(const SpatialPlan& plan) {
   spatial_materialization_boundaries_.clear();
   spatial_materialization_boundary_position_by_index_.clear();
-  spatial_live_value_by_subject_.clear();
-  spatial_lifetime_kind_by_subject_.clear();
-
-  for (int64_t i = 0; i < static_cast<int64_t>(plan->live_values.size()); ++i) {
-    const LiveValue& value = plan->live_values[i];
-    const std::string subject = static_cast<std::string>(value->subject);
-    if (!subject.empty()) {
-      spatial_live_value_by_subject_.emplace(
-          subject, SpatialLiveValueRef{static_cast<std::string>(value->name), i});
-    }
-  }
-
-  auto lifetime_rank = [](const std::string& kind) {
-    if (kind == "loop_carried") {
-      return 3;
-    }
-    if (kind == "multi_event") {
-      return 2;
-    }
-    if (kind == "single_event") {
-      return 1;
-    }
-    return 0;
-  };
-  auto record_subject_lifetime = [&](const String& subject,
-                                     const String& lifetime_kind) {
-    const std::string subject_name = static_cast<std::string>(subject);
-    const std::string lifetime = static_cast<std::string>(lifetime_kind);
-    if (subject_name.empty() || lifetime.empty()) {
-      return;
-    }
-    auto existing = spatial_lifetime_kind_by_subject_.find(subject_name);
-    if (existing == spatial_lifetime_kind_by_subject_.end() ||
-        lifetime_rank(lifetime) > lifetime_rank(existing->second)) {
-      spatial_lifetime_kind_by_subject_[subject_name] = lifetime;
-    }
-  };
 
   for (int64_t i = 0; i < static_cast<int64_t>(plan->materialization_boundaries.size()); ++i) {
     const MaterializationBoundary& boundary = plan->materialization_boundaries[i];
@@ -265,8 +228,6 @@ void PlanTTKernelABI::LoadSpatialLiveValueBoundaries(const SpatialPlan& plan) {
                                           static_cast<std::string>(boundary->event_lifetime_kind),
                                           boundary->min_publish_pages,
                                           boundary->max_consume_pages});
-    record_subject_lifetime(source->subject, boundary->event_lifetime_kind);
-    record_subject_lifetime(target->subject, boundary->event_lifetime_kind);
   }
 }
 
@@ -328,15 +289,6 @@ PlanTTKernelABI::FindSpatialAccessRegionRef(
   return &spatial_access_regions_[it->second.front()];
 }
 
-std::optional<PlanTTKernelABI::SpatialLiveValueRef>
-PlanTTKernelABI::FindSpatialLiveValueRef(const std::string& subject) const {
-  auto it = spatial_live_value_by_subject_.find(subject);
-  if (it == spatial_live_value_by_subject_.end()) {
-    return std::nullopt;
-  }
-  return it->second;
-}
-
 namespace {
 
 std::string SanitizeExactCBNameComponent(std::string value) {
@@ -351,6 +303,60 @@ std::string SanitizeExactCBNameComponent(std::string value) {
 }
 
 }  // namespace
+
+const PlanTTKernelABI::SpatialMaterializationBoundaryRef*
+PlanTTKernelABI::FindExactCBLiveFormBoundaryRef(
+    const std::string& logical_value,
+    const ExactTiledCBValue& value) const {
+  if (value.spatial_materialization_boundary_index >= 0) {
+    if (const SpatialMaterializationBoundaryRef* ref =
+            FindSpatialMaterializationBoundaryRef(
+                value.spatial_materialization_boundary_index)) {
+      return ref;
+    }
+  }
+  if (logical_value.empty()) {
+    return nullptr;
+  }
+
+  const bool loop_carried_value = IsActiveLoopCarriedExactCBValue(value);
+  const SpatialMaterializationBoundaryRef* best = nullptr;
+  int best_score = -1;
+  for (const SpatialMaterializationBoundaryRef& boundary :
+       spatial_materialization_boundaries_) {
+    const bool source_matches = boundary.source_subject == logical_value;
+    const bool target_matches = boundary.target_subject == logical_value;
+    if (!source_matches && !target_matches) {
+      continue;
+    }
+    int score = 0;
+    if (source_matches && target_matches) {
+      score += 16;
+    } else if (target_matches) {
+      score += 8;
+    } else {
+      score += 4;
+    }
+    if (boundary.logical_coverage == "full_logical_value") {
+      score += 4;
+    }
+    if (boundary.event_lifetime_kind == "loop_carried") {
+      score += loop_carried_value ? 8 : 2;
+    } else if (boundary.event_lifetime_kind == "multi_event") {
+      score += 1;
+    }
+    if (boundary.min_publish_pages >= 1 &&
+        boundary.max_consume_pages >= boundary.min_publish_pages) {
+      score += 1;
+    }
+    if (best == nullptr || score > best_score ||
+        (score == best_score && boundary.index < best->index)) {
+      best = &boundary;
+      best_score = score;
+    }
+  }
+  return best;
+}
 
 int64_t PlanTTKernelABI::EnsureExactCBLiveFormPlan(
     const std::string& logical_value,
@@ -368,21 +374,67 @@ int64_t PlanTTKernelABI::EnsureExactCBLiveFormPlan(
       return i;
     }
   }
-  auto spatial_live_value = FindSpatialLiveValueRef(logical_value);
-  if (!spatial_live_value) {
+  const SpatialMaterializationBoundaryRef* boundary =
+      FindExactCBLiveFormBoundaryRef(logical_value, value);
+  if (boundary == nullptr) {
     return -1;
   }
-  const int64_t live_form_index = static_cast<int64_t>(tt_live_form_plans_.size());
-  const std::string name = "live_form_exact_cb_" + SanitizeExactCBNameComponent(logical_value);
   const std::string kernel_name =
       requires_compute_segment_ ? std::string("compute") : std::string("main");
   const int64_t physical_extent =
       value.num_elements > 0 ? value.num_elements : int64_t{32 * 32};
+  std::vector<TTLiveFormBoundaryRequest> live_boundary_graph;
+  live_boundary_graph.reserve(spatial_materialization_boundaries_.size());
+  for (const SpatialMaterializationBoundaryRef& live_boundary :
+       spatial_materialization_boundaries_) {
+    live_boundary_graph.push_back(TTLiveFormBoundaryRequest{
+        live_boundary.name,
+        live_boundary.index,
+        live_boundary.source_live_value,
+        live_boundary.source_live_value_index,
+        live_boundary.target_live_value,
+        live_boundary.target_live_value_index,
+        live_boundary.event_lifetime_kind,
+        live_boundary.logical_coverage,
+        live_boundary.min_publish_pages,
+        live_boundary.max_consume_pages});
+  }
+  const TTLiveFormSolverResult live_form_solution =
+      SolveFragmentCastLiveFormTransition(TTLiveFormSolverRequest{
+          boundary->source_subject.empty() ? logical_value : boundary->source_subject,
+          boundary->target_subject.empty() ? logical_value : boundary->target_subject,
+          boundary->source_live_value,
+          boundary->source_live_value_index,
+          boundary->target_live_value,
+          boundary->target_live_value_index,
+          physical_extent,
+          physical_extent,
+          physical_extent,
+          boundary->event_lifetime_kind,
+          boundary->logical_coverage,
+          boundary->min_publish_pages,
+          boundary->max_consume_pages,
+          buffer_materialization::kTileNFacesMaterialization,
+          buffer_materialization::kRepublishedBuffer,
+          buffer_materialization::kPackTile,
+          boundary->index,
+          std::move(live_boundary_graph)});
+  const bool use_source_decision =
+      logical_value == boundary->source_subject ||
+      (!boundary->source_subject.empty() &&
+       value.live_identity == boundary->source_subject);
+  const TTLiveFormValueDecision& decision =
+      use_source_decision ? live_form_solution.source_value
+                          : live_form_solution.target_value;
+  const int64_t live_form_index = static_cast<int64_t>(tt_live_form_plans_.size());
+  const std::string name =
+      "live_form_" + SanitizeExactCBNameComponent(logical_value);
   tt_live_form_plans_.push_back(TTLiveFormPlan(
-      String(name), String(logical_value), String(spatial_live_value->name),
-      spatial_live_value->index, String(kernel_name),
-      String("cb_materialized_tile"), String("thread_distributed"),
-      physical_extent, physical_extent, String("materialized_cb_pages_multi_event")));
+      String(name), String(logical_value), String(decision.spatial_live_value),
+      decision.spatial_live_value_index, String(kernel_name),
+      String(decision.physical_form), String(decision.execution_topology),
+      decision.physical_local_extent, decision.logical_element_count,
+      String(decision.ownership_kind)));
   tt_exact_cb_live_form_index_by_logical_value_[logical_value] = live_form_index;
   return live_form_index;
 }
@@ -427,9 +479,11 @@ int64_t PlanTTKernelABI::EnsureExactCBVirtualValue(
       resolved_producer_order >= 0
           ? resolved_producer_order
           : (current_order_index >= 0 ? current_order_index : req.lifetime_begin);
+  const SpatialMaterializationBoundaryRef* live_boundary =
+      FindExactCBLiveFormBoundaryRef(logical_value, value);
   std::string lifetime_kind =
-      spatial_lifetime_kind_by_subject_.count(logical_value)
-          ? spatial_lifetime_kind_by_subject_.at(logical_value)
+      live_boundary != nullptr && !live_boundary->event_lifetime_kind.empty()
+          ? live_boundary->event_lifetime_kind
           : std::string("multi_event");
   if (lifetime_kind == "loop_carried" && !IsActiveLoopCarriedExactCBValue(value)) {
     // Spatial lifetime is subject-level evidence.  Reused scratch buffers can
@@ -502,6 +556,38 @@ int64_t PlanTTKernelABI::EnsureExactCBAllocation(
       std::max<int>(release_program_point, 0), String(release_reason)));
   tt_exact_cb_allocation_index_by_key_[key] = allocation_index;
   return allocation_index;
+}
+
+void PlanTTKernelABI::NormalizeExactCBVirtualValuesToAllocations() {
+  for (const TTExactCBAllocation& allocation : tt_exact_cb_allocations_) {
+    if (allocation->virtual_value_index < 0 ||
+        allocation->virtual_value_index >=
+            static_cast<int64_t>(tt_exact_cb_virtual_values_.size()) ||
+        allocation->cb_plan_index < 0 ||
+        allocation->cb_plan_index >= static_cast<int64_t>(cb_requirements_.size())) {
+      continue;
+    }
+    const size_t virtual_index =
+        static_cast<size_t>(allocation->virtual_value_index);
+    const TTExactCBVirtualValue& value = tt_exact_cb_virtual_values_[virtual_index];
+    const CBRequirement& req =
+        cb_requirements_[static_cast<size_t>(allocation->cb_plan_index)];
+    const int64_t num_pages =
+        std::max<int64_t>(value->num_pages, std::max<int64_t>(1, allocation->page_count));
+    if (value->page_size_bytes == req.page_size &&
+        static_cast<std::string>(value->data_format) == req.data_format &&
+        value->num_pages == num_pages) {
+      continue;
+    }
+    tt_exact_cb_virtual_values_.Set(
+        virtual_index,
+        TTExactCBVirtualValue(
+            value->name, value->logical_value, value->live_form,
+            value->live_form_index, value->producer_kernel,
+            value->producer_event, value->event_lifetime_kind,
+            value->loop_role, num_pages, req.page_size,
+            String(req.data_format)));
+  }
 }
 
 const Map<String, Any>* PlanTTKernelABI::FindLogicalTileLayoutSpec(const Buffer& buffer) const {

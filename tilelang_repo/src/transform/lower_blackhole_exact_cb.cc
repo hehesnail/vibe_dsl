@@ -354,32 +354,70 @@ bool PlanTTKernelABI::TryCreateLiveExactTiledCBValue(const Buffer& buffer,
 bool PlanTTKernelABI::TryCreateExactOutputLiveTiledCBValue(const Buffer& buffer,
                                                            ExactTiledCBValue* value) const {
   ICHECK(value != nullptr);
-  auto find_live_cb = [&](const std::string& name) -> std::pair<int, int> {
+  struct ExactOutputLiveRecord {
+    int cb_id = -1;
+    int order_index = -1;
+    ExactTiledCBValue value;
+  };
+  auto find_live_record = [&](const std::string& name) -> ExactOutputLiveRecord {
     if (name.empty()) {
-      return {-1, -1};
+      return {};
+    }
+    ExactOutputLiveRecord best;
+    auto history_it = exact_output_live_form_history_by_buffer_identity_.find(name);
+    if (history_it != exact_output_live_form_history_by_buffer_identity_.end()) {
+      for (const auto& [order_index, live_value] : history_it->second) {
+        if (live_value.cb_id < 0) {
+          continue;
+        }
+        if (current_lowering_order_index_ >= 0 &&
+            order_index > current_lowering_order_index_) {
+          continue;
+        }
+        if (best.cb_id < 0 || order_index > best.order_index) {
+          best.cb_id = live_value.cb_id;
+          best.order_index = order_index;
+          best.value = live_value;
+        }
+      }
+      if (best.cb_id >= 0) {
+        return best;
+      }
     }
     auto it = exact_output_live_form_cb_by_buffer_identity_.find(name);
     if (it == exact_output_live_form_cb_by_buffer_identity_.end()) {
-      return {-1, -1};
+      return {};
     }
     auto order_it = exact_output_live_form_order_by_buffer_identity_.find(name);
     const int order_index =
         order_it == exact_output_live_form_order_by_buffer_identity_.end() ? -1 : order_it->second;
-    return {it->second, order_index};
+    if (current_lowering_order_index_ >= 0 && order_index > current_lowering_order_index_) {
+      return {};
+    }
+    best.cb_id = it->second;
+    best.order_index = order_index;
+    auto value_it = exact_output_live_form_value_by_buffer_identity_.find(name);
+    if (value_it != exact_output_live_form_value_by_buffer_identity_.end()) {
+      best.value = value_it->second;
+    }
+    best.value.cb_id = best.cb_id;
+    return best;
   };
 
   int cb_id = -1;
   int live_order_index = -1;
   std::string selected_identity;
+  ExactTiledCBValue selected_live_value;
   auto consider_identity = [&](const std::string& identity) {
-    auto [candidate_cb_id, candidate_order_index] = find_live_cb(identity);
-    if (candidate_cb_id < 0) {
+    ExactOutputLiveRecord candidate = find_live_record(identity);
+    if (candidate.cb_id < 0) {
       return;
     }
-    if (cb_id < 0 || candidate_order_index > live_order_index) {
-      cb_id = candidate_cb_id;
-      live_order_index = candidate_order_index;
+    if (cb_id < 0 || candidate.order_index > live_order_index) {
+      cb_id = candidate.cb_id;
+      live_order_index = candidate.order_index;
       selected_identity = identity;
+      selected_live_value = candidate.value;
     }
   };
 
@@ -403,9 +441,11 @@ bool PlanTTKernelABI::TryCreateExactOutputLiveTiledCBValue(const Buffer& buffer,
   }
   const std::string requested_identity = BufferIdentityName(buffer);
   if (!requested_identity.empty()) {
-    auto [requested_cb_id, _] = find_live_cb(requested_identity);
-    if (requested_cb_id == cb_id) {
+    ExactOutputLiveRecord requested = find_live_record(requested_identity);
+    if (requested.cb_id == cb_id) {
       selected_identity = requested_identity;
+      selected_live_value = requested.value;
+      live_order_index = requested.order_index;
     }
   }
   if (!selected_identity.empty() &&
@@ -443,18 +483,18 @@ bool PlanTTKernelABI::TryCreateExactOutputLiveTiledCBValue(const Buffer& buffer,
   value->borrowed_live = true;
   value->live_identity = selected_identity;
   PopulateExactTiledCBValueShape(buffer, value);
-  auto value_it = exact_output_live_form_value_by_buffer_identity_.find(selected_identity);
-  if (value_it != exact_output_live_form_value_by_buffer_identity_.end()) {
-    const ExactTiledCBValue& live_value = value_it->second;
-    if (live_value.num_tiles > 0) {
-      value->num_tiles = live_value.num_tiles;
-    }
-    if (live_value.num_elements > 0) {
-      value->num_elements = live_value.num_elements;
-    }
-    if (live_value.row_width > 0) {
-      value->row_width = live_value.row_width;
-    }
+  if (selected_live_value.num_tiles > 0) {
+    value->num_tiles = selected_live_value.num_tiles;
+  }
+  if (selected_live_value.num_elements > 0) {
+    value->num_elements = selected_live_value.num_elements;
+  }
+  if (selected_live_value.row_width > 0) {
+    value->row_width = selected_live_value.row_width;
+  }
+  if (selected_live_value.spatial_materialization_boundary_index >= 0) {
+    value->spatial_materialization_boundary_index =
+        selected_live_value.spatial_materialization_boundary_index;
   }
   RefineExactTiledCBValueShapeFromRequirement(value);
   return true;
@@ -883,13 +923,14 @@ void PlanTTKernelABI::RecordLoopCarriedExactCBLifecycle(
   if (logical_value.empty() || value.cb_id < 0 || value.num_tiles <= 0) {
     return;
   }
-  auto lifetime_it = spatial_lifetime_kind_by_subject_.find(logical_value);
-  if (lifetime_it == spatial_lifetime_kind_by_subject_.end() ||
-      lifetime_it->second != "loop_carried") {
+  const SpatialMaterializationBoundaryRef* boundary =
+      FindExactCBLiveFormBoundaryRef(logical_value, value);
+  if (boundary == nullptr || boundary->event_lifetime_kind != "loop_carried") {
     return;
   }
 
   ExactTiledCBValue lifecycle_value = value;
+  lifecycle_value.spatial_materialization_boundary_index = boundary->index;
   lifecycle_value.live_identity = logical_value;
   lifecycle_value.borrowed_live = true;
   const int64_t virtual_value_index =
@@ -1301,8 +1342,8 @@ void PlanTTKernelABI::RecordExactOutputLiveForm(const Buffer& dst,
     }
   }
   const int order_index = current_lowering_order_index_;
-  auto record_exact_buffer = [&](const Buffer& candidate) {
-    const std::string identity = BufferIdentityName(candidate);
+  auto record_exact_identity = [&](const std::string& identity,
+                                   const Buffer& candidate) {
     if (identity.empty()) {
       return;
     }
@@ -1313,10 +1354,23 @@ void PlanTTKernelABI::RecordExactOutputLiveForm(const Buffer& dst,
       }
       invalidated_live_form_order_by_buffer_identity_.erase(invalidated_it);
     }
-    exact_output_live_form_cb_by_buffer_identity_[identity] = cb_value.cb_id;
+    ExactTiledCBValue recorded_value = cb_value;
+    recorded_value.live_identity = identity;
+    if (recorded_value.spatial_materialization_boundary_index < 0) {
+      if (const SpatialMaterializationBoundaryRef* boundary =
+              FindExactCBLiveFormBoundaryRef(identity, recorded_value)) {
+        recorded_value.spatial_materialization_boundary_index = boundary->index;
+      }
+    }
+    exact_output_live_form_cb_by_buffer_identity_[identity] = recorded_value.cb_id;
     exact_output_live_form_order_by_buffer_identity_[identity] = order_index;
-    exact_output_live_form_value_by_buffer_identity_[identity] = cb_value;
+    exact_output_live_form_value_by_buffer_identity_[identity] = recorded_value;
+    exact_output_live_form_history_by_buffer_identity_[identity].push_back(
+        {order_index, recorded_value});
     local_only_live_form_buffer_identities_.erase(identity);
+  };
+  auto record_exact_buffer = [&](const Buffer& candidate) {
+    record_exact_identity(BufferIdentityName(candidate), candidate);
   };
   record_exact_buffer(dst);
   const Buffer physical = ResolvePhysicalComputeBuffer(dst);
@@ -1325,10 +1379,7 @@ void PlanTTKernelABI::RecordExactOutputLiveForm(const Buffer& dst,
     for (const auto& [identity, physical_candidate] : compute_physical_buffers_by_identity_) {
       if (!identity.empty() && physical_candidate.defined() &&
           SameBufferIdentity(physical_candidate, physical)) {
-        exact_output_live_form_cb_by_buffer_identity_[identity] = cb_value.cb_id;
-        exact_output_live_form_order_by_buffer_identity_[identity] = order_index;
-        exact_output_live_form_value_by_buffer_identity_[identity] = cb_value;
-        local_only_live_form_buffer_identities_.erase(identity);
+        record_exact_identity(identity, physical_candidate);
       }
     }
   }

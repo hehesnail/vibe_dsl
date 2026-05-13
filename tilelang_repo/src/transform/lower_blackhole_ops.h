@@ -188,6 +188,7 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
     int num_tiles = 0;
     int64_t num_elements = 0;
     int64_t row_width = 0;
+    int64_t spatial_materialization_boundary_index = -1;
     bool producer_live = false;
     bool borrowed_live = false;
     std::string live_identity;
@@ -450,8 +451,9 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   const SpatialMaterializationBoundaryRef* FindSpatialMaterializationBoundaryRef(
       int64_t materialization_boundary_index) const;
 
-  std::optional<SpatialLiveValueRef> FindSpatialLiveValueRef(
-      const std::string& subject) const;
+  const SpatialMaterializationBoundaryRef* FindExactCBLiveFormBoundaryRef(
+      const std::string& logical_value,
+      const ExactTiledCBValue& value) const;
   int64_t EnsureExactCBLiveFormPlan(
       const std::string& logical_value,
       const ExactTiledCBValue& value);
@@ -464,6 +466,7 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
       const ExactTiledCBValue& value,
       int release_program_point,
       const std::string& release_reason);
+  void NormalizeExactCBVirtualValuesToAllocations();
 
   /*! \brief Load compute-region buffer to physical accumulator bindings from compute regions. */
   void LoadPhysicalComputeBufferBindings(const tvm::tir::PrimFunc& func);
@@ -1156,6 +1159,8 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   std::unordered_map<int, int> exact_output_live_form_order_by_cb_id_;
   std::unordered_map<std::string, ExactTiledCBValue>
       exact_output_live_form_value_by_buffer_identity_;
+  std::unordered_map<std::string, std::vector<std::pair<int, ExactTiledCBValue>>>
+      exact_output_live_form_history_by_buffer_identity_;
   std::unordered_map<std::string, int> invalidated_live_form_order_by_buffer_identity_;
   std::unordered_set<std::string> local_only_live_form_buffer_identities_;
   std::vector<std::unordered_set<std::string>> active_loop_carried_buffer_identity_stack_;
@@ -1171,11 +1176,9 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   std::unordered_map<std::string, int> selected_source_live_producer_order_by_buffer_identity_;
   std::vector<SpatialMaterializationBoundaryRef> spatial_materialization_boundaries_;
   std::unordered_map<int64_t, size_t> spatial_materialization_boundary_position_by_index_;
-  std::unordered_map<std::string, SpatialLiveValueRef> spatial_live_value_by_subject_;
   std::vector<SpatialAccessRegionRef> spatial_access_regions_;
   std::unordered_map<std::string, std::vector<size_t>>
       spatial_access_region_positions_by_subject_access_;
-  std::unordered_map<std::string, std::string> spatial_lifetime_kind_by_subject_;
   std::unordered_map<std::string, tvm::PrimExpr> last_fragment_fill_value_by_buffer_identity_;
   std::unordered_map<const tvm::tir::VarNode*, tvm::PrimExpr> last_fragment_fill_value_by_data_;
   std::unordered_map<std::string, std::vector<int64_t>> logical_buffer_shapes_;

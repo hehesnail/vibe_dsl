@@ -2227,6 +2227,7 @@ PrimFunc PlanTTKernelABI::SelectComputeBuiltins(const PrimFunc& func) {
   exact_output_live_form_order_by_buffer_identity_.clear();
   exact_output_live_form_order_by_cb_id_.clear();
   exact_output_live_form_value_by_buffer_identity_.clear();
+  exact_output_live_form_history_by_buffer_identity_.clear();
   invalidated_live_form_order_by_buffer_identity_.clear();
   local_only_live_form_buffer_identities_.clear();
   stmt_order_index_by_node_.clear();
@@ -2237,8 +2238,6 @@ PrimFunc PlanTTKernelABI::SelectComputeBuiltins(const PrimFunc& func) {
   spatial_materialization_boundary_position_by_index_.clear();
   spatial_access_regions_.clear();
   spatial_access_region_positions_by_subject_access_.clear();
-  spatial_live_value_by_subject_.clear();
-  spatial_lifetime_kind_by_subject_.clear();
   buffer_materialization_facts_by_target_buffer_.clear();
   tt_compute_op_plans_.clear();
   tile_compute_dag_lowering_decisions_.clear();
@@ -2538,6 +2537,7 @@ PrimFunc PlanTTKernelABI::Transform(const PrimFunc& func) {
   exact_output_live_form_order_by_buffer_identity_.clear();
   exact_output_live_form_order_by_cb_id_.clear();
   exact_output_live_form_value_by_buffer_identity_.clear();
+  exact_output_live_form_history_by_buffer_identity_.clear();
   invalidated_live_form_order_by_buffer_identity_.clear();
   local_only_live_form_buffer_identities_.clear();
   active_loop_carried_buffer_identity_stack_.clear();
@@ -2792,6 +2792,7 @@ PrimFunc PlanTTKernelABI::Transform(const PrimFunc& func) {
   UpdateCBRequirementDepthsFromLoweredBody(&cb_requirements_, lowered_body,
                                            gemm_a_buffer_name_.empty() ? "fused_dataflow"
                                                                        : "compute");
+  NormalizeExactCBVirtualValuesToAllocations();
   lowered_body =
       RewriteRetainedStreamInputMatmulTileOffsetsForRequirements(lowered_body,
                                                                  cb_requirements_);
@@ -3738,23 +3739,8 @@ Stmt PlanTTKernelABI::VisitStmt_(const AttrStmtNode* op) {
     Stmt body = VisitStmt(op->body);
     const auto* cb_id = op->value.as<IntImmNode>();
     const auto* data = op->node.as<VarNode>();
-    auto is_active_loop_carried_identity = [&](const std::string& identity) {
-      if (identity.empty()) {
-        return false;
-      }
-      for (auto stack_it = active_loop_carried_buffer_identity_stack_.rbegin();
-           stack_it != active_loop_carried_buffer_identity_stack_.rend(); ++stack_it) {
-        if (stack_it->count(identity) != 0U) {
-          return true;
-        }
-      }
-      return false;
-    };
     auto record_identity = [&](const std::string& identity) {
       if (identity.empty() || cb_id == nullptr) {
-        return;
-      }
-      if (is_active_loop_carried_identity(identity)) {
         return;
       }
       auto invalidated_it = invalidated_live_form_order_by_buffer_identity_.find(identity);
@@ -3765,20 +3751,20 @@ Stmt PlanTTKernelABI::VisitStmt_(const AttrStmtNode* op) {
         }
         invalidated_live_form_order_by_buffer_identity_.erase(invalidated_it);
       }
-      const auto tombstone_order_it =
-          exact_output_live_form_order_by_buffer_identity_.find(identity);
-      const bool has_live_cb =
-          exact_output_live_form_cb_by_buffer_identity_.find(identity) !=
-          exact_output_live_form_cb_by_buffer_identity_.end();
-      if (!has_live_cb && current_lowering_order_index_ >= 0 &&
-          tombstone_order_it != exact_output_live_form_order_by_buffer_identity_.end() &&
-          tombstone_order_it->second >= current_lowering_order_index_) {
-        return;
+      ExactTiledCBValue& live_value =
+          exact_output_live_form_value_by_buffer_identity_[identity];
+      live_value.cb_id = static_cast<int>(cb_id->value);
+      live_value.borrowed_live = true;
+      live_value.live_identity = identity;
+      if (live_value.spatial_materialization_boundary_index < 0) {
+        if (const SpatialMaterializationBoundaryRef* boundary =
+                FindExactCBLiveFormBoundaryRef(identity, live_value)) {
+          live_value.spatial_materialization_boundary_index = boundary->index;
+        }
       }
-      exact_output_live_form_cb_by_buffer_identity_[identity] =
-          static_cast<int>(cb_id->value);
-      exact_output_live_form_value_by_buffer_identity_[identity].cb_id =
-          static_cast<int>(cb_id->value);
+      exact_output_live_form_cb_by_buffer_identity_[identity] = live_value.cb_id;
+      exact_output_live_form_history_by_buffer_identity_[identity].push_back(
+          {current_lowering_order_index_, live_value});
       local_only_live_form_buffer_identities_.erase(identity);
       if (current_lowering_order_index_ >= 0) {
         exact_output_live_form_order_by_buffer_identity_[identity] =
@@ -3900,14 +3886,15 @@ void PlanTTKernelABI::LoadExactOutputLiveFormMarkers(const Stmt& body) {
     if (order_it != stmt_order_index_by_node_.end()) {
       return order_it->second;
     }
-    int last_body_order = -1;
+    int first_body_order = std::numeric_limits<int>::max();
     tir::PostOrderVisit(attr->body, [&](const ObjectRef& node) {
       auto body_order_it = stmt_order_index_by_node_.find(node.get());
       if (body_order_it != stmt_order_index_by_node_.end()) {
-        last_body_order = std::max(last_body_order, body_order_it->second);
+        first_body_order = std::min(first_body_order, body_order_it->second);
       }
     });
-    return last_body_order;
+    return first_body_order == std::numeric_limits<int>::max() ? -1
+                                                               : first_body_order;
   };
   tir::PostOrderVisit(body, [&](const ObjectRef& node) {
     const auto* attr = node.as<AttrStmtNode>();
@@ -3926,6 +3913,18 @@ void PlanTTKernelABI::LoadExactOutputLiveFormMarkers(const Stmt& body) {
     if (attr->attr_key == kBlackholeExactOutputLiveCBAttr) {
       const int cb_id = static_cast<int>(int_value->value);
       const int order = marker_order(attr);
+      ExactTiledCBValue marker_value = live_value;
+      marker_value.cb_id = cb_id;
+      marker_value.borrowed_live = true;
+      marker_value.live_identity = identity;
+      if (marker_value.spatial_materialization_boundary_index < 0) {
+        if (const SpatialMaterializationBoundaryRef* boundary =
+                FindExactCBLiveFormBoundaryRef(identity, marker_value)) {
+          marker_value.spatial_materialization_boundary_index = boundary->index;
+        }
+      }
+      exact_output_live_form_history_by_buffer_identity_[identity].push_back(
+          {order, marker_value});
       const auto existing_order_it =
           exact_output_live_form_order_by_buffer_identity_.find(identity);
       const bool replaces_existing =
@@ -3933,7 +3932,7 @@ void PlanTTKernelABI::LoadExactOutputLiveFormMarkers(const Stmt& body) {
           existing_order_it->second < 0 || order < 0 || order >= existing_order_it->second;
       if (replaces_existing) {
         exact_output_live_form_cb_by_buffer_identity_[identity] = cb_id;
-        live_value.cb_id = cb_id;
+        live_value = marker_value;
         if (order >= 0) {
           exact_output_live_form_order_by_buffer_identity_[identity] = order;
         }
@@ -6223,8 +6222,31 @@ Stmt PlanTTKernelABI::VisitStmt_(const EvaluateNode* op) {
     }
     return false;
   };
+  auto record_untilize_local_materialization = [&](const CallNode* call) {
+    if (call == nullptr || !call->op->IsInstance<OpNode>() || call->args.empty()) {
+      return;
+    }
+    const Op call_op = Downcast<Op>(call->op);
+    if (!call_op.same_as(blackhole_untilize_cb_front_tile_fragment())) {
+      return;
+    }
+    const auto* data = call->args[0].as<VarNode>();
+    if (data == nullptr) {
+      return;
+    }
+    auto physical_it = compute_physical_buffers_by_data_.find(data);
+    if (physical_it == compute_physical_buffers_by_data_.end() ||
+        !physical_it->second.defined()) {
+      return;
+    }
+    ClearSelectedSourceLiveProducer(physical_it->second);
+    ClearTiledCBLiveFormAliases(physical_it->second);
+    MarkLocalOnlyLiveFormAliases(physical_it->second);
+    InvalidateLastFragmentFillValue(physical_it->second);
+  };
   if (select_compute_builtins_only_) {
     if (const auto* call = op->value.as<CallNode>()) {
+      record_untilize_local_materialization(call);
       if (should_drop_completed_loop_carried_state_pop(call)) {
         return Evaluate(IntImm32(0));
       }
@@ -6268,6 +6290,7 @@ Stmt PlanTTKernelABI::VisitStmt_(const EvaluateNode* op) {
     return GetRef<Stmt>(op);
   }
   if (const auto* call = op->value.as<CallNode>()) {
+    record_untilize_local_materialization(call);
     if (should_drop_completed_loop_carried_state_pop(call)) {
       return Evaluate(IntImm32(0));
     }
