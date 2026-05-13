@@ -196,6 +196,12 @@ TVM_REGISTER_TARGET_KIND("blackhole", kDLExtDev)
     .add_attr_option<int64_t>("num_cores", 110)  // 11x10 logical worker cores
     .add_attr_option<int64_t>("logical_worker_grid_x", 11)
     .add_attr_option<int64_t>("logical_worker_grid_y", 10)
+    .add_attr_option<int64_t>("mesh_shape_x", 1)
+    .add_attr_option<int64_t>("mesh_shape_y", 1)
+    .add_attr_option<int64_t>("device_range_start_x", 0)
+    .add_attr_option<int64_t>("device_range_start_y", 0)
+    .add_attr_option<int64_t>("device_range_shape_x", 1)
+    .add_attr_option<int64_t>("device_range_shape_y", 1)
     .add_attr_option<int64_t>("max_cb_count", 64)
     .add_attr_option<int64_t>("num_cbs", 64)     // 64 circular buffers per core
     .set_default_keys({"blackhole"});
@@ -305,6 +311,10 @@ static std::vector<CBConfig> ExtractCBConfig(const tir::PrimFunc& f) {
   return cb_configs;
 }
 
+static std::vector<int64_t> ExtractIntegerVector(const ffi::Map<ffi::String, ffi::Any>& item,
+                                                 const char* key);
+static bool HasPositiveIntegerShape(const std::vector<int64_t>& shape);
+
 static CorePlan ExtractCorePlan(const tir::PrimFunc& f) {
   CorePlan plan;
   auto core_plan = RequireExecutableMapField(
@@ -326,6 +336,14 @@ static CorePlan ExtractCorePlan(const tir::PrimFunc& f) {
   } else if (auto v = core_plan.Get("grid_z")) {
     plan.logical_grid_z = Downcast<Integer>(v.value()).IntValue();
   }
+  if (auto v = core_plan.Get("mesh_plan")) {
+    plan.mesh_plan = Downcast<String>(v.value());
+  }
+  if (auto v = core_plan.Get("mesh_plan_index")) {
+    plan.mesh_plan_index = Downcast<Integer>(v.value()).IntValue();
+  }
+  plan.device_range_start = ExtractIntegerVector(core_plan, "device_range_start");
+  plan.device_range_shape = ExtractIntegerVector(core_plan, "device_range_shape");
   if (auto v = core_plan.Get("linearization")) {
     plan.linearization = Downcast<String>(v.value());
   }
@@ -370,6 +388,12 @@ static CorePlan ExtractCorePlan(const tir::PrimFunc& f) {
       << "Blackhole executable core_plan requires physical_cores";
   ICHECK(!plan.work_packets.empty())
       << "Blackhole executable core_plan requires work_packets";
+  ICHECK(!plan.mesh_plan.empty())
+      << "Blackhole executable core_plan requires mesh_plan";
+  ICHECK_GE(plan.mesh_plan_index, 0)
+      << "Blackhole executable core_plan requires mesh_plan_index";
+  ICHECK(HasPositiveIntegerShape(plan.device_range_shape))
+      << "Blackhole executable core_plan requires device_range_shape";
   return plan;
 }
 
@@ -1146,6 +1170,85 @@ static bool HasPositiveIntegerShape(const std::vector<int64_t>& shape) {
   return !shape.empty() &&
          std::all_of(shape.begin(), shape.end(),
                      [](int64_t value) { return value > 0; });
+}
+
+static std::vector<MeshPlanSpec> ExtractMeshPlans(const tir::PrimFunc& f) {
+  std::vector<MeshPlanSpec> plans;
+  auto items = tl::tt_program_projection::GetExecutableArrayField(
+      f, "Blackhole executable spec extraction",
+      tl::tt_program_projection::executable_key::kMeshPlans);
+  for (const auto& item_any : items) {
+    auto item = RequireMap(item_any, "Blackhole executable mesh_plans item");
+    MeshPlanSpec plan;
+    if (auto value = item.Get("name")) plan.name = Downcast<String>(value.value());
+    if (auto value = item.Get("mesh_kind")) plan.mesh_kind = Downcast<String>(value.value());
+    plan.mesh_shape = ExtractIntegerVector(item, "mesh_shape");
+    plan.device_range_start = ExtractIntegerVector(item, "device_range_start");
+    plan.device_range_shape = ExtractIntegerVector(item, "device_range_shape");
+    if (auto value = item.Get("system_mesh_ref")) {
+      plan.system_mesh_ref = Downcast<String>(value.value());
+    }
+
+    ICHECK(!plan.name.empty()) << "Blackhole executable mesh_plans item requires name";
+    ICHECK(!plan.mesh_kind.empty())
+        << "Blackhole executable mesh_plans item requires mesh_kind";
+    ICHECK(HasPositiveIntegerShape(plan.mesh_shape))
+        << "Blackhole executable mesh_plans item requires mesh_shape";
+    ICHECK_EQ(plan.device_range_start.size(), plan.mesh_shape.size())
+        << "Blackhole executable mesh_plans item device_range_start rank must match mesh_shape";
+    ICHECK_EQ(plan.device_range_shape.size(), plan.mesh_shape.size())
+        << "Blackhole executable mesh_plans item device_range_shape rank must match mesh_shape";
+    for (size_t i = 0; i < plan.mesh_shape.size(); ++i) {
+      ICHECK_GE(plan.device_range_start[i], 0)
+          << "Blackhole executable mesh_plans item requires non-negative device_range_start";
+      ICHECK_GT(plan.device_range_shape[i], 0)
+          << "Blackhole executable mesh_plans item requires positive device_range_shape";
+      ICHECK_LE(plan.device_range_start[i] + plan.device_range_shape[i],
+                plan.mesh_shape[i])
+          << "Blackhole executable mesh_plans item device range must fit mesh_shape";
+    }
+    plans.push_back(std::move(plan));
+  }
+  return plans;
+}
+
+static int64_t PositiveProduct(const std::vector<int64_t>& values) {
+  int64_t product = 1;
+  for (int64_t value : values) {
+    if (value <= 0) {
+      return 0;
+    }
+    product *= value;
+  }
+  return product;
+}
+
+static bool IsUnitDirectMeshPlan(const MeshPlanSpec& plan) {
+  return plan.name == "unit_mesh" && plan.mesh_kind == "unit_mesh" &&
+         PositiveProduct(plan.mesh_shape) == 1 &&
+         plan.device_range_start.size() == plan.mesh_shape.size() &&
+         plan.device_range_shape.size() == plan.mesh_shape.size() &&
+         std::all_of(plan.device_range_start.begin(), plan.device_range_start.end(),
+                     [](int64_t value) { return value == 0; }) &&
+         PositiveProduct(plan.device_range_shape) == 1;
+}
+
+static bool RequiresUnsupportedDirectMeshPlacement(const ExecutableSpec& spec) {
+  if (spec.mesh_plans.empty()) {
+    return false;
+  }
+  return std::any_of(spec.mesh_plans.begin(), spec.mesh_plans.end(),
+                     [](const MeshPlanSpec& plan) {
+                       return !IsUnitDirectMeshPlan(plan);
+                     });
+}
+
+static void AppendUniqueUnsupportedReason(std::vector<std::string>* reasons,
+                                          const std::string& reason) {
+  ICHECK(reasons != nullptr);
+  if (std::find(reasons->begin(), reasons->end(), reason) == reasons->end()) {
+    reasons->push_back(reason);
+  }
 }
 
 static bool HasShardedSourceBinding(const BufferDistributionSpec& plan) {
@@ -2084,6 +2187,7 @@ static ExecutableSpec ExtractExecutableSpecFromDeviceFunc(const tir::PrimFunc& f
   PopulateTVMArgMetadataFromPrimFunc(f, &spec);
 
   spec.cb_configs = ExtractCBConfig(f);
+  spec.mesh_plans = ExtractMeshPlans(f);
   spec.core_plan = ExtractCorePlan(f);
   ValidateExtractedCorePlan(spec.core_plan, entry_name);
   spec.semaphores = ExtractSemaphorePlan(f);
@@ -2102,6 +2206,12 @@ static ExecutableSpec ExtractExecutableSpecFromDeviceFunc(const tir::PrimFunc& f
   spec.exact_cb_allocations = ExtractExactCBAllocations(f);
   spec.exact_cb_release_events = ExtractExactCBReleaseEvents(f);
   spec.direct_runtime_unsupported_reasons = ExtractDirectRuntimeUnsupportedReasons(f);
+  if (RequiresUnsupportedDirectMeshPlacement(spec)) {
+    AppendUniqueUnsupportedReason(
+        &spec.direct_runtime_unsupported_reasons,
+        "non-unit or multi-device mesh placement is not admitted by direct runtime; "
+        "T10 distributed movement requires typed CCL/NoC scheduling");
+  }
   ExtractSegmentPlan(f, &spec);
   return spec;
 }

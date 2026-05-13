@@ -779,12 +779,17 @@ def rebuild_tt_core_group(
     name=None,
     logical_grid_x=None,
     logical_grid_y=None,
+    logical_grid_z=None,
+    mesh_plan=None,
+    mesh_plan_index=None,
+    device_range_start=None,
+    device_range_shape=None,
     linearization=None,
     physical_cores=None,
     work_packets=None,
 ):
     """Rebuild a TTCoreGroup with optional field overrides."""
-    make_tt_core_group = tilelang.tvm.get_global_func("tl.TTCoreGroup")
+    make_tt_core_group = tilelang.tvm.get_global_func("tl.TTCoreGroupWithMesh")
     return make_tt_core_group(
         str(core_group.name) if name is None else name,
         int(core_group.logical_grid_x) if logical_grid_x is None else logical_grid_x,
@@ -792,6 +797,17 @@ def rebuild_tt_core_group(
         str(core_group.linearization) if linearization is None else linearization,
         list(core_group.physical_cores) if physical_cores is None else physical_cores,
         list(core_group.work_packets) if work_packets is None else work_packets,
+        int(core_group.logical_grid_z) if logical_grid_z is None else logical_grid_z,
+        str(core_group.mesh_plan) if mesh_plan is None else mesh_plan,
+        int(core_group.mesh_plan_index)
+        if mesh_plan_index is None
+        else mesh_plan_index,
+        list(core_group.device_range_start)
+        if device_range_start is None
+        else device_range_start,
+        list(core_group.device_range_shape)
+        if device_range_shape is None
+        else device_range_shape,
     )
 
 

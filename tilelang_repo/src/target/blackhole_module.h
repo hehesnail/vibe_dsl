@@ -92,6 +92,26 @@ struct WorkPacket {
   }
 };
 
+struct MeshPlanSpec {
+  std::string name;
+  std::string mesh_kind;
+  std::vector<int64_t> mesh_shape;
+  std::vector<int64_t> device_range_start;
+  std::vector<int64_t> device_range_shape;
+  std::string system_mesh_ref;
+
+  void Save(dmlc::JSONWriter* writer) const {
+    writer->BeginObject();
+    writer->WriteObjectKeyValue("name", name);
+    writer->WriteObjectKeyValue("mesh_kind", mesh_kind);
+    writer->WriteObjectKeyValue("mesh_shape", mesh_shape);
+    writer->WriteObjectKeyValue("device_range_start", device_range_start);
+    writer->WriteObjectKeyValue("device_range_shape", device_range_shape);
+    writer->WriteObjectKeyValue("system_mesh_ref", system_mesh_ref);
+    writer->EndObject();
+  }
+};
+
 /*!
  * \brief Host scheduling plan derived from Blackhole passes.
  */
@@ -99,6 +119,10 @@ struct CorePlan {
   uint32_t logical_grid_x = 1;
   uint32_t logical_grid_y = 1;
   uint32_t logical_grid_z = 1;
+  std::string mesh_plan;
+  int64_t mesh_plan_index = -1;
+  std::vector<int64_t> device_range_start;
+  std::vector<int64_t> device_range_shape;
   std::string linearization = "row_major";
   std::vector<PhysicalCore> physical_cores;
   std::vector<WorkPacket> work_packets;
@@ -108,6 +132,10 @@ struct CorePlan {
     writer->WriteObjectKeyValue("logical_grid_x", static_cast<int64_t>(logical_grid_x));
     writer->WriteObjectKeyValue("logical_grid_y", static_cast<int64_t>(logical_grid_y));
     writer->WriteObjectKeyValue("logical_grid_z", static_cast<int64_t>(logical_grid_z));
+    writer->WriteObjectKeyValue("mesh_plan", mesh_plan);
+    writer->WriteObjectKeyValue("mesh_plan_index", mesh_plan_index);
+    writer->WriteObjectKeyValue("device_range_start", device_range_start);
+    writer->WriteObjectKeyValue("device_range_shape", device_range_shape);
     writer->WriteObjectKeyValue("linearization", linearization);
     writer->WriteObjectKeyValue("physical_cores", physical_cores);
     writer->WriteObjectKeyValue("work_packets", work_packets);
@@ -1132,6 +1160,7 @@ struct KernelSpec {
 struct ExecutableSpec {
   std::string entry_name;
   std::vector<CBConfig> cb_configs;
+  std::vector<MeshPlanSpec> mesh_plans;
   CorePlan core_plan;
   std::vector<SemaphoreSpec> semaphores;
   std::vector<BufferDistributionSpec> buffer_distribution_plans;
@@ -1163,6 +1192,9 @@ struct ExecutableSpec {
     writer->WriteObjectKeyValue("entry_name", entry_name);
     if (!cb_configs.empty()) {
       writer->WriteObjectKeyValue("cb_configs", cb_configs);
+    }
+    if (!mesh_plans.empty()) {
+      writer->WriteObjectKeyValue("mesh_plans", mesh_plans);
     }
     writer->WriteObjectKeyValue("core_plan", core_plan);
     if (!semaphores.empty()) {

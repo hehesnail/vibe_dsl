@@ -716,6 +716,10 @@ public:
   int64_t logical_grid_x = 1;
   int64_t logical_grid_y = 1;
   int64_t logical_grid_z = 1;
+  ffi::String mesh_plan;
+  int64_t mesh_plan_index = -1;
+  ffi::Array<Integer> device_range_start;
+  ffi::Array<Integer> device_range_shape;
   ffi::String linearization;
   ffi::Array<ffi::Any> physical_cores;
   ffi::Array<ffi::Any> work_packets;
@@ -730,7 +734,11 @@ public:
                       int64_t logical_grid_y, ffi::String linearization,
                       ffi::Array<ffi::Any> physical_cores,
                       ffi::Array<ffi::Any> work_packets,
-                      int64_t logical_grid_z = 1);
+                      int64_t logical_grid_z = 1,
+                      ffi::String mesh_plan = "unit_mesh",
+                      int64_t mesh_plan_index = 0,
+                      ffi::Array<Integer> device_range_start = {},
+                      ffi::Array<Integer> device_range_shape = {});
   TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(TTCoreGroup, ObjectRef,
                                              TTCoreGroupNode);
 };

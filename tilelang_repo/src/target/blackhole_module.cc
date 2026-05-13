@@ -67,7 +67,7 @@ static std::string EncodeExecutableSpecMetadata(const ExecutableSpec& spec) {
 }
 
 static constexpr const char* kBlackholeModuleSerializationMagic =
-    "tilelang.blackhole.module.v5";
+    "tilelang.blackhole.module.v6";
 
 static uint64_t ReadUInt64(dmlc::Stream* stream, const char* field) {
   uint64_t value = 0;
@@ -273,10 +273,34 @@ static WorkPacket ReadWorkPacket(dmlc::Stream* stream) {
   return spec;
 }
 
+static void WriteMeshPlanSpec(dmlc::Stream* stream, const MeshPlanSpec& spec) {
+  WriteString(stream, spec.name);
+  WriteString(stream, spec.mesh_kind);
+  WriteInt64Vector(stream, spec.mesh_shape);
+  WriteInt64Vector(stream, spec.device_range_start);
+  WriteInt64Vector(stream, spec.device_range_shape);
+  WriteString(stream, spec.system_mesh_ref);
+}
+
+static MeshPlanSpec ReadMeshPlanSpec(dmlc::Stream* stream) {
+  MeshPlanSpec spec;
+  spec.name = ReadString(stream, "mesh_plan.name");
+  spec.mesh_kind = ReadString(stream, "mesh_plan.mesh_kind");
+  spec.mesh_shape = ReadInt64Vector(stream, "mesh_plan.mesh_shape");
+  spec.device_range_start = ReadInt64Vector(stream, "mesh_plan.device_range_start");
+  spec.device_range_shape = ReadInt64Vector(stream, "mesh_plan.device_range_shape");
+  spec.system_mesh_ref = ReadString(stream, "mesh_plan.system_mesh_ref");
+  return spec;
+}
+
 static void WriteCorePlan(dmlc::Stream* stream, const CorePlan& spec) {
   WriteUInt32(stream, spec.logical_grid_x);
   WriteUInt32(stream, spec.logical_grid_y);
   WriteUInt32(stream, spec.logical_grid_z);
+  WriteString(stream, spec.mesh_plan);
+  WriteInt64(stream, spec.mesh_plan_index);
+  WriteInt64Vector(stream, spec.device_range_start);
+  WriteInt64Vector(stream, spec.device_range_shape);
   WriteString(stream, spec.linearization);
   WriteVectorField<PhysicalCore>(stream, spec.physical_cores, WritePhysicalCore);
   WriteVectorField<WorkPacket>(stream, spec.work_packets, WriteWorkPacket);
@@ -287,6 +311,10 @@ static CorePlan ReadCorePlan(dmlc::Stream* stream) {
   spec.logical_grid_x = ReadUInt32(stream, "core_plan.logical_grid_x");
   spec.logical_grid_y = ReadUInt32(stream, "core_plan.logical_grid_y");
   spec.logical_grid_z = ReadUInt32(stream, "core_plan.logical_grid_z");
+  spec.mesh_plan = ReadString(stream, "core_plan.mesh_plan");
+  spec.mesh_plan_index = ReadInt64(stream, "core_plan.mesh_plan_index");
+  spec.device_range_start = ReadInt64Vector(stream, "core_plan.device_range_start");
+  spec.device_range_shape = ReadInt64Vector(stream, "core_plan.device_range_shape");
   spec.linearization = ReadString(stream, "core_plan.linearization");
   spec.physical_cores = ReadVectorField<PhysicalCore>(
       stream, "core_plan.physical_cores", ReadPhysicalCore);
@@ -1207,6 +1235,7 @@ static KernelSpec ReadKernelSpec(dmlc::Stream* stream) {
 static void WriteExecutableSpec(dmlc::Stream* stream, const ExecutableSpec& spec) {
   WriteString(stream, spec.entry_name);
   WriteVectorField<CBConfig>(stream, spec.cb_configs, WriteCBConfig);
+  WriteVectorField<MeshPlanSpec>(stream, spec.mesh_plans, WriteMeshPlanSpec);
   WriteCorePlan(stream, spec.core_plan);
   WriteVectorField<SemaphoreSpec>(stream, spec.semaphores, WriteSemaphoreSpec);
   WriteVectorField<BufferDistributionSpec>(
@@ -1248,6 +1277,8 @@ static ExecutableSpec ReadExecutableSpec(dmlc::Stream* stream) {
   spec.entry_name = ReadString(stream, "executable.entry_name");
   spec.cb_configs = ReadVectorField<CBConfig>(
       stream, "executable.cb_configs", ReadCBConfig);
+  spec.mesh_plans = ReadVectorField<MeshPlanSpec>(
+      stream, "executable.mesh_plans", ReadMeshPlanSpec);
   spec.core_plan = ReadCorePlan(stream);
   spec.semaphores = ReadVectorField<SemaphoreSpec>(
       stream, "executable.semaphores", ReadSemaphoreSpec);
@@ -4092,6 +4123,28 @@ static std::vector<uint32_t> BuildRuntimeArgsFromSpec(
 static void ValidateExecutableSpecCorePlan(const std::string& func_name,
                                            const ExecutableSpec& spec) {
   const auto& core_plan = spec.core_plan;
+  ICHECK(!core_plan.mesh_plan.empty())
+      << "Blackhole planner/runtime contract requires core_plan.mesh_plan for "
+      << func_name;
+  ICHECK_GE(core_plan.mesh_plan_index, 0)
+      << "Blackhole planner/runtime contract requires core_plan.mesh_plan_index for "
+      << func_name;
+  ICHECK_LT(core_plan.mesh_plan_index,
+            static_cast<int64_t>(spec.mesh_plans.size()))
+      << "Blackhole planner/runtime contract requires core_plan.mesh_plan_index "
+         "to reference mesh_plans for "
+      << func_name;
+  const MeshPlanSpec& mesh_plan =
+      spec.mesh_plans[static_cast<size_t>(core_plan.mesh_plan_index)];
+  ICHECK_EQ(core_plan.mesh_plan, mesh_plan.name)
+      << "Blackhole planner/runtime contract requires core_plan.mesh_plan to "
+         "match mesh_plans";
+  ICHECK(core_plan.device_range_start == mesh_plan.device_range_start)
+      << "Blackhole planner/runtime contract requires core_plan.device_range_start "
+         "to match mesh plan";
+  ICHECK(core_plan.device_range_shape == mesh_plan.device_range_shape)
+      << "Blackhole planner/runtime contract requires core_plan.device_range_shape "
+         "to match mesh plan";
   ICHECK(!core_plan.work_packets.empty())
       << "Blackhole planner/runtime contract requires non-empty core_plan.work_packets for "
       << func_name;
@@ -4111,6 +4164,42 @@ static void ValidateExecutableSpecCorePlan(const std::string& func_name,
 static bool HasPositiveShape(const std::vector<int64_t>& shape) {
   return !shape.empty() &&
          std::all_of(shape.begin(), shape.end(), [](int64_t value) { return value > 0; });
+}
+
+static void ValidateExecutableSpecMeshPlans(const std::string& func_name,
+                                            const ExecutableSpec& spec) {
+  ICHECK(!spec.mesh_plans.empty())
+      << "Blackhole executable requires mesh_plans for " << func_name;
+  std::unordered_set<std::string> mesh_names;
+  for (const auto& plan : spec.mesh_plans) {
+    ICHECK(!plan.name.empty())
+        << "Blackhole executable mesh plan requires name for " << func_name;
+    ICHECK(!plan.mesh_kind.empty())
+        << "Blackhole executable mesh plan " << plan.name << " requires mesh_kind";
+    ICHECK(HasPositiveShape(plan.mesh_shape))
+        << "Blackhole executable mesh plan " << plan.name << " requires mesh_shape";
+    ICHECK_EQ(plan.device_range_start.size(), plan.mesh_shape.size())
+        << "Blackhole executable mesh plan " << plan.name
+        << " device_range_start rank must match mesh_shape";
+    ICHECK_EQ(plan.device_range_shape.size(), plan.mesh_shape.size())
+        << "Blackhole executable mesh plan " << plan.name
+        << " device_range_shape rank must match mesh_shape";
+    for (size_t i = 0; i < plan.mesh_shape.size(); ++i) {
+      ICHECK_GE(plan.device_range_start[i], 0)
+          << "Blackhole executable mesh plan " << plan.name
+          << " requires non-negative device_range_start";
+      ICHECK_GT(plan.device_range_shape[i], 0)
+          << "Blackhole executable mesh plan " << plan.name
+          << " requires positive device_range_shape";
+      ICHECK_LE(plan.device_range_start[i] + plan.device_range_shape[i],
+                plan.mesh_shape[i])
+          << "Blackhole executable mesh plan " << plan.name
+          << " device range must fit mesh_shape";
+    }
+    ICHECK(mesh_names.insert(plan.name).second)
+        << "Blackhole executable has duplicate mesh plan " << plan.name
+        << " for " << func_name;
+  }
 }
 
 static bool HasShardedSourceBinding(const BufferDistributionSpec& plan) {
@@ -4143,6 +4232,14 @@ static void ValidateExecutableSpecBufferDistributionPlans(const std::string& fun
     ICHECK_GE(plan.mesh_plan_index, 0)
         << "Blackhole executable buffer distribution for " << plan.buffer
         << " requires mesh_plan_index";
+    ICHECK_LT(plan.mesh_plan_index, static_cast<int64_t>(spec.mesh_plans.size()))
+        << "Blackhole executable buffer distribution for " << plan.buffer
+        << " requires mesh_plan_index to reference mesh_plans";
+    const MeshPlanSpec& mesh_plan =
+        spec.mesh_plans[static_cast<size_t>(plan.mesh_plan_index)];
+    ICHECK_EQ(plan.mesh_plan, mesh_plan.name)
+        << "Blackhole executable buffer distribution for " << plan.buffer
+        << " requires mesh_plan to match mesh_plans";
     ICHECK(!plan.distribution_kind.empty())
         << "Blackhole executable buffer distribution for " << plan.buffer
         << " requires distribution_kind";
@@ -4456,6 +4553,7 @@ BlackholeModuleNode::BlackholeModuleNode(
     : fmap_(std::move(fmap)),
       kernel_dir_(std::move(kernel_dir)) {
   for (const auto& entry : fmap_) {
+    ValidateExecutableSpecMeshPlans(entry.first, entry.second);
     ValidateExecutableSpecCorePlan(entry.first, entry.second);
     ValidateExecutableSpecBufferDistributionPlans(entry.first, entry.second);
     ValidateExecutableSpecPlacementRecords(entry.first, entry.second);

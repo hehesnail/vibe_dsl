@@ -613,8 +613,44 @@ Array<TTMeshPlan> BuildUnitMeshPlans() {
   return mesh_plans;
 }
 
-Array<TTCoreGroup> BuildCoreGroups(const PlanTTCoreGroups &planner) {
+bool IsUnitMeshHardwareModel(const TTHardwareModel &hardware_model) {
+  return hardware_model->mesh_shape_x == 1 && hardware_model->mesh_shape_y == 1 &&
+         hardware_model->device_range_start_x == 0 &&
+         hardware_model->device_range_start_y == 0 &&
+         hardware_model->device_range_shape_x == 1 &&
+         hardware_model->device_range_shape_y == 1;
+}
+
+Array<TTMeshPlan> BuildMeshPlans(
+    const std::optional<TTHardwareModel> &maybe_hardware_model) {
+  if (!maybe_hardware_model || IsUnitMeshHardwareModel(maybe_hardware_model.value())) {
+    return BuildUnitMeshPlans();
+  }
+  const TTHardwareModel &hardware_model = maybe_hardware_model.value();
+  Array<TTMeshPlan> mesh_plans;
+  mesh_plans.push_back(TTMeshPlan(
+      String("system_mesh"), String("system_mesh"),
+      Array<Integer>{Integer(hardware_model->mesh_shape_x),
+                     Integer(hardware_model->mesh_shape_y)},
+      Array<Integer>{Integer(hardware_model->device_range_start_x),
+                     Integer(hardware_model->device_range_start_y)},
+      Array<Integer>{Integer(hardware_model->device_range_shape_x),
+                     Integer(hardware_model->device_range_shape_y)},
+      hardware_model->system_mesh_ref.empty()
+          ? String("default_system_mesh")
+          : hardware_model->system_mesh_ref));
+  return mesh_plans;
+}
+
+TTMeshPlan PrimaryMeshPlan(const Array<TTMeshPlan> &mesh_plans) {
+  ICHECK(!mesh_plans.empty()) << "TTProgram planning requires TTMeshPlan owner truth";
+  return mesh_plans[0];
+}
+
+Array<TTCoreGroup> BuildCoreGroups(const PlanTTCoreGroups &planner,
+                                   const Array<TTMeshPlan> &mesh_plans) {
   const CoreAssignment assignment = planner.GetCoreAssignment();
+  const TTMeshPlan &mesh_plan = PrimaryMeshPlan(mesh_plans);
 
   Array<Any> physical_cores;
   Array<Any> work_packets;
@@ -637,7 +673,9 @@ Array<TTCoreGroup> BuildCoreGroups(const PlanTTCoreGroups &planner) {
   Array<TTCoreGroup> tt_core_groups;
   tt_core_groups.push_back(TTCoreGroup(
       String("main_core_group"), assignment.grid_x, assignment.grid_y,
-      String("row_major"), physical_cores, work_packets, assignment.grid_z));
+      String("row_major"), physical_cores, work_packets, assignment.grid_z,
+      mesh_plan->name, /*mesh_plan_index=*/0, mesh_plan->device_range_start,
+      mesh_plan->device_range_shape));
   return tt_core_groups;
 }
 
@@ -1483,6 +1521,9 @@ BuildBufferDistributionPlans(const SpatialPlan &spatial_plan,
       CollectSourceBufferByMaterializedTarget(func, slices.cb_plans);
   const std::unordered_map<int64_t, std::string> cb_target_by_index =
       BuildCBRequirementTargetByIndex(slices.cb_plans);
+  const TTMeshPlan &mesh_plan = PrimaryMeshPlan(slices.mesh_plans);
+  const String mesh_plan_name = mesh_plan->name;
+  constexpr int64_t kPrimaryMeshPlanIndex = 0;
   std::unordered_map<std::string, int64_t> cb_page_size_by_buffer;
   for (const TTCBPlan &cb_plan : slices.cb_plans) {
     for (const std::string &buffer_name : CBRequirementTargets(cb_plan, cb_target_by_index)) {
@@ -1619,8 +1660,8 @@ BuildBufferDistributionPlans(const SpatialPlan &spatial_plan,
     }
     distribution_plans.push_back(TTBufferDistributionPlan(
         String("buffer_distribution_" + buffer), String(buffer),
-        String("unit_mesh"),
-        /*mesh_plan_index=*/0, distribution_kind, layout, memory_space,
+        mesh_plan_name,
+        /*mesh_plan_index=*/kPrimaryMeshPlanIndex, distribution_kind, layout, memory_space,
         page_size_bytes, shard_shape, shard_grid_shape, sharding_strategy,
         shard_orientation, source_buffer, source_region_kind,
         source_region_shape, logical_index_mapping, core_local_address_mapping,
@@ -2397,10 +2438,11 @@ tvm::transform::Pass PlanTTBlocks() {
       PlanTTCoreGroups planner;
       tir::PrimFunc planned =
           planner.Transform(func.value(), maybe_hardware_model);
-      const Array<TTCoreGroup> core_groups = BuildCoreGroups(planner);
+      const Array<TTMeshPlan> mesh_plans = BuildMeshPlans(maybe_hardware_model);
+      const Array<TTCoreGroup> core_groups = BuildCoreGroups(planner, mesh_plans);
       TTProgramSlices slices =
           GetOrCreateTTProgramSlices(planned, gvar, spatial_plan);
-      slices.mesh_plans = BuildUnitMeshPlans();
+      slices.mesh_plans = mesh_plans;
       slices.block_plans = BuildBlockPlans(spatial_plan, core_groups);
       slices.core_groups = core_groups;
       slices.resource_demands =

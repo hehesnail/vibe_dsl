@@ -7,8 +7,9 @@
 
 ## Status
 
-- Date: `2026-05-11`
-- Active lane: `None; next queued lane is P2 / T10 distributed production`
+- Date: `2026-05-13`
+- Active lane: `None; P2 / T10 mesh placement slice is closed, remaining
+  distributed-production work is queued`
 - Main chain:
   `Normalized Tile TIR -> SpatialPlan -> TTProgram -> ExecutableSpec`
 
@@ -20,7 +21,7 @@
 | `P0` target execution contract | Complete | Covered execution facts are owned by `TTProgram` typed fields/objects and projected once to `ExecutableSpec`; leaf consumers reject source/body/name recovery. |
 | `T8` irregular/indexed access | Complete | Indexed, sparse, ragged, paged, segmented, and grouped-feed paths use generic `AccessRegion` plus `value_expr` evidence. |
 | `P1 / T9` workload-first paths | Complete | T9.1-T9.6 are admitted on current bf16 direct-runtime surfaces, including grouped GEMM, paged decode, sparse/ragged attention, chunk scan, and split-block flash decode. |
-| `P2 / T10` distributed production | Queued | Mesh placement, CCL, NoC/multicast/global scheduling, and production partial-K reduction remain future TT target-realization work. |
+| `P2 / T10` distributed production | Queued / partially sliced | Mesh / multi-device placement is typed through `TTProgram -> ExecutableSpec` and direct runtime fails closed for non-unit mesh placements.  CCL, NoC/multicast/global scheduling, and production partial-K reduction remain queued. |
 
 ## Current Protocol Snapshot
 
@@ -58,6 +59,11 @@
   runtime args bind ABI values and must reference a matching descriptor; they
   are not endpoint owner truth and projection must not reconstruct descriptors
   from runtime-arg pairs.
+- Mesh placement is explicit `TTMeshPlan` owner truth.  `TTCoreGroup`,
+  `TTBufferDistributionPlan`, and `ExecutableSpec.core_plan` must bind the
+  selected mesh by name and index plus device range.  Current direct runtime
+  admits unit mesh only; non-unit mesh placements fail closed with a typed
+  unsupported reason before runtime creates a unit mesh.
 - Any future fuse-like behavior must be expressed as a generic pass over IR
   constraints and typed records.  Do not add workload-specific fused-op
   schema or per-case lowering branches.
@@ -91,7 +97,6 @@
 
 ### Queued
 
-- Add typed mesh / multi-device placement before distributed runtime movement.
 - Add CCL contracts for all-gather, reduce-scatter, and all-to-all.
 - Add NoC / multicast / global scheduling records for remote routes,
   semaphores, and producer/consumer timing.
@@ -132,8 +137,8 @@ Current baseline:
   repository TT-Sim bf16 baseline where tensor values are involved.
 - Typed unsupported coverage:
   malformed schema, missing page/address metadata, invalid exact-CB lifecycle,
-  and current simulator capability boundaries fail closed before source or
-  runtime guessing.
+  non-unit mesh placement, and current simulator capability boundaries
+  fail closed before source or runtime guessing.
 
 Historical checkpoint logs, exact selector counts, and patch notes belong in
 git history and `memory/`, not in this file.

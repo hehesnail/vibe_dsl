@@ -258,25 +258,61 @@ def _with_test_hardware_model(
     dram_view_size=4278190080,
     max_cb_count=64,
     l1_allocation_alignment_bytes=32,
+    mesh_shape=(1, 1),
+    device_range_start=(0, 0),
+    device_range_shape=(1, 1),
+    system_mesh_ref="default_system_mesh",
 ):
-    make_hardware_model = tvm.get_global_func("tl.TTHardwareModel")
-    hardware_model = make_hardware_model(
-        "BLACKHOLE_TEST",
-        "",
-        logical_worker_grid_x,
-        logical_worker_grid_y,
-        functional_worker_count,
-        0,
-        dram_view_count,
-        worker_l1_size,
-        dram_view_size,
-        max_cb_count,
-        l1_allocation_alignment_bytes,
-        True,
-        2,
-        2,
-        2,
-    )
+    if (
+        tuple(mesh_shape) != (1, 1)
+        or tuple(device_range_start) != (0, 0)
+        or tuple(device_range_shape) != (1, 1)
+        or system_mesh_ref != "default_system_mesh"
+    ):
+        make_hardware_model = tvm.get_global_func("tl.TTHardwareModelWithMesh")
+        hardware_model = make_hardware_model(
+            "BLACKHOLE_TEST",
+            "",
+            logical_worker_grid_x,
+            logical_worker_grid_y,
+            functional_worker_count,
+            0,
+            dram_view_count,
+            worker_l1_size,
+            dram_view_size,
+            max_cb_count,
+            l1_allocation_alignment_bytes,
+            True,
+            2,
+            2,
+            2,
+            int(mesh_shape[0]),
+            int(mesh_shape[1]),
+            int(device_range_start[0]),
+            int(device_range_start[1]),
+            int(device_range_shape[0]),
+            int(device_range_shape[1]),
+            system_mesh_ref,
+        )
+    else:
+        make_hardware_model = tvm.get_global_func("tl.TTHardwareModel")
+        hardware_model = make_hardware_model(
+            "BLACKHOLE_TEST",
+            "",
+            logical_worker_grid_x,
+            logical_worker_grid_y,
+            functional_worker_count,
+            0,
+            dram_view_count,
+            worker_l1_size,
+            dram_view_size,
+            max_cb_count,
+            l1_allocation_alignment_bytes,
+            True,
+            2,
+            2,
+            2,
+        )
     return tvm.IRModule({"main": mod["main"]}, global_infos={
         "tl.tt_hardware_model": [hardware_model]
     })
@@ -698,11 +734,16 @@ def _rebuild_tt_core_group(
     *,
     logical_grid_x=None,
     logical_grid_y=None,
+    logical_grid_z=None,
+    mesh_plan=None,
+    mesh_plan_index=None,
+    device_range_start=None,
+    device_range_shape=None,
     linearization=None,
     physical_cores=None,
     work_packets=None,
 ):
-    make_tt_core_group = tvm.get_global_func("tl.TTCoreGroup")
+    make_tt_core_group = tvm.get_global_func("tl.TTCoreGroupWithMesh")
     return make_tt_core_group(
         str(core_group.name),
         int(core_group.logical_grid_x) if logical_grid_x is None else logical_grid_x,
@@ -710,6 +751,17 @@ def _rebuild_tt_core_group(
         str(core_group.linearization) if linearization is None else linearization,
         list(core_group.physical_cores) if physical_cores is None else physical_cores,
         list(core_group.work_packets) if work_packets is None else work_packets,
+        int(core_group.logical_grid_z) if logical_grid_z is None else logical_grid_z,
+        str(core_group.mesh_plan) if mesh_plan is None else mesh_plan,
+        int(core_group.mesh_plan_index)
+        if mesh_plan_index is None
+        else mesh_plan_index,
+        list(core_group.device_range_start)
+        if device_range_start is None
+        else device_range_start,
+        list(core_group.device_range_shape)
+        if device_range_shape is None
+        else device_range_shape,
     )
 
 
@@ -1185,7 +1237,7 @@ def test_modern_cpp_audit_blackhole_serialization_contract_is_real():
 
     assert "opaque imported runtime modules" in header
     assert "kBinarySerializable | ffi::Module::kRunnable" in header
-    assert "tilelang.blackhole.module.v4" in source
+    assert "tilelang.blackhole.module.v6" in source
     assert "WriteExecutableSpecMap(stream, fmap_)" in source
     assert "ReadExecutableSpecMap(stream)" in source
     assert "ffi.Module.load_from_bytes.blackhole" in source
@@ -3372,6 +3424,104 @@ def test_build_tt_program_exposes_mesh_and_buffer_distribution_plans():
     executable = mod["main"].attrs["tl.blackhole_executable"]
     assert "mesh_plans" in executable
     assert "buffer_distribution_plans" in executable
+
+
+def test_t10_mesh_placement_uses_hardware_model_device_range():
+    mod = _prepare_blackhole_phase_b_module(grid_indexed_staged_copy_kernel(3, 2))
+    mod = _with_test_hardware_model(
+        mod,
+        logical_worker_grid_x=2,
+        logical_worker_grid_y=2,
+        functional_worker_count=4,
+        dram_view_count=8,
+        worker_l1_size=1572864,
+        l1_allocation_alignment_bytes=32,
+        mesh_shape=(2, 1),
+        device_range_start=(0, 0),
+        device_range_shape=(2, 1),
+        system_mesh_ref="test_system_mesh",
+    )
+    mod = tilelang.transform.PlanTTBlocks()(mod)
+    mod = tilelang.transform.SelectBlackholeTTMetalBuiltins()(mod)
+    mod = tilelang.transform.PlanTTCompute()(mod)
+    mod = tilelang.transform.PlanTTTransport()(mod)
+    mod = tilelang.transform.PlanTTSync()(mod)
+    mod = tilelang.transform.PlanTTABI()(mod)
+    mod = tilelang.transform.PlanTTExecution()(mod)
+    mod = tilelang.transform.BuildTTProgram()(mod)
+    mod = tilelang.transform.ValidateTTProgram()(mod)
+
+    tt_program = mod["main"].attrs["tl.tt_program"]
+    assert len(tt_program.mesh_plans) == 1
+    mesh_plan = tt_program.mesh_plans[0]
+    assert str(mesh_plan.name) == "system_mesh"
+    assert str(mesh_plan.mesh_kind) == "system_mesh"
+    assert tuple(int(dim) for dim in mesh_plan.mesh_shape) == (2, 1)
+    assert tuple(int(dim) for dim in mesh_plan.device_range_start) == (0, 0)
+    assert tuple(int(dim) for dim in mesh_plan.device_range_shape) == (2, 1)
+    assert str(mesh_plan.system_mesh_ref) == "test_system_mesh"
+
+    assert len(tt_program.core_groups) == 1
+    core_group = tt_program.core_groups[0]
+    assert str(core_group.mesh_plan) == "system_mesh"
+    assert int(core_group.mesh_plan_index) == 0
+    assert tuple(int(dim) for dim in core_group.device_range_start) == (0, 0)
+    assert tuple(int(dim) for dim in core_group.device_range_shape) == (2, 1)
+
+    distributions = {
+        str(plan.buffer): plan for plan in tt_program.buffer_distribution_plans
+    }
+    assert distributions
+    assert all(str(plan.mesh_plan) == "system_mesh" for plan in distributions.values())
+    assert all(int(plan.mesh_plan_index) == 0 for plan in distributions.values())
+
+    mod = tilelang.transform.MaterializeBlackholeExecutable()(mod)
+    executable = mod["main"].attrs["tl.blackhole_executable"]
+    executable_mesh = executable["mesh_plans"][0]
+    assert str(executable_mesh["name"]) == "system_mesh"
+    assert tuple(int(dim) for dim in executable_mesh["mesh_shape"]) == (2, 1)
+    assert tuple(int(dim) for dim in executable_mesh["device_range_shape"]) == (2, 1)
+    core_plan = executable["core_plan"]
+    assert str(core_plan["mesh_plan"]) == "system_mesh"
+    assert int(core_plan["mesh_plan_index"]) == 0
+    assert tuple(int(dim) for dim in core_plan["device_range_shape"]) == (2, 1)
+
+
+def test_t10_mesh_placement_uses_blackhole_target_attrs():
+    target = Target(
+        "blackhole -mesh_shape_x=2 -mesh_shape_y=1 "
+        "-device_range_start_x=0 -device_range_start_y=0 "
+        "-device_range_shape_x=2 -device_range_shape_y=1"
+    )
+    mod = tvm.IRModule(
+        {"main": grid_indexed_staged_copy_kernel(3, 2).with_attr("global_symbol", "main")}
+    )
+    with target:
+        mod = LowerAndLegalize(mod, target)
+        mod = OptimizeForTarget(mod, target)
+    mod = tilelang.transform.LowerDeviceStorageAccessInfo()(mod)
+    mod = tilelang.transform.LowerIntrin()(mod)
+    mod = tvm.tir.transform.Simplify()(mod)
+    mod = tilelang.transform.HoistBroadcastValues()(mod)
+    mod = LowerToBlackholePhaseB(mod)
+    with target:
+        mod = tilelang.transform.PlanTTBlocks()(mod)
+        mod = tilelang.transform.SelectBlackholeTTMetalBuiltins()(mod)
+        mod = tilelang.transform.PlanTTCompute()(mod)
+        mod = tilelang.transform.PlanTTTransport()(mod)
+        mod = tilelang.transform.PlanTTSync()(mod)
+        mod = tilelang.transform.PlanTTABI()(mod)
+        mod = tilelang.transform.PlanTTExecution()(mod)
+        mod = tilelang.transform.BuildTTProgram()(mod)
+        mod = tilelang.transform.ValidateTTProgram()(mod)
+
+    tt_program = mod["main"].attrs["tl.tt_program"]
+    mesh_plan = tt_program.mesh_plans[0]
+    assert str(mesh_plan.name) == "system_mesh"
+    assert tuple(int(dim) for dim in mesh_plan.mesh_shape) == (2, 1)
+    assert tuple(int(dim) for dim in mesh_plan.device_range_shape) == (2, 1)
+    assert str(tt_program.core_groups[0].mesh_plan) == "system_mesh"
+    assert tuple(int(dim) for dim in tt_program.core_groups[0].device_range_shape) == (2, 1)
 
 
 def test_plan_tt_abi_uses_hardware_backed_buffer_distribution():

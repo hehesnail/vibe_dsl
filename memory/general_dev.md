@@ -2904,3 +2904,10 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   logical wait over several one-page stream pushes still reads logical tile
   indices from zero; treating the wait depth itself as retained history shifts
   the GEMM inputs.
+- 2026-05-13 T10 mesh placement boundary:
+  Mesh / multi-device placement belongs in typed target-realization records,
+  not in runtime observation.  `TTMeshPlan` owns mesh shape and selected device
+  range; `TTCoreGroup`, `TTBufferDistributionPlan`, and
+  `ExecutableSpec.core_plan` must bind it by name/index.  Until CCL / NoC
+  movement is typed, Blackhole direct runtime admits unit mesh only and must
+  fail closed on non-unit mesh placements before creating a unit mesh.

@@ -938,6 +938,10 @@ void TTCoreGroupNode::RegisterReflection() {
       .def_ro("logical_grid_x", &TTCoreGroupNode::logical_grid_x)
       .def_ro("logical_grid_y", &TTCoreGroupNode::logical_grid_y)
       .def_ro("logical_grid_z", &TTCoreGroupNode::logical_grid_z)
+      .def_ro("mesh_plan", &TTCoreGroupNode::mesh_plan)
+      .def_ro("mesh_plan_index", &TTCoreGroupNode::mesh_plan_index)
+      .def_ro("device_range_start", &TTCoreGroupNode::device_range_start)
+      .def_ro("device_range_shape", &TTCoreGroupNode::device_range_shape)
       .def_ro("linearization", &TTCoreGroupNode::linearization)
       .def_ro("physical_cores", &TTCoreGroupNode::physical_cores)
       .def_ro("work_packets", &TTCoreGroupNode::work_packets);
@@ -947,12 +951,25 @@ TTCoreGroup::TTCoreGroup(ffi::String name, int64_t logical_grid_x,
                          int64_t logical_grid_y, ffi::String linearization,
                          ffi::Array<ffi::Any> physical_cores,
                          ffi::Array<ffi::Any> work_packets,
-                         int64_t logical_grid_z) {
+                         int64_t logical_grid_z, ffi::String mesh_plan,
+                         int64_t mesh_plan_index,
+                         ffi::Array<Integer> device_range_start,
+                         ffi::Array<Integer> device_range_shape) {
   auto n = ffi::make_object<TTCoreGroupNode>();
   n->name = std::move(name);
   n->logical_grid_x = logical_grid_x;
   n->logical_grid_y = logical_grid_y;
   n->logical_grid_z = logical_grid_z;
+  n->mesh_plan = std::move(mesh_plan);
+  n->mesh_plan_index = mesh_plan_index;
+  n->device_range_start =
+      device_range_start.empty()
+          ? ffi::Array<Integer>{Integer(0), Integer(0)}
+          : std::move(device_range_start);
+  n->device_range_shape =
+      device_range_shape.empty()
+          ? ffi::Array<Integer>{Integer(1), Integer(1)}
+          : std::move(device_range_shape);
   n->linearization = std::move(linearization);
   n->physical_cores = std::move(physical_cores);
   n->work_packets = std::move(work_packets);
@@ -2192,6 +2209,21 @@ TVM_FFI_STATIC_INIT_BLOCK() {
         return TTCoreGroup(std::move(name), logical_grid_x, logical_grid_y,
                            std::move(linearization), std::move(physical_cores),
                            std::move(work_packets));
+      });
+  refl::GlobalDef().def(
+      "tl.TTCoreGroupWithMesh",
+      [](ffi::String name, int64_t logical_grid_x, int64_t logical_grid_y,
+         ffi::String linearization, ffi::Array<ffi::Any> physical_cores,
+         ffi::Array<ffi::Any> work_packets, int64_t logical_grid_z,
+         ffi::String mesh_plan, int64_t mesh_plan_index,
+         ffi::Array<Integer> device_range_start,
+         ffi::Array<Integer> device_range_shape) {
+        return TTCoreGroup(
+            std::move(name), logical_grid_x, logical_grid_y,
+            std::move(linearization), std::move(physical_cores),
+            std::move(work_packets), logical_grid_z, std::move(mesh_plan),
+            mesh_plan_index, std::move(device_range_start),
+            std::move(device_range_shape));
       });
   refl::GlobalDef().def(
       "tl.TTCBPlan",

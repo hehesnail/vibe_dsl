@@ -633,6 +633,10 @@ inline Map<String, Any> EncodeCoreGroup(const TTCoreGroup &core_group) {
   item.Set("logical_grid_x", Integer(core_group->logical_grid_x));
   item.Set("logical_grid_y", Integer(core_group->logical_grid_y));
   item.Set("logical_grid_z", Integer(core_group->logical_grid_z));
+  item.Set("mesh_plan", core_group->mesh_plan);
+  item.Set("mesh_plan_index", Integer(core_group->mesh_plan_index));
+  item.Set("device_range_start", core_group->device_range_start);
+  item.Set("device_range_shape", core_group->device_range_shape);
   item.Set("linearization", core_group->linearization);
   item.Set("physical_cores", core_group->physical_cores);
   item.Set("work_packets", core_group->work_packets);

@@ -141,7 +141,12 @@ TTHardwareModel::TTHardwareModel(ffi::String arch_name, ffi::String descriptor_p
                                  int64_t l1_allocation_alignment_bytes,
                                  bool noc_translation_id_enabled,
                                  int64_t unpacker_version, int64_t packer_version,
-                                 int64_t overlay_version) {
+                                 int64_t overlay_version, int64_t mesh_shape_x,
+                                 int64_t mesh_shape_y, int64_t device_range_start_x,
+                                 int64_t device_range_start_y,
+                                 int64_t device_range_shape_x,
+                                 int64_t device_range_shape_y,
+                                 ffi::String system_mesh_ref) {
   auto n = ffi::make_object<TTHardwareModelNode>();
   n->arch_name = std::move(arch_name);
   n->descriptor_path = std::move(descriptor_path);
@@ -158,6 +163,13 @@ TTHardwareModel::TTHardwareModel(ffi::String arch_name, ffi::String descriptor_p
   n->unpacker_version = unpacker_version;
   n->packer_version = packer_version;
   n->overlay_version = overlay_version;
+  n->mesh_shape_x = mesh_shape_x;
+  n->mesh_shape_y = mesh_shape_y;
+  n->device_range_start_x = device_range_start_x;
+  n->device_range_start_y = device_range_start_y;
+  n->device_range_shape_x = device_range_shape_x;
+  n->device_range_shape_y = device_range_shape_y;
+  n->system_mesh_ref = std::move(system_mesh_ref);
   data_ = std::move(n);
 }
 
@@ -165,6 +177,16 @@ TTHardwareModel BuildBlackholeTTHardwareModel(const Target& target) {
   const auto [descriptor_text, descriptor_path] = LoadBlackholeSoCDescriptorText();
   const int64_t logical_worker_grid_x = GetTargetIntAttr(target, "logical_worker_grid_x", 11);
   const int64_t logical_worker_grid_y = GetTargetIntAttr(target, "logical_worker_grid_y", 10);
+  const int64_t mesh_shape_x = GetTargetIntAttr(target, "mesh_shape_x", 1);
+  const int64_t mesh_shape_y = GetTargetIntAttr(target, "mesh_shape_y", 1);
+  const int64_t device_range_start_x =
+      GetTargetIntAttr(target, "device_range_start_x", 0);
+  const int64_t device_range_start_y =
+      GetTargetIntAttr(target, "device_range_start_y", 0);
+  const int64_t device_range_shape_x =
+      GetTargetIntAttr(target, "device_range_shape_x", mesh_shape_x);
+  const int64_t device_range_shape_y =
+      GetTargetIntAttr(target, "device_range_shape_y", mesh_shape_y);
 
   const std::string arch_name =
       MatchString(descriptor_text, R"(arch_name:\s*([A-Za-z0-9_]+))").value_or("BLACKHOLE");
@@ -207,7 +229,10 @@ TTHardwareModel BuildBlackholeTTHardwareModel(const Target& target) {
                          dram_view_count, worker_l1_size, dram_view_size,
                          max_cb_count, l1_allocation_alignment_bytes,
                          noc_translation_id_enabled, unpacker_version, packer_version,
-                         overlay_version);
+                         overlay_version, mesh_shape_x, mesh_shape_y,
+                         device_range_start_x, device_range_start_y,
+                         device_range_shape_x, device_range_shape_y,
+                         String("default_system_mesh"));
 }
 
 std::optional<TTHardwareModel> GetModuleTTHardwareModel(const IRModule& mod) {
@@ -241,6 +266,31 @@ TVM_FFI_STATIC_INIT_BLOCK() {
                               noc_translation_id_enabled, unpacker_version, packer_version,
                               overlay_version);
                         });
+  refl::GlobalDef().def(
+      "tl.TTHardwareModelWithMesh",
+      [](ffi::String arch_name, ffi::String descriptor_path,
+         int64_t logical_worker_grid_x, int64_t logical_worker_grid_y,
+         int64_t functional_worker_count, int64_t router_only_count,
+         int64_t dram_view_count, int64_t worker_l1_size,
+         int64_t dram_view_size, int64_t max_cb_count,
+         int64_t l1_allocation_alignment_bytes,
+         bool noc_translation_id_enabled, int64_t unpacker_version,
+         int64_t packer_version, int64_t overlay_version,
+         int64_t mesh_shape_x, int64_t mesh_shape_y,
+         int64_t device_range_start_x, int64_t device_range_start_y,
+         int64_t device_range_shape_x, int64_t device_range_shape_y,
+         ffi::String system_mesh_ref) {
+        return TTHardwareModel(
+            std::move(arch_name), std::move(descriptor_path),
+            logical_worker_grid_x, logical_worker_grid_y,
+            functional_worker_count, router_only_count, dram_view_count,
+            worker_l1_size, dram_view_size, max_cb_count,
+            l1_allocation_alignment_bytes, noc_translation_id_enabled,
+            unpacker_version, packer_version, overlay_version, mesh_shape_x,
+            mesh_shape_y, device_range_start_x, device_range_start_y,
+            device_range_shape_x, device_range_shape_y,
+            std::move(system_mesh_ref));
+      });
 }
 
 }  // namespace tl

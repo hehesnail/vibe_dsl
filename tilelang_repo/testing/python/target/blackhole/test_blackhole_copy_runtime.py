@@ -528,6 +528,57 @@ def test_blackhole_module_direct_call():
     )
 
 
+def test_blackhole_t10_multi_device_mesh_direct_runtime_fails_closed():
+    can_run, msg = check_blackhole_direct_execution_requirements()
+    if not can_run:
+        pytest.skip(f"Blackhole requirements not met: {msg}")
+
+    m, n = 32, 32
+    a_torch = torch.randn(m, n, dtype=torch.bfloat16)
+    b_output = torch.zeros_like(a_torch)
+
+    target = Target("blackhole")
+    kernel = staged_copy_kernel(tile_rows=1, tile_cols=1)
+    with target:
+        artifact = lower(kernel, target=target)
+
+    def force_multi_device_mesh(executable):
+        executable["mesh_plans"] = [
+            {
+                "name": "system_mesh",
+                "mesh_kind": "system_mesh",
+                "mesh_shape": [2, 1],
+                "device_range_start": [0, 0],
+                "device_range_shape": [2, 1],
+                "system_mesh_ref": "test_system_mesh",
+            }
+        ]
+        core_plan = {str(key): value for key, value in executable["core_plan"].items()}
+        core_plan["mesh_plan"] = "system_mesh"
+        core_plan["mesh_plan_index"] = 0
+        core_plan["device_range_start"] = [0, 0]
+        core_plan["device_range_shape"] = [2, 1]
+        executable["core_plan"] = core_plan
+        distributions = []
+        for item in executable["buffer_distribution_plans"]:
+            plan = {str(key): value for key, value in item.items()}
+            plan["mesh_plan"] = "system_mesh"
+            plan["mesh_plan_index"] = 0
+            distributions.append(plan)
+        executable["buffer_distribution_plans"] = distributions
+        return executable
+
+    mutated_mod = _rebuild_direct_runtime_module_with_executable_mutator(
+        artifact, force_multi_device_mesh
+    )
+
+    with pytest.raises(
+        tvm.error.InternalError,
+        match="multi-device mesh placement.*direct runtime",
+    ):
+        mutated_mod["main"](a_torch, b_output)
+
+
 def test_blackhole_module_direct_call_rectangular_tiles():
     can_run, msg = check_blackhole_direct_execution_requirements()
     if not can_run:

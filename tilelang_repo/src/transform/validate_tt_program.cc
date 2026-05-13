@@ -301,13 +301,54 @@ void ValidateBufferDistributionPlan(
 
 void ValidateCoreGroup(
     const TTCoreGroup &core_group,
+    const std::unordered_map<std::string, int64_t> &mesh_index_by_name,
+    const std::unordered_map<std::string, TTMeshPlan> &mesh_plan_by_name,
     const std::optional<TTHardwareModel> &maybe_hardware_model) {
+  ICHECK(!core_group->name.empty()) << "TTCoreGroup requires name";
   ICHECK_GT(core_group->logical_grid_x, 0)
       << "TTCoreGroup requires positive logical_grid_x";
   ICHECK_GT(core_group->logical_grid_y, 0)
       << "TTCoreGroup requires positive logical_grid_y";
   ICHECK_GT(core_group->logical_grid_z, 0)
       << "TTCoreGroup requires positive logical_grid_z";
+  ICHECK(!core_group->mesh_plan.empty()) << "TTCoreGroup requires mesh_plan";
+  ICHECK_GE(core_group->mesh_plan_index, 0)
+      << "TTCoreGroup requires mesh_plan_index";
+  auto mesh_it =
+      mesh_index_by_name.find(static_cast<std::string>(core_group->mesh_plan));
+  ICHECK(mesh_it != mesh_index_by_name.end())
+      << "TTCoreGroup references unknown mesh_plan " << core_group->mesh_plan;
+  auto mesh_plan_it =
+      mesh_plan_by_name.find(static_cast<std::string>(core_group->mesh_plan));
+  ICHECK(mesh_plan_it != mesh_plan_by_name.end())
+      << "TTCoreGroup references unknown mesh_plan " << core_group->mesh_plan;
+  ICHECK_EQ(core_group->mesh_plan_index, mesh_it->second)
+      << "TTCoreGroup mesh_plan_index must match mesh_plan";
+  ICHECK(!core_group->device_range_start.empty())
+      << "TTCoreGroup requires device_range_start";
+  ICHECK(!core_group->device_range_shape.empty())
+      << "TTCoreGroup requires device_range_shape";
+  ICHECK_EQ(core_group->device_range_start.size(),
+            core_group->device_range_shape.size())
+      << "TTCoreGroup device_range_start rank must match device_range_shape";
+  ICHECK_EQ(core_group->device_range_start.size(),
+            mesh_plan_it->second->device_range_start.size())
+      << "TTCoreGroup device_range_start rank must match TTMeshPlan";
+  ICHECK_EQ(core_group->device_range_shape.size(),
+            mesh_plan_it->second->device_range_shape.size())
+      << "TTCoreGroup device_range_shape rank must match TTMeshPlan";
+  for (int i = 0; i < core_group->device_range_start.size(); ++i) {
+    ICHECK_GE(core_group->device_range_start[i]->value, 0)
+        << "TTCoreGroup device_range_start requires non-negative coordinates";
+    ICHECK_GT(core_group->device_range_shape[i]->value, 0)
+        << "TTCoreGroup device_range_shape requires positive dimensions";
+    ICHECK_EQ(core_group->device_range_start[i]->value,
+              mesh_plan_it->second->device_range_start[i]->value)
+        << "TTCoreGroup device_range_start must match TTMeshPlan";
+    ICHECK_EQ(core_group->device_range_shape[i]->value,
+              mesh_plan_it->second->device_range_shape[i]->value)
+        << "TTCoreGroup device_range_shape must match TTMeshPlan";
+  }
   ICHECK(!core_group->physical_cores.empty())
       << "TTCoreGroup requires physical_cores";
   ICHECK(!core_group->work_packets.empty())
@@ -1931,6 +1972,7 @@ void CheckTTProgram(
          "truth";
 
   std::unordered_map<std::string, int64_t> mesh_index_by_name;
+  std::unordered_map<std::string, TTMeshPlan> mesh_plan_by_name;
   for (int64_t mesh_index = 0;
        mesh_index < static_cast<int64_t>(program->mesh_plans.size());
        ++mesh_index) {
@@ -1940,6 +1982,8 @@ void CheckTTProgram(
                .emplace(static_cast<std::string>(mesh_plan->name), mesh_index)
                .second)
         << "duplicate TTMeshPlan name " << mesh_plan->name;
+    mesh_plan_by_name.emplace(static_cast<std::string>(mesh_plan->name),
+                              mesh_plan);
   }
 
   std::unordered_set<std::string> spatial_layout_subjects;
@@ -1952,6 +1996,8 @@ void CheckTTProgram(
        core_group_index < static_cast<int64_t>(program->core_groups.size());
        ++core_group_index) {
     const TTCoreGroup &core_group = program->core_groups[core_group_index];
+    ValidateCoreGroup(core_group, mesh_index_by_name, mesh_plan_by_name,
+                      maybe_hardware_model);
     const std::string core_group_name =
         static_cast<std::string>(core_group->name);
     ICHECK(core_group_index_by_name
@@ -2159,10 +2205,6 @@ void CheckTTProgram(
         << "TTResourcePressureReport requires matching TTResourceDemand for "
            "kernel "
         << entry.first;
-  }
-
-  for (const TTCoreGroup &core_group : program->core_groups) {
-    ValidateCoreGroup(core_group, maybe_hardware_model);
   }
 
   std::unordered_set<int64_t> cb_ids;

@@ -33,6 +33,13 @@ class TTHardwareModelNode : public GlobalInfoNode {
   int64_t unpacker_version = 0;
   int64_t packer_version = 0;
   int64_t overlay_version = 0;
+  int64_t mesh_shape_x = 1;
+  int64_t mesh_shape_y = 1;
+  int64_t device_range_start_x = 0;
+  int64_t device_range_start_y = 0;
+  int64_t device_range_shape_x = 1;
+  int64_t device_range_shape_y = 1;
+  ffi::String system_mesh_ref;
 
   static void RegisterReflection() {
     namespace refl = tvm::ffi::reflection;
@@ -53,7 +60,18 @@ class TTHardwareModelNode : public GlobalInfoNode {
                 &TTHardwareModelNode::noc_translation_id_enabled)
         .def_ro("unpacker_version", &TTHardwareModelNode::unpacker_version)
         .def_ro("packer_version", &TTHardwareModelNode::packer_version)
-        .def_ro("overlay_version", &TTHardwareModelNode::overlay_version);
+        .def_ro("overlay_version", &TTHardwareModelNode::overlay_version)
+        .def_ro("mesh_shape_x", &TTHardwareModelNode::mesh_shape_x)
+        .def_ro("mesh_shape_y", &TTHardwareModelNode::mesh_shape_y)
+        .def_ro("device_range_start_x",
+                &TTHardwareModelNode::device_range_start_x)
+        .def_ro("device_range_start_y",
+                &TTHardwareModelNode::device_range_start_y)
+        .def_ro("device_range_shape_x",
+                &TTHardwareModelNode::device_range_shape_x)
+        .def_ro("device_range_shape_y",
+                &TTHardwareModelNode::device_range_shape_y)
+        .def_ro("system_mesh_ref", &TTHardwareModelNode::system_mesh_ref);
   }
 
   TVM_FFI_DECLARE_OBJECT_INFO_FINAL("tl.TTHardwareModel", TTHardwareModelNode, GlobalInfoNode);
@@ -69,7 +87,13 @@ class TTHardwareModel : public GlobalInfo {
                           int64_t l1_allocation_alignment_bytes,
                           bool noc_translation_id_enabled,
                           int64_t unpacker_version, int64_t packer_version,
-                          int64_t overlay_version);
+                          int64_t overlay_version,
+                          int64_t mesh_shape_x = 1, int64_t mesh_shape_y = 1,
+                          int64_t device_range_start_x = 0,
+                          int64_t device_range_start_y = 0,
+                          int64_t device_range_shape_x = 1,
+                          int64_t device_range_shape_y = 1,
+                          ffi::String system_mesh_ref = "default_system_mesh");
   TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(TTHardwareModel, GlobalInfo, TTHardwareModelNode);
 };
 
