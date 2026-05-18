@@ -18,6 +18,8 @@ def test_single_card_multitile_ccl_semantics_probe_passes():
     )
 
     assert result.returncode == 0, result.stdout + result.stderr
+    assert "participant_count=4" in result.stdout
+    assert "all_gather_shape=[1, 2, 256, 1024]" in result.stdout
     assert "single_card_multitile_ccl_semantics=ok" in result.stdout
     assert "all_gather_ok=true" in result.stdout
     assert "reduce_scatter_ok=true" in result.stdout

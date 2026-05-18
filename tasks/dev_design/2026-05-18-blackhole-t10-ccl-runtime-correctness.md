@@ -145,7 +145,7 @@ This slice is verified by:
 - `tilelang_repo/testing/python/target/blackhole/test_blackhole_t10_single_card_multitile_ccl_runtime.py`,
   proving local multi-tile all-gather / reduce-scatter / all-to-all
   equivalents through `BlackholeModule` on the repository TT-Sim bf16 direct
-  path with `8x8x2` logical tile work items per collective;
+  path with `8x8x4` logical tile work items per collective;
 - structure tests proving `TTCollectivePlan` exists on `TTProgram`;
 - negative validator tests for malformed collective records;
 - executable projection tests proving `collective_plans` reaches

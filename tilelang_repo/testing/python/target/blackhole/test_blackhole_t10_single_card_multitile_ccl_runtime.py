@@ -11,7 +11,7 @@ from .common import assert_tensors_close_or_dump, check_blackhole_direct_executi
 
 
 TILE_SIZE = 32
-PARTICIPANT_COUNT = 2
+PARTICIPANT_COUNT = 4
 TILE_ROWS = 8
 TILE_COLS = 8
 
@@ -51,18 +51,26 @@ def t10_single_card_all_gather_kernel(tile_rows=TILE_ROWS, tile_cols=TILE_COLS):
     def main(
         A0: T.Tensor((rows, shard_cols), "bfloat16"),
         A1: T.Tensor((rows, shard_cols), "bfloat16"),
+        A2: T.Tensor((rows, shard_cols), "bfloat16"),
+        A3: T.Tensor((rows, shard_cols), "bfloat16"),
         O: T.Tensor((PARTICIPANT_COUNT, rows, output_cols), "bfloat16"),
     ):
         with T.Kernel(tile_cols, tile_rows, PARTICIPANT_COUNT, threads=128) as (bx, by, bp):
             a0_tile = T.alloc_shared((TILE_SIZE, TILE_SIZE), "bfloat16")
             a1_tile = T.alloc_shared((TILE_SIZE, TILE_SIZE), "bfloat16")
+            a2_tile = T.alloc_shared((TILE_SIZE, TILE_SIZE), "bfloat16")
+            a3_tile = T.alloc_shared((TILE_SIZE, TILE_SIZE), "bfloat16")
             l1_tile = _l1_tile_config()
             T.annotate_memory_config(
                 {
                     A0: T.interleaved_dram(),
                     A1: T.interleaved_dram(),
+                    A2: T.interleaved_dram(),
+                    A3: T.interleaved_dram(),
                     a0_tile: l1_tile,
                     a1_tile: l1_tile,
+                    a2_tile: l1_tile,
+                    a3_tile: l1_tile,
                     O: T.interleaved_dram(),
                 }
             )
@@ -70,8 +78,12 @@ def t10_single_card_all_gather_kernel(tile_rows=TILE_ROWS, tile_cols=TILE_COLS):
             col = bx * TILE_SIZE
             T.copy(A0[row, col], a0_tile)
             T.copy(A1[row, col], a1_tile)
+            T.copy(A2[row, col], a2_tile)
+            T.copy(A3[row, col], a3_tile)
             T.copy(a0_tile, O[bp, row, col])
             T.copy(a1_tile, O[bp, row, col + shard_cols])
+            T.copy(a2_tile, O[bp, row, col + shard_cols * 2])
+            T.copy(a3_tile, O[bp, row, col + shard_cols * 3])
 
     return main
 
@@ -85,32 +97,50 @@ def t10_single_card_reduce_scatter_kernel(tile_rows=TILE_ROWS, tile_cols=TILE_CO
     def main(
         A0: T.Tensor((rows, input_cols), "bfloat16"),
         A1: T.Tensor((rows, input_cols), "bfloat16"),
+        A2: T.Tensor((rows, input_cols), "bfloat16"),
+        A3: T.Tensor((rows, input_cols), "bfloat16"),
         O: T.Tensor((PARTICIPANT_COUNT, rows, output_cols), "bfloat16"),
     ):
         with T.Kernel(tile_cols, tile_rows, PARTICIPANT_COUNT, threads=128) as (bx, by, bp):
-            a_tile = T.alloc_shared((TILE_SIZE, TILE_SIZE), "bfloat16")
-            b_tile = T.alloc_shared((TILE_SIZE, TILE_SIZE), "bfloat16")
+            a0_tile = T.alloc_shared((TILE_SIZE, TILE_SIZE), "bfloat16")
+            a1_tile = T.alloc_shared((TILE_SIZE, TILE_SIZE), "bfloat16")
+            a2_tile = T.alloc_shared((TILE_SIZE, TILE_SIZE), "bfloat16")
+            a3_tile = T.alloc_shared((TILE_SIZE, TILE_SIZE), "bfloat16")
             acc = T.alloc_fragment((TILE_SIZE, TILE_SIZE), "bfloat16")
-            rhs = T.alloc_fragment((TILE_SIZE, TILE_SIZE), "bfloat16")
+            rhs1 = T.alloc_fragment((TILE_SIZE, TILE_SIZE), "bfloat16")
+            rhs2 = T.alloc_fragment((TILE_SIZE, TILE_SIZE), "bfloat16")
+            rhs3 = T.alloc_fragment((TILE_SIZE, TILE_SIZE), "bfloat16")
             l1_tile = _l1_tile_config()
             T.annotate_memory_config(
                 {
                     A0: T.interleaved_dram(),
                     A1: T.interleaved_dram(),
-                    a_tile: l1_tile,
-                    b_tile: l1_tile,
+                    A2: T.interleaved_dram(),
+                    A3: T.interleaved_dram(),
+                    a0_tile: l1_tile,
+                    a1_tile: l1_tile,
+                    a2_tile: l1_tile,
+                    a3_tile: l1_tile,
                     O: T.interleaved_dram(),
                 }
             )
             row = by * TILE_SIZE
             col = bx * TILE_SIZE
             source_col = bp * output_cols + col
-            T.copy(A0[row, source_col], a_tile)
-            T.copy(A1[row, source_col], b_tile)
-            T.copy(a_tile, acc)
-            T.copy(b_tile, rhs)
+            T.copy(A0[row, source_col], a0_tile)
+            T.copy(A1[row, source_col], a1_tile)
+            T.copy(A2[row, source_col], a2_tile)
+            T.copy(A3[row, source_col], a3_tile)
+            T.copy(a0_tile, acc)
+            T.copy(a1_tile, rhs1)
+            T.copy(a2_tile, rhs2)
+            T.copy(a3_tile, rhs3)
             for i, j in T.Parallel(TILE_SIZE, TILE_SIZE):
-                acc[i, j] = acc[i, j] + rhs[i, j]
+                acc[i, j] = acc[i, j] + rhs1[i, j]
+            for i, j in T.Parallel(TILE_SIZE, TILE_SIZE):
+                acc[i, j] = acc[i, j] + rhs2[i, j]
+            for i, j in T.Parallel(TILE_SIZE, TILE_SIZE):
+                acc[i, j] = acc[i, j] + rhs3[i, j]
             T.copy(acc, O[bp, row, col])
 
     return main
@@ -157,14 +187,16 @@ def test_blackhole_t10_single_card_all_gather_multitile_runtime_correctness():
     output_cols = shard_cols * PARTICIPANT_COUNT
     a0 = _bf16_tensor((rows, shard_cols), offset=3)
     a1 = _bf16_tensor((rows, shard_cols), offset=19)
+    a2 = _bf16_tensor((rows, shard_cols), offset=35)
+    a3 = _bf16_tensor((rows, shard_cols), offset=51)
     output = torch.zeros((PARTICIPANT_COUNT, rows, output_cols), dtype=torch.bfloat16)
     reference = torch.stack(
-        [torch.cat([a0, a1], dim=1) for _ in range(PARTICIPANT_COUNT)],
+        [torch.cat([a0, a1, a2, a3], dim=1) for _ in range(PARTICIPANT_COUNT)],
         dim=0,
     )
 
     artifact = _lower_blackhole(t10_single_card_all_gather_kernel())
-    artifact.codegen_mod["main"](a0, a1, output)
+    artifact.codegen_mod["main"](a0, a1, a2, a3, output)
 
     assert_tensors_close_or_dump(
         output,
@@ -182,16 +214,26 @@ def test_blackhole_t10_single_card_reduce_scatter_multitile_runtime_correctness(
     output_cols = TILE_COLS * TILE_SIZE
     input_cols = output_cols * PARTICIPANT_COUNT
     a0 = _bf16_tensor((rows, input_cols), offset=5)
-    a1 = _bf16_tensor((rows, input_cols), offset=29)
+    a1 = _bf16_tensor((rows, input_cols), offset=17)
+    a2 = _bf16_tensor((rows, input_cols), offset=29)
+    a3 = _bf16_tensor((rows, input_cols), offset=41)
     output = torch.zeros((PARTICIPANT_COUNT, rows, output_cols), dtype=torch.bfloat16)
-    reduced = (a0.to(torch.float32) + a1.to(torch.float32)).to(torch.bfloat16)
+    reduced = (
+        a0.to(torch.float32)
+        + a1.to(torch.float32)
+        + a2.to(torch.float32)
+        + a3.to(torch.float32)
+    ).to(torch.bfloat16)
     reference = torch.stack(
-        [reduced[:, :output_cols], reduced[:, output_cols:]],
+        [
+            reduced[:, participant * output_cols : (participant + 1) * output_cols]
+            for participant in range(PARTICIPANT_COUNT)
+        ],
         dim=0,
     )
 
     artifact = _lower_blackhole(t10_single_card_reduce_scatter_kernel())
-    artifact.codegen_mod["main"](a0, a1, output)
+    artifact.codegen_mod["main"](a0, a1, a2, a3, output)
 
     assert_tensors_close_or_dump(
         output,
@@ -213,7 +255,10 @@ def test_blackhole_t10_single_card_all_to_all_multitile_runtime_correctness():
     output = torch.zeros((PARTICIPANT_COUNT, rows, output_cols), dtype=torch.bfloat16)
     full_rows = torch.cat([a[participant] for participant in range(PARTICIPANT_COUNT)], dim=0)
     reference = torch.stack(
-        [full_rows[:, :output_cols], full_rows[:, output_cols:]],
+        [
+            full_rows[:, participant * output_cols : (participant + 1) * output_cols]
+            for participant in range(PARTICIPANT_COUNT)
+        ],
         dim=0,
     )
 

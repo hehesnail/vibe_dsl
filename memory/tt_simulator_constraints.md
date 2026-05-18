@@ -311,7 +311,7 @@ unsupported_reason=eth_txq_cmd=0x2
   `scripts/probe_single_card_multitile_ccl_semantics.py` 的 single-card
   multi-tile bf16 value probe，以及
   `tilelang_repo/testing/python/target/blackhole/test_blackhole_t10_single_card_multitile_ccl_runtime.py`
-  的 single-card `BlackholeModule` `8x8x2` local-runtime equivalent probe，
+  的 single-card `BlackholeModule` `8x8x4` local-runtime equivalent probe，
   不能退化成 contract-only / fail-closed；
 - 后续如果重新收口 multi-device fabric correctness，仍不能把 typed CCL
   contract、projection 或 fail-closed diagnostic 当成 runtime correctness；

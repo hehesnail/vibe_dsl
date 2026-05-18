@@ -194,7 +194,7 @@ Current baseline:
   `tilelang_repo/testing/python/target/blackhole/test_blackhole_t10_single_card_multitile_ccl_runtime.py`
   runs local multi-tile all-gather / reduce-scatter / all-to-all equivalents
   through `BlackholeModule` on the repository TT-Sim bf16 direct path with
-  `8x8x2` logical tile work items per collective.
+  `8x8x4` logical tile work items per collective.
 - Direct-runtime correctness:
   admitted T7/T8/T9 positive paths run through `BlackholeModule` with the
   repository TT-Sim bf16 baseline where tensor values are involved, including
