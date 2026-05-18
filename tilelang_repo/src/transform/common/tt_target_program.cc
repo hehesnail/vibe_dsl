@@ -142,6 +142,81 @@ TTBufferDistributionPlan::TTBufferDistributionPlan(
   data_ = std::move(n);
 }
 
+void TTCollectivePlanNode::RegisterReflection() {
+  namespace refl = tvm::ffi::reflection;
+  refl::ObjectDef<TTCollectivePlanNode>()
+      .def_ro("name", &TTCollectivePlanNode::name)
+      .def_ro("operation_kind", &TTCollectivePlanNode::operation_kind)
+      .def_ro("mesh_plan", &TTCollectivePlanNode::mesh_plan)
+      .def_ro("mesh_plan_index", &TTCollectivePlanNode::mesh_plan_index)
+      .def_ro("source_buffer", &TTCollectivePlanNode::source_buffer)
+      .def_ro("target_buffer", &TTCollectivePlanNode::target_buffer)
+      .def_ro("source_buffer_distribution",
+              &TTCollectivePlanNode::source_buffer_distribution)
+      .def_ro("source_buffer_distribution_index",
+              &TTCollectivePlanNode::source_buffer_distribution_index)
+      .def_ro("target_buffer_distribution",
+              &TTCollectivePlanNode::target_buffer_distribution)
+      .def_ro("target_buffer_distribution_index",
+              &TTCollectivePlanNode::target_buffer_distribution_index)
+      .def_ro("collective_axis", &TTCollectivePlanNode::collective_axis)
+      .def_ro("tensor_axis", &TTCollectivePlanNode::tensor_axis)
+      .def_ro("split_axis", &TTCollectivePlanNode::split_axis)
+      .def_ro("concat_axis", &TTCollectivePlanNode::concat_axis)
+      .def_ro("participant_count", &TTCollectivePlanNode::participant_count)
+      .def_ro("topology", &TTCollectivePlanNode::topology)
+      .def_ro("reduce_op", &TTCollectivePlanNode::reduce_op)
+      .def_ro("input_shape", &TTCollectivePlanNode::input_shape)
+      .def_ro("output_shape", &TTCollectivePlanNode::output_shape)
+      .def_ro("required_semaphore_plan_indices",
+              &TTCollectivePlanNode::required_semaphore_plan_indices)
+      .def_ro("required_sync_plan_indices",
+              &TTCollectivePlanNode::required_sync_plan_indices)
+      .def_ro("admission_status", &TTCollectivePlanNode::admission_status)
+      .def_ro("unsupported_reason", &TTCollectivePlanNode::unsupported_reason);
+}
+
+TTCollectivePlan::TTCollectivePlan(
+    ffi::String name, ffi::String operation_kind, ffi::String mesh_plan,
+    int64_t mesh_plan_index, ffi::String source_buffer,
+    ffi::String target_buffer, ffi::String source_buffer_distribution,
+    int64_t source_buffer_distribution_index,
+    ffi::String target_buffer_distribution,
+    int64_t target_buffer_distribution_index, int64_t collective_axis,
+    int64_t tensor_axis, int64_t split_axis, int64_t concat_axis,
+    int64_t participant_count, ffi::String topology, ffi::String reduce_op,
+    ffi::Array<Integer> input_shape, ffi::Array<Integer> output_shape,
+    ffi::Array<Integer> required_semaphore_plan_indices,
+    ffi::Array<Integer> required_sync_plan_indices,
+    ffi::String admission_status, ffi::String unsupported_reason) {
+  auto n = ffi::make_object<TTCollectivePlanNode>();
+  n->name = std::move(name);
+  n->operation_kind = std::move(operation_kind);
+  n->mesh_plan = std::move(mesh_plan);
+  n->mesh_plan_index = mesh_plan_index;
+  n->source_buffer = std::move(source_buffer);
+  n->target_buffer = std::move(target_buffer);
+  n->source_buffer_distribution = std::move(source_buffer_distribution);
+  n->source_buffer_distribution_index = source_buffer_distribution_index;
+  n->target_buffer_distribution = std::move(target_buffer_distribution);
+  n->target_buffer_distribution_index = target_buffer_distribution_index;
+  n->collective_axis = collective_axis;
+  n->tensor_axis = tensor_axis;
+  n->split_axis = split_axis;
+  n->concat_axis = concat_axis;
+  n->participant_count = participant_count;
+  n->topology = std::move(topology);
+  n->reduce_op = std::move(reduce_op);
+  n->input_shape = std::move(input_shape);
+  n->output_shape = std::move(output_shape);
+  n->required_semaphore_plan_indices =
+      std::move(required_semaphore_plan_indices);
+  n->required_sync_plan_indices = std::move(required_sync_plan_indices);
+  n->admission_status = std::move(admission_status);
+  n->unsupported_reason = std::move(unsupported_reason);
+  data_ = std::move(n);
+}
+
 void TTTensorMemoryConfigPlanNode::RegisterReflection() {
   namespace refl = tvm::ffi::reflection;
   refl::ObjectDef<TTTensorMemoryConfigPlanNode>()
@@ -1666,6 +1741,7 @@ void TTProgramNode::RegisterReflection() {
       .def_ro("mesh_plans", &TTProgramNode::mesh_plans)
       .def_ro("buffer_distribution_plans",
               &TTProgramNode::buffer_distribution_plans)
+      .def_ro("collective_plans", &TTProgramNode::collective_plans)
       .def_ro("tensor_memory_config_plans",
               &TTProgramNode::tensor_memory_config_plans)
       .def_ro("op_sharding_contracts",
@@ -1706,6 +1782,7 @@ TTProgram::TTProgram(
     ffi::String entry_name, ffi::String member_func,
     ffi::Array<TTMeshPlan> mesh_plans,
     ffi::Array<TTBufferDistributionPlan> buffer_distribution_plans,
+    ffi::Array<TTCollectivePlan> collective_plans,
     ffi::Array<TTTensorMemoryConfigPlan> tensor_memory_config_plans,
     ffi::Array<TTOpShardingContract> op_sharding_contracts,
     ffi::Array<TTPlacementResolutionPlan> placement_resolution_plans,
@@ -1734,6 +1811,7 @@ TTProgram::TTProgram(
   n->member_func = std::move(member_func);
   n->mesh_plans = std::move(mesh_plans);
   n->buffer_distribution_plans = std::move(buffer_distribution_plans);
+  n->collective_plans = std::move(collective_plans);
   n->tensor_memory_config_plans = std::move(tensor_memory_config_plans);
   n->op_sharding_contracts = std::move(op_sharding_contracts);
   n->placement_resolution_plans = std::move(placement_resolution_plans);
@@ -1767,6 +1845,7 @@ TTProgram::TTProgram(
 TVM_FFI_STATIC_INIT_BLOCK() {
   RegisterNodeReflection<TTMeshPlanNode>();
   RegisterNodeReflection<TTBufferDistributionPlanNode>();
+  RegisterNodeReflection<TTCollectivePlanNode>();
   RegisterNodeReflection<TTTensorMemoryConfigPlanNode>();
   RegisterNodeReflection<TTOpShardingContractNode>();
   RegisterNodeReflection<TTPlacementResolutionPlanNode>();
@@ -1857,6 +1936,36 @@ TVM_FFI_STATIC_INIT_BLOCK() {
             std::move(inverse_logical_index_exprs), std::move(spatial_layout),
             std::move(spatial_distribution_kind), std::move(abi_layout),
             std::move(abi_memory_space));
+      });
+  refl::GlobalDef().def(
+      "tl.TTCollectivePlan",
+      [](ffi::String name, ffi::String operation_kind,
+         ffi::String mesh_plan, int64_t mesh_plan_index,
+         ffi::String source_buffer, ffi::String target_buffer,
+         ffi::String source_buffer_distribution,
+         int64_t source_buffer_distribution_index,
+         ffi::String target_buffer_distribution,
+         int64_t target_buffer_distribution_index, int64_t collective_axis,
+         int64_t tensor_axis, int64_t split_axis, int64_t concat_axis,
+         int64_t participant_count, ffi::String topology,
+         ffi::String reduce_op, ffi::Array<Integer> input_shape,
+         ffi::Array<Integer> output_shape,
+         ffi::Array<Integer> required_semaphore_plan_indices,
+         ffi::Array<Integer> required_sync_plan_indices,
+         ffi::String admission_status, ffi::String unsupported_reason) {
+        return TTCollectivePlan(
+            std::move(name), std::move(operation_kind), std::move(mesh_plan),
+            mesh_plan_index, std::move(source_buffer),
+            std::move(target_buffer), std::move(source_buffer_distribution),
+            source_buffer_distribution_index,
+            std::move(target_buffer_distribution),
+            target_buffer_distribution_index, collective_axis, tensor_axis,
+            split_axis, concat_axis, participant_count, std::move(topology),
+            std::move(reduce_op), std::move(input_shape),
+            std::move(output_shape),
+            std::move(required_semaphore_plan_indices),
+            std::move(required_sync_plan_indices),
+            std::move(admission_status), std::move(unsupported_reason));
       });
 	  refl::GlobalDef().def(
 	      "tl.TTTensorMemoryConfigPlan",
@@ -2472,15 +2581,16 @@ TVM_FFI_STATIC_INIT_BLOCK() {
                                std::move(phase_indices));
       });
   refl::GlobalDef().def(
-	      "tl.TTProgram",
-	      [](ffi::String entry_name, ffi::String member_func,
-	         ffi::Array<TTMeshPlan> mesh_plans,
-	         ffi::Array<TTBufferDistributionPlan> buffer_distribution_plans,
-	         ffi::Array<TTTensorMemoryConfigPlan> tensor_memory_config_plans,
-	         ffi::Array<TTOpShardingContract> op_sharding_contracts,
-	         ffi::Array<TTPlacementResolutionPlan> placement_resolution_plans,
-	         ffi::Array<TTReshardPlan> reshard_plans,
-	         ffi::Array<TTBlockPlan> block_plans,
+      "tl.TTProgram",
+      [](ffi::String entry_name, ffi::String member_func,
+         ffi::Array<TTMeshPlan> mesh_plans,
+         ffi::Array<TTBufferDistributionPlan> buffer_distribution_plans,
+         ffi::Array<TTCollectivePlan> collective_plans,
+         ffi::Array<TTTensorMemoryConfigPlan> tensor_memory_config_plans,
+         ffi::Array<TTOpShardingContract> op_sharding_contracts,
+         ffi::Array<TTPlacementResolutionPlan> placement_resolution_plans,
+         ffi::Array<TTReshardPlan> reshard_plans,
+         ffi::Array<TTBlockPlan> block_plans,
          ffi::Array<TTKernelPlan> kernel_plans,
          ffi::Array<TTComputeOpPlan> compute_op_plans,
          ffi::Array<TTTransportPlan> transport_plans,
@@ -2501,14 +2611,15 @@ TVM_FFI_STATIC_INIT_BLOCK() {
          ffi::Array<TTExactCBReleaseEvent> exact_cb_release_events,
          ffi::Array<TTResourceDemand> resource_demands,
          ffi::Array<TTResourcePressureReport> resource_pressure_reports) {
-	        return TTProgram(
-	            std::move(entry_name), std::move(member_func),
-	            std::move(mesh_plans), std::move(buffer_distribution_plans),
-	            std::move(tensor_memory_config_plans),
-	            std::move(op_sharding_contracts),
-	            std::move(placement_resolution_plans),
-	            std::move(reshard_plans),
-	            std::move(block_plans), std::move(kernel_plans),
+        return TTProgram(
+            std::move(entry_name), std::move(member_func),
+            std::move(mesh_plans), std::move(buffer_distribution_plans),
+            std::move(collective_plans),
+            std::move(tensor_memory_config_plans),
+            std::move(op_sharding_contracts),
+            std::move(placement_resolution_plans),
+            std::move(reshard_plans),
+            std::move(block_plans), std::move(kernel_plans),
             std::move(compute_op_plans), std::move(transport_plans),
             std::move(sync_plans), std::move(abi_plans),
             std::move(execution_plans), std::move(kernels),

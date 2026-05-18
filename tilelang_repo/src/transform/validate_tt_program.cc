@@ -411,6 +411,173 @@ void ValidateCoreGroup(
   }
 }
 
+int64_t IntegerArrayAt(const Array<Integer> &values, int64_t index,
+                       const std::string &context) {
+  ICHECK_GE(index, 0) << context << " requires non-negative axis";
+  ICHECK_LT(index, static_cast<int64_t>(values.size()))
+      << context << " axis out of bounds";
+  return values[index]->value;
+}
+
+void ValidateIndexArrayBounds(const Array<Integer> &indices, int64_t limit,
+                              const std::string &context) {
+  for (const Integer &index : indices) {
+    ICHECK_GE(index->value, 0) << context << " requires non-negative indices";
+    ICHECK_LT(index->value, limit) << context << " index out of bounds";
+  }
+}
+
+void ValidateCollectivePlan(
+    const TTCollectivePlan &plan,
+    const std::unordered_map<std::string, int64_t> &mesh_index_by_name,
+    const std::unordered_map<std::string, TTMeshPlan> &mesh_plan_by_name,
+    const std::unordered_map<std::string, int64_t> &distribution_index_by_name,
+    const std::unordered_map<std::string, TTBufferDistributionPlan>
+        &distribution_by_name,
+    int64_t semaphore_plan_count, int64_t sync_plan_count) {
+  ICHECK(!plan->name.empty()) << "TTCollectivePlan requires name";
+  ICHECK(plan->operation_kind == "all_gather" ||
+         plan->operation_kind == "reduce_scatter" ||
+         plan->operation_kind == "all_to_all")
+      << "TTCollectivePlan " << plan->name
+      << " has unsupported operation_kind " << plan->operation_kind;
+  ICHECK(!plan->mesh_plan.empty())
+      << "TTCollectivePlan " << plan->name << " requires mesh_plan";
+  ICHECK_GE(plan->mesh_plan_index, 0)
+      << "TTCollectivePlan " << plan->name << " requires mesh_plan_index";
+  auto mesh_index_it = mesh_index_by_name.find(str(plan->mesh_plan));
+  ICHECK(mesh_index_it != mesh_index_by_name.end())
+      << "TTCollectivePlan " << plan->name << " references unknown mesh_plan "
+      << plan->mesh_plan;
+  ICHECK_EQ(mesh_index_it->second, plan->mesh_plan_index)
+      << "TTCollectivePlan " << plan->name
+      << " mesh_plan_index must match mesh_plan";
+  const TTMeshPlan &mesh_plan = mesh_plan_by_name.at(str(plan->mesh_plan));
+  ICHECK_GE(plan->collective_axis, 0)
+      << "TTCollectivePlan " << plan->name << " requires collective_axis";
+  ICHECK_LT(plan->collective_axis,
+            static_cast<int64_t>(mesh_plan->mesh_shape.size()))
+      << "TTCollectivePlan " << plan->name
+      << " collective_axis out of mesh rank";
+  ICHECK_GE(plan->participant_count, 2)
+      << "TTCollectivePlan " << plan->name
+      << " requires participant_count >= 2";
+  ICHECK(!plan->topology.empty())
+      << "TTCollectivePlan " << plan->name << " requires topology";
+  ICHECK_LE(plan->participant_count,
+            mesh_plan->mesh_shape[plan->collective_axis]->value)
+      << "TTCollectivePlan " << plan->name
+      << " participant_count must fit mesh collective axis";
+  ICHECK(!plan->source_buffer.empty())
+      << "TTCollectivePlan " << plan->name << " requires source_buffer";
+  ICHECK(!plan->target_buffer.empty())
+      << "TTCollectivePlan " << plan->name << " requires target_buffer";
+  ICHECK(!plan->source_buffer_distribution.empty())
+      << "TTCollectivePlan " << plan->name
+      << " requires source_buffer_distribution";
+  ICHECK(!plan->target_buffer_distribution.empty())
+      << "TTCollectivePlan " << plan->name
+      << " requires target_buffer_distribution";
+
+  auto require_distribution =
+      [&](const ffi::String &distribution_name, int64_t distribution_index,
+          const ffi::String &buffer_name,
+          const char *role) -> TTBufferDistributionPlan {
+    auto dist_index_it = distribution_index_by_name.find(str(distribution_name));
+    ICHECK(dist_index_it != distribution_index_by_name.end())
+        << "TTCollectivePlan " << plan->name << " references unknown " << role
+        << " distribution " << distribution_name;
+    ICHECK_EQ(dist_index_it->second, distribution_index)
+        << "TTCollectivePlan " << plan->name << " " << role
+        << " distribution index must match distribution name";
+    auto dist_it = distribution_by_name.find(str(distribution_name));
+    ICHECK(dist_it != distribution_by_name.end())
+        << "TTCollectivePlan " << plan->name << " missing " << role
+        << " distribution record";
+    const TTBufferDistributionPlan &distribution = dist_it->second;
+    ICHECK_EQ(distribution->buffer, buffer_name)
+        << "TTCollectivePlan " << plan->name << " " << role
+        << " distribution buffer must match " << role << "_buffer";
+    ICHECK_EQ(distribution->mesh_plan, plan->mesh_plan)
+        << "TTCollectivePlan " << plan->name << " " << role
+        << " distribution mesh_plan must match collective mesh_plan";
+    ICHECK_EQ(distribution->mesh_plan_index, plan->mesh_plan_index)
+        << "TTCollectivePlan " << plan->name << " " << role
+        << " distribution mesh_plan_index must match collective mesh";
+    return distribution;
+  };
+
+  require_distribution(plan->source_buffer_distribution,
+                       plan->source_buffer_distribution_index,
+                       plan->source_buffer, "source");
+  require_distribution(plan->target_buffer_distribution,
+                       plan->target_buffer_distribution_index,
+                       plan->target_buffer, "target");
+
+  ValidatePositiveIntegerArray(plan->input_shape,
+                               "TTCollectivePlan input_shape");
+  ValidatePositiveIntegerArray(plan->output_shape,
+                               "TTCollectivePlan output_shape");
+  ICHECK_EQ(plan->input_shape.size(), plan->output_shape.size())
+      << "TTCollectivePlan " << plan->name
+      << " input_shape and output_shape rank must match";
+  const int64_t input_axis =
+      IntegerArrayAt(plan->input_shape, plan->tensor_axis,
+                     "TTCollectivePlan tensor_axis");
+  const int64_t output_axis =
+      IntegerArrayAt(plan->output_shape, plan->tensor_axis,
+                     "TTCollectivePlan tensor_axis");
+  if (plan->operation_kind == "all_gather") {
+    ICHECK_EQ(output_axis, input_axis * plan->participant_count)
+        << "TTCollectivePlan " << plan->name
+        << " all_gather output_shape[tensor_axis] must equal "
+           "input_shape[tensor_axis] * participant_count";
+  } else if (plan->operation_kind == "reduce_scatter") {
+    ICHECK_EQ(input_axis, output_axis * plan->participant_count)
+        << "TTCollectivePlan " << plan->name
+        << " reduce_scatter input_shape[tensor_axis] must equal "
+           "output_shape[tensor_axis] * participant_count";
+    ICHECK(!plan->reduce_op.empty())
+        << "TTCollectivePlan " << plan->name
+        << " reduce_scatter requires reduce_op";
+  } else if (plan->operation_kind == "all_to_all") {
+    const int64_t split_dim =
+        IntegerArrayAt(plan->input_shape, plan->split_axis,
+                       "TTCollectivePlan split_axis");
+    const int64_t concat_dim =
+        IntegerArrayAt(plan->output_shape, plan->concat_axis,
+                       "TTCollectivePlan concat_axis");
+    ICHECK_EQ(split_dim % plan->participant_count, 0)
+        << "TTCollectivePlan " << plan->name
+        << " all_to_all split_axis dimension must divide participant_count";
+    ICHECK_EQ(concat_dim % plan->participant_count, 0)
+        << "TTCollectivePlan " << plan->name
+        << " all_to_all concat_axis dimension must divide participant_count";
+    ICHECK_EQ(IntegerArrayProduct(plan->input_shape),
+              IntegerArrayProduct(plan->output_shape))
+        << "TTCollectivePlan " << plan->name
+        << " all_to_all must preserve total element count";
+  }
+  ValidateIndexArrayBounds(plan->required_semaphore_plan_indices,
+                           semaphore_plan_count,
+                           "TTCollectivePlan required_semaphore_plan_indices");
+  ValidateIndexArrayBounds(plan->required_sync_plan_indices, sync_plan_count,
+                           "TTCollectivePlan required_sync_plan_indices");
+  ICHECK(plan->admission_status == "admitted" ||
+         plan->admission_status == "unsupported")
+      << "TTCollectivePlan " << plan->name
+      << " has invalid admission_status " << plan->admission_status;
+  if (plan->admission_status == "admitted") {
+    ICHECK(plan->unsupported_reason.empty())
+        << "TTCollectivePlan " << plan->name
+        << " admitted record cannot carry unsupported_reason";
+  } else {
+    ICHECK(!plan->unsupported_reason.empty())
+        << "TTCollectivePlan " << plan->name
+        << " unsupported record requires unsupported_reason";
+  }
+}
+
 std::string ExpectedTensorMemoryLayout(const TTBufferDistributionPlan &distribution) {
   const std::string kind = distribution->distribution_kind;
   if (kind == "interleaved" || kind == "replicated") {
@@ -2009,6 +2176,7 @@ void CheckTTProgram(
   std::unordered_set<std::string> distributed_buffers;
   std::unordered_set<std::string> required_reshard_edges;
   std::unordered_map<std::string, TTBufferDistributionPlan> distribution_by_buffer;
+  std::unordered_map<std::string, TTBufferDistributionPlan> distribution_by_name;
   std::unordered_map<std::string, int64_t> distribution_index_by_name;
   for (const TTBufferDistributionPlan &distribution :
        program->buffer_distribution_plans) {
@@ -2020,6 +2188,9 @@ void CheckTTProgram(
                .second)
         << "duplicate TTBufferDistributionPlan buffer " << distribution->buffer;
     distribution_by_buffer.emplace(str(distribution->buffer), distribution);
+    ICHECK(distribution_by_name.emplace(str(distribution->name), distribution)
+               .second)
+        << "duplicate TTBufferDistributionPlan name " << distribution->name;
     if (!distribution->source_buffer.empty()) {
       required_reshard_edges.insert(str(distribution->source_buffer) + "|" +
                                     str(distribution->buffer));
@@ -2056,6 +2227,13 @@ void CheckTTProgram(
   }
   for (const TTSyncPlan &sync_plan : program->sync_plans) {
     ValidateSyncPlan(sync_plan);
+  }
+  for (const TTCollectivePlan &collective_plan : program->collective_plans) {
+    ValidateCollectivePlan(collective_plan, mesh_index_by_name,
+                           mesh_plan_by_name, distribution_index_by_name,
+                           distribution_by_name,
+                           static_cast<int64_t>(program->semaphore_plans.size()),
+                           static_cast<int64_t>(program->sync_plans.size()));
   }
 
   std::unordered_set<std::string> kernel_names;

@@ -1112,6 +1112,7 @@ def rebuild_tt_program(
     member_func=None,
     mesh_plans=None,
     buffer_distribution_plans=None,
+    collective_plans=None,
     tensor_memory_config_plans=None,
     op_sharding_contracts=None,
     placement_resolution_plans=None,
@@ -1160,6 +1161,9 @@ def rebuild_tt_program(
         list(program.buffer_distribution_plans)
         if buffer_distribution_plans is None
         else buffer_distribution_plans,
+        list(program.collective_plans)
+        if collective_plans is None
+        else collective_plans,
         list(program.tensor_memory_config_plans)
         if tensor_memory_config_plans is None
         else tensor_memory_config_plans,

@@ -141,6 +141,10 @@ prerequisite of the active CCL task, not a standalone completion target.
    - `T10.1b` Typed CCL owner truth: add
      `TTCollectivePlan -> ExecutableSpec.collective_plans`, validators, and
      typed admission diagnostics required by the positive runtime path.
+     Base schema/projection/validator support exists for unsupported
+     all-gather / reduce-scatter / all-to-all records; admitted producer,
+     route, and runtime records still depend on the T10.1a fabric support
+     gate.
    - `T10.1c` Minimal CCL execution records: add only the route,
      synchronization, and launch-order records needed for the admitted
      all-gather / reduce-scatter / all-to-all cases.
@@ -186,7 +190,8 @@ Current baseline:
 - Compile: `cmake --build build -j32`.
 - Protocol/source guards:
   typed tile-CB queue verifier, TTProgram execution-contract source guards,
-  T8/T9 projection selectors, and deleted-schema guards.
+  T8/T9 projection selectors, T10.1b `TTCollectivePlan` projection/validator
+  guards, and deleted-schema guards.
 - Direct-runtime correctness:
   admitted T7/T8/T9 positive paths run through `BlackholeModule` with the
   repository TT-Sim bf16 baseline where tensor values are involved, including

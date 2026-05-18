@@ -36,6 +36,7 @@ constexpr const char *kEntryName = "entry_name";
 constexpr const char *kMemberFunc = "member_func";
 constexpr const char *kMeshPlans = "mesh_plans";
 constexpr const char *kBufferDistributionPlans = "buffer_distribution_plans";
+constexpr const char *kCollectivePlans = "collective_plans";
 constexpr const char *kTensorMemoryConfigPlans =
     "tensor_memory_config_plans";
 constexpr const char *kOpShardingContracts = "op_sharding_contracts";
@@ -247,6 +248,53 @@ inline Array<Any> EncodeBufferDistributionPlans(
     }
     if (!plan->abi_memory_space.empty()) {
       item.Set("abi_memory_space", plan->abi_memory_space);
+    }
+    encoded.push_back(item);
+  }
+  return encoded;
+}
+
+inline Array<Any>
+EncodeCollectivePlans(const Array<TTCollectivePlan> &collective_plans) {
+  Array<Any> encoded;
+  for (const TTCollectivePlan &plan : collective_plans) {
+    Map<String, Any> item;
+    item.Set("name", plan->name);
+    item.Set("operation_kind", plan->operation_kind);
+    item.Set("mesh_plan", plan->mesh_plan);
+    item.Set("mesh_plan_index", Integer(plan->mesh_plan_index));
+    item.Set("source_buffer", plan->source_buffer);
+    item.Set("target_buffer", plan->target_buffer);
+    item.Set("source_buffer_distribution",
+             plan->source_buffer_distribution);
+    item.Set("source_buffer_distribution_index",
+             Integer(plan->source_buffer_distribution_index));
+    item.Set("target_buffer_distribution",
+             plan->target_buffer_distribution);
+    item.Set("target_buffer_distribution_index",
+             Integer(plan->target_buffer_distribution_index));
+    item.Set("collective_axis", Integer(plan->collective_axis));
+    item.Set("tensor_axis", Integer(plan->tensor_axis));
+    item.Set("split_axis", Integer(plan->split_axis));
+    item.Set("concat_axis", Integer(plan->concat_axis));
+    item.Set("participant_count", Integer(plan->participant_count));
+    item.Set("topology", plan->topology);
+    if (!plan->reduce_op.empty()) {
+      item.Set("reduce_op", plan->reduce_op);
+    }
+    item.Set("input_shape", plan->input_shape);
+    item.Set("output_shape", plan->output_shape);
+    if (!plan->required_semaphore_plan_indices.empty()) {
+      item.Set("required_semaphore_plan_indices",
+               plan->required_semaphore_plan_indices);
+    }
+    if (!plan->required_sync_plan_indices.empty()) {
+      item.Set("required_sync_plan_indices",
+               plan->required_sync_plan_indices);
+    }
+    item.Set("admission_status", plan->admission_status);
+    if (!plan->unsupported_reason.empty()) {
+      item.Set("unsupported_reason", plan->unsupported_reason);
     }
     encoded.push_back(item);
   }
@@ -1557,6 +1605,13 @@ MaterializeBlackholeExecutableProjection(const TTProgram &program) {
   if (!buffer_distribution_plans.empty()) {
     executable.Set(String(executable_key::kBufferDistributionPlans),
                    buffer_distribution_plans);
+  }
+
+  Array<Any> collective_plans =
+      EncodeCollectivePlans(program->collective_plans);
+  if (!collective_plans.empty()) {
+    executable.Set(String(executable_key::kCollectivePlans),
+                   collective_plans);
   }
 
   Array<Any> tensor_memory_config_plans =

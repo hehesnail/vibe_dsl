@@ -104,6 +104,56 @@ public:
                                              TTBufferDistributionPlanNode);
 };
 
+class TTCollectivePlanNode : public Object {
+public:
+  ffi::String name;
+  ffi::String operation_kind;
+  ffi::String mesh_plan;
+  int64_t mesh_plan_index = -1;
+  ffi::String source_buffer;
+  ffi::String target_buffer;
+  ffi::String source_buffer_distribution;
+  int64_t source_buffer_distribution_index = -1;
+  ffi::String target_buffer_distribution;
+  int64_t target_buffer_distribution_index = -1;
+  int64_t collective_axis = -1;
+  int64_t tensor_axis = -1;
+  int64_t split_axis = -1;
+  int64_t concat_axis = -1;
+  int64_t participant_count = 0;
+  ffi::String topology;
+  ffi::String reduce_op;
+  ffi::Array<Integer> input_shape;
+  ffi::Array<Integer> output_shape;
+  ffi::Array<Integer> required_semaphore_plan_indices;
+  ffi::Array<Integer> required_sync_plan_indices;
+  ffi::String admission_status;
+  ffi::String unsupported_reason;
+
+  static void RegisterReflection();
+  TVM_FFI_DECLARE_OBJECT_INFO_FINAL("tl.TTCollectivePlan",
+                                    TTCollectivePlanNode, Object);
+};
+
+class TTCollectivePlan : public ObjectRef {
+public:
+  TVM_DLL TTCollectivePlan(
+      ffi::String name, ffi::String operation_kind, ffi::String mesh_plan,
+      int64_t mesh_plan_index, ffi::String source_buffer,
+      ffi::String target_buffer, ffi::String source_buffer_distribution,
+      int64_t source_buffer_distribution_index,
+      ffi::String target_buffer_distribution,
+      int64_t target_buffer_distribution_index, int64_t collective_axis,
+      int64_t tensor_axis, int64_t split_axis, int64_t concat_axis,
+      int64_t participant_count, ffi::String topology, ffi::String reduce_op,
+      ffi::Array<Integer> input_shape, ffi::Array<Integer> output_shape,
+      ffi::Array<Integer> required_semaphore_plan_indices,
+      ffi::Array<Integer> required_sync_plan_indices,
+      ffi::String admission_status, ffi::String unsupported_reason);
+  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(TTCollectivePlan, ObjectRef,
+                                             TTCollectivePlanNode);
+};
+
 class TTTensorMemoryConfigPlanNode : public Object {
 public:
   ffi::String name;
@@ -1329,6 +1379,7 @@ public:
   ffi::String member_func;
   ffi::Array<TTMeshPlan> mesh_plans;
   ffi::Array<TTBufferDistributionPlan> buffer_distribution_plans;
+  ffi::Array<TTCollectivePlan> collective_plans;
   ffi::Array<TTTensorMemoryConfigPlan> tensor_memory_config_plans;
   ffi::Array<TTOpShardingContract> op_sharding_contracts;
   ffi::Array<TTPlacementResolutionPlan> placement_resolution_plans;
@@ -1367,6 +1418,7 @@ public:
   TTProgram(ffi::String entry_name, ffi::String member_func,
             ffi::Array<TTMeshPlan> mesh_plans,
             ffi::Array<TTBufferDistributionPlan> buffer_distribution_plans,
+            ffi::Array<TTCollectivePlan> collective_plans,
             ffi::Array<TTTensorMemoryConfigPlan> tensor_memory_config_plans,
             ffi::Array<TTOpShardingContract> op_sharding_contracts,
             ffi::Array<TTPlacementResolutionPlan> placement_resolution_plans,

@@ -695,6 +695,74 @@ struct BufferDistributionSpec {
   }
 };
 
+struct CollectivePlanSpec {
+  std::string name;
+  std::string operation_kind;
+  std::string mesh_plan;
+  int64_t mesh_plan_index = -1;
+  std::string source_buffer;
+  std::string target_buffer;
+  std::string source_buffer_distribution;
+  int64_t source_buffer_distribution_index = -1;
+  std::string target_buffer_distribution;
+  int64_t target_buffer_distribution_index = -1;
+  int64_t collective_axis = -1;
+  int64_t tensor_axis = -1;
+  int64_t split_axis = -1;
+  int64_t concat_axis = -1;
+  int64_t participant_count = 0;
+  std::string topology;
+  std::string reduce_op;
+  std::vector<int64_t> input_shape;
+  std::vector<int64_t> output_shape;
+  std::vector<int64_t> required_semaphore_plan_indices;
+  std::vector<int64_t> required_sync_plan_indices;
+  std::string admission_status;
+  std::string unsupported_reason;
+
+  void Save(dmlc::JSONWriter* writer) const {
+    writer->BeginObject();
+    writer->WriteObjectKeyValue("name", name);
+    writer->WriteObjectKeyValue("operation_kind", operation_kind);
+    writer->WriteObjectKeyValue("mesh_plan", mesh_plan);
+    writer->WriteObjectKeyValue("mesh_plan_index", mesh_plan_index);
+    writer->WriteObjectKeyValue("source_buffer", source_buffer);
+    writer->WriteObjectKeyValue("target_buffer", target_buffer);
+    writer->WriteObjectKeyValue("source_buffer_distribution",
+                                source_buffer_distribution);
+    writer->WriteObjectKeyValue("source_buffer_distribution_index",
+                                source_buffer_distribution_index);
+    writer->WriteObjectKeyValue("target_buffer_distribution",
+                                target_buffer_distribution);
+    writer->WriteObjectKeyValue("target_buffer_distribution_index",
+                                target_buffer_distribution_index);
+    writer->WriteObjectKeyValue("collective_axis", collective_axis);
+    writer->WriteObjectKeyValue("tensor_axis", tensor_axis);
+    writer->WriteObjectKeyValue("split_axis", split_axis);
+    writer->WriteObjectKeyValue("concat_axis", concat_axis);
+    writer->WriteObjectKeyValue("participant_count", participant_count);
+    writer->WriteObjectKeyValue("topology", topology);
+    if (!reduce_op.empty()) {
+      writer->WriteObjectKeyValue("reduce_op", reduce_op);
+    }
+    writer->WriteObjectKeyValue("input_shape", input_shape);
+    writer->WriteObjectKeyValue("output_shape", output_shape);
+    if (!required_semaphore_plan_indices.empty()) {
+      writer->WriteObjectKeyValue("required_semaphore_plan_indices",
+                                  required_semaphore_plan_indices);
+    }
+    if (!required_sync_plan_indices.empty()) {
+      writer->WriteObjectKeyValue("required_sync_plan_indices",
+                                  required_sync_plan_indices);
+    }
+    writer->WriteObjectKeyValue("admission_status", admission_status);
+    if (!unsupported_reason.empty()) {
+      writer->WriteObjectKeyValue("unsupported_reason", unsupported_reason);
+    }
+    writer->EndObject();
+  }
+};
+
 struct TensorMemoryConfigSpec {
   std::string name;
   std::string subject;
@@ -1164,6 +1232,7 @@ struct ExecutableSpec {
   CorePlan core_plan;
   std::vector<SemaphoreSpec> semaphores;
   std::vector<BufferDistributionSpec> buffer_distribution_plans;
+  std::vector<CollectivePlanSpec> collective_plans;
   std::vector<TensorMemoryConfigSpec> tensor_memory_config_plans;
   std::vector<ReshardPlanSpec> reshard_plans;
   std::vector<BufferMaterializationSpec> buffer_materializations;
@@ -1203,6 +1272,9 @@ struct ExecutableSpec {
     if (!buffer_distribution_plans.empty()) {
       writer->WriteObjectKeyValue("buffer_distribution_plans",
                                   buffer_distribution_plans);
+    }
+    if (!collective_plans.empty()) {
+      writer->WriteObjectKeyValue("collective_plans", collective_plans);
     }
     if (!tensor_memory_config_plans.empty()) {
       writer->WriteObjectKeyValue("tensor_memory_config_plans",

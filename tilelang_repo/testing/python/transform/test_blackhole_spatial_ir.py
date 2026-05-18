@@ -648,6 +648,7 @@ def _rebuild_tt_program(
     *,
     mesh_plans=None,
     buffer_distribution_plans=None,
+    collective_plans=None,
     tensor_memory_config_plans=None,
     op_sharding_contracts=None,
     placement_resolution_plans=None,
@@ -675,6 +676,9 @@ def _rebuild_tt_program(
         list(program.buffer_distribution_plans)
         if buffer_distribution_plans is None
         else buffer_distribution_plans,
+        list(program.collective_plans)
+        if collective_plans is None
+        else collective_plans,
         list(program.tensor_memory_config_plans)
         if tensor_memory_config_plans is None
         else tensor_memory_config_plans,
@@ -835,6 +839,112 @@ def _rebuild_tt_buffer_distribution_plan(
         str(plan.spatial_distribution_kind),
         str(plan.abi_layout),
         str(plan.abi_memory_space),
+    )
+
+
+def _make_t10_all_gather_collective_plan(program):
+    make_collective_plan = tvm.get_global_func("tl.TTCollectivePlan")
+    distributions = {
+        str(plan.buffer): (index, plan)
+        for index, plan in enumerate(program.buffer_distribution_plans)
+    }
+    source_index, source_distribution = distributions["A"]
+    target_index, target_distribution = distributions["B"]
+    return make_collective_plan(
+        "all_gather_A_to_B",
+        "all_gather",
+        str(program.mesh_plans[0].name),
+        0,
+        "A",
+        "B",
+        str(source_distribution.name),
+        source_index,
+        str(target_distribution.name),
+        target_index,
+        1,
+        3,
+        -1,
+        3,
+        2,
+        "linear",
+        "",
+        [1, 1, 32, 32],
+        [1, 1, 32, 64],
+        [],
+        [],
+        "unsupported",
+        "t10_1a_fabric_ccl_unavailable",
+    )
+
+
+def _prepare_t10_collective_tt_program_module():
+    mod = _prepare_blackhole_phase_b_module(grid_indexed_staged_copy_kernel(3, 2))
+    mod = _with_test_hardware_model(
+        mod,
+        logical_worker_grid_x=2,
+        logical_worker_grid_y=2,
+        functional_worker_count=4,
+        dram_view_count=8,
+        worker_l1_size=1572864,
+        l1_allocation_alignment_bytes=32,
+        mesh_shape=(1, 2),
+        device_range_start=(0, 0),
+        device_range_shape=(1, 2),
+        system_mesh_ref="test_system_mesh",
+    )
+    mod = tilelang.transform.PlanTTBlocks()(mod)
+    mod = tilelang.transform.SelectBlackholeTTMetalBuiltins()(mod)
+    mod = tilelang.transform.PlanTTCompute()(mod)
+    mod = tilelang.transform.PlanTTTransport()(mod)
+    mod = tilelang.transform.PlanTTSync()(mod)
+    mod = tilelang.transform.PlanTTABI()(mod)
+    mod = tilelang.transform.PlanTTExecution()(mod)
+    return tilelang.transform.BuildTTProgram()(mod)
+
+
+def _rebuild_tt_collective_plan(
+    plan,
+    *,
+    name=None,
+    operation_kind=None,
+    topology=None,
+    reduce_op=None,
+    input_shape=None,
+    output_shape=None,
+    split_axis=None,
+    concat_axis=None,
+    admission_status=None,
+    unsupported_reason=None,
+):
+    make_collective_plan = tvm.get_global_func("tl.TTCollectivePlan")
+    return make_collective_plan(
+        str(plan.name) if name is None else name,
+        str(plan.operation_kind) if operation_kind is None else operation_kind,
+        str(plan.mesh_plan),
+        int(plan.mesh_plan_index),
+        str(plan.source_buffer),
+        str(plan.target_buffer),
+        str(plan.source_buffer_distribution),
+        int(plan.source_buffer_distribution_index),
+        str(plan.target_buffer_distribution),
+        int(plan.target_buffer_distribution_index),
+        int(plan.collective_axis),
+        int(plan.tensor_axis),
+        int(plan.split_axis) if split_axis is None else split_axis,
+        int(plan.concat_axis) if concat_axis is None else concat_axis,
+        int(plan.participant_count),
+        str(plan.topology) if topology is None else topology,
+        str(plan.reduce_op) if reduce_op is None else reduce_op,
+        list(plan.input_shape) if input_shape is None else input_shape,
+        list(plan.output_shape) if output_shape is None else output_shape,
+        list(plan.required_semaphore_plan_indices),
+        list(plan.required_sync_plan_indices),
+        str(plan.admission_status)
+        if admission_status is None
+        else admission_status,
+        str(plan.unsupported_reason)
+        if unsupported_reason is None
+        else unsupported_reason,
     )
 
 
@@ -1153,6 +1263,7 @@ def _assert_no_tt_plan_payload_surface(tt_program):
     plan_groups = (
         tt_program.mesh_plans,
         tt_program.buffer_distribution_plans,
+        tt_program.collective_plans,
         tt_program.tensor_memory_config_plans,
         tt_program.op_sharding_contracts,
         tt_program.placement_resolution_plans,
@@ -1237,7 +1348,7 @@ def test_modern_cpp_audit_blackhole_serialization_contract_is_real():
 
     assert "opaque imported runtime modules" in header
     assert "kBinarySerializable | ffi::Module::kRunnable" in header
-    assert "tilelang.blackhole.module.v6" in source
+    assert "tilelang.blackhole.module.v7" in source
     assert "WriteExecutableSpecMap(stream, fmap_)" in source
     assert "ReadExecutableSpecMap(stream)" in source
     assert "ffi.Module.load_from_bytes.blackhole" in source
@@ -3485,6 +3596,137 @@ def test_t10_mesh_placement_uses_hardware_model_device_range():
     assert str(core_plan["mesh_plan"]) == "system_mesh"
     assert int(core_plan["mesh_plan_index"]) == 0
     assert tuple(int(dim) for dim in core_plan["device_range_shape"]) == (2, 1)
+
+
+def test_t10_collective_plan_projects_all_gather_owner_truth():
+    mod = _prepare_t10_collective_tt_program_module()
+    main = mod["main"]
+    tt_program = main.attrs["tl.tt_program"]
+    collective_plan = _make_t10_all_gather_collective_plan(tt_program)
+    with_collective = tvm.IRModule(
+        {
+            "main": main.with_attr(
+                "tl.tt_program",
+                _rebuild_tt_program(
+                    tt_program,
+                    collective_plans=[collective_plan],
+                ),
+            )
+        },
+        global_infos=mod.global_infos,
+    )
+
+    with_collective = tilelang.transform.ValidateTTProgram()(with_collective)
+    projected = tilelang.transform.MaterializeBlackholeExecutable()(with_collective)
+    executable = projected["main"].attrs["tl.blackhole_executable"]
+    assert "collective_plans" in executable
+    assert len(executable["collective_plans"]) == 1
+    projected_collective = executable["collective_plans"][0]
+    assert str(projected_collective["operation_kind"]) == "all_gather"
+    assert str(projected_collective["mesh_plan"]) == "system_mesh"
+    assert int(projected_collective["mesh_plan_index"]) == 0
+    assert str(projected_collective["source_buffer"]) == "A"
+    assert str(projected_collective["target_buffer"]) == "B"
+    assert int(projected_collective["participant_count"]) == 2
+    assert str(projected_collective["admission_status"]) == "unsupported"
+    assert (
+        str(projected_collective["unsupported_reason"])
+        == "t10_1a_fabric_ccl_unavailable"
+    )
+
+
+def test_validate_tt_program_rejects_collective_without_topology():
+    mod = _prepare_t10_collective_tt_program_module()
+    main = mod["main"]
+    tt_program = main.attrs["tl.tt_program"]
+    bad_collective_plan = _rebuild_tt_collective_plan(
+        _make_t10_all_gather_collective_plan(tt_program),
+        topology="",
+    )
+    broken = tvm.IRModule(
+        {
+            "main": main.with_attr(
+                "tl.tt_program",
+                _rebuild_tt_program(
+                    tt_program,
+                    collective_plans=[bad_collective_plan],
+                ),
+            )
+        },
+        global_infos=mod.global_infos,
+    )
+
+    with pytest.raises(Exception, match="TTCollectivePlan.*topology"):
+        tilelang.transform.ValidateTTProgram()(broken)
+
+
+def test_validate_tt_program_rejects_all_gather_shape_mismatch():
+    mod = _prepare_t10_collective_tt_program_module()
+    main = mod["main"]
+    tt_program = main.attrs["tl.tt_program"]
+    bad_collective_plan = _rebuild_tt_collective_plan(
+        _make_t10_all_gather_collective_plan(tt_program),
+        output_shape=[1, 1, 32, 32],
+    )
+    broken = tvm.IRModule(
+        {
+            "main": main.with_attr(
+                "tl.tt_program",
+                _rebuild_tt_program(
+                    tt_program,
+                    collective_plans=[bad_collective_plan],
+                ),
+            )
+        },
+        global_infos=mod.global_infos,
+    )
+
+    with pytest.raises(Exception, match="all_gather.*output_shape"):
+        tilelang.transform.ValidateTTProgram()(broken)
+
+
+def test_t10_collective_plan_accepts_reduce_scatter_and_all_to_all():
+    mod = _prepare_t10_collective_tt_program_module()
+    main = mod["main"]
+    tt_program = main.attrs["tl.tt_program"]
+    base_plan = _make_t10_all_gather_collective_plan(tt_program)
+    reduce_scatter = _rebuild_tt_collective_plan(
+        base_plan,
+        name="reduce_scatter_A_to_B",
+        operation_kind="reduce_scatter",
+        reduce_op="sum",
+        input_shape=[1, 1, 32, 64],
+        output_shape=[1, 1, 32, 32],
+    )
+    all_to_all = _rebuild_tt_collective_plan(
+        base_plan,
+        name="all_to_all_A_to_B",
+        operation_kind="all_to_all",
+        input_shape=[1, 1, 64, 32],
+        output_shape=[1, 1, 32, 64],
+        split_axis=2,
+        concat_axis=3,
+    )
+    with_collectives = tvm.IRModule(
+        {
+            "main": main.with_attr(
+                "tl.tt_program",
+                _rebuild_tt_program(
+                    tt_program,
+                    collective_plans=[reduce_scatter, all_to_all],
+                ),
+            )
+        },
+        global_infos=mod.global_infos,
+    )
+
+    with_collectives = tilelang.transform.ValidateTTProgram()(with_collectives)
+    projected = tilelang.transform.MaterializeBlackholeExecutable()(with_collectives)
+    executable = projected["main"].attrs["tl.blackhole_executable"]
+    operation_kinds = {
+        str(plan["operation_kind"]) for plan in executable["collective_plans"]
+    }
+    assert operation_kinds == {"reduce_scatter", "all_to_all"}
 
 
 def test_t10_mesh_placement_uses_blackhole_target_attrs():

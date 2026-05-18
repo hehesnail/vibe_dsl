@@ -67,7 +67,7 @@ static std::string EncodeExecutableSpecMetadata(const ExecutableSpec& spec) {
 }
 
 static constexpr const char* kBlackholeModuleSerializationMagic =
-    "tilelang.blackhole.module.v6";
+    "tilelang.blackhole.module.v7";
 
 static uint64_t ReadUInt64(dmlc::Stream* stream, const char* field) {
   uint64_t value = 0;
@@ -799,6 +799,70 @@ static BufferDistributionSpec ReadBufferDistributionSpec(dmlc::Stream* stream) {
   return spec;
 }
 
+static void WriteCollectivePlanSpec(dmlc::Stream* stream,
+                                    const CollectivePlanSpec& spec) {
+  WriteString(stream, spec.name);
+  WriteString(stream, spec.operation_kind);
+  WriteString(stream, spec.mesh_plan);
+  WriteInt64(stream, spec.mesh_plan_index);
+  WriteString(stream, spec.source_buffer);
+  WriteString(stream, spec.target_buffer);
+  WriteString(stream, spec.source_buffer_distribution);
+  WriteInt64(stream, spec.source_buffer_distribution_index);
+  WriteString(stream, spec.target_buffer_distribution);
+  WriteInt64(stream, spec.target_buffer_distribution_index);
+  WriteInt64(stream, spec.collective_axis);
+  WriteInt64(stream, spec.tensor_axis);
+  WriteInt64(stream, spec.split_axis);
+  WriteInt64(stream, spec.concat_axis);
+  WriteInt64(stream, spec.participant_count);
+  WriteString(stream, spec.topology);
+  WriteString(stream, spec.reduce_op);
+  WriteInt64Vector(stream, spec.input_shape);
+  WriteInt64Vector(stream, spec.output_shape);
+  WriteInt64Vector(stream, spec.required_semaphore_plan_indices);
+  WriteInt64Vector(stream, spec.required_sync_plan_indices);
+  WriteString(stream, spec.admission_status);
+  WriteString(stream, spec.unsupported_reason);
+}
+
+static CollectivePlanSpec ReadCollectivePlanSpec(dmlc::Stream* stream) {
+  CollectivePlanSpec spec;
+  spec.name = ReadString(stream, "collective_plan.name");
+  spec.operation_kind = ReadString(stream, "collective_plan.operation_kind");
+  spec.mesh_plan = ReadString(stream, "collective_plan.mesh_plan");
+  spec.mesh_plan_index = ReadInt64(stream, "collective_plan.mesh_plan_index");
+  spec.source_buffer = ReadString(stream, "collective_plan.source_buffer");
+  spec.target_buffer = ReadString(stream, "collective_plan.target_buffer");
+  spec.source_buffer_distribution =
+      ReadString(stream, "collective_plan.source_buffer_distribution");
+  spec.source_buffer_distribution_index =
+      ReadInt64(stream, "collective_plan.source_buffer_distribution_index");
+  spec.target_buffer_distribution =
+      ReadString(stream, "collective_plan.target_buffer_distribution");
+  spec.target_buffer_distribution_index =
+      ReadInt64(stream, "collective_plan.target_buffer_distribution_index");
+  spec.collective_axis = ReadInt64(stream, "collective_plan.collective_axis");
+  spec.tensor_axis = ReadInt64(stream, "collective_plan.tensor_axis");
+  spec.split_axis = ReadInt64(stream, "collective_plan.split_axis");
+  spec.concat_axis = ReadInt64(stream, "collective_plan.concat_axis");
+  spec.participant_count =
+      ReadInt64(stream, "collective_plan.participant_count");
+  spec.topology = ReadString(stream, "collective_plan.topology");
+  spec.reduce_op = ReadString(stream, "collective_plan.reduce_op");
+  spec.input_shape = ReadInt64Vector(stream, "collective_plan.input_shape");
+  spec.output_shape = ReadInt64Vector(stream, "collective_plan.output_shape");
+  spec.required_semaphore_plan_indices = ReadInt64Vector(
+      stream, "collective_plan.required_semaphore_plan_indices");
+  spec.required_sync_plan_indices =
+      ReadInt64Vector(stream, "collective_plan.required_sync_plan_indices");
+  spec.admission_status =
+      ReadString(stream, "collective_plan.admission_status");
+  spec.unsupported_reason =
+      ReadString(stream, "collective_plan.unsupported_reason");
+  return spec;
+}
+
 static void WriteTensorMemoryConfigSpec(dmlc::Stream* stream,
                                         const TensorMemoryConfigSpec& spec) {
   WriteString(stream, spec.name);
@@ -1240,6 +1304,8 @@ static void WriteExecutableSpec(dmlc::Stream* stream, const ExecutableSpec& spec
   WriteVectorField<SemaphoreSpec>(stream, spec.semaphores, WriteSemaphoreSpec);
   WriteVectorField<BufferDistributionSpec>(
       stream, spec.buffer_distribution_plans, WriteBufferDistributionSpec);
+  WriteVectorField<CollectivePlanSpec>(
+      stream, spec.collective_plans, WriteCollectivePlanSpec);
   WriteVectorField<TensorMemoryConfigSpec>(
       stream, spec.tensor_memory_config_plans, WriteTensorMemoryConfigSpec);
   WriteVectorField<ReshardPlanSpec>(
@@ -1284,6 +1350,8 @@ static ExecutableSpec ReadExecutableSpec(dmlc::Stream* stream) {
       stream, "executable.semaphores", ReadSemaphoreSpec);
   spec.buffer_distribution_plans = ReadVectorField<BufferDistributionSpec>(
       stream, "executable.buffer_distribution_plans", ReadBufferDistributionSpec);
+  spec.collective_plans = ReadVectorField<CollectivePlanSpec>(
+      stream, "executable.collective_plans", ReadCollectivePlanSpec);
   spec.tensor_memory_config_plans = ReadVectorField<TensorMemoryConfigSpec>(
       stream, "executable.tensor_memory_config_plans", ReadTensorMemoryConfigSpec);
   spec.reshard_plans = ReadVectorField<ReshardPlanSpec>(
@@ -4335,6 +4403,163 @@ static void ValidateExecutableSpecBufferDistributionPlans(const std::string& fun
   }
 }
 
+static int64_t ShapeAt(const std::vector<int64_t>& shape, int64_t axis,
+                       const std::string& context) {
+  ICHECK_GE(axis, 0) << context << " requires non-negative axis";
+  ICHECK_LT(axis, static_cast<int64_t>(shape.size()))
+      << context << " axis out of bounds";
+  return shape[static_cast<size_t>(axis)];
+}
+
+static int64_t ShapeProduct(const std::vector<int64_t>& shape) {
+  int64_t product = 1;
+  for (int64_t value : shape) {
+    product *= value;
+  }
+  return product;
+}
+
+static void ValidateExecutableSpecCollectivePlans(
+    const std::string& func_name, const ExecutableSpec& spec) {
+  std::unordered_map<std::string, int64_t> mesh_index_by_name;
+  for (int64_t index = 0; index < static_cast<int64_t>(spec.mesh_plans.size());
+       ++index) {
+    mesh_index_by_name.emplace(spec.mesh_plans[static_cast<size_t>(index)].name,
+                               index);
+  }
+  std::unordered_map<std::string, int64_t> distribution_index_by_name;
+  for (int64_t index = 0;
+       index < static_cast<int64_t>(spec.buffer_distribution_plans.size());
+       ++index) {
+    distribution_index_by_name.emplace(
+        spec.buffer_distribution_plans[static_cast<size_t>(index)].name,
+        index);
+  }
+  for (const auto& plan : spec.collective_plans) {
+    ICHECK(!plan.name.empty())
+        << "Blackhole executable collective plan requires name for "
+        << func_name;
+    ICHECK(plan.operation_kind == "all_gather" ||
+           plan.operation_kind == "reduce_scatter" ||
+           plan.operation_kind == "all_to_all")
+        << "Blackhole executable collective plan " << plan.name
+        << " has unsupported operation_kind " << plan.operation_kind;
+    ICHECK(!plan.mesh_plan.empty())
+        << "Blackhole executable collective plan " << plan.name
+        << " requires mesh_plan";
+    auto mesh_it = mesh_index_by_name.find(plan.mesh_plan);
+    ICHECK(mesh_it != mesh_index_by_name.end())
+        << "Blackhole executable collective plan " << plan.name
+        << " references unknown mesh_plan";
+    ICHECK_EQ(plan.mesh_plan_index, mesh_it->second)
+        << "Blackhole executable collective plan " << plan.name
+        << " mesh_plan_index must match mesh_plan";
+    ICHECK_GE(plan.collective_axis, 0)
+        << "Blackhole executable collective plan " << plan.name
+        << " requires collective_axis";
+    const auto& mesh = spec.mesh_plans[static_cast<size_t>(plan.mesh_plan_index)];
+    ICHECK_LT(plan.collective_axis, static_cast<int64_t>(mesh.mesh_shape.size()))
+        << "Blackhole executable collective plan " << plan.name
+        << " collective_axis out of bounds";
+    ICHECK_GE(plan.participant_count, 2)
+        << "Blackhole executable collective plan " << plan.name
+        << " requires participant_count >= 2";
+    ICHECK(!plan.topology.empty())
+        << "Blackhole executable collective plan " << plan.name
+        << " requires topology";
+    ICHECK_LE(plan.participant_count,
+              mesh.mesh_shape[static_cast<size_t>(plan.collective_axis)])
+        << "Blackhole executable collective plan " << plan.name
+        << " participant_count must fit mesh collective axis";
+    auto source_dist_it =
+        distribution_index_by_name.find(plan.source_buffer_distribution);
+    auto target_dist_it =
+        distribution_index_by_name.find(plan.target_buffer_distribution);
+    ICHECK(source_dist_it != distribution_index_by_name.end())
+        << "Blackhole executable collective plan " << plan.name
+        << " references unknown source distribution";
+    ICHECK(target_dist_it != distribution_index_by_name.end())
+        << "Blackhole executable collective plan " << plan.name
+        << " references unknown target distribution";
+    ICHECK_EQ(plan.source_buffer_distribution_index, source_dist_it->second)
+        << "Blackhole executable collective plan " << plan.name
+        << " source distribution index must match";
+    ICHECK_EQ(plan.target_buffer_distribution_index, target_dist_it->second)
+        << "Blackhole executable collective plan " << plan.name
+        << " target distribution index must match";
+    const auto& source_distribution =
+        spec.buffer_distribution_plans[static_cast<size_t>(
+            plan.source_buffer_distribution_index)];
+    const auto& target_distribution =
+        spec.buffer_distribution_plans[static_cast<size_t>(
+            plan.target_buffer_distribution_index)];
+    ICHECK_EQ(source_distribution.buffer, plan.source_buffer)
+        << "Blackhole executable collective plan " << plan.name
+        << " source distribution buffer must match source_buffer";
+    ICHECK_EQ(target_distribution.buffer, plan.target_buffer)
+        << "Blackhole executable collective plan " << plan.name
+        << " target distribution buffer must match target_buffer";
+    ICHECK_EQ(source_distribution.mesh_plan, plan.mesh_plan)
+        << "Blackhole executable collective plan " << plan.name
+        << " source distribution mesh must match collective mesh";
+    ICHECK_EQ(target_distribution.mesh_plan, plan.mesh_plan)
+        << "Blackhole executable collective plan " << plan.name
+        << " target distribution mesh must match collective mesh";
+    ICHECK(HasPositiveShape(plan.input_shape))
+        << "Blackhole executable collective plan " << plan.name
+        << " requires input_shape";
+    ICHECK(HasPositiveShape(plan.output_shape))
+        << "Blackhole executable collective plan " << plan.name
+        << " requires output_shape";
+    ICHECK_EQ(plan.input_shape.size(), plan.output_shape.size())
+        << "Blackhole executable collective plan " << plan.name
+        << " input/output ranks must match";
+    const int64_t input_axis =
+        ShapeAt(plan.input_shape, plan.tensor_axis, "collective tensor_axis");
+    const int64_t output_axis =
+        ShapeAt(plan.output_shape, plan.tensor_axis, "collective tensor_axis");
+    if (plan.operation_kind == "all_gather") {
+      ICHECK_EQ(output_axis, input_axis * plan.participant_count)
+          << "Blackhole executable all_gather collective plan " << plan.name
+          << " has invalid shape equation";
+    } else if (plan.operation_kind == "reduce_scatter") {
+      ICHECK_EQ(input_axis, output_axis * plan.participant_count)
+          << "Blackhole executable reduce_scatter collective plan " << plan.name
+          << " has invalid shape equation";
+      ICHECK(!plan.reduce_op.empty())
+          << "Blackhole executable reduce_scatter collective plan "
+          << plan.name << " requires reduce_op";
+    } else {
+      const int64_t split_dim =
+          ShapeAt(plan.input_shape, plan.split_axis, "collective split_axis");
+      const int64_t concat_dim =
+          ShapeAt(plan.output_shape, plan.concat_axis, "collective concat_axis");
+      ICHECK_EQ(split_dim % plan.participant_count, 0)
+          << "Blackhole executable all_to_all collective plan " << plan.name
+          << " split dimension must divide participant_count";
+      ICHECK_EQ(concat_dim % plan.participant_count, 0)
+          << "Blackhole executable all_to_all collective plan " << plan.name
+          << " concat dimension must divide participant_count";
+      ICHECK_EQ(ShapeProduct(plan.input_shape), ShapeProduct(plan.output_shape))
+          << "Blackhole executable all_to_all collective plan " << plan.name
+          << " must preserve element count";
+    }
+    ICHECK(plan.admission_status == "admitted" ||
+           plan.admission_status == "unsupported")
+        << "Blackhole executable collective plan " << plan.name
+        << " has invalid admission_status";
+    if (plan.admission_status == "admitted") {
+      ICHECK(plan.unsupported_reason.empty())
+          << "Blackhole executable admitted collective plan " << plan.name
+          << " cannot carry unsupported_reason";
+    } else {
+      ICHECK(!plan.unsupported_reason.empty())
+          << "Blackhole executable unsupported collective plan " << plan.name
+          << " requires unsupported_reason";
+    }
+  }
+}
+
 static bool IsShardedTensorMemoryLayout(const std::string& layout) {
   return layout == "HEIGHT_SHARDED" || layout == "WIDTH_SHARDED" ||
          layout == "BLOCK_SHARDED" || layout == "ND_SHARDED";
@@ -4556,6 +4781,7 @@ BlackholeModuleNode::BlackholeModuleNode(
     ValidateExecutableSpecMeshPlans(entry.first, entry.second);
     ValidateExecutableSpecCorePlan(entry.first, entry.second);
     ValidateExecutableSpecBufferDistributionPlans(entry.first, entry.second);
+    ValidateExecutableSpecCollectivePlans(entry.first, entry.second);
     ValidateExecutableSpecPlacementRecords(entry.first, entry.second);
     ValidateExecutableSpecSynchronizationSchema(entry.first, entry.second);
   }

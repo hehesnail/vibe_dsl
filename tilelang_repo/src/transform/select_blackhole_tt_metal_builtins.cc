@@ -23,6 +23,7 @@ TTProgram WithStagedCBAndComputeOpPlans(const TTProgram& program,
                                         ffi::Array<TTKernel> kernel_seeds) {
   return TTProgram(program->entry_name, program->member_func, program->mesh_plans,
                    program->buffer_distribution_plans,
+                   program->collective_plans,
                    program->tensor_memory_config_plans,
                    program->op_sharding_contracts,
                    program->placement_resolution_plans, program->reshard_plans,

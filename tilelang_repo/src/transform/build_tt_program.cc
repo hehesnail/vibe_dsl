@@ -452,6 +452,7 @@ struct TTProgramSlices {
   String member_func;
   Array<TTMeshPlan> mesh_plans;
   Array<TTBufferDistributionPlan> buffer_distribution_plans;
+  Array<TTCollectivePlan> collective_plans;
   Array<TTTensorMemoryConfigPlan> tensor_memory_config_plans;
   Array<TTOpShardingContract> op_sharding_contracts;
   Array<TTPlacementResolutionPlan> placement_resolution_plans;
@@ -487,6 +488,7 @@ TTProgramSlices UnpackTTProgram(const TTProgram &program) {
   slices.member_func = program->member_func;
   slices.mesh_plans = program->mesh_plans;
   slices.buffer_distribution_plans = program->buffer_distribution_plans;
+  slices.collective_plans = program->collective_plans;
   slices.tensor_memory_config_plans = program->tensor_memory_config_plans;
   slices.op_sharding_contracts = program->op_sharding_contracts;
   slices.placement_resolution_plans = program->placement_resolution_plans;
@@ -521,6 +523,7 @@ TTProgram PackTTProgram(TTProgramSlices slices) {
   return TTProgram(
       std::move(slices.entry_name), std::move(slices.member_func),
       std::move(slices.mesh_plans), std::move(slices.buffer_distribution_plans),
+      std::move(slices.collective_plans),
       std::move(slices.tensor_memory_config_plans),
       std::move(slices.op_sharding_contracts),
       std::move(slices.placement_resolution_plans),

@@ -1401,6 +1401,103 @@ static std::vector<BufferDistributionSpec> ExtractBufferDistributionPlans(
   return plans;
 }
 
+static std::vector<CollectivePlanSpec> ExtractCollectivePlans(
+    const tir::PrimFunc& f) {
+  std::vector<CollectivePlanSpec> plans;
+  auto items = tl::tt_program_projection::GetExecutableArrayField(
+      f, "Blackhole executable spec extraction",
+      tl::tt_program_projection::executable_key::kCollectivePlans);
+  for (const auto& item_any : items) {
+    auto item = RequireMap(item_any, "Blackhole executable collective_plans item");
+    CollectivePlanSpec plan;
+    if (auto value = item.Get("name")) plan.name = Downcast<String>(value.value());
+    if (auto value = item.Get("operation_kind")) {
+      plan.operation_kind = Downcast<String>(value.value());
+    }
+    if (auto value = item.Get("mesh_plan")) {
+      plan.mesh_plan = Downcast<String>(value.value());
+    }
+    if (auto value = item.Get("mesh_plan_index")) {
+      plan.mesh_plan_index = Downcast<Integer>(value.value())->value;
+    }
+    if (auto value = item.Get("source_buffer")) {
+      plan.source_buffer = Downcast<String>(value.value());
+    }
+    if (auto value = item.Get("target_buffer")) {
+      plan.target_buffer = Downcast<String>(value.value());
+    }
+    if (auto value = item.Get("source_buffer_distribution")) {
+      plan.source_buffer_distribution = Downcast<String>(value.value());
+    }
+    if (auto value = item.Get("source_buffer_distribution_index")) {
+      plan.source_buffer_distribution_index =
+          Downcast<Integer>(value.value())->value;
+    }
+    if (auto value = item.Get("target_buffer_distribution")) {
+      plan.target_buffer_distribution = Downcast<String>(value.value());
+    }
+    if (auto value = item.Get("target_buffer_distribution_index")) {
+      plan.target_buffer_distribution_index =
+          Downcast<Integer>(value.value())->value;
+    }
+    if (auto value = item.Get("collective_axis")) {
+      plan.collective_axis = Downcast<Integer>(value.value())->value;
+    }
+    if (auto value = item.Get("tensor_axis")) {
+      plan.tensor_axis = Downcast<Integer>(value.value())->value;
+    }
+    if (auto value = item.Get("split_axis")) {
+      plan.split_axis = Downcast<Integer>(value.value())->value;
+    }
+    if (auto value = item.Get("concat_axis")) {
+      plan.concat_axis = Downcast<Integer>(value.value())->value;
+    }
+    if (auto value = item.Get("participant_count")) {
+      plan.participant_count = Downcast<Integer>(value.value())->value;
+    }
+    if (auto value = item.Get("topology")) {
+      plan.topology = Downcast<String>(value.value());
+    }
+    if (auto value = item.Get("reduce_op")) {
+      plan.reduce_op = Downcast<String>(value.value());
+    }
+    plan.input_shape = ExtractIntegerVector(item, "input_shape");
+    plan.output_shape = ExtractIntegerVector(item, "output_shape");
+    plan.required_semaphore_plan_indices =
+        ExtractIntegerVector(item, "required_semaphore_plan_indices");
+    plan.required_sync_plan_indices =
+        ExtractIntegerVector(item, "required_sync_plan_indices");
+    if (auto value = item.Get("admission_status")) {
+      plan.admission_status = Downcast<String>(value.value());
+    }
+    if (auto value = item.Get("unsupported_reason")) {
+      plan.unsupported_reason = Downcast<String>(value.value());
+    }
+    ICHECK(!plan.name.empty())
+        << "Blackhole executable collective_plans item requires name";
+    ICHECK(!plan.operation_kind.empty())
+        << "Blackhole executable collective_plans item requires operation_kind";
+    ICHECK(!plan.mesh_plan.empty())
+        << "Blackhole executable collective_plans item requires mesh_plan";
+    ICHECK_GE(plan.mesh_plan_index, 0)
+        << "Blackhole executable collective_plans item requires mesh_plan_index";
+    ICHECK(!plan.source_buffer.empty())
+        << "Blackhole executable collective_plans item requires source_buffer";
+    ICHECK(!plan.target_buffer.empty())
+        << "Blackhole executable collective_plans item requires target_buffer";
+    ICHECK(!plan.source_buffer_distribution.empty())
+        << "Blackhole executable collective_plans item requires source distribution";
+    ICHECK(!plan.target_buffer_distribution.empty())
+        << "Blackhole executable collective_plans item requires target distribution";
+    ICHECK(HasPositiveIntegerShape(plan.input_shape))
+        << "Blackhole executable collective_plans item requires input_shape";
+    ICHECK(HasPositiveIntegerShape(plan.output_shape))
+        << "Blackhole executable collective_plans item requires output_shape";
+    plans.push_back(std::move(plan));
+  }
+  return plans;
+}
+
 static std::vector<TensorMemoryConfigSpec> ExtractTensorMemoryConfigPlans(
     const tir::PrimFunc& f) {
   std::vector<TensorMemoryConfigSpec> plans;
@@ -2192,6 +2289,7 @@ static ExecutableSpec ExtractExecutableSpecFromDeviceFunc(const tir::PrimFunc& f
   ValidateExtractedCorePlan(spec.core_plan, entry_name);
   spec.semaphores = ExtractSemaphorePlan(f);
   spec.buffer_distribution_plans = ExtractBufferDistributionPlans(f);
+  spec.collective_plans = ExtractCollectivePlans(f);
   spec.tensor_memory_config_plans = ExtractTensorMemoryConfigPlans(f);
   spec.reshard_plans = ExtractReshardPlans(f);
   spec.runtime_args = ExtractRuntimeArgs(f);
@@ -2211,6 +2309,11 @@ static ExecutableSpec ExtractExecutableSpecFromDeviceFunc(const tir::PrimFunc& f
         &spec.direct_runtime_unsupported_reasons,
         "non-unit or multi-device mesh placement is not admitted by direct runtime; "
         "T10 distributed movement requires typed CCL/NoC scheduling");
+  }
+  if (!spec.collective_plans.empty()) {
+    AppendUniqueUnsupportedReason(
+        &spec.direct_runtime_unsupported_reasons,
+        "collective_plans require T10.1 CCL runtime correctness support");
   }
   ExtractSegmentPlan(f, &spec);
   return spec;
