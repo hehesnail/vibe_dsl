@@ -80,7 +80,8 @@ For the current single-card direct-runtime admissible protocol:
   distribution
 - `scratch_lifetime = one_producer_wave`
 - `transport_kind = device_tile_add`
-- `route_kind = local_same_device_sharded_tile`
+- `route_kind = local_same_device_sharded_tile` for sharded L1 targets or
+  `local_same_device_interleaved_tile` for interleaved DRAM targets
 - `accumulation_order = ascending_producer_id`
 - `final_writer_timing = producer_0_writes_final_then_later_producers_reduce`
 - `final_writer_producer = 0`
@@ -144,6 +145,41 @@ may cover multiple logical output tiles per resident shard.  The verified
 `shard_shape=(64,64)` so the `400` logical output tiles are covered by `100`
 resident L1 shards plus temporal work/reduction.
 
+Shape-general correctness must not depend on the full logical C tensor being
+resident in L1.  When the full output shape cannot fit as an admitted sharded
+L1 resident view under the active CB/L1 budget, the admitted typed path is an
+interleaved DRAM output/scratch reducer:
+
+- target buffer distribution is `interleaved` / `DRAM` with
+  `interleaved_linear_page` indexing;
+- scratch layout and memory space match the target distribution;
+- route kind is `local_same_device_interleaved_tile`;
+- producer shards still run in ascending z order, producer 0 writes final C,
+  later producers write the typed scratch buffer, and runtime reduces scratch
+  pages into final C using the admitted reducer plan.
+
+This makes large MNK support a memory-placement decision rather than a new
+workload-specific semantic path: L1 sharded resident outputs remain supported
+when they fit; larger full-output tensors use DRAM as the full tensor owner
+and L1 only as the kernel staging/CB working set.
+
+Large MNK support also must not be modeled as "increase the logical output
+grid until it is large."  For shapes beyond the one-output-tile-per-work-item
+form, the logical/core grid stays within the available core budget and each
+work item may cover multiple C tiles using explicit core-internal M/N serial
+loops.  When a producer's K shard is larger than the working CB window, that
+same work item also loops over K chunks before publishing its partial C
+tiles.  The direct runtime reduces interleaved DRAM partial-K scratch by
+adding the full output scratch buffer into final C after each nonzero
+producer shard, because a single work item may have written many output
+pages.
+
+Compute-side CB lifetime must follow the explicit reader/compute events in
+that core-internal loop form.  Repeated serial loops are not proof that input
+CB pages are invariant: retaining A/B pages across a local output-tile loop
+can replay stale tiles.  The admitted path therefore uses the ordinary
+per-consume pop/reacquire protocol for compute input CB pages.
+
 If a K-sharded GEMM reaches runtime without an admitted matching reducer plan,
 the executable must fail closed with a typed unsupported reason before
 launching.  Runtime must not fall back to the old implicit z-wave inference.
@@ -164,6 +200,11 @@ This slice is verified by:
   `20x20x4` output grids with C resident grid `10x10` /
   `shard_shape=(64,64)` run through direct runtime and match the torch bf16
   reference;
+- large MNK DRAM-output guard proving `M=N=512,K=2048,k_shards=4` runs on a
+  bounded `4x4x4` logical/core grid, assigns `4x4` output tiles to each core,
+  tiles each K shard as two `k_tile=256` chunks, runs through direct runtime
+  with an interleaved DRAM output/scratch reducer, and matches the torch bf16
+  reference;
 - compile gate: `cmake --build build -j32`.
 
 ## Completion Criteria
@@ -173,7 +214,9 @@ owned by `TTReducerPlan -> ExecutableSpec.reducer_plans`, positive direct
 runtime correctness still passes for bf16 partial-K GEMM, temporal output
 waves do not return wrong values, malformed or missing reducer contracts fail
 closed, and the old implicit reducer inference is no longer a public runtime
-protocol.  Fully device-side temporal reducer ownership remains a future
-resource-planning expansion, but the current single-card direct runtime owns
-correctness for the admitted `13x10x4` temporal-wave subset and the larger
-`20x20x4` logical-grid / capped-resident-grid subset.
+protocol.  Fully device-side temporal sharded-L1 window ownership remains a
+future resource-planning expansion, but the current single-card direct
+runtime owns correctness for the admitted `13x10x4` temporal-wave subset, the
+larger `20x20x4` logical-grid / capped-resident-grid subset, and larger MNK
+core-tiled full-output tensors through the interleaved DRAM output/scratch
+reducer path.

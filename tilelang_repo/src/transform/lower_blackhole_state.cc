@@ -2227,16 +2227,13 @@ bool PlanTTKernelABI::ShouldRetainComputeInputBufferAcrossSerialLoop(
   if (!buffer.defined() || consumed_pages <= 0 || !HasRepeatingActiveSerialLoop()) {
     return false;
   }
-  const int requirement_index = FindRequirementIndexForBuffer(buffer);
-  if (requirement_index < 0 ||
-      requirement_index >= static_cast<int>(cb_requirements_.size())) {
-    return false;
-  }
-  const CBRequirement& req = cb_requirements_.at(requirement_index);
-  if (req.type != CBType::kInput || GetStorageScope(buffer) == "blackhole.acc") {
-    return false;
-  }
-  return true;
+  // A repeated serial loop in the selected compute body does not by itself
+  // prove that an input CB page is loop invariant.  Core-internal tiled GEMM
+  // may read a fresh A/B window for each local output tile while the compute
+  // segment still contains nested serial loops.  Retaining those input pages
+  // across the loop replays stale tiles and corrupts values; let the ordinary
+  // per-consume pop/reacquire protocol track the explicit reader events.
+  return false;
 }
 
 bool PlanTTKernelABI::HasRepeatingActiveSerialLoop() const {

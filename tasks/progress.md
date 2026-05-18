@@ -105,6 +105,15 @@
   multiple logical output tiles per resident shard.  The `13x10x4` and
   `20x20x4` bf16 cases now check these paths through TT-Sim instead of
   publishing a fail-closed temporal reason or returning silent wrong values.
+  Shape-general large MNK correctness is not defined by making the logical
+  output grid huge.  The admitted large-shape path keeps the logical/core
+  grid bounded by available cores, lets each work item cover multiple output
+  tiles through core-internal M/N loops, and tiles each K shard internally
+  when the full shard is larger than the working CB window.  The verified
+  interleaved DRAM output/scratch path covers
+  `M=N=512,K=2048,k_shards=4` with a `4x4x4` logical/core grid; each core
+  writes `4x4` output tiles and each producer shard runs two `k_tile=256`
+  chunks before the runtime reduces full-output scratch pages into final C.
 
 ## Next Work Queue
 
@@ -177,6 +186,15 @@ evidence, not a standalone completion target.
    Larger logical grids are admitted by capping the resident sharded L1 grid
    to the physical core/bank budget, as in the verified `20x20x4` case with
    C resident grid `10x10` and `shard_shape=(64,64)`.
+   Larger MNK shapes that cannot keep full C resident in sharded L1 use an
+   admitted interleaved DRAM output/scratch reducer while keeping the
+   logical/core grid bounded.  The verified core-tiled large-MNK case covers
+   `M=N=512,K=2048,k_shards=4` on a `4x4x4` logical/core grid; each core
+   owns `4x4` output tiles and each K shard is computed by two internal
+   `k_tile=256` GEMM chunks before the direct runtime reduces the full
+   scratch C buffer into final C.  The compute-side CB lifetime now pops
+   input pages per consume instead of retaining them across serial loops, so
+   nested core-internal M/N loops cannot replay stale A/B tiles.
    Status: complete for the current single-card/local direct-runtime protocol
    subset.
 
@@ -231,7 +249,12 @@ Current baseline:
   cores, and `20x20x4` covers `400` logical output tiles with a C resident
   grid of `10x10` / `64x64` shards.  Both compare the full bf16
   direct-runtime result against torch, so later-wave tiles are no longer
-  allowed to return wrong values.
+  allowed to return wrong values.  It also checks a core-tiled large-MNK
+  bf16 case, `M=N=512,K=2048,k_shards=4`, with an admitted interleaved DRAM
+  output/scratch reducer.  The case keeps the logical/core grid at `4x4x4`,
+  covers `16x16` output tiles by assigning `4x4` tiles to each core, tiles
+  each K shard as two `k_tile=256` chunks, and compares the full direct
+  runtime result against torch.
 - Direct-runtime correctness:
   admitted T7/T8/T9 positive paths run through `BlackholeModule` with the
   repository TT-Sim bf16 baseline where tensor values are involved, including

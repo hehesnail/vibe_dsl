@@ -2379,6 +2379,7 @@ Array<TTReducerPlan> BuildPartialKReducerPlans(
   }
 
   Array<TTReducerPlan> reducer_plans;
+  std::unordered_set<std::string> emitted_reducer_keys;
   for (int64_t compute_index = 0;
        compute_index < static_cast<int64_t>(compute_op_plans.size());
        ++compute_index) {
@@ -2402,6 +2403,14 @@ Array<TTReducerPlan> BuildPartialKReducerPlans(
     if (target_buffer.empty()) {
       continue;
     }
+    const std::string reducer_key =
+        target_buffer + "#core_group=" + std::to_string(core_group_index) +
+        "#grid=" + std::to_string(core_group->logical_grid_x) + "x" +
+        std::to_string(core_group->logical_grid_y) + "x" +
+        std::to_string(core_group->logical_grid_z);
+    if (!emitted_reducer_keys.insert(reducer_key).second) {
+      continue;
+    }
     auto distribution_it = distribution_by_buffer.find(target_buffer);
     if (distribution_it == distribution_by_buffer.end()) {
       continue;
@@ -2412,13 +2421,28 @@ Array<TTReducerPlan> BuildPartialKReducerPlans(
         distribution_index_by_buffer.at(target_buffer);
     const std::string target_memory_space =
         LowerAscii(str(target_distribution->memory_space));
-    const bool admitted = str(target_distribution->layout) == "sharded" &&
-                          target_memory_space == "l1";
+    const bool target_sharded_l1 =
+        str(target_distribution->layout) == "sharded" &&
+        target_memory_space == "l1";
+    const bool target_interleaved_dram =
+        str(target_distribution->layout) == "interleaved" &&
+        target_memory_space == "dram";
+    const bool admitted = target_sharded_l1 || target_interleaved_dram;
+    const String route_kind =
+        target_interleaved_dram
+            ? String("local_same_device_interleaved_tile")
+            : String("local_same_device_sharded_tile");
+    const String unsupported_reason =
+        admitted ? String("")
+                 : String("partial_k_sum_requires_sharded_l1_or_interleaved_dram_target");
     Array<Integer> logical_grid{
         Integer(core_group->logical_grid_x),
         Integer(core_group->logical_grid_y),
         Integer(core_group->logical_grid_z)};
-    Array<Integer> tile_shape = target_distribution->shard_shape;
+    Array<Integer> tile_shape =
+        target_interleaved_dram
+            ? Array<Integer>{Integer(32), Integer(32)}
+            : target_distribution->shard_shape;
     if (tile_shape.size() != 2U && compute_op->tile_shape.size() >= 2U) {
       tile_shape = Array<Integer>{compute_op->tile_shape[0],
                                   compute_op->tile_shape[1]};
@@ -2427,7 +2451,8 @@ Array<TTReducerPlan> BuildPartialKReducerPlans(
       tile_shape = Array<Integer>{Integer(32), Integer(32)};
     }
     reducer_plans.push_back(TTReducerPlan(
-        String("reducer_" + str(compute_op->name) + "_partial_k_sum"),
+        String("reducer_" + target_buffer + "_core_group_" +
+               std::to_string(core_group_index) + "_partial_k_sum"),
         String("partial_k_sum"), compute_op->name, compute_index,
         String(target_buffer), target_distribution->name,
         target_distribution_index, String(target_buffer + "__partial_k"),
@@ -2435,12 +2460,12 @@ Array<TTReducerPlan> BuildPartialKReducerPlans(
         String(target_memory_space), String("one_producer_wave"),
         String("logical_grid_z"), core_group->logical_grid_z, logical_grid,
         tile_shape, String("sum"), String("device_tile_add"),
-        String("local_same_device_sharded_tile"),
+        route_kind,
         String("ascending_producer_id"),
         String("producer_0_writes_final_then_later_producers_reduce"),
         /*final_writer_producer=*/0, Array<Integer>(), Array<Integer>(),
         Array<Integer>(), admitted ? String("admitted") : String("unsupported"),
-        admitted ? String("") : String("partial_k_sum_requires_sharded_l1_target")));
+        unsupported_reason));
   }
   return reducer_plans;
 }

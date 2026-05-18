@@ -32,7 +32,7 @@
 | `2026-04-29-blackhole-resource-planning-roadmap.md` | Next P2/T10 expansion boundary: CB/L1 pressure, placement, buffer distribution, and future NoC work. |
 | `2026-05-13-blackhole-t10-mesh-placement.md` | Completed T10 mesh / multi-device placement slice: typed mesh owner truth and direct-runtime admission boundary before CCL / NoC movement. |
 | `2026-05-18-blackhole-t10-ccl-runtime-correctness.md` | Completed T10 single-card multi-tile CCL value/local-runtime slice: all-gather / reduce-scatter / all-to-all pass bf16 multi-tile host-reference checks and local `BlackholeModule` equivalents; multi-device fabric remains an external blocker, not the current completion gate. |
-| `2026-05-18-blackhole-t10-production-reducer.md` | Completed T10.4 partial-K GEMM reducer contract for the admitted local subset: reducer ownership, scratch lifetime/placement, transport, route, accumulation order, final-writer timing, and single-card temporal-wave runtime correctness live in `TTProgram -> ExecutableSpec` plus the direct runtime. |
+| `2026-05-18-blackhole-t10-production-reducer.md` | Completed T10.4 partial-K GEMM reducer contract for the admitted local subset: reducer ownership, scratch lifetime/placement, transport, route, accumulation order, temporal-wave correctness, and bounded-grid core-tiled large-MNK direct-runtime correctness live in `TTProgram -> ExecutableSpec` plus the direct runtime. |
 
 ## Supporting Contracts
 

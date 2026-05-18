@@ -64,6 +64,14 @@ std::string CoreCoordKey(int64_t x, int64_t y) {
   return std::to_string(x) + "," + std::to_string(y);
 }
 
+std::string LowerAscii(std::string value) {
+  std::transform(value.begin(), value.end(), value.begin(),
+                 [](unsigned char c) {
+                   return static_cast<char>(std::tolower(c));
+                 });
+  return value;
+}
+
 std::optional<Target> FindBlackholeTarget(const IRModule &mod) {
   for (const auto &[gvar, base_func] : mod->functions) {
     auto func = base_func.as<tir::PrimFunc>();
@@ -639,11 +647,11 @@ void ValidateReducerPlan(
   ICHECK_EQ(plan->scratch_layout, distribution->layout)
       << "TTReducerPlan " << plan->name
       << " scratch_layout must match target distribution layout";
-  ICHECK(plan->scratch_memory_space == "l1" ||
-         plan->scratch_memory_space == "L1")
+  const std::string target_memory_space =
+      LowerAscii(str(distribution->memory_space));
+  ICHECK_EQ(LowerAscii(str(plan->scratch_memory_space)), target_memory_space)
       << "TTReducerPlan " << plan->name
-      << " has unsupported scratch_memory_space "
-      << plan->scratch_memory_space;
+      << " scratch_memory_space must match target distribution memory_space";
   ICHECK(plan->scratch_lifetime == "one_producer_wave")
       << "TTReducerPlan " << plan->name
       << " has unsupported scratch_lifetime " << plan->scratch_lifetime;
@@ -669,9 +677,30 @@ void ValidateReducerPlan(
   ICHECK(plan->transport_kind == "device_tile_add")
       << "TTReducerPlan " << plan->name
       << " has unsupported transport_kind " << plan->transport_kind;
-  ICHECK(plan->route_kind == "local_same_device_sharded_tile")
+  const bool target_sharded_l1 =
+      distribution->layout == "sharded" && target_memory_space == "l1";
+  const bool target_interleaved_dram =
+      distribution->layout == "interleaved" && target_memory_space == "dram";
+  const bool route_is_sharded_l1 =
+      plan->route_kind == "local_same_device_sharded_tile";
+  const bool route_is_interleaved_dram =
+      plan->route_kind == "local_same_device_interleaved_tile";
+  ICHECK(route_is_sharded_l1 || route_is_interleaved_dram)
       << "TTReducerPlan " << plan->name
       << " has unsupported route_kind " << plan->route_kind;
+  const char *expected_route_kind =
+      target_interleaved_dram ? "local_same_device_interleaved_tile"
+                              : "local_same_device_sharded_tile";
+  if (plan->admission_status == "admitted") {
+    ICHECK(target_sharded_l1 || target_interleaved_dram)
+        << "TTReducerPlan " << plan->name
+        << " partial_k_sum admitted target distribution must be sharded L1 or interleaved DRAM";
+    ICHECK(plan->route_kind == expected_route_kind)
+        << "TTReducerPlan " << plan->name
+        << " route_kind must be " << expected_route_kind
+        << " for target distribution " << distribution->layout << "/"
+        << distribution->memory_space;
+  }
   ICHECK(plan->accumulation_order == "ascending_producer_id")
       << "TTReducerPlan " << plan->name
       << " has unsupported accumulation_order " << plan->accumulation_order;

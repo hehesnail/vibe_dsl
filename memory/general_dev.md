@@ -186,7 +186,13 @@
   equal to the logical tile grid by default.  The resident grid must satisfy
   the core/L1-bank limit, while `shard_shape` can cover multiple logical
   output tiles per resident shard and temporal work packets cover the full
-  logical grid.
+  logical grid.  Once full C cannot fit as sharded L1 under the active CB/L1
+  budget, keep full C in interleaved DRAM and use an admitted interleaved
+  DRAM output/scratch reducer.  Large MNK coverage should keep the
+  logical/core grid bounded and put the extra work inside core-local M/N and
+  K loops; the current runtime guard verifies `M=N=512,K=2048,k_shards=4`
+  on a `4x4x4` grid where each core writes `4x4` output tiles and each K
+  shard runs two `k_tile=256` chunks.
 - CB allocation 更像寄存器分配：
   第一版优先用 live-interval / linear-scan
   模型和 arch-aware CB limits，
@@ -2315,7 +2321,20 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   decouple logical work grid from resident C grid: the verified shape keeps
   logical grid `20x20x4`, uses C resident grid `10x10` with
   `shard_shape=(64,64)`, and relies on temporal launch/reducer handling for
-  the full logical grid.
+  the full logical grid.  For shapes that exceed the full-output sharded L1
+  residency budget, use the typed interleaved DRAM reducer path instead of
+  inflating resident shards.  Large MNK verification should use bounded
+  core grids plus core-internal tiling, not a bigger logical output grid:
+  the current guard uses `M=N=512,K=2048,k_shards=4`, a `4x4x4` logical/core
+  grid, `4x4` output tiles per core, and two `k_tile=256` chunks per
+  producer shard.
+- 2026-05-18 core-internal tiled GEMM compute input CB lifetime:
+  a repeated serial loop is not evidence that input CB pages are loop
+  invariant.  The core-tiled large-MNK reducer case exposed that retaining
+  A/B input pages across nested local output-tile loops made later `local_x`
+  iterations replay stale B tiles and return wrong values.  Use the ordinary
+  per-consume input CB pop/reacquire path unless invariance is explicitly
+  proven by typed loop/access-region evidence.
 - 2026-05-04 T8 design boundary:
   Do not turn grouped / ragged / sparse workload parameters into a metadata
   registry or a parallel domain IR.  First analyze existing TIR loops,

@@ -1726,6 +1726,13 @@ static KernelComputeOpSpec GetPrimaryGemmCompute(const ExecutableSpec& spec) {
   if (gemm_ops.empty()) {
     return KernelComputeOpSpec();
   }
+  for (const KernelComputeOpSpec* gemm_op : gemm_ops) {
+    if (gemm_op->c_tensor_dtype == "Float32" &&
+        gemm_op->c_cb_dtype == "Float32" &&
+        gemm_op->accumulator_dtype == "Float32") {
+      return *gemm_op;
+    }
+  }
   return *gemm_ops.front();
 }
 
@@ -1873,6 +1880,28 @@ static void ValidateGemmOutputShape(const ExecutableSpec& spec,
   }
   const uint32_t expected_rows = gemm.M * logical_grid_y;
   const uint32_t expected_cols = gemm.N * logical_grid_x;
+  bool output_is_interleaved_dram = false;
+  for (const BufferDistributionSpec& distribution :
+       spec.buffer_distribution_plans) {
+    if (distribution.buffer != gemm.c_buffer) {
+      continue;
+    }
+    std::string memory_space = distribution.memory_space;
+    std::transform(memory_space.begin(), memory_space.end(),
+                   memory_space.begin(), [](unsigned char c) {
+                     return static_cast<char>(std::tolower(c));
+                   });
+    output_is_interleaved_dram =
+        distribution.distribution_kind == "interleaved" &&
+        distribution.layout == "interleaved" &&
+        memory_space == "dram";
+    break;
+  }
+  if (output_is_interleaved_dram && rows >= expected_rows &&
+      cols >= expected_cols && rows % expected_rows == 0 &&
+      cols % expected_cols == 0) {
+    return;
+  }
   ICHECK(rows == expected_rows && cols == expected_cols)
       << "Unexpected C tensor shape for GEMM direct path: got (" << rows << ", " << cols
       << "), expected (" << expected_rows << ", " << expected_cols
@@ -3269,6 +3298,42 @@ static void AddPartialKTemporalWaveOnHost(
   LOG(INFO) << "Direct path: host-add partial-K temporal reduction for "
             << func_name << " with " << producer_wave.work_items.size()
             << " logical output tile(s)";
+}
+
+static void AddPartialKFullOutputBufferOnHost(
+    distributed::MeshCommandQueue& cq,
+    const std::string& func_name,
+    const RuntimeBufferBinding& final_binding,
+    const RuntimeBufferBinding& partial_binding) {
+  ICHECK_EQ(final_binding.size_bytes, partial_binding.size_bytes)
+      << "Blackhole partial-K full-buffer reducer requires equal final and partial buffer sizes";
+  ICHECK_EQ(final_binding.size_bytes % sizeof(float), 0U)
+      << "Blackhole partial-K full-buffer reducer requires float32 buffer pages";
+  std::vector<uint8_t> final_data;
+  std::vector<uint8_t> partial_data;
+  auto final_mesh_buffer = final_binding.mesh_buffer;
+  auto partial_mesh_buffer = partial_binding.mesh_buffer;
+  distributed::EnqueueReadMeshBuffer(cq, final_data, final_mesh_buffer,
+                                     /*blocking=*/true);
+  distributed::EnqueueReadMeshBuffer(cq, partial_data, partial_mesh_buffer,
+                                     /*blocking=*/true);
+  ICHECK_GE(final_data.size(), final_binding.size_bytes)
+      << "Blackhole partial-K full-buffer reducer final buffer read is too small";
+  ICHECK_GE(partial_data.size(), partial_binding.size_bytes)
+      << "Blackhole partial-K full-buffer reducer partial buffer read is too small";
+  for (uint64_t byte_offset = 0; byte_offset < final_binding.size_bytes;
+       byte_offset += sizeof(float)) {
+    float final_value = 0.0f;
+    float partial_value = 0.0f;
+    std::memcpy(&final_value, final_data.data() + byte_offset, sizeof(float));
+    std::memcpy(&partial_value, partial_data.data() + byte_offset, sizeof(float));
+    const float sum = final_value + partial_value;
+    std::memcpy(final_data.data() + byte_offset, &sum, sizeof(float));
+  }
+  distributed::EnqueueWriteMeshBuffer(cq, final_mesh_buffer, final_data,
+                                      /*blocking=*/true);
+  LOG(INFO) << "Direct path: host-add partial-K full-output reduction for "
+            << func_name << " over " << final_binding.size_bytes << " byte(s)";
 }
 
 static std::vector<KernelHandle> CreateProgramKernelsFromSpec(
@@ -5244,8 +5309,13 @@ void BlackholeModuleNode::ExecuteDirect(
     ICHECK(reducer_plan != nullptr);
     ICHECK_EQ(reducer_plan->transport_kind, "device_tile_add")
         << "Blackhole partial-K direct GEMM reduction requires device_tile_add transport";
-    ICHECK_EQ(reducer_plan->route_kind, "local_same_device_sharded_tile")
-        << "Blackhole partial-K direct GEMM reduction requires local same-device route";
+    const bool reducer_uses_sharded_l1_route =
+        reducer_plan->route_kind == "local_same_device_sharded_tile";
+    const bool reducer_uses_interleaved_dram_route =
+        reducer_plan->route_kind == "local_same_device_interleaved_tile";
+    ICHECK(reducer_uses_sharded_l1_route || reducer_uses_interleaved_dram_route)
+        << "Blackhole partial-K direct GEMM reduction requires a local same-device "
+           "sharded L1 or interleaved DRAM route";
     ICHECK_EQ(reducer_plan->accumulation_order, "ascending_producer_id")
         << "Blackhole partial-K direct GEMM reduction requires ascending producer order";
     ICHECK_EQ(reducer_plan->final_writer_producer, 0)
@@ -5271,10 +5341,19 @@ void BlackholeModuleNode::ExecuteDirect(
     ICHECK(output_accessor != nullptr)
         << "Blackhole partial-K direct GEMM reduction requires output accessor for "
         << output_binding->name;
-    ICHECK_EQ(output_accessor->layout, "sharded")
-        << "Blackhole partial-K direct GEMM reduction currently requires sharded output accessor";
-    ICHECK_EQ(output_accessor->memory_space, "l1")
-        << "Blackhole partial-K direct GEMM reduction currently requires L1 output accessor";
+    const std::string output_accessor_memory_space =
+        LowerAsciiDirect(output_accessor->memory_space);
+    if (reducer_uses_sharded_l1_route) {
+      ICHECK_EQ(output_accessor->layout, "sharded")
+          << "Blackhole partial-K direct GEMM sharded route requires sharded output accessor";
+      ICHECK_EQ(output_accessor_memory_space, "l1")
+          << "Blackhole partial-K direct GEMM sharded route requires L1 output accessor";
+    } else {
+      ICHECK_EQ(output_accessor->layout, "interleaved")
+          << "Blackhole partial-K direct GEMM interleaved route requires interleaved output accessor";
+      ICHECK_EQ(output_accessor_memory_space, "dram")
+          << "Blackhole partial-K direct GEMM interleaved route requires DRAM output accessor";
+    }
     const auto& output_materialization =
         ResolveBufferMaterializationSpec(spec, output_binding->name);
     ICHECK_GT(output_materialization.transport_page_size_bytes, 0U)
@@ -5319,6 +5398,11 @@ void BlackholeModuleNode::ExecuteDirect(
                                "/" + std::to_string(grid_z),
                            z_runtime_buffers);
       if (z == 0) {
+        continue;
+      }
+      if (reducer_uses_interleaved_dram_route) {
+        AddPartialKFullOutputBufferOnHost(
+            cq, func_name, final_output_binding, partial_output_binding);
         continue;
       }
       for (const DirectLaunchWave& producer_wave : z_waves) {

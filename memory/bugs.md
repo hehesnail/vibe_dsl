@@ -245,6 +245,54 @@
   - `13x10x4` 仍覆盖 temporal overflow wave `110..129` 的 reducer
     correctness；不要把这两个问题混成一个 allocator blocker。
 
+### partial-K 更大 MNK 不能靠继续放大 logical output grid 或 full-output L1 shard
+
+- **症状**:
+  - 把“大 case”理解成继续放大 logical output grid，例如
+    `40x40x8`，会绕开真正问题：这仍然是一 work item 负责一个 C tile。
+    用户要求的是 MNK 本身变大，core grid 仍满足硬件/core 数限制，
+    单个 core 内部再 temporal 覆盖多个 M/N output tiles 和多个 K chunks。
+  - 如果把 full C 继续放进 sharded L1，通过增大 resident shard 来覆盖
+    更大 full-output tensor，容易撞上 L1/CB 工作区重叠或超过单卡 L1 bank
+    mapping 能力。这是 placement/resource 问题，不是 reducer 数值问题。
+- **根因**:
+  - Large MNK 的正确表示是 bounded logical/core grid + core-internal
+    tiling。logical grid 表示并行 work item 数，不能直接替代每个 work
+    item 内部需要覆盖的 output-tile set。
+  - 当 full C 不能作为 sharded-L1 resident tensor 放下时，full-output
+    owner 应该是 interleaved DRAM；L1 只承载 kernel staging/CB 工作集。
+- **修法 / 验证**:
+  - 大 MNK 的 full-output owner 走 interleaved DRAM output/scratch
+    reducer：target distribution 是 interleaved DRAM，scratch layout /
+    memory space 跟 target 一致，route kind 是
+    `local_same_device_interleaved_tile`。
+  - runtime 对 interleaved DRAM partial-K reducer 在每个非零 producer
+    shard 完成后，把完整 scratch C buffer 以 float32 加到 final C，
+    而不是假设一个 work item 只写一个 output tile。
+  - `test_blackhole_t10_partial_k_reducer_supports_core_tiled_large_mnk_bf16`
+    验证 `M=N=512,K=2048,k_shards=4`，logical/core grid 是 `4x4x4`，
+    每个 core 写 `4x4` output tiles，每个 K shard 由两个 `k_tile=256`
+    chunks 组成，并通过 TT-Sim direct runtime 与 torch bf16 reference 对比。
+
+### core-internal tiled GEMM 不能跨 serial loop 盲目 retain input CB pages
+
+- **症状**:
+  - core-tiled large-MNK partial-K case 初始可以执行完，但输出和 torch
+    reference 明显不一致。
+  - compute segment 里 reader 为每个 `local_x/local_y` output tile 推入新的
+    A/B tile pages；compute 却把 `cb_pop_front(0/1, 8)` 延迟到外层
+    `local_y` 之后，导致后续 `local_x` 重复消费旧 B tiles。
+- **根因**:
+  - repeated serial loop 不是 input CB page loop-invariant 的证明。
+    旧 retained-input 逻辑只看到 compute body 里有 serial loop，就把输入
+    pages 留到 loop suffix 再 pop；但 core-internal tiled GEMM 的 reader
+    events 已经表达了每个 local output tile 都有新的 A/B window。
+- **修法 / 验证**:
+  - 取消该隐式 serial-loop input retention，回到显式 reader/compute
+    event 驱动的 per-consume pop/reacquire 协议。
+  - 同一个 core-tiled large-MNK runtime case 从数值 mismatch 变为通过；
+    T10 partial-K/CCL focused selector 同时报告 `9 passed`。
+
 ### Remote core endpoints cannot be recovered from logical_core_noc ABI pairs
 
 - **症状**:

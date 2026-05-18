@@ -179,6 +179,9 @@ def _assert_t10_partial_k_reducer_plan(
     *,
     expected_logical_grid,
     expected_tile_shape=(32, 32),
+    expected_scratch_layout="sharded",
+    expected_scratch_memory_space="l1",
+    expected_route_kind="local_same_device_sharded_tile",
 ):
     assert "reducer_plans" in executable_spec
     reducer_plans = list(executable_spec["reducer_plans"])
@@ -188,8 +191,8 @@ def _assert_t10_partial_k_reducer_plan(
     assert str(reducer["target_buffer"]) == "C"
     assert str(reducer["scratch_buffer"]) == "C__partial_k"
     assert str(reducer["scratch_scope"]) == "per_target_buffer"
-    assert str(reducer["scratch_layout"]) == "sharded"
-    assert str(reducer["scratch_memory_space"]) == "l1"
+    assert str(reducer["scratch_layout"]) == expected_scratch_layout
+    assert str(reducer["scratch_memory_space"]) == expected_scratch_memory_space
     assert str(reducer["scratch_lifetime"]) == "one_producer_wave"
     assert str(reducer["producer_axis"]) == "logical_grid_z"
     assert int(reducer["producer_count"]) == expected_logical_grid[2]
@@ -197,7 +200,7 @@ def _assert_t10_partial_k_reducer_plan(
     assert [int(value) for value in reducer["tile_shape"]] == list(expected_tile_shape)
     assert str(reducer["reduction_op"]) == "sum"
     assert str(reducer["transport_kind"]) == "device_tile_add"
-    assert str(reducer["route_kind"]) == "local_same_device_sharded_tile"
+    assert str(reducer["route_kind"]) == expected_route_kind
     assert str(reducer["accumulation_order"]) == "ascending_producer_id"
     assert (
         str(reducer["final_writer_timing"])
@@ -585,6 +588,7 @@ def external_k_sharded_l1_gemm_kernel(
     k_shards: int = 2,
     output_grid=None,
     output_shard_shape=None,
+    output_memory: str = "sharded_l1",
 ):
     grid_x = N // tile_n
     grid_y = M // tile_m
@@ -616,18 +620,23 @@ def external_k_sharded_l1_gemm_kernel(
                 orientation="row_major",
                 allow_reshard=False,
             )
-            C_sharded = T.sharded_l1(
-                strategy="block",
-                grid=T.CoreGrid(x=output_grid[0], y=output_grid[1]),
-                shard_shape=output_shard_shape,
-                orientation="row_major",
-                allow_reshard=False,
-            )
+            if output_memory == "sharded_l1":
+                C_memory = T.sharded_l1(
+                    strategy="block",
+                    grid=T.CoreGrid(x=output_grid[0], y=output_grid[1]),
+                    shard_shape=output_shard_shape,
+                    orientation="row_major",
+                    allow_reshard=False,
+                )
+            elif output_memory == "interleaved_dram":
+                C_memory = T.interleaved_dram(allow_reshard=False)
+            else:
+                raise ValueError(f"unsupported output_memory: {output_memory}")
             T.annotate_memory_config(
                 {
                     A: A_k_sharded,
                     B: B_k_sharded,
-                    C: C_sharded,
+                    C: C_memory,
                 }
             )
             T.copy(
@@ -652,6 +661,106 @@ def external_k_sharded_l1_gemm_kernel(
                     bx * tile_n : (bx + 1) * tile_n,
                 ],
             )
+
+    return main
+
+
+def external_k_sharded_dram_core_tiled_gemm_kernel(
+    *,
+    M: int,
+    N: int,
+    K: int,
+    core_grid_x: int,
+    core_grid_y: int,
+    tile_m: int = 32,
+    tile_n: int = 32,
+    k_tile: int = 256,
+    k_shards: int = 4,
+):
+    output_tiles_x = N // tile_n
+    output_tiles_y = M // tile_m
+    tiles_per_core_x = output_tiles_x // core_grid_x
+    tiles_per_core_y = output_tiles_y // core_grid_y
+    k_shard = K // k_shards
+    k_tiles_per_shard = k_shard // k_tile
+    assert M % tile_m == 0
+    assert N % tile_n == 0
+    assert K % k_shards == 0
+    assert k_shard % k_tile == 0
+    assert output_tiles_x % core_grid_x == 0
+    assert output_tiles_y % core_grid_y == 0
+    assert tiles_per_core_x > 1
+    assert tiles_per_core_y > 1
+    assert k_tiles_per_shard > 1
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((M, K), "bfloat16"),
+        B: T.Tensor((N, K), "bfloat16"),
+        C: T.Tensor((M, N), "float32"),
+    ):
+        with T.Kernel(core_grid_x, core_grid_y, k_shards) as (cx, cy, bk):
+            A_shared = T.alloc_shared((tile_m, k_tile), "bfloat16")
+            B_shared = T.alloc_shared((tile_n, k_tile), "bfloat16")
+            C_local = T.alloc_fragment((tile_m, tile_n), "float32")
+            dram = T.interleaved_dram(allow_reshard=False)
+            T.annotate_memory_config({A: dram, B: dram, C: dram})
+            for local_y in T.serial(tiles_per_core_y):
+                for local_x in T.serial(tiles_per_core_x):
+                    output_tile_y = cy * tiles_per_core_y + local_y
+                    output_tile_x = cx * tiles_per_core_x + local_x
+                    first_k_start = bk * k_shard
+                    T.copy(
+                        A[
+                            output_tile_y * tile_m : (output_tile_y + 1) * tile_m,
+                            first_k_start : first_k_start + k_tile,
+                        ],
+                        A_shared,
+                    )
+                    T.copy(
+                        B[
+                            output_tile_x * tile_n : (output_tile_x + 1) * tile_n,
+                            first_k_start : first_k_start + k_tile,
+                        ],
+                        B_shared,
+                    )
+                    T.gemm(
+                        A_shared,
+                        B_shared,
+                        C_local,
+                        transpose_B=True,
+                        clear_accum=True,
+                    )
+                    for local_k in T.serial(1, k_tiles_per_shard):
+                        next_k_start = bk * k_shard + local_k * k_tile
+                        T.copy(
+                            A[
+                                output_tile_y * tile_m : (output_tile_y + 1) * tile_m,
+                                next_k_start : next_k_start + k_tile,
+                            ],
+                            A_shared,
+                        )
+                        T.copy(
+                            B[
+                                output_tile_x * tile_n : (output_tile_x + 1) * tile_n,
+                                next_k_start : next_k_start + k_tile,
+                            ],
+                            B_shared,
+                        )
+                        T.gemm(
+                            A_shared,
+                            B_shared,
+                            C_local,
+                            transpose_B=True,
+                            clear_accum=False,
+                        )
+                    T.copy(
+                        C_local,
+                        C[
+                            output_tile_y * tile_m : (output_tile_y + 1) * tile_m,
+                            output_tile_x * tile_n : (output_tile_x + 1) * tile_n,
+                        ],
+                    )
 
     return main
 
@@ -2453,6 +2562,71 @@ def test_blackhole_t10_partial_k_reducer_supports_large_temporal_output_grid_bf1
         failure_message=(
             "Large temporal-grid K-sharded external L1 GEMM partial-sum "
             "direct-call output mismatch"
+        ),
+    )
+
+
+def test_blackhole_t10_partial_k_reducer_supports_core_tiled_large_mnk_bf16():
+    can_run, msg = check_blackhole_direct_execution_requirements()
+    if not can_run:
+        pytest.skip(f"Blackhole requirements not met: {msg}")
+
+    m, n, k, k_shards = 512, 512, 2048, 4
+    torch.manual_seed(31)
+    a_torch = torch.randn(m, k, dtype=torch.bfloat16)
+    b_torch = torch.randn(n, k, dtype=torch.bfloat16)
+    c_output = torch.zeros(m, n, dtype=torch.float32)
+    c_ref = torch.matmul(a_torch.float(), b_torch.float().transpose(0, 1))
+
+    target = Target("blackhole")
+    kernel = external_k_sharded_dram_core_tiled_gemm_kernel(
+        M=m,
+        N=n,
+        K=k,
+        core_grid_x=4,
+        core_grid_y=4,
+        k_tile=256,
+        k_shards=k_shards,
+    )
+    with target:
+        artifact = lower(kernel, target=target)
+
+    device_main = artifact.device_mod["main_kernel"]
+    executable = _extract_materialized_blackhole_executable(device_main)
+    core_plan = executable["core_plan"]
+    assert int(core_plan["logical_grid_x"]) == 4
+    assert int(core_plan["logical_grid_y"]) == 4
+    assert int(core_plan["logical_grid_z"]) == 4
+    assert len(core_plan["physical_cores"]) == 64
+    assert sum(int(packet["work_count"]) for packet in core_plan["work_packets"]) == 64
+    output_distribution = next(
+        plan for plan in executable["buffer_distribution_plans"]
+        if str(plan["buffer"]) == "C"
+    )
+    assert str(output_distribution["distribution_kind"]) == "interleaved"
+    assert str(output_distribution["layout"]) == "interleaved"
+    assert str(output_distribution["memory_space"]) == "DRAM"
+    _assert_t10_partial_k_reducer_plan(
+        executable,
+        expected_logical_grid=[4, 4, 4],
+        expected_tile_shape=(32, 32),
+        expected_scratch_layout="interleaved",
+        expected_scratch_memory_space="dram",
+        expected_route_kind="local_same_device_interleaved_tile",
+    )
+
+    reasons = _direct_runtime_unsupported_reasons(artifact)
+    assert reasons == []
+
+    artifact.codegen_mod["main"](a_torch, b_torch, c_output)
+    assert_tensors_close_or_dump(
+        c_output,
+        c_ref,
+        atol=2.5,
+        rtol=2e-1,
+        failure_message=(
+            "Core-tiled large-MNK K-sharded GEMM partial-sum direct-call output "
+            "mismatch"
         ),
     )
 
