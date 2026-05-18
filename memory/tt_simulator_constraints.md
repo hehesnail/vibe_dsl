@@ -273,6 +273,22 @@ mesh：
   `Trying to get un-initialized fabric context`
 - 设置 `TTSIM_SEMIHOSTING=1` 不改变该 fatal
 
+可重复 probe：
+
+```bash
+/root/dev/vibe_dsl/scripts/probe_tt_sim_ccl.sh
+```
+
+该 probe 默认 source 仓库固定的 TT-Sim 环境入口、设置 Blackhole P300 mock
+cluster descriptor，先在独立 Python 子进程里确认 no-fabric `1x2` mesh
+可打开，再在另一个 Python 子进程里跑最小 `1x2` bf16 all-gather。退出码
+`0` 表示 all-gather 数值等于 host reference；当前本地预期结果是非零并打印：
+
+```text
+probe_status=fabric_ccl_unsupported
+unsupported_reason=eth_txq_cmd=0x2
+```
+
 当前结论：
 
 - 这个环境可以验证 single-device direct-runtime correctness；

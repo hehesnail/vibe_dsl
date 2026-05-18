@@ -21,6 +21,12 @@
     `Trying to get un-initialized fabric context`，不能作为 correctness
     fallback。
   - `TTSIM_SEMIHOSTING=1` 不改变该 fatal。
+- **复现 / probe**:
+  - `scripts/probe_tt_sim_ccl.sh`
+  - 当前预期输出包含 `mesh_without_fabric_ok=true`、
+    `mesh_num_devices=2`、
+    `probe_status=fabric_ccl_unsupported` 和
+    `unsupported_reason=eth_txq_cmd=0x2`。
 - **当前结论**:
   - T10.1 all-gather / reduce-scatter / all-to-all 的
     `BlackholeModule + TT-Sim bf16 + host reference` 正向 correctness

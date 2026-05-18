@@ -114,6 +114,10 @@ prerequisite of the active CCL task, not a standalone completion target.
   - a minimal TTNN all-gather smoke with `ttnn.FabricConfig.FABRIC_1D` reaches
     Fabric initialization on both simulated devices, then fails with
     `UnimplementedFunctionality: eth_txq_regs_wr32: eth_txq_cmd=0x2`;
+  - `scripts/probe_tt_sim_ccl.sh` is the reusable probe for this boundary:
+    exit `0` means the minimal `1x2` bf16 all-gather runtime route is
+    numerically correct; the current expected local result is
+    `probe_status=fabric_ccl_unsupported`;
   - running the same all-gather smoke without fabric config is not a fallback:
     it fails with `Trying to get un-initialized fabric context`;
   - `TTSIM_SEMIHOSTING=1` does not change that fabric fatal.
