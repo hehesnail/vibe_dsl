@@ -99,9 +99,12 @@
   the single-card direct runtime.  Producer shards run in z order; in-physical
   output waves use the typed `device_tile_add` reducer, and later temporal
   output waves are accumulated by a host-mediated float32 page add from the
-  typed final/scratch buffers.  The `13x10x4` bf16 case now checks this path
-  through TT-Sim instead of publishing a fail-closed temporal reason or
-  returning silent wrong values.
+  typed final/scratch buffers.  Large logical output grids keep the logical
+  work grid separate from the resident sharded L1 grid: the resident grid must
+  fit core/L1-bank limits, while larger `shard_shape` values can cover
+  multiple logical output tiles per resident shard.  The `13x10x4` and
+  `20x20x4` bf16 cases now check these paths through TT-Sim instead of
+  publishing a fail-closed temporal reason or returning silent wrong values.
 
 ## Next Work Queue
 
@@ -171,6 +174,9 @@ evidence, not a standalone completion target.
    waves per producer are supported for the current single-card direct runtime:
    the first wave uses the device tile-add reducer and later temporal waves
    use typed final/scratch buffer pages for host-mediated float32 accumulation.
+   Larger logical grids are admitted by capping the resident sharded L1 grid
+   to the physical core/bank budget, as in the verified `20x20x4` case with
+   C resident grid `10x10` and `shard_shape=(64,64)`.
    Status: complete for the current single-card/local direct-runtime protocol
    subset.
 
@@ -222,8 +228,10 @@ Current baseline:
   `K-sharded GEMM requires an admitted TTReducerPlan partial_k_sum record`.
   It also checks temporal-wave runtime correctness: `13x10x4` partial-K
   output grids cover `130` logical output tiles over `110` physical launch
-  cores and compare the full bf16 direct-runtime result against torch, so
-  later-wave tiles `110..129` are no longer allowed to return wrong values.
+  cores, and `20x20x4` covers `400` logical output tiles with a C resident
+  grid of `10x10` / `64x64` shards.  Both compare the full bf16
+  direct-runtime result against torch, so later-wave tiles are no longer
+  allowed to return wrong values.
 - Direct-runtime correctness:
   admitted T7/T8/T9 positive paths run through `BlackholeModule` with the
   repository TT-Sim bf16 baseline where tensor values are involved, including

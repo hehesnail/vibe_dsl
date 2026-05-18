@@ -5,44 +5,6 @@
 
 ## 1. 当前未解决
 
-### 大 partial-K GEMM 仍受当前 sharded L1 bank/resource plan 限制
-
-- **现象**:
-  - `M=640,N=640,K=1024,k_shards=4`
-    对应 `20x20x4` partial-K GEMM，在 TT-Metal allocator 阶段失败：
-    `Expected number of shards 400 to be less than or equal to total number of L1 banks 130 in compute cores`。
-  - 已修复的相邻 case：`M=320,N=416,K=1024,k_shards=4`
-    对应 `13x10x4`，覆盖 `130` 个 logical output tiles / `110`
-    个 physical launch cores。旧实现会完整执行但第二个 temporal wave
-    tile ids `110..129` 数值错误；现在 direct runtime 正向 correctness
-    case 通过。
-  - `M=320,N=352,K=2048,k_shards=4`
-    对应 `11x10x4`，仍通过 bf16 correctness；问题不是 K 深度本身。
-- **根因 / 当前判断**:
-  - `13x10x4` 的 silent wrong 根因是后续 temporal output wave 复用
-    physical workers 后，device tile-add reducer 对 tile ids `>= 110`
-    没有给出正确结果。
-  - 直接把 reducer launch 放到 C shard owner cores 不可行：当前
-    physical executable set 是 `11x10=110`，而 C sharded L1 distribution
-    是 `13x10=130`；owner columns `x=11,12` 在 TT-Sim 上触发
-    `tensix_execute_unpacr` unsupported。
-  - 运行时修法是：producer 仍按 temporal waves 在 TT-Sim 上执行；
-    first-wave output tiles 继续走 typed `device_tile_add` reducer；
-    后续 temporal output waves 从 typed final/scratch L1 buffer 读回
-    tile pages，在 host 侧做 float32 page add，再写回 final buffer。
-  - `20x20x4` 是不同边界：它在 sharded L1 buffer 创建阶段已经要求
-    `400` shards，超过当前 compute-core L1 bank capacity `130`，需要
-    后续 temporal output buffer/resource plan，而不是 reducer 数值修正。
-- **当前处理**:
-  - `13x10x4` 已由
-    `test_blackhole_t10_partial_k_reducer_supports_temporal_wave_output_tiles_bf16`
-    覆盖，`direct_runtime_unsupported_reasons == []`，并和 torch bf16
-    reference 比较。
-  - 已有 `2x2x2` / `11x10x2` positive partial-K correctness 仍通过。
-  - 后续要支持 `20x20x4` 这类更大 case，需要先设计 typed temporal
-    output buffer/resource ownership，不能假设 full-grid sharded L1
-    allocation 一定可行。
-
 ### 当前 TT-Sim fabric path 无法完成 multi-device CCL runtime correctness
 
 - **现象**:
@@ -257,6 +219,31 @@
     不能进入生产 compute op 协议
 
 ## 2. 已解决但值得记住的模式
+
+### partial-K 大 shape 的 logical work grid 不能直接当 L1 shard grid
+
+- **症状**:
+  - `M=640,N=640,K=1024,k_shards=4` 对应 logical work grid
+    `20x20x4`。如果把 C 的 sharded L1 grid 也设成 `20x20` 且
+    `shard_shape=(32,32)`，TT-Metal buffer 创建阶段会要求 `400`
+    shards，超过当前单卡 compute-core L1 bank capacity `130`。
+  - 这个错误不能解释为 reducer 数值边界；它说明 resident L1 grid 给错
+    了。
+- **根因**:
+  - Logical work grid 表示需要计算的 output tile 数；resident sharded L1
+    grid 表示物理常驻 shard / bank 布局。两者不能默认相等。
+  - 大 shape 应该让 resident grid 满足 core/bank 限制，并通过
+    `shard_shape` 让每个 resident shard 覆盖多个 logical tiles；temporal
+    work packets / launch waves 再覆盖完整 logical grid。
+- **修法 / 验证**:
+  - `20x20x4` 使用 C resident grid `10x10`、`shard_shape=(64,64)`，
+    每个 resident shard 覆盖 `2x2` output tiles。
+  - `test_blackhole_t10_partial_k_reducer_supports_large_temporal_output_grid_bf16`
+    验证 logical grid 仍是 `20x20x4`、physical launch cores 是 `110`、
+    C distribution 是 `10x10`/`64x64`，并通过 TT-Sim direct runtime
+    与 torch bf16 reference 对比。
+  - `13x10x4` 仍覆盖 temporal overflow wave `110..129` 的 reducer
+    correctness；不要把这两个问题混成一个 allocator blocker。
 
 ### Remote core endpoints cannot be recovered from logical_core_noc ABI pairs
 

@@ -174,7 +174,12 @@ def _require_tt_program_compute_kernel(func):
     return require_tt_kernel(tt_program, kind="compute", core_type="trisc")
 
 
-def _assert_t10_partial_k_reducer_plan(executable_spec, *, expected_logical_grid):
+def _assert_t10_partial_k_reducer_plan(
+    executable_spec,
+    *,
+    expected_logical_grid,
+    expected_tile_shape=(32, 32),
+):
     assert "reducer_plans" in executable_spec
     reducer_plans = list(executable_spec["reducer_plans"])
     assert len(reducer_plans) == 1
@@ -189,7 +194,7 @@ def _assert_t10_partial_k_reducer_plan(executable_spec, *, expected_logical_grid
     assert str(reducer["producer_axis"]) == "logical_grid_z"
     assert int(reducer["producer_count"]) == expected_logical_grid[2]
     assert [int(value) for value in reducer["logical_grid"]] == expected_logical_grid
-    assert [int(value) for value in reducer["tile_shape"]] == [32, 32]
+    assert [int(value) for value in reducer["tile_shape"]] == list(expected_tile_shape)
     assert str(reducer["reduction_op"]) == "sum"
     assert str(reducer["transport_kind"]) == "device_tile_add"
     assert str(reducer["route_kind"]) == "local_same_device_sharded_tile"
@@ -578,10 +583,14 @@ def external_k_sharded_l1_gemm_kernel(
     tile_m: int = 32,
     tile_n: int = 32,
     k_shards: int = 2,
+    output_grid=None,
+    output_shard_shape=None,
 ):
     grid_x = N // tile_n
     grid_y = M // tile_m
     k_shard = K // k_shards
+    output_grid = output_grid or (grid_x, grid_y)
+    output_shard_shape = output_shard_shape or (tile_m, tile_n)
 
     @T.prim_func
     def main(
@@ -609,8 +618,8 @@ def external_k_sharded_l1_gemm_kernel(
             )
             C_sharded = T.sharded_l1(
                 strategy="block",
-                grid=T.CoreGrid(x=grid_x, y=grid_y),
-                shard_shape=(tile_m, tile_n),
+                grid=T.CoreGrid(x=output_grid[0], y=output_grid[1]),
+                shard_shape=output_shard_shape,
                 orientation="row_major",
                 allow_reshard=False,
             )
@@ -2385,6 +2394,65 @@ def test_blackhole_t10_partial_k_reducer_supports_temporal_wave_output_tiles_bf1
         failure_message=(
             "Temporal-wave K-sharded external L1 GEMM partial-sum direct-call "
             "output mismatch"
+        ),
+    )
+
+
+def test_blackhole_t10_partial_k_reducer_supports_large_temporal_output_grid_bf16():
+    can_run, msg = check_blackhole_direct_execution_requirements()
+    if not can_run:
+        pytest.skip(f"Blackhole requirements not met: {msg}")
+
+    m, n, k, k_shards = 640, 640, 1024, 4
+    torch.manual_seed(23)
+    a_torch = torch.randn(m, k, dtype=torch.bfloat16)
+    b_torch = torch.randn(n, k, dtype=torch.bfloat16)
+    c_output = torch.zeros(m, n, dtype=torch.float32)
+    c_ref = torch.matmul(a_torch.float(), b_torch.float().transpose(0, 1))
+
+    target = Target("blackhole")
+    kernel = external_k_sharded_l1_gemm_kernel(
+        M=m,
+        N=n,
+        K=k,
+        k_shards=k_shards,
+        output_grid=(10, 10),
+        output_shard_shape=(64, 64),
+    )
+    with target:
+        artifact = lower(kernel, target=target)
+
+    device_main = artifact.device_mod["main_kernel"]
+    executable = _extract_materialized_blackhole_executable(device_main)
+    core_plan = executable["core_plan"]
+    assert int(core_plan["logical_grid_x"]) == 20
+    assert int(core_plan["logical_grid_y"]) == 20
+    assert int(core_plan["logical_grid_z"]) == 4
+    assert len(core_plan["physical_cores"]) == 110
+    assert sum(int(packet["work_count"]) for packet in core_plan["work_packets"]) == 1600
+    output_distribution = next(
+        plan for plan in executable["buffer_distribution_plans"]
+        if str(plan["buffer"]) == "C"
+    )
+    assert [int(v) for v in output_distribution["shard_grid_shape"]] == [10, 10]
+    assert [int(v) for v in output_distribution["shard_shape"]] == [64, 64]
+    _assert_t10_partial_k_reducer_plan(
+        executable, expected_logical_grid=[20, 20, 4],
+        expected_tile_shape=(64, 64),
+    )
+
+    reasons = _direct_runtime_unsupported_reasons(artifact)
+    assert reasons == []
+
+    artifact.codegen_mod["main"](a_torch, b_torch, c_output)
+    assert_tensors_close_or_dump(
+        c_output,
+        c_ref,
+        atol=1.2,
+        rtol=2e-1,
+        failure_message=(
+            "Large temporal-grid K-sharded external L1 GEMM partial-sum "
+            "direct-call output mismatch"
         ),
     )
 

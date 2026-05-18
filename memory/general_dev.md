@@ -181,9 +181,12 @@
   in-physical output waves use the typed device tile-add reducer, and later
   temporal output waves use host-mediated float32 page adds from the typed
   scratch buffer into the typed final buffer.  Do not let those later-wave
-  tiles silently reuse the ordinary device reducer and return wrong values;
-  larger shapes that cannot allocate their sharded L1 output still need a
-  typed resource-plan expansion or a fail-closed resource diagnostic.
+  tiles silently reuse the ordinary device reducer and return wrong values.
+  For larger logical output grids, do not make the resident sharded L1 grid
+  equal to the logical tile grid by default.  The resident grid must satisfy
+  the core/L1-bank limit, while `shard_shape` can cover multiple logical
+  output tiles per resident shard and temporal work packets cover the full
+  logical grid.
 - CB allocation 更像寄存器分配：
   第一版优先用 live-interval / linear-scan
   模型和 arch-aware CB limits，
@@ -2308,9 +2311,11 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   float32 tile pages from the typed scratch buffer into the typed final buffer
   for later temporal output waves.  This is a runtime implementation detail
   under `TTReducerPlan -> ExecutableSpec.reducer_plans`, not a new source
-  matcher or public fallback path.  Bigger grids such as `20x20x4` still need
-  a typed temporal output buffer/resource plan because sharded L1 allocation
-  can fail before reducer execution.
+  matcher or public fallback path.  Bigger grids such as `20x20x4` should
+  decouple logical work grid from resident C grid: the verified shape keeps
+  logical grid `20x20x4`, uses C resident grid `10x10` with
+  `shard_shape=(64,64)`, and relies on temporal launch/reducer handling for
+  the full logical grid.
 - 2026-05-04 T8 design boundary:
   Do not turn grouped / ragged / sparse workload parameters into a metadata
   registry or a parallel domain IR.  First analyze existing TIR loops,

@@ -133,10 +133,16 @@ physical workers after the first `physical_cores.size()` logical tiles, the
 direct runtime performs a host-mediated float32 page add from the typed
 scratch buffer into the typed final buffer.  This is still a runtime
 implementation of the admitted `partial_k_sum` reducer plan; it is not a
-separate public protocol or source-derived fallback.  Larger shapes can still
-fail before runtime if the target sharded L1 buffer distribution exceeds the
-TT-Metal bank/resource capacity, for example `20x20x4` on the current
-single-card TT-Sim setup.
+separate public protocol or source-derived fallback.
+
+Large logical output grids must not automatically make the target sharded L1
+grid equal to the logical tile grid.  The logical grid belongs to work
+coverage; the resident sharded L1 grid belongs to physical memory placement
+and must satisfy the core/L1-bank limit.  A larger per-shard `shard_shape`
+may cover multiple logical output tiles per resident shard.  The verified
+`20x20x4` direct-runtime case uses C resident grid `10x10` and
+`shard_shape=(64,64)` so the `400` logical output tiles are covered by `100`
+resident L1 shards plus temporal work/reduction.
 
 If a K-sharded GEMM reaches runtime without an admitted matching reducer plan,
 the executable must fail closed with a typed unsupported reason before
@@ -153,10 +159,11 @@ This slice is verified by:
   GEMM cases proving numerical correctness through `BlackholeModule`;
 - source/runtime guards proving partial-K direct runtime consumes a reducer
   plan and fails closed when a K-sharded GEMM has no admitted reducer plan;
-- temporal correctness guard proving `13x10x4` partial-K output grids with
-  `130` logical output tiles over `110` physical launch cores run through
-  direct runtime and match the torch bf16 reference, including later-wave
-  tiles `110..129`;
+- temporal correctness guards proving `13x10x4` partial-K output grids with
+  `130` logical output tiles over `110` physical launch cores and large
+  `20x20x4` output grids with C resident grid `10x10` /
+  `shard_shape=(64,64)` run through direct runtime and match the torch bf16
+  reference;
 - compile gate: `cmake --build build -j32`.
 
 ## Completion Criteria
@@ -168,4 +175,5 @@ waves do not return wrong values, malformed or missing reducer contracts fail
 closed, and the old implicit reducer inference is no longer a public runtime
 protocol.  Fully device-side temporal reducer ownership remains a future
 resource-planning expansion, but the current single-card direct runtime owns
-correctness for the admitted `13x10x4` temporal-wave subset.
+correctness for the admitted `13x10x4` temporal-wave subset and the larger
+`20x20x4` logical-grid / capped-resident-grid subset.
