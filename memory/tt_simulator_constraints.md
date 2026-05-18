@@ -242,33 +242,43 @@
 4. 当 direct runtime 首次命中这三类 taxonomy 时，
    应先把它和 target contract 回归分开判断。
 
-## 8. CCL runtime correctness multi-device boundary
+## 8. CCL runtime correctness fabric boundary
 
 日期：`2026-05-18`
 
 T10.1 的 all-gather / reduce-scatter / all-to-all runtime correctness 需要
-至少两个设备的 mesh。当前仓库固定的 TT-Sim 入口只能发现一个设备：
+至少两个设备的 mesh 和 fabric CCL execution。当前仓库固定的 TT-Sim 入口
+默认只能发现一个设备：
 
 - `source /root/dev/vibe_dsl/scripts/setup_tt_sim.sh`
 - `PYTHONPATH=/root/dev/vibe_dsl/tt_metal_repo/ttnn:/root/dev/vibe_dsl/tt_metal_repo/build_Release/ttnn:/root/dev/vibe_dsl/tt_metal_repo/build_Release:$PYTHONPATH`
 - `ttnn.get_num_devices()` 返回 `1`
-- `ttnn.open_mesh_device(mesh_shape=ttnn.MeshShape(1, 2))` 失败：
-  requested mesh 需要 `2` devices，但 system mesh 是 `MeshShape([1, 1])`
-- 指定
-  `TT_MESH_GRAPH_DESC_PATH=tt_metal_repo/tests/scale_out/4x_bh_quietbox/mesh_graph_descriptors/2x2_bh_mesh_graph_descriptor.textproto`
-  后仍失败：logical `2x2` BH graph 不能映射到 discovered physical topology
-  的单节点 graph
-- 指定 `TT_METAL_VISIBLE_DEVICES=0,1` 并传
-  `physical_device_ids=[0, 1]` 仍失败：physical chip id `1` 不在 control
-  plane chip mapping 中
+
+补充设置 Blackhole P300 mock cluster descriptor 后可以打开双设备 simulator
+mesh：
+
+- `TT_METAL_MOCK_CLUSTER_DESC_PATH=/root/dev/vibe_dsl/tt_metal_repo/tt_metal/third_party/umd/tests/cluster_descriptor_examples/blackhole_P300_both_mmio.yaml`
+- `ttnn.get_num_devices()` 返回 `2`
+- `ttnn.open_mesh_device(mesh_shape=ttnn.MeshShape(1, 2))` 成功，mesh shape
+  是 `MeshShape([1, 2])`
+
+但 CCL fabric execution 仍被当前 simulator 卡住：
+
+- 最小 `ttnn.all_gather(..., topology=ttnn.Topology.Linear)` smoke 设置
+  `ttnn.FabricConfig.FABRIC_1D`
+- Fabric 在两个 simulated devices 上初始化成功
+- 进入 fabric command handling 后 fatal：
+  `UnimplementedFunctionality: eth_txq_regs_wr32: eth_txq_cmd=0x2`
+- 设置 `TTSIM_SEMIHOSTING=1` 不改变该 fatal
 
 当前结论：
 
 - 这个环境可以验证 single-device direct-runtime correctness；
-- 这个环境不能完成 multi-device CCL runtime correctness；
+- 这个环境可以打开 `1x2` Blackhole simulator mesh；
+- 这个环境当前不能完成 fabric-backed multi-device CCL runtime correctness；
 - T10.1/T10.2/T10.3 的完成判定不能退化成 contract-only / fail-closed；
-- 需要新的 multi-device TT-Sim 配置、multi-device simulator binary，或真实
-  多设备 Blackhole 目标后，才能宣称 CCL runtime correctness 完成。
+- 需要 fabric simulator 支持 `eth_txq_cmd=0x2`，或真实多设备 Blackhole 目标
+  后，才能宣称 CCL runtime correctness 完成。
 
 ## 9. 使用方式
 
