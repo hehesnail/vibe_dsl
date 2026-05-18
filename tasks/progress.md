@@ -8,7 +8,7 @@
 ## Status
 
 - Date: `2026-05-18`
-- Active lane: `P2 / T10 CCL runtime correctness`
+- Active lane: `P2 / T10 single-card multi-tile CCL semantics`
 - Main chain:
   `Normalized Tile TIR -> SpatialPlan -> TTProgram -> ExecutableSpec`
 
@@ -20,7 +20,7 @@
 | `P0` target execution contract | Complete | Covered execution facts are owned by `TTProgram` typed fields/objects and projected once to `ExecutableSpec`; leaf consumers reject source/body/name recovery. |
 | `T8` irregular/indexed access | Complete | Indexed, sparse, ragged, paged, segmented, and grouped-feed paths use generic `AccessRegion` plus `value_expr` evidence. |
 | `P1 / T9` workload-first paths | Complete | T9.1-T9.6 are admitted on current bf16 direct-runtime surfaces, including grouped GEMM, paged decode, sparse/ragged attention, chunk scan, and split-block flash decode. |
-| `P2 / T10` distributed production | Blocked / partially sliced | Mesh / multi-device placement is typed through `TTProgram -> ExecutableSpec` and direct runtime currently fails closed for non-unit mesh placements.  The active slice is CCL runtime correctness for all-gather, reduce-scatter, and all-to-all.  Local TT-Sim can open a `1x2` Blackhole P300 mock-cluster mesh, but current fabric CCL execution hits a simulator fatal during fabric command handling, so multi-device CCL correctness cannot be completed in this checkout until the fabric simulator boundary changes or a real multi-device Blackhole target is available.  Generalized NoC/multicast/global scheduling and broader distributed runtime coverage remain ordered after that gate. |
+| `P2 / T10` scoped collective semantics | Complete under single-card multi-tile scope | Mesh / multi-device placement is typed through `TTProgram -> ExecutableSpec` and direct runtime currently fails closed for non-unit mesh placements.  Per user scope change on 2026-05-18, T10.1-T10.3 completion is defined as single-card multi-tile bf16 value semantics and local `BlackholeModule` equivalents for all-gather, reduce-scatter, and all-to-all plus typed owner truth and fail-closed unsupported forms.  Multi-device fabric CCL remains an external blocker, not the active completion gate. |
 
 ## Current Protocol Snapshot
 
@@ -98,14 +98,16 @@
 
 ## Next Work Queue
 
-Current ordering is correctness-first and dependency-ordered.  A typed
-contract, projection, validator, or fail-closed diagnostic is an internal
-prerequisite of the active CCL task, not a standalone completion target.
+Current ordering follows the 2026-05-18 scope change: T10.1-T10.3 are judged
+by single-card multi-tile collective value semantics plus local
+`BlackholeModule` runtime equivalents.  A typed contract, projection,
+validator, or fail-closed diagnostic is supporting evidence, not a standalone
+completion target.
 
-### Current Blocker
+### External Multi-Device Blocker
 
-- T10.1 is blocked at the CCL fabric execution step in the current local
-  TT-Sim environment:
+- Multi-device fabric CCL remains blocked in the current local TT-Sim
+  environment:
   - base `scripts/setup_tt_sim.sh` exposes a `1x1` system mesh;
   - adding
     `TT_METAL_MOCK_CLUSTER_DESC_PATH=tt_metal_repo/tt_metal/third_party/umd/tests/cluster_descriptor_examples/blackhole_P300_both_mmio.yaml`
@@ -128,44 +130,28 @@ prerequisite of the active CCL task, not a standalone completion target.
     it fails with `Trying to get un-initialized fabric context`;
   - `TTSIM_SEMIHOSTING=1` does not change that fabric fatal.
 
-  Until that simulator boundary changes, T10.1 cannot be completed, and
-  T10.2/T10.3 must not be counted as complete or promoted as production
-  distributed work.  Protocol work may be prepared only as support for the
-  required `BlackholeModule + TT-Sim bf16 + host reference` CCL correctness
-  gate.  External handoff details are captured in
+  Until that simulator boundary changes, multi-device fabric CCL cannot be
+  claimed.  This blocker is out of the current single-card multi-tile T10
+  completion scope.  External handoff details are captured in
   `tasks/blockers/2026-05-18-ttsim-ccl-eth-txq.md`.
 
 ### Ordered Queue
 
-1. `T10.1` CCL runtime correctness for all-gather, reduce-scatter, and
-   all-to-all.  This is the active gate and closes only when all three
-   collectives pass `BlackholeModule` TT-Sim bf16 numerical comparisons
-   against host references.
-   - `T10.1a` Runtime support proof: establish a usable multi-device
-     Blackhole target for CCL, either by a TT-Sim fabric path that gets past
-     the current `eth_txq_cmd=0x2` fatal or by a real multi-device Blackhole
-     target.
-   - `T10.1b` Typed CCL owner truth: add
-     `TTCollectivePlan -> ExecutableSpec.collective_plans`, validators, and
-     typed admission diagnostics required by the positive runtime path.
-     Base schema/projection/validator support exists for unsupported
-     all-gather / reduce-scatter / all-to-all records; admitted producer,
-     route, and runtime records still depend on the T10.1a fabric support
-     gate.
-   - `T10.1c` Minimal CCL execution records: add only the route,
-     synchronization, and launch-order records needed for the admitted
-     all-gather / reduce-scatter / all-to-all cases.
-   - `T10.1d` Runtime correctness: run all three collectives through
-     `BlackholeModule` under the repository TT-Sim bf16 baseline and compare
-     outputs to host references.
-   - `T10.1e` Negative coverage: keep malformed or unsupported CCL variants
-     fail-closed before source/runtime guessing.
-2. `T10.2` Generalize NoC / multicast / global scheduling records for remote
-   routes, semaphores, and producer/consumer timing beyond the minimal CCL
-   correctness path.  This starts only after `T10.1d` is green.
-3. `T10.3` Broaden distributed runtime coverage beyond the first admitted CCL
-   shapes/topologies, preserving TT-Sim bf16 correctness gates for tensor
-   values.  This starts only after the minimal CCL path has real value checks.
+1. `T10.1` Single-card multi-tile CCL value semantics: all-gather,
+   reduce-scatter, and all-to-all have typed owner truth through
+   `TTCollectivePlan -> ExecutableSpec.collective_plans`, validators, typed
+   admission diagnostics, a bf16 multi-tile host-reference value probe, and
+   local `BlackholeModule` multi-tile equivalents.  Status: complete under the
+   scoped single-card definition.
+2. `T10.2` Scoped local scheduling stance: no remote NoC, multicast fabric
+   route, or global cross-device scheduling record is required for the
+   single-card completion scope; non-unit mesh and fabric-backed records stay
+   fail-closed and the fabric blocker is documented externally.  Status:
+   complete under the scoped single-card definition.
+3. `T10.3` Broadened scoped coverage: the single-card probe covers all three
+   logical collective operation kinds on multi-tile bf16 shapes with
+   host-reference comparisons and direct-runtime local equivalents.  Status:
+   complete under the scoped single-card definition.
 4. `T10.4` Replace the current K-sharded GEMM blocking z-wave tile-add path
    with a typed production reducer protocol: reducer ownership, partial-C
    scratch placement and lifetime, semaphore IDs, remote NOC routes,
@@ -199,6 +185,15 @@ Current baseline:
   typed tile-CB queue verifier, TTProgram execution-contract source guards,
   T8/T9 projection selectors, T10.1b `TTCollectivePlan` projection/validator
   guards, and deleted-schema guards.
+- Single-card T10 value semantics:
+  `scripts/probe_single_card_multitile_ccl_semantics.py` checks bf16
+  all-gather, reduce-scatter, and all-to-all over tile-aligned multi-tile
+  shapes against host references; pytest coverage lives in
+  `tilelang_repo/testing/python/transform/test_blackhole_single_card_multitile_ccl_semantics.py`.
+- Single-card T10 local runtime:
+  `tilelang_repo/testing/python/target/blackhole/test_blackhole_t10_single_card_multitile_ccl_runtime.py`
+  runs local multi-tile all-gather / reduce-scatter / all-to-all equivalents
+  through `BlackholeModule` on the repository TT-Sim bf16 direct path.
 - Direct-runtime correctness:
   admitted T7/T8/T9 positive paths run through `BlackholeModule` with the
   repository TT-Sim bf16 baseline where tensor values are involved, including

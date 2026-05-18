@@ -1,51 +1,57 @@
-# Blackhole T10 CCL Runtime Correctness
+# Blackhole T10 Single-Card Multi-Tile CCL Semantics
 
 ## Role
 
-This document defines the active P2/T10 collective-communication runtime
-correctness slice after typed mesh placement.
+This document defines the P2/T10 collective-communication single-card
+multi-tile value and local-runtime slice after typed mesh placement.
 
 Overall architecture:
 `final_blackhole_backend_redesign.md`.
 Current status:
 `tasks/progress.md`.
 
+## Scope Change
+
+As of 2026-05-18, T10 completion is scoped to single-card multi-tile
+semantics.  Multi-device fabric execution remains recorded as an external
+blocker, but it is no longer the active completion gate for T10.1-T10.3 in
+this checkout.
+
+This scope proves the logical value behavior of the CCL operations over
+tile-aligned bf16 tensors on one host/card-equivalent execution context, and
+executes local multi-tile equivalents through `BlackholeModule` on TT-Sim.  It
+does not claim fabric route correctness, Ethernet TXQ support, remote
+semaphore behavior, or real multi-device launch ordering.
+
 ## Goal
 
-Admit a minimal, typed, distributed CCL runtime path for:
+Define and verify a minimal, typed, single-card multi-tile semantics path for:
 
 - all-gather;
 - reduce-scatter;
 - all-to-all.
 
-Completion requires positive bf16 numerical correctness through
-`BlackholeModule` under the repository TT-Sim setup, compared with host
-references.  A contract-only fail-closed slice is not a completion point for
-this task.
+Completion requires positive bf16 numerical correctness for all three logical
+collectives on multi-tile shapes, compared with host references.  A
+contract-only fail-closed slice is not a completion point for this task.
 
 ## Ordered Work
 
-This task is ordered as a single correctness gate.  Typed contracts,
+This task is ordered as a single-card value-semantics gate.  Typed contracts,
 projection, validators, and unsupported diagnostics are prerequisites inside
 the gate; they do not close the task without positive tensor-value checks.
 
-1. `T10.1a` Prove the runtime support boundary:
-   TT-Sim can create the required multi-device mesh shape and the selected
-   TileLang/TT-Metal runtime route can launch a distributed collective without
-   using the legacy external runner.  In the current local setup, the known
-   blocker is the TT-Sim fabric fatal during CCL command handling; a real
-   multi-device Blackhole target is an equivalent unblocker for this step.
-2. `T10.1b` Add the typed CCL owner truth needed by runtime:
+1. `T10.1` Add the typed CCL owner truth needed by runtime:
    `TTCollectivePlan -> ExecutableSpec.collective_plans`, validators, and
    direct-runtime admission reasons.
-3. `T10.1c` Add the minimum route / synchronization / launch-order records
-   required by the three admitted CCL operations.  These records are scoped to
-   the CCL positive path; wider NoC / multicast / global scheduling
-   generalization remains the next task after the correctness gate is green.
-4. `T10.1d` Execute all-gather, reduce-scatter, and all-to-all through
-   `BlackholeModule` on TT-Sim with bf16 inputs and compare against host
-   references.
-5. `T10.1e` Keep malformed or unsupported CCL variants fail-closed with typed
+2. `T10.2` Keep route / synchronization / launch-order semantics single-card
+   and local.  No remote NoC, multicast fabric route, or global cross-device
+   scheduling record is required for this scoped completion.  Non-unit mesh
+   and fabric-backed CCL records remain fail-closed or externally blocked.
+3. `T10.3` Broaden the scoped value gate to cover all three operation kinds
+   on multi-tile bf16 tensors with host-reference comparisons and
+   single-card `BlackholeModule` local-runtime equivalents.
+4. Keep malformed or unsupported CCL variants fail-closed with typed
    diagnostics before source/runtime guessing.
 
 ## Representation Contract
@@ -100,10 +106,14 @@ concat axis, and total element count must be preserved.
 `TTCollectivePlan`.
 
 Direct runtime may execute only admitted CCL records whose mesh, buffer
-distribution, route, sync, and launch-order records are complete.  It must not
-silently drop a collective, create a unit-mesh fallback, or reconstruct
-collective behavior from generated source, buffer names, argument positions,
-or runtime observation.
+distribution, route, sync, and launch-order records are complete for the
+selected scope.  Under the current single-card multi-tile scope, fabric
+`TTCollectivePlan` records remain unsupported/fail-closed; the positive runtime
+gate is a local multi-tile equivalent that verifies the same all-gather,
+reduce-scatter, and all-to-all value equations through `BlackholeModule` on a
+unit mesh.  Runtime must not silently drop a collective, create a unit-mesh
+fallback for a multi-device request, or reconstruct collective behavior from
+generated source, buffer names, argument positions, or runtime observation.
 
 ## Validation Contract
 
@@ -120,7 +130,8 @@ or runtime observation.
 - all-gather, reduce-scatter, or all-to-all shape equations that do not hold;
 - reduce-scatter without `reduce_op`;
 - admitted records that still carry `unsupported_reason`;
-- executable CCL records without complete route / synchronization evidence;
+- executable CCL records without complete route / synchronization evidence for
+  their admitted scope;
 - unsupported records without `unsupported_reason`;
 - stale attempts to recover CCL semantics outside typed records.
 
@@ -128,17 +139,22 @@ or runtime observation.
 
 This slice is verified by:
 
-- a TT-Sim environment probe proving the required multi-device CCL route is
-  locally available, or a recorded blocker if it is not;
+- `scripts/probe_single_card_multitile_ccl_semantics.py`, proving bf16
+  all-gather, reduce-scatter, and all-to-all value semantics over tile-aligned
+  multi-tile shapes;
+- `tilelang_repo/testing/python/target/blackhole/test_blackhole_t10_single_card_multitile_ccl_runtime.py`,
+  proving local multi-tile all-gather / reduce-scatter / all-to-all
+  equivalents through `BlackholeModule` on the repository TT-Sim bf16 direct
+  path;
 - structure tests proving `TTCollectivePlan` exists on `TTProgram`;
 - negative validator tests for malformed collective records;
 - executable projection tests proving `collective_plans` reaches
   `ExecutableSpec`;
 - direct-runtime tests proving unsupported CCL variants fail closed with typed
   diagnostics;
-- positive direct-runtime tests for all-gather, reduce-scatter, and all-to-all
-  through `BlackholeModule` under TT-Sim using bf16 inputs and host-reference
-  comparisons;
+- a recorded external blocker for multi-device fabric CCL
+  `eth_txq_cmd=0x2`, without treating that external blocker as part of the
+  single-card completion gate;
 - compile gate: `cmake --build build -j32`.
 
 ## Completion Criteria
@@ -147,10 +163,10 @@ This task is complete only when:
 
 - all three collective operation kinds have typed owner truth from
   `TTProgram -> ExecutableSpec`;
-- direct runtime admits the supported CCL records from executable facts, not
-  from source/runtime recovery;
-- all-gather, reduce-scatter, and all-to-all pass TT-Sim bf16 numerical
-  correctness against host references through `BlackholeModule`;
+- all-gather, reduce-scatter, and all-to-all pass the single-card multi-tile
+  bf16 numerical semantics probe against host references;
+- all-gather, reduce-scatter, and all-to-all pass the single-card multi-tile
+  `BlackholeModule` local-runtime equivalent probe against host references;
 - unsupported or malformed CCL forms fail closed with typed diagnostics;
 - docs and `tasks/progress.md` state any remaining wider distributed work,
   such as generalized NoC scheduling or production partial-K reduction,

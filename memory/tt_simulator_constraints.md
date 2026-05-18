@@ -242,13 +242,17 @@
 4. 当 direct runtime 首次命中这三类 taxonomy 时，
    应先把它和 target contract 回归分开判断。
 
-## 8. CCL runtime correctness fabric boundary
+## 8. Multi-device CCL fabric boundary
 
 日期：`2026-05-18`
 
-T10.1 的 all-gather / reduce-scatter / all-to-all runtime correctness 需要
-至少两个设备的 mesh 和 fabric CCL execution。当前仓库固定的 TT-Sim 入口
-默认只能发现一个设备：
+原始 multi-device CCL runtime correctness 口径下，all-gather /
+reduce-scatter / all-to-all 需要至少两个设备的 mesh 和 fabric CCL
+execution。2026-05-18 用户已把当前 T10.1/T10.2/T10.3 完成口径改为
+single-card multi-tile value semantics；本节记录的是后续 multi-device
+fabric 收口 blocker，不再阻塞当前 scoped T10 完成。
+
+当前仓库固定的 TT-Sim 入口默认只能发现一个设备：
 
 - `source /root/dev/vibe_dsl/scripts/setup_tt_sim.sh`
 - `PYTHONPATH=/root/dev/vibe_dsl/tt_metal_repo/ttnn:/root/dev/vibe_dsl/tt_metal_repo/build_Release/ttnn:/root/dev/vibe_dsl/tt_metal_repo/build_Release:$PYTHONPATH`
@@ -303,9 +307,16 @@ unsupported_reason=eth_txq_cmd=0x2
 - 这个环境可以验证 single-device direct-runtime correctness；
 - 这个环境可以打开 `1x2` Blackhole simulator mesh；
 - 这个环境当前不能完成 fabric-backed multi-device CCL runtime correctness；
-- T10.1/T10.2/T10.3 的完成判定不能退化成 contract-only / fail-closed；
+- 当前 scoped T10.1/T10.2/T10.3 完成判定使用
+  `scripts/probe_single_card_multitile_ccl_semantics.py` 的 single-card
+  multi-tile bf16 value probe，以及
+  `tilelang_repo/testing/python/target/blackhole/test_blackhole_t10_single_card_multitile_ccl_runtime.py`
+  的 single-card `BlackholeModule` local-runtime equivalent probe，不能退化成
+  contract-only / fail-closed；
+- 后续如果重新收口 multi-device fabric correctness，仍不能把 typed CCL
+  contract、projection 或 fail-closed diagnostic 当成 runtime correctness；
 - 需要 fabric simulator 支持 `eth_txq_cmd=0x2`，或真实多设备 Blackhole 目标
-  后，才能宣称 CCL runtime correctness 完成。
+  后，才能宣称 multi-device CCL runtime correctness 完成。
 
 ## 9. 使用方式
 

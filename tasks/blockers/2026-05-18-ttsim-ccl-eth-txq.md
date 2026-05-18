@@ -2,18 +2,23 @@
 
 Date: 2026-05-18
 
+Scope note: after the 2026-05-18 user scope change, this file is only the
+external handoff for future multi-device fabric CCL closure.  Current
+T10.1-T10.3 completion is judged by single-card multi-tile CCL value
+semantics and is not blocked by this fabric simulator boundary.
+
 ## Blocked Work
 
-Active objective: complete T10.1, T10.2, and T10.3.
+Future objective: close multi-device CCL runtime correctness.
 
-Current blocking gate:
+Future blocking gate:
 
-- T10.1 CCL runtime correctness for all-gather, reduce-scatter, and
-  all-to-all.
+- Multi-device fabric CCL runtime correctness for all-gather, reduce-scatter,
+  and all-to-all.
 - Success requires all three collectives to pass the repository
   `BlackholeModule + TT-Sim bf16 + host reference` numerical comparison gate.
-- T10.2 and T10.3 are ordered after the T10.1d runtime value gate and must not
-  be counted complete before it passes.
+- This is outside the current single-card multi-tile T10.1-T10.3 completion
+  scope.
 
 ## Reproduction
 
@@ -72,7 +77,8 @@ unsupported_reason=eth_txq_cmd=0x2
 
 ## Required External Input
 
-One of the following is required before T10.1 can continue:
+One of the following is required before multi-device CCL runtime correctness
+can continue:
 
 - A Blackhole TT-Sim binary that supports the fabric TXQ data command path hit
   by `ETH_TXQ_CMD_START_DATA`; or
@@ -85,6 +91,6 @@ After either input is available, rerun:
 scripts/probe_tt_sim_ccl.sh
 ```
 
-Then continue with T10.1c/T10.1d only if the probe reaches CCL value execution
-and reports numerical correctness for all-gather, reduce-scatter, and
-all-to-all.
+Then continue with the multi-device fabric closure only if the probe reaches
+CCL value execution and reports numerical correctness for all-gather,
+reduce-scatter, and all-to-all.

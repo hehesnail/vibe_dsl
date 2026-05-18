@@ -34,13 +34,17 @@
     `probe_status=fabric_ccl_unsupported` 和
     `unsupported_reason=eth_txq_cmd=0x2`。
 - **当前结论**:
-  - T10.1 all-gather / reduce-scatter / all-to-all 的
+  - 原始 multi-device all-gather / reduce-scatter / all-to-all 的
     `BlackholeModule + TT-Sim bf16 + host reference` 正向 correctness
     在当前本地 TT-Sim 环境不可完成。
-  - 不能把 typed CCL contract、source/spec projection、fail-closed reject
-    当作 T10.1 完成。
-  - 需要当前 TT-Sim 支持 fabric `eth_txq_cmd=0x2`，或使用真实多设备
-    Blackhole 目标后再做 runtime correctness 收口。
+  - 2026-05-18 用户已把当前 T10.1/T10.2/T10.3 完成口径改为
+    single-card multi-tile value semantics；当前 scoped gate 使用
+    `scripts/probe_single_card_multitile_ccl_semantics.py` 和
+    `tilelang_repo/testing/python/target/blackhole/test_blackhole_t10_single_card_multitile_ccl_runtime.py`，
+    不是 fabric probe。
+  - 后续若重新收口 multi-device fabric correctness，仍不能把 typed CCL
+    contract、source/spec projection、fail-closed reject 当作完成；需要当前
+    TT-Sim 支持 fabric `eth_txq_cmd=0x2`，或使用真实多设备 Blackhole 目标。
 
 ### TT-Sim 的 fatal taxonomy 需要先按 simulator 约束判断，不要直接误判成 target contract 回归
 
