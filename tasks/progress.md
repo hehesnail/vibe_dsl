@@ -187,13 +187,14 @@ Current baseline:
   guards, and deleted-schema guards.
 - Single-card T10 value semantics:
   `scripts/probe_single_card_multitile_ccl_semantics.py` checks bf16
-  all-gather, reduce-scatter, and all-to-all over tile-aligned multi-tile
-  shapes against host references; pytest coverage lives in
+  all-gather, reduce-scatter, and all-to-all over tile-aligned `8x8`
+  multi-tile shapes against host references; pytest coverage lives in
   `tilelang_repo/testing/python/transform/test_blackhole_single_card_multitile_ccl_semantics.py`.
 - Single-card T10 local runtime:
   `tilelang_repo/testing/python/target/blackhole/test_blackhole_t10_single_card_multitile_ccl_runtime.py`
   runs local multi-tile all-gather / reduce-scatter / all-to-all equivalents
-  through `BlackholeModule` on the repository TT-Sim bf16 direct path.
+  through `BlackholeModule` on the repository TT-Sim bf16 direct path with
+  `8x8x2` logical tile work items per collective.
 - Direct-runtime correctness:
   admitted T7/T8/T9 positive paths run through `BlackholeModule` with the
   repository TT-Sim bf16 baseline where tensor values are involved, including

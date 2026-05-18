@@ -18,6 +18,8 @@ import torch
 
 TILE_SIZE = 32
 PARTICIPANT_COUNT = 2
+TILE_ROWS = 8
+TILE_COLS = 8
 
 
 def _emit(key: str, value: object) -> None:
@@ -41,7 +43,7 @@ def _all_equal(values: Iterable[bool]) -> bool:
 
 def _verify_all_gather() -> bool:
     tensor_axis = 3
-    shard_shape = (1, 2, TILE_SIZE * 2, TILE_SIZE * 2)
+    shard_shape = (1, 2, TILE_SIZE * TILE_ROWS, TILE_SIZE * TILE_COLS)
     shards = [
         _make_bf16_tensor(shard_shape, offset=participant * 17)
         for participant in range(PARTICIPANT_COUNT)
@@ -60,7 +62,12 @@ def _verify_all_gather() -> bool:
 
 def _verify_reduce_scatter() -> bool:
     tensor_axis = 3
-    input_shape = (1, 2, TILE_SIZE * 2, TILE_SIZE * 4)
+    input_shape = (
+        1,
+        2,
+        TILE_SIZE * TILE_ROWS,
+        TILE_SIZE * TILE_COLS * PARTICIPANT_COUNT,
+    )
     inputs = [
         _make_bf16_tensor(input_shape, offset=participant * 19)
         for participant in range(PARTICIPANT_COUNT)
@@ -82,7 +89,12 @@ def _verify_reduce_scatter() -> bool:
 def _verify_all_to_all() -> bool:
     split_axis = 2
     concat_axis = 3
-    full_shape = (1, 2, TILE_SIZE * 4, TILE_SIZE * 4)
+    full_shape = (
+        1,
+        2,
+        TILE_SIZE * TILE_ROWS,
+        TILE_SIZE * TILE_COLS * PARTICIPANT_COUNT,
+    )
     full_tensor = _make_bf16_tensor(full_shape, offset=23)
 
     input_shards = list(torch.chunk(full_tensor, PARTICIPANT_COUNT, dim=split_axis))
@@ -110,6 +122,8 @@ def _verify_all_to_all() -> bool:
 def main() -> int:
     _emit("scope", "single_card_multitile_value_semantics")
     _emit("tile_size", TILE_SIZE)
+    _emit("tile_rows", TILE_ROWS)
+    _emit("tile_cols", TILE_COLS)
     _emit("participant_count", PARTICIPANT_COUNT)
     _emit("dtype", "bf16")
 

@@ -141,11 +141,11 @@ This slice is verified by:
 
 - `scripts/probe_single_card_multitile_ccl_semantics.py`, proving bf16
   all-gather, reduce-scatter, and all-to-all value semantics over tile-aligned
-  multi-tile shapes;
+  `8x8` multi-tile shapes;
 - `tilelang_repo/testing/python/target/blackhole/test_blackhole_t10_single_card_multitile_ccl_runtime.py`,
   proving local multi-tile all-gather / reduce-scatter / all-to-all
   equivalents through `BlackholeModule` on the repository TT-Sim bf16 direct
-  path;
+  path with `8x8x2` logical tile work items per collective;
 - structure tests proving `TTCollectivePlan` exists on `TTProgram`;
 - negative validator tests for malformed collective records;
 - executable projection tests proving `collective_plans` reaches

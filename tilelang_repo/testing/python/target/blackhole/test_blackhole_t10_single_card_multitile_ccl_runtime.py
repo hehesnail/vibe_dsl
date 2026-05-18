@@ -12,6 +12,8 @@ from .common import assert_tensors_close_or_dump, check_blackhole_direct_executi
 
 TILE_SIZE = 32
 PARTICIPANT_COUNT = 2
+TILE_ROWS = 8
+TILE_COLS = 8
 
 
 def _lower_blackhole(kernel):
@@ -40,7 +42,7 @@ def _l1_tile_config(tile_m=TILE_SIZE, tile_n=TILE_SIZE):
     )
 
 
-def t10_single_card_all_gather_kernel(tile_rows=2, tile_cols=2):
+def t10_single_card_all_gather_kernel(tile_rows=TILE_ROWS, tile_cols=TILE_COLS):
     rows = tile_rows * TILE_SIZE
     shard_cols = tile_cols * TILE_SIZE
     output_cols = shard_cols * PARTICIPANT_COUNT
@@ -74,7 +76,7 @@ def t10_single_card_all_gather_kernel(tile_rows=2, tile_cols=2):
     return main
 
 
-def t10_single_card_reduce_scatter_kernel(tile_rows=2, tile_cols=2):
+def t10_single_card_reduce_scatter_kernel(tile_rows=TILE_ROWS, tile_cols=TILE_COLS):
     rows = tile_rows * TILE_SIZE
     output_cols = tile_cols * TILE_SIZE
     input_cols = output_cols * PARTICIPANT_COUNT
@@ -114,14 +116,16 @@ def t10_single_card_reduce_scatter_kernel(tile_rows=2, tile_cols=2):
     return main
 
 
-def t10_single_card_all_to_all_kernel(tile_rows=4, tile_cols=2):
-    rows = tile_rows * TILE_SIZE
+def t10_single_card_all_to_all_kernel(tile_rows=TILE_ROWS, tile_cols=TILE_COLS):
+    source_tile_rows = tile_rows // PARTICIPANT_COUNT
+    source_rows = source_tile_rows * TILE_SIZE
+    rows = source_rows * PARTICIPANT_COUNT
     output_cols = tile_cols * TILE_SIZE
     input_cols = output_cols * PARTICIPANT_COUNT
 
     @T.prim_func
     def main(
-        A: T.Tensor((rows, input_cols), "bfloat16"),
+        A: T.Tensor((PARTICIPANT_COUNT, source_rows, input_cols), "bfloat16"),
         O: T.Tensor((PARTICIPANT_COUNT, rows, output_cols), "bfloat16"),
     ):
         with T.Kernel(tile_cols, tile_rows, PARTICIPANT_COUNT, threads=128) as (bx, by, bp):
@@ -136,8 +140,10 @@ def t10_single_card_all_to_all_kernel(tile_rows=4, tile_cols=2):
             )
             row = by * TILE_SIZE
             col = bx * TILE_SIZE
+            source_participant = by // source_tile_rows
+            source_row = (by % source_tile_rows) * TILE_SIZE
             source_col = bp * output_cols + col
-            T.copy(A[row, source_col], dest_tile)
+            T.copy(A[source_participant, source_row, source_col], dest_tile)
             T.copy(dest_tile, O[bp, row, col])
 
     return main
@@ -146,8 +152,8 @@ def t10_single_card_all_to_all_kernel(tile_rows=4, tile_cols=2):
 def test_blackhole_t10_single_card_all_gather_multitile_runtime_correctness():
     _require_blackhole_direct_runtime()
 
-    rows = 2 * TILE_SIZE
-    shard_cols = 2 * TILE_SIZE
+    rows = TILE_ROWS * TILE_SIZE
+    shard_cols = TILE_COLS * TILE_SIZE
     output_cols = shard_cols * PARTICIPANT_COUNT
     a0 = _bf16_tensor((rows, shard_cols), offset=3)
     a1 = _bf16_tensor((rows, shard_cols), offset=19)
@@ -172,8 +178,8 @@ def test_blackhole_t10_single_card_all_gather_multitile_runtime_correctness():
 def test_blackhole_t10_single_card_reduce_scatter_multitile_runtime_correctness():
     _require_blackhole_direct_runtime()
 
-    rows = 2 * TILE_SIZE
-    output_cols = 2 * TILE_SIZE
+    rows = TILE_ROWS * TILE_SIZE
+    output_cols = TILE_COLS * TILE_SIZE
     input_cols = output_cols * PARTICIPANT_COUNT
     a0 = _bf16_tensor((rows, input_cols), offset=5)
     a1 = _bf16_tensor((rows, input_cols), offset=29)
@@ -199,12 +205,17 @@ def test_blackhole_t10_single_card_reduce_scatter_multitile_runtime_correctness(
 def test_blackhole_t10_single_card_all_to_all_multitile_runtime_correctness():
     _require_blackhole_direct_runtime()
 
-    rows = 4 * TILE_SIZE
-    output_cols = 2 * TILE_SIZE
+    source_rows = (TILE_ROWS // PARTICIPANT_COUNT) * TILE_SIZE
+    rows = TILE_ROWS * TILE_SIZE
+    output_cols = TILE_COLS * TILE_SIZE
     input_cols = output_cols * PARTICIPANT_COUNT
-    a = _bf16_tensor((rows, input_cols), offset=37)
+    a = _bf16_tensor((PARTICIPANT_COUNT, source_rows, input_cols), offset=37)
     output = torch.zeros((PARTICIPANT_COUNT, rows, output_cols), dtype=torch.bfloat16)
-    reference = torch.stack([a[:, :output_cols], a[:, output_cols:]], dim=0)
+    full_rows = torch.cat([a[participant] for participant in range(PARTICIPANT_COUNT)], dim=0)
+    reference = torch.stack(
+        [full_rows[:, :output_cols], full_rows[:, output_cols:]],
+        dim=0,
+    )
 
     artifact = _lower_blackhole(t10_single_card_all_to_all_kernel())
     artifact.codegen_mod["main"](a, output)
