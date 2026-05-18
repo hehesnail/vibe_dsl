@@ -17,6 +17,9 @@
   - 但最小 `ttnn.all_gather` smoke 设置 `FABRIC_1D` 后，Fabric 在两个
     simulated devices 上初始化成功，随后命中 simulator fatal：
     `UnimplementedFunctionality: eth_txq_regs_wr32: eth_txq_cmd=0x2`。
+  - 不设置 fabric config 时，同一 all-gather smoke 会失败于
+    `Trying to get un-initialized fabric context`，不能作为 correctness
+    fallback。
   - `TTSIM_SEMIHOSTING=1` 不改变该 fatal。
 - **当前结论**:
   - T10.1 all-gather / reduce-scatter / all-to-all 的

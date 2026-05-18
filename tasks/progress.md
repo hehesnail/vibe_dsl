@@ -114,6 +114,8 @@ completion target.
   - a minimal TTNN all-gather smoke with `ttnn.FabricConfig.FABRIC_1D` reaches
     Fabric initialization on both simulated devices, then fails with
     `UnimplementedFunctionality: eth_txq_regs_wr32: eth_txq_cmd=0x2`;
+  - running the same all-gather smoke without fabric config is not a fallback:
+    it fails with `Trying to get un-initialized fabric context`;
   - `TTSIM_SEMIHOSTING=1` does not change that fabric fatal.
 
   Until that simulator boundary changes, T10.1/T10.2/T10.3 can only make

@@ -269,6 +269,8 @@ mesh：
 - Fabric 在两个 simulated devices 上初始化成功
 - 进入 fabric command handling 后 fatal：
   `UnimplementedFunctionality: eth_txq_regs_wr32: eth_txq_cmd=0x2`
+- 不设置 fabric config 不能作为 fallback：同一 all-gather smoke 会失败于
+  `Trying to get un-initialized fabric context`
 - 设置 `TTSIM_SEMIHOSTING=1` 不改变该 fatal
 
 当前结论：
