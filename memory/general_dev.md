@@ -176,12 +176,14 @@
 - Oversubscribed direct-runtime launch waves are not automatically safe for
   every sharded-L1 protocol.  Plain per-work kernels can reuse physical cores
   temporally when all state is wave-local, but partial-K GEMM reducers also
-  need final-output and scratch ownership to be temporal-wave-aware.  If
-  `logical_grid_x * logical_grid_y` exceeds the physical launch core count,
-  later logical output tiles reuse workers whose local L1 ownership no longer
-  matches full-grid sharded output ownership.  Until a typed wave-local
-  output/scratch mapping exists, this must be an `ExecutableSpec`
-  unsupported reason, not a runtime best-effort path.
+  need final-output and scratch ownership to be temporal-wave-aware.  For the
+  current single-card direct runtime, the admitted support split is explicit:
+  in-physical output waves use the typed device tile-add reducer, and later
+  temporal output waves use host-mediated float32 page adds from the typed
+  scratch buffer into the typed final buffer.  Do not let those later-wave
+  tiles silently reuse the ordinary device reducer and return wrong values;
+  larger shapes that cannot allocate their sharded L1 output still need a
+  typed resource-plan expansion or a fail-closed resource diagnostic.
 - CB allocation 更像寄存器分配：
   第一版优先用 live-interval / linear-scan
   模型和 arch-aware CB limits，
@@ -2294,6 +2296,21 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   `K-sharded GEMM requires an admitted TTReducerPlan partial_k_sum record`.
   The reducer `tile_shape` should come from the target C distribution shard
   shape, not from the GEMM compute op's 3D tile shape.
+- 2026-05-18 T10.4 temporal partial-K direct runtime:
+  `13x10x4` has `130` logical output tiles over `110` physical launch cores.
+  Device tile-add remains valid for the in-physical output wave, but the
+  later temporal wave `110..129` must not be reduced by pretending those
+  logical tiles have executable owner cores.  The C sharded L1 distribution
+  is `13x10`, while the executable physical set is `11x10`; launching reducer
+  compute on owner columns `x=11,12` can hit TT-Sim `tensix_execute_unpacr`
+  unsupported.  Current direct-runtime correctness support keeps producers on
+  TT-Sim, uses typed device tile-add for first-wave tiles, and host-adds
+  float32 tile pages from the typed scratch buffer into the typed final buffer
+  for later temporal output waves.  This is a runtime implementation detail
+  under `TTReducerPlan -> ExecutableSpec.reducer_plans`, not a new source
+  matcher or public fallback path.  Bigger grids such as `20x20x4` still need
+  a typed temporal output buffer/resource plan because sharded L1 allocation
+  can fail before reducer execution.
 - 2026-05-04 T8 design boundary:
   Do not turn grouped / ragged / sparse workload parameters into a metadata
   registry or a parallel domain IR.  First analyze existing TIR loops,

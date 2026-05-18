@@ -115,24 +115,28 @@ need a `SpatialPlan` layout spec.
 
 For an admitted `partial_k_sum` plan, direct runtime launches producer shards
 in the plan's `accumulation_order`.  Producer `final_writer_producer` writes
-final `C`.  Later producers write `scratch_buffer`; after each producer wave,
-runtime invokes the typed `transport_kind` reducer to add scratch into final
-`C`.  The scratch buffer is allocated according to the plan and is released
-after the producer wave is reduced.
+final `C`.  Later producers write `scratch_buffer`; after each producer
+shard's output waves finish, runtime invokes the typed `transport_kind`
+reducer for those waves to add scratch into final `C`.  The scratch buffer is
+allocated according to the plan and reused only within this host-sequenced
+producer-shard reduction window.
 
-Current direct-runtime admission additionally requires one wave of output
-tiles per producer:
+Current direct-runtime admission supports output grids that need multiple
+temporal waves per producer.  The runtime keeps the same typed reducer plan:
+producer `0` writes final `C`, later producers write the typed scratch buffer,
+and each producer wave is reduced before the next producer is observed by the
+host result path.
 
-```text
-logical_grid[0] * logical_grid[1] <= physical launch cores
-```
-
-If a partial-K GEMM needs multiple temporal waves per producer, the executable
-must fail closed with a typed unsupported reason.  Reusing physical workers for
-later logical output tiles is not enough: sharded L1 target ownership and the
-device tile-add reducer must agree on a wave-local output/scratch mapping and
-the final logical tile mapping.  That temporal ownership protocol is not part
-of the current admitted T10.4 reducer slice.
+For logical output tiles covered by the physical launch core set, runtime uses
+the `device_tile_add` transport.  For later temporal output waves that reuse
+physical workers after the first `physical_cores.size()` logical tiles, the
+direct runtime performs a host-mediated float32 page add from the typed
+scratch buffer into the typed final buffer.  This is still a runtime
+implementation of the admitted `partial_k_sum` reducer plan; it is not a
+separate public protocol or source-derived fallback.  Larger shapes can still
+fail before runtime if the target sharded L1 buffer distribution exceeds the
+TT-Metal bank/resource capacity, for example `20x20x4` on the current
+single-card TT-Sim setup.
 
 If a K-sharded GEMM reaches runtime without an admitted matching reducer plan,
 the executable must fail closed with a typed unsupported reason before
@@ -149,17 +153,19 @@ This slice is verified by:
   GEMM cases proving numerical correctness through `BlackholeModule`;
 - source/runtime guards proving partial-K direct runtime consumes a reducer
   plan and fails closed when a K-sharded GEMM has no admitted reducer plan;
-- temporal-admission guard proving multi-wave partial-K output grids fail
-  closed instead of running with incorrect later-wave tiles;
+- temporal correctness guard proving `13x10x4` partial-K output grids with
+  `130` logical output tiles over `110` physical launch cores run through
+  direct runtime and match the torch bf16 reference, including later-wave
+  tiles `110..129`;
 - compile gate: `cmake --build build -j32`.
 
 ## Completion Criteria
 
 T10.4 is complete only when the current K-sharded GEMM correctness path is
 owned by `TTReducerPlan -> ExecutableSpec.reducer_plans`, positive direct
-runtime correctness still passes for bf16 partial-K GEMM, malformed or missing
-reducer contracts fail closed, and the old implicit reducer inference is no
-longer a public runtime protocol.  Multi-wave temporal reducer ownership is a
-future resource-planning expansion and is explicitly outside the current
-admitted direct-runtime subset until represented as typed output/scratch
-temporal ownership.
+runtime correctness still passes for bf16 partial-K GEMM, temporal output
+waves do not return wrong values, malformed or missing reducer contracts fail
+closed, and the old implicit reducer inference is no longer a public runtime
+protocol.  Fully device-side temporal reducer ownership remains a future
+resource-planning expansion, but the current single-card direct runtime owns
+correctness for the admitted `13x10x4` temporal-wave subset.

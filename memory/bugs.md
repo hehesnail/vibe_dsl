@@ -5,37 +5,43 @@
 
 ## 1. 当前未解决
 
-### partial-K GEMM reducer 需要 temporal wave-local output ownership 才能支持超过单波的输出 tile 网格
+### 大 partial-K GEMM 仍受当前 sharded L1 bank/resource plan 限制
 
 - **现象**:
   - `M=640,N=640,K=1024,k_shards=4`
     对应 `20x20x4` partial-K GEMM，在 TT-Metal allocator 阶段失败：
     `Expected number of shards 400 to be less than or equal to total number of L1 banks 130 in compute cores`。
-  - `M=320,N=416,K=1024,k_shards=4`
-    对应 `13x10x4`，可以完整执行 direct runtime 和 device partial-K
-    reductions，但结果错误：
-    `max diff ~= 107-154`、`mean diff ~= 3.4-4.7`。
-  - tile-wise 诊断显示错误集中在第二个 temporal wave：
-    logical output tile ids `110..129`，前 `0..109` 仍正确。
+  - 已修复的相邻 case：`M=320,N=416,K=1024,k_shards=4`
+    对应 `13x10x4`，覆盖 `130` 个 logical output tiles / `110`
+    个 physical launch cores。旧实现会完整执行但第二个 temporal wave
+    tile ids `110..129` 数值错误；现在 direct runtime 正向 correctness
+    case 通过。
   - `M=320,N=352,K=2048,k_shards=4`
     对应 `11x10x4`，仍通过 bf16 correctness；问题不是 K 深度本身。
 - **根因 / 当前判断**:
-  - 当前 direct runtime 能 temporal 地复用 physical workers 发多波 launch，
-    但 partial-K reducer 的 sharded L1 final output / scratch ownership 仍按
-    full logical output grid 解释。
-  - 当 `logical_grid_x * logical_grid_y > physical launch cores` 时，后续
-    output tiles 复用物理 core，却没有 typed wave-local output/scratch
-    映射把“计算逻辑 tile id”和“当前波本地 L1 shard owner”分开。
-  - 这不是单纯增大 tolerances 或多跑几波可以解决的问题；需要
-    `TTProgram -> ExecutableSpec` 里显式表达 temporal output ownership、
-    scratch lifetime/range 和 final logical tile mapping。
+  - `13x10x4` 的 silent wrong 根因是后续 temporal output wave 复用
+    physical workers 后，device tile-add reducer 对 tile ids `>= 110`
+    没有给出正确结果。
+  - 直接把 reducer launch 放到 C shard owner cores 不可行：当前
+    physical executable set 是 `11x10=110`，而 C sharded L1 distribution
+    是 `13x10=130`；owner columns `x=11,12` 在 TT-Sim 上触发
+    `tensix_execute_unpacr` unsupported。
+  - 运行时修法是：producer 仍按 temporal waves 在 TT-Sim 上执行；
+    first-wave output tiles 继续走 typed `device_tile_add` reducer；
+    后续 temporal output waves 从 typed final/scratch L1 buffer 读回
+    tile pages，在 host 侧做 float32 page add，再写回 final buffer。
+  - `20x20x4` 是不同边界：它在 sharded L1 buffer 创建阶段已经要求
+    `400` shards，超过当前 compute-core L1 bank capacity `130`，需要
+    后续 temporal output buffer/resource plan，而不是 reducer 数值修正。
 - **当前处理**:
-  - direct runtime 现在对该形状 fail closed，typed reason 为：
-    `partial-K GEMM reducer direct runtime requires temporal wave-local output ownership when logical output tiles exceed physical launch cores`。
-  - 已验证 `13x10x4` 不再执行错误数值，而是在 runtime 创建 device 前失败；
-    已有 `11x10x2` / small positive partial-K correctness 仍通过。
-  - 后续若要支持更大 partial-K GEMM，需要先设计 typed temporal reducer
-    ownership，不能在 runtime 里靠 full-grid sharded L1 accessor 猜。
+  - `13x10x4` 已由
+    `test_blackhole_t10_partial_k_reducer_supports_temporal_wave_output_tiles_bf16`
+    覆盖，`direct_runtime_unsupported_reasons == []`，并和 torch bf16
+    reference 比较。
+  - 已有 `2x2x2` / `11x10x2` positive partial-K correctness 仍通过。
+  - 后续要支持 `20x20x4` 这类更大 case，需要先设计 typed temporal
+    output buffer/resource ownership，不能假设 full-grid sharded L1
+    allocation 一定可行。
 
 ### 当前 TT-Sim fabric path 无法完成 multi-device CCL runtime correctness
 

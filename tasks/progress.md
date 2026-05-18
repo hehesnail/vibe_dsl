@@ -95,14 +95,13 @@
   old T7/T9 `t_tile_mmio_wr32` classifier is gone; remaining PACR gates are
   limited to proven simulator capability boundaries, and admitted T9.5/T9.6
   paths publish through typed exact/live CB records rather than PACR skips.
-- Current partial-K GEMM reducer admission is temporal-wave bounded:
-  `logical_grid_x * logical_grid_y` must fit in the physical launch core set
-  for each producer shard.  If a shape needs multiple temporal output waves
-  per producer, direct runtime publishes the typed unsupported reason
-  `partial-K GEMM reducer direct runtime requires temporal wave-local output ownership when logical output tiles exceed physical launch cores`.
-  This prevents the previous silent wrong-result path where later-wave output
-  tiles reused physical workers without a wave-local sharded-L1
-  output/scratch ownership protocol.
+- Current partial-K GEMM reducer admission supports temporal output waves in
+  the single-card direct runtime.  Producer shards run in z order; in-physical
+  output waves use the typed `device_tile_add` reducer, and later temporal
+  output waves are accumulated by a host-mediated float32 page add from the
+  typed final/scratch buffers.  The `13x10x4` bf16 case now checks this path
+  through TT-Sim instead of publishing a fail-closed temporal reason or
+  returning silent wrong values.
 
 ## Next Work Queue
 
@@ -169,9 +168,11 @@ evidence, not a standalone completion target.
    transport, ascending producer accumulation order, and producer-0 final
    writer timing.  Missing admitted reducer plans fail closed before direct
    runtime execution.  Partial-K output grids that require multiple temporal
-   waves per producer now also fail closed until a typed wave-local
-   output/scratch ownership protocol exists.  Status: complete for the
-   current single-card/local direct-runtime protocol subset.
+   waves per producer are supported for the current single-card direct runtime:
+   the first wave uses the device tile-add reducer and later temporal waves
+   use typed final/scratch buffer pages for host-mediated float32 accumulation.
+   Status: complete for the current single-card/local direct-runtime protocol
+   subset.
 
 ### Standing Guardrails
 
@@ -219,10 +220,10 @@ Current baseline:
   that deleting the admitted reducer plan produces the typed unsupported
   reason
   `K-sharded GEMM requires an admitted TTReducerPlan partial_k_sum record`.
-  It also checks the temporal-wave boundary: `13x10x4` partial-K output
-  grids publish
-  `partial-K GEMM reducer direct runtime requires temporal wave-local output ownership when logical output tiles exceed physical launch cores`
-  instead of executing with wrong later-wave tiles.
+  It also checks temporal-wave runtime correctness: `13x10x4` partial-K
+  output grids cover `130` logical output tiles over `110` physical launch
+  cores and compare the full bf16 direct-runtime result against torch, so
+  later-wave tiles `110..129` are no longer allowed to return wrong values.
 - Direct-runtime correctness:
   admitted T7/T8/T9 positive paths run through `BlackholeModule` with the
   repository TT-Sim bf16 baseline where tensor values are involved, including

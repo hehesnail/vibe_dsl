@@ -2766,6 +2766,44 @@ static std::vector<DirectLaunchWave> BuildPartialKLaunchWavesForZ(
   return waves;
 }
 
+static DirectLaunchWave BuildPartialKReductionLaunchWave(
+    const ExecutableSpec& spec,
+    const DirectLaunchWave& producer_wave) {
+  DirectLaunchWave reduction_wave;
+  reduction_wave.work_items.reserve(producer_wave.work_items.size());
+  reduction_wave.launch_cores.reserve(spec.core_plan.physical_cores.size());
+  std::unordered_set<uint64_t> seen_cores;
+  seen_cores.reserve(producer_wave.work_items.size());
+  for (const DirectWorkItem& producer_item : producer_wave.work_items) {
+    ICHECK(seen_cores.insert(EncodeDirectLaunchCoreKey(producer_item.core)).second)
+        << "Blackhole partial-K temporal reducer requires one active logical output tile "
+           "per physical core within a reduction wave";
+    reduction_wave.work_items.push_back(producer_item);
+  }
+  std::unordered_set<uint64_t> launch_core_keys;
+  launch_core_keys.reserve(spec.core_plan.physical_cores.size());
+  for (const PhysicalCore& physical_core : spec.core_plan.physical_cores) {
+    const CoreCoord core(physical_core.core_x, physical_core.core_y);
+    ICHECK(launch_core_keys.insert(EncodeDirectLaunchCoreKey(core)).second)
+        << "Blackhole partial-K temporal reducer core plan contains duplicate physical core";
+    reduction_wave.launch_cores.push_back(core);
+  }
+  return reduction_wave;
+}
+
+static bool PartialKReductionWaveRequiresHostTemporalAdd(
+    const DirectLaunchWave& producer_wave,
+    uint32_t xy_work,
+    uint32_t physical_core_count) {
+  ICHECK_GT(xy_work, 0U);
+  for (const DirectWorkItem& item : producer_wave.work_items) {
+    if ((item.work_id % xy_work) >= physical_core_count) {
+      return true;
+    }
+  }
+  return false;
+}
+
 static const RuntimeTensorBinding* FindRuntimeBinding(
     const std::vector<RuntimeTensorBinding>& bindings,
     const std::string& name) {
@@ -2892,6 +2930,8 @@ static std::string PartialKReductionReaderSource(uint32_t partial_accessor_offse
   os << "  uint32_t final_addr = get_arg_val<uint32_t>(0);\n";
   os << "  uint32_t partial_addr = get_arg_val<uint32_t>(1);\n";
   os << "  uint32_t output_tile_start_id = get_arg_val<uint32_t>(2);\n";
+  os << "  uint32_t active = get_arg_val<uint32_t>(3);\n";
+  os << "  if (active == 0) { return; }\n";
   os << "  const uint32_t tile_index = output_tile_start_id;\n";
   os << "  const uint32_t tile_bytes = " << tile_bytes << ";\n";
   os << "  cb_reserve_back(0, 1);\n";
@@ -2922,6 +2962,8 @@ static std::string PartialKReductionComputeSource() {
   os << "#include \"api/compute/compute_kernel_api.h\"\n";
   os << "#include \"experimental/circular_buffer.h\"\n\n";
   os << "void kernel_main() {\n";
+  os << "  uint32_t active = get_arg_val<uint32_t>(0);\n";
+  os << "  if (active == 0) { return; }\n";
   os << "  reconfig_data_format(0, 1);\n";
   os << "  pack_reconfig_data_format<true>(16);\n";
   os << "  add_tiles_init(0, 1);\n";
@@ -2950,6 +2992,8 @@ static std::string PartialKReductionWriterSource(uint32_t tile_bytes) {
   os << "void kernel_main() {\n";
   os << "  uint32_t final_addr = get_arg_val<uint32_t>(0);\n";
   os << "  uint32_t output_tile_start_id = get_arg_val<uint32_t>(1);\n";
+  os << "  uint32_t active = get_arg_val<uint32_t>(2);\n";
+  os << "  if (active == 0) { return; }\n";
   os << "  const uint32_t tile_index = output_tile_start_id;\n";
   os << "  const uint32_t tile_bytes = " << tile_bytes << ";\n";
   os << "  cb_wait_front(16, 1);\n";
@@ -3131,7 +3175,6 @@ static void EnqueuePartialKDeviceReduction(
                     .compile_args = {},
                     .defines = {},
                     .named_compile_args = {}});
-  (void)compute;
   KernelHandle writer = CreateKernel(
       program, kernel_paths.writer, launch_core_ranges,
       DataMovementConfig{.processor = DataMovementProcessor::RISCV_1,
@@ -3144,12 +3187,26 @@ static void EnqueuePartialKDeviceReduction(
       static_cast<uint32_t>(partial_binding.mesh_buffer->address() & 0xFFFFFFFF);
   const uint32_t xy_work = std::max<uint32_t>(
       1, GetRuntimeLogicalGridX(spec) * GetRuntimeLogicalGridY(spec));
+  std::unordered_map<uint64_t, uint32_t> active_work_by_core;
+  active_work_by_core.reserve(launch_wave.work_items.size());
   for (const DirectWorkItem& item : launch_wave.work_items) {
-    const uint32_t output_tile_start_id = item.work_id % xy_work;
-    SetRuntimeArgs(program, reader, item.core,
-                   {final_addr, partial_addr, output_tile_start_id});
-    SetRuntimeArgs(program, writer, item.core,
-                   {final_addr, output_tile_start_id});
+    const uint64_t core_key = EncodeDirectLaunchCoreKey(item.core);
+    ICHECK(active_work_by_core.emplace(core_key, item.work_id).second)
+        << "Blackhole partial-K reduction wave has duplicate active work item for core ("
+        << item.core.x << "," << item.core.y << ")";
+  }
+  for (const CoreCoord& core : launch_wave.launch_cores) {
+    const uint64_t core_key = EncodeDirectLaunchCoreKey(core);
+    const auto active_it = active_work_by_core.find(core_key);
+    const bool active = active_it != active_work_by_core.end();
+    const uint32_t output_tile_start_id =
+        active ? active_it->second % xy_work : 0U;
+    const uint32_t active_u32 = active ? 1U : 0U;
+    SetRuntimeArgs(program, reader, core,
+                   {final_addr, partial_addr, output_tile_start_id, active_u32});
+    SetRuntimeArgs(program, compute, core, {active_u32});
+    SetRuntimeArgs(program, writer, core,
+                   {final_addr, output_tile_start_id, active_u32});
   }
 
   distributed::MeshWorkload workload;
@@ -3159,6 +3216,59 @@ static void EnqueuePartialKDeviceReduction(
             << " with " << launch_wave.work_items.size()
             << " logical output tile(s)";
   distributed::EnqueueMeshWorkload(cq, workload, /*blocking=*/true);
+}
+
+static void AddPartialKTemporalWaveOnHost(
+    distributed::MeshCommandQueue& cq,
+    const std::string& func_name,
+    const DirectLaunchWave& producer_wave,
+    const RuntimeBufferBinding& final_binding,
+    const RuntimeBufferBinding& partial_binding,
+    uint32_t xy_work,
+    uint32_t tile_bytes) {
+  ICHECK_GT(xy_work, 0U);
+  ICHECK_GT(tile_bytes, 0U);
+  ICHECK_EQ(tile_bytes % sizeof(float), 0U)
+      << "Blackhole partial-K host temporal reducer requires float32 tile pages";
+  std::vector<uint8_t> final_data;
+  std::vector<uint8_t> partial_data;
+  auto final_mesh_buffer = final_binding.mesh_buffer;
+  auto partial_mesh_buffer = partial_binding.mesh_buffer;
+  distributed::EnqueueReadMeshBuffer(cq, final_data, final_mesh_buffer,
+                                     /*blocking=*/true);
+  distributed::EnqueueReadMeshBuffer(cq, partial_data, partial_mesh_buffer,
+                                     /*blocking=*/true);
+  ICHECK_LE(final_binding.size_bytes, final_data.size())
+      << "Blackhole partial-K host temporal reducer final buffer read is too small";
+  ICHECK_LE(partial_binding.size_bytes, partial_data.size())
+      << "Blackhole partial-K host temporal reducer partial buffer read is too small";
+  const uint32_t values_per_tile = tile_bytes / sizeof(float);
+  for (const DirectWorkItem& item : producer_wave.work_items) {
+    const uint32_t output_tile_start_id = item.work_id % xy_work;
+    const uint64_t tile_offset =
+        static_cast<uint64_t>(output_tile_start_id) * tile_bytes;
+    ICHECK_LE(tile_offset + tile_bytes, final_data.size())
+        << "Blackhole partial-K host temporal reducer final tile "
+        << output_tile_start_id << " exceeds buffer size";
+    ICHECK_LE(tile_offset + tile_bytes, partial_data.size())
+        << "Blackhole partial-K host temporal reducer partial tile "
+        << output_tile_start_id << " exceeds buffer size";
+    for (uint32_t i = 0; i < values_per_tile; ++i) {
+      const uint64_t byte_offset =
+          tile_offset + static_cast<uint64_t>(i) * sizeof(float);
+      float final_value = 0.0f;
+      float partial_value = 0.0f;
+      std::memcpy(&final_value, final_data.data() + byte_offset, sizeof(float));
+      std::memcpy(&partial_value, partial_data.data() + byte_offset, sizeof(float));
+      const float sum = final_value + partial_value;
+      std::memcpy(final_data.data() + byte_offset, &sum, sizeof(float));
+    }
+  }
+  distributed::EnqueueWriteMeshBuffer(cq, final_mesh_buffer, final_data,
+                                      /*blocking=*/true);
+  LOG(INFO) << "Direct path: host-add partial-K temporal reduction for "
+            << func_name << " with " << producer_wave.work_items.size()
+            << " logical output tile(s)";
 }
 
 static std::vector<KernelHandle> CreateProgramKernelsFromSpec(
@@ -5140,12 +5250,6 @@ void BlackholeModuleNode::ExecuteDirect(
         << "Blackhole partial-K direct GEMM reduction requires ascending producer order";
     ICHECK_EQ(reducer_plan->final_writer_producer, 0)
         << "Blackhole partial-K direct GEMM reduction requires producer 0 final writer";
-    const uint64_t reducer_logical_output_tiles =
-        static_cast<uint64_t>(CheckedReducerPlanGridDim(*reducer_plan, 0, "x")) *
-        static_cast<uint64_t>(CheckedReducerPlanGridDim(*reducer_plan, 1, "y"));
-    ICHECK_LE(reducer_logical_output_tiles, spec.core_plan.physical_cores.size())
-        << "Blackhole partial-K direct GEMM reduction requires temporal wave-local "
-           "output ownership when logical output tiles exceed physical launch cores";
     ICHECK_EQ(gemm.c_tensor_dtype, "Float32")
         << "Blackhole partial-K direct GEMM device reduction currently requires float32 output tensors";
     ICHECK_EQ(gemm.c_cb_dtype, "Float32")
@@ -5194,6 +5298,11 @@ void BlackholeModuleNode::ExecuteDirect(
     ICHECK_EQ(static_cast<int64_t>(grid_z), reducer_plan->producer_count)
         << "Blackhole partial-K direct GEMM reduction requires producer_count "
            "to match reducer logical_grid z";
+    const uint32_t reducer_xy_work = std::max<uint32_t>(
+        1, CheckedReducerPlanGridDim(*reducer_plan, 0, "x") *
+               CheckedReducerPlanGridDim(*reducer_plan, 1, "y"));
+    const uint32_t physical_core_count =
+        static_cast<uint32_t>(spec.core_plan.physical_cores.size());
     for (uint32_t z = 0; z < grid_z; ++z) {
       std::vector<DirectLaunchWave> z_waves =
           BuildPartialKLaunchWavesForZ(spec, *reducer_plan, z);
@@ -5212,13 +5321,23 @@ void BlackholeModuleNode::ExecuteDirect(
       if (z == 0) {
         continue;
       }
-      for (const DirectLaunchWave& reduction_wave : z_waves) {
-        EnqueuePartialKDeviceReduction(
-            cq, *mesh_device, spec, func_name, reduction_wave,
-            reduction_kernel_paths, *output_binding, final_output_binding,
-            partial_output_binding, *output_accessor,
-            *reducer_plan,
-            output_materialization.transport_page_size_bytes);
+      for (const DirectLaunchWave& producer_wave : z_waves) {
+        if (PartialKReductionWaveRequiresHostTemporalAdd(
+                producer_wave, reducer_xy_work, physical_core_count)) {
+          AddPartialKTemporalWaveOnHost(
+              cq, func_name, producer_wave, final_output_binding,
+              partial_output_binding, reducer_xy_work,
+              output_materialization.transport_page_size_bytes);
+        } else {
+          const DirectLaunchWave reduction_wave =
+              BuildPartialKReductionLaunchWave(spec, producer_wave);
+          EnqueuePartialKDeviceReduction(
+              cq, *mesh_device, spec, func_name, reduction_wave,
+              reduction_kernel_paths, *output_binding, final_output_binding,
+              partial_output_binding, *output_accessor,
+              *reducer_plan,
+              output_materialization.transport_page_size_bytes);
+        }
       }
     }
     std::vector<uint8_t> output_data;

@@ -2344,9 +2344,20 @@ def test_blackhole_t5_manycore_external_k_sharded_l1_gemm_direct_runtime_partial
     )
 
 
-def test_blackhole_t10_partial_k_reducer_rejects_temporal_wave_oversubscription():
+def test_blackhole_t10_partial_k_reducer_supports_temporal_wave_output_tiles_bf16():
+    can_run, msg = check_blackhole_direct_execution_requirements()
+    if not can_run:
+        pytest.skip(f"Blackhole requirements not met: {msg}")
+
+    m, n, k, k_shards = 320, 416, 1024, 4
+    torch.manual_seed(17)
+    a_torch = torch.randn(m, k, dtype=torch.bfloat16)
+    b_torch = torch.randn(n, k, dtype=torch.bfloat16)
+    c_output = torch.zeros(m, n, dtype=torch.float32)
+    c_ref = torch.matmul(a_torch.float(), b_torch.float().transpose(0, 1))
+
     target = Target("blackhole")
-    kernel = external_k_sharded_l1_gemm_kernel(M=320, N=416, K=1024, k_shards=4)
+    kernel = external_k_sharded_l1_gemm_kernel(M=m, N=n, K=k, k_shards=k_shards)
     with target:
         artifact = lower(kernel, target=target)
 
@@ -2363,10 +2374,19 @@ def test_blackhole_t10_partial_k_reducer_rejects_temporal_wave_oversubscription(
     )
 
     reasons = _direct_runtime_unsupported_reasons(artifact)
-    assert (
-        "partial-K GEMM reducer direct runtime requires temporal wave-local output "
-        "ownership when logical output tiles exceed physical launch cores"
-    ) in reasons
+    assert reasons == []
+
+    artifact.codegen_mod["main"](a_torch, b_torch, c_output)
+    assert_tensors_close_or_dump(
+        c_output,
+        c_ref,
+        atol=8e-1,
+        rtol=2e-1,
+        failure_message=(
+            "Temporal-wave K-sharded external L1 GEMM partial-sum direct-call "
+            "output mismatch"
+        ),
+    )
 
 
 def test_blackhole_t10_partial_k_reducer_plan_required_for_direct_runtime():

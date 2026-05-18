@@ -316,12 +316,6 @@ static std::vector<int64_t> ExtractIntegerVector(const ffi::Map<ffi::String, ffi
 static bool HasPositiveIntegerShape(const std::vector<int64_t>& shape);
 static bool SpecHasKShardedGemmWithoutAdmittedReducerPlan(
     const ExecutableSpec& spec);
-static bool SpecHasPartialKReducerTemporalOversubscription(
-    const ExecutableSpec& spec);
-
-static constexpr const char* kPartialKReducerTemporalWaveUnsupportedReason =
-    "partial-K GEMM reducer direct runtime requires temporal wave-local output "
-    "ownership when logical output tiles exceed physical launch cores";
 
 static CorePlan ExtractCorePlan(const tir::PrimFunc& f) {
   CorePlan plan;
@@ -2465,11 +2459,6 @@ static ExecutableSpec ExtractExecutableSpecFromDeviceFunc(const tir::PrimFunc& f
         &spec.direct_runtime_unsupported_reasons,
         "K-sharded GEMM requires an admitted TTReducerPlan partial_k_sum record");
   }
-  if (SpecHasPartialKReducerTemporalOversubscription(spec)) {
-    AppendUniqueUnsupportedReason(
-        &spec.direct_runtime_unsupported_reasons,
-        kPartialKReducerTemporalWaveUnsupportedReason);
-  }
   return spec;
 }
 
@@ -3040,15 +3029,6 @@ static void EnforcePartialKReducerPlanGate(ExecutableSpec* spec) {
       "K-sharded GEMM requires an admitted TTReducerPlan partial_k_sum record");
 }
 
-static void EnforcePartialKReducerTemporalWaveGate(ExecutableSpec* spec) {
-  ICHECK(spec != nullptr);
-  if (!SpecHasPartialKReducerTemporalOversubscription(*spec)) {
-    return;
-  }
-  AppendDirectRuntimeUnsupportedReason(
-      spec, kPartialKReducerTemporalWaveUnsupportedReason);
-}
-
 static void EnforceExplicitPerWorkAccessDescriptorGate(
     const BufferLogicalShapeMap& logical_shape_by_buffer,
     ExecutableSpec* spec) {
@@ -3206,35 +3186,6 @@ static bool SpecHasKShardedGemmWithoutAdmittedReducerPlan(
           HasAdmittedPartialKReducerPlanForTarget(spec, compute_op.c_buffer)) {
         continue;
       }
-      return true;
-    }
-  }
-  return false;
-}
-
-static bool SpecHasPartialKReducerTemporalOversubscription(
-    const ExecutableSpec& spec) {
-  if (spec.core_plan.logical_grid_z <= 1 ||
-      spec.core_plan.physical_cores.empty()) {
-    return false;
-  }
-  const uint64_t physical_core_count = spec.core_plan.physical_cores.size();
-  for (const ReducerPlanSpec& plan : spec.reducer_plans) {
-    if (plan.reducer_kind != "partial_k_sum" ||
-        plan.admission_status != "admitted") {
-      continue;
-    }
-    if (plan.logical_grid.size() < 2) {
-      continue;
-    }
-    const int64_t grid_x = plan.logical_grid[0];
-    const int64_t grid_y = plan.logical_grid[1];
-    if (grid_x <= 0 || grid_y <= 0) {
-      continue;
-    }
-    const uint64_t logical_output_tiles =
-        static_cast<uint64_t>(grid_x) * static_cast<uint64_t>(grid_y);
-    if (logical_output_tiles > physical_core_count) {
       return true;
     }
   }
@@ -4415,7 +4366,6 @@ ffi::Module BuildTileLangBlackhole(IRModule mod, Target target) {
     const auto logical_shape_by_buffer =
         CollectTensorLogicalShapesByBuffer(spec_it->second);
     EnforcePartialKReducerPlanGate(&spec_it->second);
-    EnforcePartialKReducerTemporalWaveGate(&spec_it->second);
     PopulateBufferMaterializationSpecs(logical_shape_by_buffer, &spec_it->second);
     EnforceBufferDistributionAddressContractGate(&spec_it->second);
     EnforceProjectedReshardAdmissionGate(&spec_it->second);
@@ -4507,7 +4457,6 @@ ffi::Module BuildTileLangBlackholeWithoutHost(IRModule mod, Target target) {
     const auto logical_shape_by_buffer =
         CollectTensorLogicalShapesByBuffer(spec_it->second);
     EnforcePartialKReducerPlanGate(&spec_it->second);
-    EnforcePartialKReducerTemporalWaveGate(&spec_it->second);
     PopulateBufferMaterializationSpecs(logical_shape_by_buffer, &spec_it->second);
     EnforceBufferDistributionAddressContractGate(&spec_it->second);
     EnforceProjectedReshardAdmissionGate(&spec_it->second);
