@@ -20,7 +20,7 @@
 | `P0` target execution contract | Complete | Covered execution facts are owned by `TTProgram` typed fields/objects and projected once to `ExecutableSpec`; leaf consumers reject source/body/name recovery. |
 | `T8` irregular/indexed access | Complete | Indexed, sparse, ragged, paged, segmented, and grouped-feed paths use generic `AccessRegion` plus `value_expr` evidence. |
 | `P1 / T9` workload-first paths | Complete | T9.1-T9.6 are admitted on current bf16 direct-runtime surfaces, including grouped GEMM, paged decode, sparse/ragged attention, chunk scan, and split-block flash decode. |
-| `P2 / T10` distributed production | Active / partially sliced | Mesh / multi-device placement is typed through `TTProgram -> ExecutableSpec` and direct runtime currently fails closed for non-unit mesh placements.  The active slice is CCL runtime correctness for all-gather, reduce-scatter, and all-to-all; generalized NoC/multicast/global scheduling and production partial-K reduction remain queued after that gate. |
+| `P2 / T10` distributed production | Blocked / partially sliced | Mesh / multi-device placement is typed through `TTProgram -> ExecutableSpec` and direct runtime currently fails closed for non-unit mesh placements.  The active slice is CCL runtime correctness for all-gather, reduce-scatter, and all-to-all, but the current local TT-Sim environment exposes only a `1x1` system mesh, so multi-device CCL correctness cannot be completed in this checkout until a multi-device simulator or hardware target is available.  Generalized NoC/multicast/global scheduling and broader distributed runtime coverage remain ordered after that gate. |
 
 ## Current Protocol Snapshot
 
@@ -101,6 +101,23 @@
 Current ordering is correctness-first.  A typed contract or fail-closed
 projection is a prerequisite inside the active CCL task, not a standalone
 completion target.
+
+### Current Blocker
+
+- T10.1 is blocked at the first verification step in the current local
+  TT-Sim environment:
+  - with the repository `scripts/setup_tt_sim.sh` entrypoint and TTNN Python
+    path added, `ttnn.get_num_devices()` reports `1`;
+  - `ttnn.open_mesh_device(mesh_shape=ttnn.MeshShape(1, 2))` fails because the
+    requested mesh needs `2` devices but the system mesh is `MeshShape([1, 1])`;
+  - adding the BH `2x2` mesh graph descriptor still fails topology mapping
+    because the discovered physical topology has one node;
+  - forcing `TT_METAL_VISIBLE_DEVICES=0,1` fails because physical chip id `1`
+    is not in the simulator control-plane chip mapping.
+
+  Until that boundary changes, T10.1/T10.2/T10.3 can only make protocol
+  progress, not the required `BlackholeModule + TT-Sim bf16 + host reference`
+  runtime correctness claim.
 
 ### Active
 

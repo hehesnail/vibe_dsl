@@ -5,6 +5,25 @@
 
 ## 1. 当前未解决
 
+### 当前 TT-Sim 入口只暴露单设备，无法完成 multi-device CCL runtime correctness
+
+- **现象**:
+  - 按仓库固定入口 `scripts/setup_tt_sim.sh` 配置后，TTNN Python 只能发现
+    `1` 个设备。
+  - `ttnn.open_mesh_device(ttnn.MeshShape(1, 2))` 报
+    requested mesh 需要 `2` devices，但 system mesh 是 `MeshShape([1, 1])`。
+  - 指定 BH `2x2` mesh graph descriptor 仍然无法映射到 discovered physical
+    topology；强制 `TT_METAL_VISIBLE_DEVICES=0,1` 会报 chip id `1` 不在
+    control plane chip mapping。
+- **当前结论**:
+  - T10.1 all-gather / reduce-scatter / all-to-all 的
+    `BlackholeModule + TT-Sim bf16 + host reference` 正向 correctness
+    在当前本地 TT-Sim 环境不可完成。
+  - 不能把 typed CCL contract、source/spec projection、fail-closed reject
+    当作 T10.1 完成。
+  - 需要 multi-device TT-Sim 配置 / binary 或真实多设备 Blackhole 目标后再
+    做 runtime correctness 收口。
+
 ### TT-Sim 的 fatal taxonomy 需要先按 simulator 约束判断，不要直接误判成 target contract 回归
 
 - **现象**:
