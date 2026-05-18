@@ -7,9 +7,8 @@
 
 ## Status
 
-- Date: `2026-05-13`
-- Active lane: `None; P2 / T10 mesh placement slice is closed, remaining
-  distributed-production work is queued`
+- Date: `2026-05-18`
+- Active lane: `P2 / T10 CCL runtime correctness`
 - Main chain:
   `Normalized Tile TIR -> SpatialPlan -> TTProgram -> ExecutableSpec`
 
@@ -21,7 +20,7 @@
 | `P0` target execution contract | Complete | Covered execution facts are owned by `TTProgram` typed fields/objects and projected once to `ExecutableSpec`; leaf consumers reject source/body/name recovery. |
 | `T8` irregular/indexed access | Complete | Indexed, sparse, ragged, paged, segmented, and grouped-feed paths use generic `AccessRegion` plus `value_expr` evidence. |
 | `P1 / T9` workload-first paths | Complete | T9.1-T9.6 are admitted on current bf16 direct-runtime surfaces, including grouped GEMM, paged decode, sparse/ragged attention, chunk scan, and split-block flash decode. |
-| `P2 / T10` distributed production | Queued / partially sliced | Mesh / multi-device placement is typed through `TTProgram -> ExecutableSpec` and direct runtime fails closed for non-unit mesh placements.  CCL, NoC/multicast/global scheduling, and production partial-K reduction remain queued. |
+| `P2 / T10` distributed production | Active / partially sliced | Mesh / multi-device placement is typed through `TTProgram -> ExecutableSpec` and direct runtime currently fails closed for non-unit mesh placements.  The active slice is CCL runtime correctness for all-gather, reduce-scatter, and all-to-all; generalized NoC/multicast/global scheduling and production partial-K reduction remain queued after that gate. |
 
 ## Current Protocol Snapshot
 
@@ -99,16 +98,31 @@
 
 ## Next Work Queue
 
+Current ordering is correctness-first.  A typed contract or fail-closed
+projection is a prerequisite inside the active CCL task, not a standalone
+completion target.
+
 ### Active
 
-- None.  P1/T9 is closed on the current single-device bf16 direct-runtime
-  surfaces.
+- `T10.1` CCL runtime correctness for all-gather, reduce-scatter, and
+  all-to-all:
+  1. prove the TT-Sim multi-device / CCL runtime support boundary;
+  2. add `TTCollectivePlan -> ExecutableSpec.collective_plans` owner truth,
+     validators, and typed admission diagnostics;
+  3. add the minimum route / synchronization / launch-order records required
+     by the admitted CCL positive path;
+  4. run all three collectives through `BlackholeModule` under TT-Sim with
+     bf16 inputs and host-reference comparisons;
+  5. keep unsupported CCL variants fail-closed before source/runtime guessing.
 
 ### Queued
 
-- Add CCL contracts for all-gather, reduce-scatter, and all-to-all.
-- Add NoC / multicast / global scheduling records for remote routes,
-  semaphores, and producer/consumer timing.
+- `T10.2` Generalize NoC / multicast / global scheduling records for remote
+  routes, semaphores, and producer/consumer timing beyond the minimal CCL
+  correctness path.
+- `T10.3` Broaden distributed runtime coverage beyond the first admitted CCL
+  shapes/topologies, preserving TT-Sim bf16 correctness gates for tensor
+  values.
 - Replace the current K-sharded GEMM blocking z-wave tile-add path with a
   typed production reducer protocol: reducer ownership, partial-C scratch
   placement and lifetime, semaphore IDs, remote NOC routes, transport choice,
