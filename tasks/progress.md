@@ -132,7 +132,8 @@ prerequisite of the active CCL task, not a standalone completion target.
   T10.2/T10.3 must not be counted as complete or promoted as production
   distributed work.  Protocol work may be prepared only as support for the
   required `BlackholeModule + TT-Sim bf16 + host reference` CCL correctness
-  gate.
+  gate.  External handoff details are captured in
+  `tasks/blockers/2026-05-18-ttsim-ccl-eth-txq.md`.
 
 ### Ordered Queue
 
