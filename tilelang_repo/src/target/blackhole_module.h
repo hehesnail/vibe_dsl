@@ -763,6 +763,85 @@ struct CollectivePlanSpec {
   }
 };
 
+struct ReducerPlanSpec {
+  std::string name;
+  std::string reducer_kind;
+  std::string compute_op_plan;
+  int64_t compute_op_plan_index = -1;
+  std::string target_buffer;
+  std::string target_buffer_distribution;
+  int64_t target_buffer_distribution_index = -1;
+  std::string scratch_buffer;
+  std::string scratch_scope;
+  std::string scratch_layout;
+  std::string scratch_memory_space;
+  std::string scratch_lifetime;
+  std::string producer_axis;
+  int64_t producer_count = 0;
+  std::vector<int64_t> logical_grid;
+  std::vector<int64_t> tile_shape;
+  std::string reduction_op;
+  std::string transport_kind;
+  std::string route_kind;
+  std::string accumulation_order;
+  std::string final_writer_timing;
+  int64_t final_writer_producer = -1;
+  std::vector<int64_t> required_semaphore_plan_indices;
+  std::vector<int64_t> required_sync_plan_indices;
+  std::vector<int64_t> remote_core_descriptor_indices;
+  std::string admission_status;
+  std::string unsupported_reason;
+
+  void Save(dmlc::JSONWriter* writer) const {
+    writer->BeginObject();
+    writer->WriteObjectKeyValue("name", name);
+    writer->WriteObjectKeyValue("reducer_kind", reducer_kind);
+    writer->WriteObjectKeyValue("compute_op_plan", compute_op_plan);
+    writer->WriteObjectKeyValue("compute_op_plan_index",
+                                compute_op_plan_index);
+    writer->WriteObjectKeyValue("target_buffer", target_buffer);
+    writer->WriteObjectKeyValue("target_buffer_distribution",
+                                target_buffer_distribution);
+    writer->WriteObjectKeyValue("target_buffer_distribution_index",
+                                target_buffer_distribution_index);
+    writer->WriteObjectKeyValue("scratch_buffer", scratch_buffer);
+    writer->WriteObjectKeyValue("scratch_scope", scratch_scope);
+    writer->WriteObjectKeyValue("scratch_layout", scratch_layout);
+    writer->WriteObjectKeyValue("scratch_memory_space",
+                                scratch_memory_space);
+    writer->WriteObjectKeyValue("scratch_lifetime", scratch_lifetime);
+    writer->WriteObjectKeyValue("producer_axis", producer_axis);
+    writer->WriteObjectKeyValue("producer_count", producer_count);
+    writer->WriteObjectKeyValue("logical_grid", logical_grid);
+    writer->WriteObjectKeyValue("tile_shape", tile_shape);
+    writer->WriteObjectKeyValue("reduction_op", reduction_op);
+    writer->WriteObjectKeyValue("transport_kind", transport_kind);
+    writer->WriteObjectKeyValue("route_kind", route_kind);
+    writer->WriteObjectKeyValue("accumulation_order", accumulation_order);
+    writer->WriteObjectKeyValue("final_writer_timing",
+                                final_writer_timing);
+    writer->WriteObjectKeyValue("final_writer_producer",
+                                final_writer_producer);
+    if (!required_semaphore_plan_indices.empty()) {
+      writer->WriteObjectKeyValue("required_semaphore_plan_indices",
+                                  required_semaphore_plan_indices);
+    }
+    if (!required_sync_plan_indices.empty()) {
+      writer->WriteObjectKeyValue("required_sync_plan_indices",
+                                  required_sync_plan_indices);
+    }
+    if (!remote_core_descriptor_indices.empty()) {
+      writer->WriteObjectKeyValue("remote_core_descriptor_indices",
+                                  remote_core_descriptor_indices);
+    }
+    writer->WriteObjectKeyValue("admission_status", admission_status);
+    if (!unsupported_reason.empty()) {
+      writer->WriteObjectKeyValue("unsupported_reason", unsupported_reason);
+    }
+    writer->EndObject();
+  }
+};
+
 struct TensorMemoryConfigSpec {
   std::string name;
   std::string subject;
@@ -1233,6 +1312,7 @@ struct ExecutableSpec {
   std::vector<SemaphoreSpec> semaphores;
   std::vector<BufferDistributionSpec> buffer_distribution_plans;
   std::vector<CollectivePlanSpec> collective_plans;
+  std::vector<ReducerPlanSpec> reducer_plans;
   std::vector<TensorMemoryConfigSpec> tensor_memory_config_plans;
   std::vector<ReshardPlanSpec> reshard_plans;
   std::vector<BufferMaterializationSpec> buffer_materializations;
@@ -1275,6 +1355,9 @@ struct ExecutableSpec {
     }
     if (!collective_plans.empty()) {
       writer->WriteObjectKeyValue("collective_plans", collective_plans);
+    }
+    if (!reducer_plans.empty()) {
+      writer->WriteObjectKeyValue("reducer_plans", reducer_plans);
     }
     if (!tensor_memory_config_plans.empty()) {
       writer->WriteObjectKeyValue("tensor_memory_config_plans",

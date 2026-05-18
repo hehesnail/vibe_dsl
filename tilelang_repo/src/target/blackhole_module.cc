@@ -863,6 +863,80 @@ static CollectivePlanSpec ReadCollectivePlanSpec(dmlc::Stream* stream) {
   return spec;
 }
 
+static void WriteReducerPlanSpec(dmlc::Stream* stream,
+                                 const ReducerPlanSpec& spec) {
+  WriteString(stream, spec.name);
+  WriteString(stream, spec.reducer_kind);
+  WriteString(stream, spec.compute_op_plan);
+  WriteInt64(stream, spec.compute_op_plan_index);
+  WriteString(stream, spec.target_buffer);
+  WriteString(stream, spec.target_buffer_distribution);
+  WriteInt64(stream, spec.target_buffer_distribution_index);
+  WriteString(stream, spec.scratch_buffer);
+  WriteString(stream, spec.scratch_scope);
+  WriteString(stream, spec.scratch_layout);
+  WriteString(stream, spec.scratch_memory_space);
+  WriteString(stream, spec.scratch_lifetime);
+  WriteString(stream, spec.producer_axis);
+  WriteInt64(stream, spec.producer_count);
+  WriteInt64Vector(stream, spec.logical_grid);
+  WriteInt64Vector(stream, spec.tile_shape);
+  WriteString(stream, spec.reduction_op);
+  WriteString(stream, spec.transport_kind);
+  WriteString(stream, spec.route_kind);
+  WriteString(stream, spec.accumulation_order);
+  WriteString(stream, spec.final_writer_timing);
+  WriteInt64(stream, spec.final_writer_producer);
+  WriteInt64Vector(stream, spec.required_semaphore_plan_indices);
+  WriteInt64Vector(stream, spec.required_sync_plan_indices);
+  WriteInt64Vector(stream, spec.remote_core_descriptor_indices);
+  WriteString(stream, spec.admission_status);
+  WriteString(stream, spec.unsupported_reason);
+}
+
+static ReducerPlanSpec ReadReducerPlanSpec(dmlc::Stream* stream) {
+  ReducerPlanSpec spec;
+  spec.name = ReadString(stream, "reducer_plan.name");
+  spec.reducer_kind = ReadString(stream, "reducer_plan.reducer_kind");
+  spec.compute_op_plan = ReadString(stream, "reducer_plan.compute_op_plan");
+  spec.compute_op_plan_index =
+      ReadInt64(stream, "reducer_plan.compute_op_plan_index");
+  spec.target_buffer = ReadString(stream, "reducer_plan.target_buffer");
+  spec.target_buffer_distribution =
+      ReadString(stream, "reducer_plan.target_buffer_distribution");
+  spec.target_buffer_distribution_index =
+      ReadInt64(stream, "reducer_plan.target_buffer_distribution_index");
+  spec.scratch_buffer = ReadString(stream, "reducer_plan.scratch_buffer");
+  spec.scratch_scope = ReadString(stream, "reducer_plan.scratch_scope");
+  spec.scratch_layout = ReadString(stream, "reducer_plan.scratch_layout");
+  spec.scratch_memory_space =
+      ReadString(stream, "reducer_plan.scratch_memory_space");
+  spec.scratch_lifetime = ReadString(stream, "reducer_plan.scratch_lifetime");
+  spec.producer_axis = ReadString(stream, "reducer_plan.producer_axis");
+  spec.producer_count = ReadInt64(stream, "reducer_plan.producer_count");
+  spec.logical_grid = ReadInt64Vector(stream, "reducer_plan.logical_grid");
+  spec.tile_shape = ReadInt64Vector(stream, "reducer_plan.tile_shape");
+  spec.reduction_op = ReadString(stream, "reducer_plan.reduction_op");
+  spec.transport_kind = ReadString(stream, "reducer_plan.transport_kind");
+  spec.route_kind = ReadString(stream, "reducer_plan.route_kind");
+  spec.accumulation_order =
+      ReadString(stream, "reducer_plan.accumulation_order");
+  spec.final_writer_timing =
+      ReadString(stream, "reducer_plan.final_writer_timing");
+  spec.final_writer_producer =
+      ReadInt64(stream, "reducer_plan.final_writer_producer");
+  spec.required_semaphore_plan_indices = ReadInt64Vector(
+      stream, "reducer_plan.required_semaphore_plan_indices");
+  spec.required_sync_plan_indices =
+      ReadInt64Vector(stream, "reducer_plan.required_sync_plan_indices");
+  spec.remote_core_descriptor_indices =
+      ReadInt64Vector(stream, "reducer_plan.remote_core_descriptor_indices");
+  spec.admission_status = ReadString(stream, "reducer_plan.admission_status");
+  spec.unsupported_reason =
+      ReadString(stream, "reducer_plan.unsupported_reason");
+  return spec;
+}
+
 static void WriteTensorMemoryConfigSpec(dmlc::Stream* stream,
                                         const TensorMemoryConfigSpec& spec) {
   WriteString(stream, spec.name);
@@ -1306,6 +1380,8 @@ static void WriteExecutableSpec(dmlc::Stream* stream, const ExecutableSpec& spec
       stream, spec.buffer_distribution_plans, WriteBufferDistributionSpec);
   WriteVectorField<CollectivePlanSpec>(
       stream, spec.collective_plans, WriteCollectivePlanSpec);
+  WriteVectorField<ReducerPlanSpec>(
+      stream, spec.reducer_plans, WriteReducerPlanSpec);
   WriteVectorField<TensorMemoryConfigSpec>(
       stream, spec.tensor_memory_config_plans, WriteTensorMemoryConfigSpec);
   WriteVectorField<ReshardPlanSpec>(
@@ -1352,6 +1428,8 @@ static ExecutableSpec ReadExecutableSpec(dmlc::Stream* stream) {
       stream, "executable.buffer_distribution_plans", ReadBufferDistributionSpec);
   spec.collective_plans = ReadVectorField<CollectivePlanSpec>(
       stream, "executable.collective_plans", ReadCollectivePlanSpec);
+  spec.reducer_plans = ReadVectorField<ReducerPlanSpec>(
+      stream, "executable.reducer_plans", ReadReducerPlanSpec);
   spec.tensor_memory_config_plans = ReadVectorField<TensorMemoryConfigSpec>(
       stream, "executable.tensor_memory_config_plans", ReadTensorMemoryConfigSpec);
   spec.reshard_plans = ReadVectorField<ReshardPlanSpec>(
@@ -2335,6 +2413,22 @@ static uint32_t GetRuntimeLogicalGridZ(const ExecutableSpec& spec) {
   return std::max<uint32_t>(1, spec.core_plan.logical_grid_z);
 }
 
+static uint32_t CheckedReducerPlanGridDim(const ReducerPlanSpec& plan,
+                                          size_t index,
+                                          const char* name) {
+  ICHECK_LT(index, plan.logical_grid.size())
+      << "Blackhole reducer plan " << plan.name
+      << " missing logical_grid dimension " << name;
+  ICHECK_GT(plan.logical_grid[index], 0)
+      << "Blackhole reducer plan " << plan.name
+      << " requires positive logical_grid dimension " << name;
+  ICHECK_LE(static_cast<uint64_t>(plan.logical_grid[index]),
+            static_cast<uint64_t>(std::numeric_limits<uint32_t>::max()))
+      << "Blackhole reducer plan " << plan.name
+      << " logical_grid dimension " << name << " exceeds uint32 range";
+  return static_cast<uint32_t>(plan.logical_grid[index]);
+}
+
 static void CreateCircularBuffersFromSpec(
     Program& program,
     const std::variant<CoreCoord, CoreRange, CoreRangeSet>& core_spec,
@@ -2621,10 +2715,14 @@ static std::vector<DirectLaunchWave> BuildDirectLaunchWaves(const ExecutableSpec
 
 static std::vector<DirectLaunchWave> BuildPartialKLaunchWavesForZ(
     const ExecutableSpec& spec,
+    const ReducerPlanSpec& reducer_plan,
     uint32_t z) {
-  const uint32_t grid_x = GetRuntimeLogicalGridX(spec);
-  const uint32_t grid_y = GetRuntimeLogicalGridY(spec);
-  const uint32_t grid_z = GetRuntimeLogicalGridZ(spec);
+  const uint32_t grid_x =
+      CheckedReducerPlanGridDim(reducer_plan, 0, "x");
+  const uint32_t grid_y =
+      CheckedReducerPlanGridDim(reducer_plan, 1, "y");
+  const uint32_t grid_z =
+      CheckedReducerPlanGridDim(reducer_plan, 2, "z");
   ICHECK_LT(z, grid_z)
       << "Blackhole partial-K direct runtime requested out-of-range K shard";
   const uint64_t xy_work =
@@ -2678,11 +2776,27 @@ static const RuntimeTensorBinding* FindRuntimeBinding(
   return it == bindings.end() ? nullptr : &(*it);
 }
 
+static const ReducerPlanSpec* FindAdmittedPartialKGemmReducerPlan(
+    const ExecutableSpec& spec,
+    const KernelComputeOpSpec& gemm) {
+  for (const ReducerPlanSpec& plan : spec.reducer_plans) {
+    if (plan.reducer_kind == "partial_k_sum" &&
+        plan.admission_status == "admitted" &&
+        plan.target_buffer == gemm.c_buffer) {
+      return &plan;
+    }
+  }
+  return nullptr;
+}
+
 static bool RequiresDirectRuntimePartialKGemmReduction(
     const ExecutableSpec& spec,
     const std::vector<RuntimeTensorBinding>& buffer_args) {
   const auto gemm = GetPrimaryGemmCompute(spec);
   if (!gemm.enabled || gemm.kind != "gemm" || GetRuntimeLogicalGridZ(spec) <= 1) {
+    return false;
+  }
+  if (FindAdmittedPartialKGemmReducerPlan(spec, gemm) == nullptr) {
     return false;
   }
   const RuntimeTensorBinding* output_binding =
@@ -2943,12 +3057,12 @@ static void CreatePartialKReductionCircularBuffers(
 static std::vector<uint32_t> BuildPartialKReductionReaderCompileArgs(
     const AccessorSpec& output_accessor,
     const std::string& output_name,
+    const std::string& scratch_name,
     const RuntimeBufferBinding& final_binding,
     const RuntimeBufferBinding& partial_binding) {
   std::unordered_map<std::string, RuntimeBufferBinding> bindings;
   bindings.emplace(output_name, final_binding);
-  const std::string partial_name = output_name + "__partial_k";
-  bindings.emplace(partial_name, partial_binding);
+  bindings.emplace(scratch_name, partial_binding);
 
   std::vector<uint32_t> compile_args;
   AppendAccessorCompileTimeArgsFromBuffer(
@@ -2956,7 +3070,7 @@ static std::vector<uint32_t> BuildPartialKReductionReaderCompileArgs(
       output_accessor.args_config_bits, output_accessor.layout,
       output_accessor.memory_space, bindings, &compile_args);
   AppendAccessorCompileTimeArgsFromBuffer(
-      partial_name, output_accessor.compile_time_arg_count,
+      scratch_name, output_accessor.compile_time_arg_count,
       output_accessor.args_config_bits, output_accessor.layout,
       output_accessor.memory_space, bindings, &compile_args);
   return compile_args;
@@ -2987,6 +3101,7 @@ static void EnqueuePartialKDeviceReduction(
     const RuntimeBufferBinding& final_binding,
     const RuntimeBufferBinding& partial_binding,
     const AccessorSpec& output_accessor,
+    const ReducerPlanSpec& reducer_plan,
     uint32_t tile_bytes) {
   const CoreRangeSet launch_core_ranges(launch_wave.launch_cores);
   Program program = CreateProgram();
@@ -2994,7 +3109,8 @@ static void EnqueuePartialKDeviceReduction(
 
   const std::vector<uint32_t> reader_compile_args =
       BuildPartialKReductionReaderCompileArgs(
-          output_accessor, output_binding.name, final_binding, partial_binding);
+          output_accessor, output_binding.name, reducer_plan.scratch_buffer,
+          final_binding, partial_binding);
   const std::vector<uint32_t> writer_compile_args =
       BuildPartialKReductionWriterCompileArgs(
           output_accessor, output_binding.name, final_binding);
@@ -4997,8 +5113,33 @@ void BlackholeModuleNode::ExecuteDirect(
     }
   };
 
+  const auto primary_gemm = GetPrimaryGemmCompute(spec);
+  if (primary_gemm.enabled && primary_gemm.kind == "gemm" &&
+      GetRuntimeLogicalGridZ(spec) > 1) {
+    const RuntimeTensorBinding* reducer_output_binding =
+        FindRuntimeBinding(buffer_args, primary_gemm.c_buffer);
+    if (reducer_output_binding != nullptr &&
+        reducer_output_binding->is_output) {
+      ICHECK(FindAdmittedPartialKGemmReducerPlan(spec, primary_gemm) != nullptr)
+          << "Blackhole partial-K GEMM direct runtime requires an admitted "
+             "TTReducerPlan partial_k_sum record for target buffer "
+          << primary_gemm.c_buffer;
+    }
+  }
+
   if (RequiresDirectRuntimePartialKGemmReduction(spec, buffer_args)) {
     const auto gemm = GetPrimaryGemmCompute(spec);
+    const ReducerPlanSpec* reducer_plan =
+        FindAdmittedPartialKGemmReducerPlan(spec, gemm);
+    ICHECK(reducer_plan != nullptr);
+    ICHECK_EQ(reducer_plan->transport_kind, "device_tile_add")
+        << "Blackhole partial-K direct GEMM reduction requires device_tile_add transport";
+    ICHECK_EQ(reducer_plan->route_kind, "local_same_device_sharded_tile")
+        << "Blackhole partial-K direct GEMM reduction requires local same-device route";
+    ICHECK_EQ(reducer_plan->accumulation_order, "ascending_producer_id")
+        << "Blackhole partial-K direct GEMM reduction requires ascending producer order";
+    ICHECK_EQ(reducer_plan->final_writer_producer, 0)
+        << "Blackhole partial-K direct GEMM reduction requires producer 0 final writer";
     ICHECK_EQ(gemm.c_tensor_dtype, "Float32")
         << "Blackhole partial-K direct GEMM device reduction currently requires float32 output tensors";
     ICHECK_EQ(gemm.c_cb_dtype, "Float32")
@@ -5042,10 +5183,14 @@ void BlackholeModuleNode::ExecuteDirect(
             func_name, tmp_dir, output_accessor->compile_time_arg_count,
             output_materialization.transport_page_size_bytes);
 
-    const uint32_t grid_z = GetRuntimeLogicalGridZ(spec);
+    const uint32_t grid_z =
+        CheckedReducerPlanGridDim(*reducer_plan, 2, "z");
+    ICHECK_EQ(static_cast<int64_t>(grid_z), reducer_plan->producer_count)
+        << "Blackhole partial-K direct GEMM reduction requires producer_count "
+           "to match reducer logical_grid z";
     for (uint32_t z = 0; z < grid_z; ++z) {
       std::vector<DirectLaunchWave> z_waves =
-          BuildPartialKLaunchWavesForZ(spec, z);
+          BuildPartialKLaunchWavesForZ(spec, *reducer_plan, z);
       ICHECK(!z_waves.empty())
           << "Blackhole partial-K direct GEMM reduction requires work coverage for K shard "
           << z;
@@ -5066,6 +5211,7 @@ void BlackholeModuleNode::ExecuteDirect(
             cq, *mesh_device, spec, func_name, reduction_wave,
             reduction_kernel_paths, *output_binding, final_output_binding,
             partial_output_binding, *output_accessor,
+            *reducer_plan,
             output_materialization.transport_page_size_bytes);
       }
     }

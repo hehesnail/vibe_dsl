@@ -2270,6 +2270,21 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   both `blockIdx.x = xy % grid_x` and `blockIdx.y = (xy / grid_x) % grid_y`;
   otherwise partial-K writers can silently write every partial to tile 0 even
   though runtime per-work args are correct.
+- 2026-05-18 T10.4 partial-K reducer protocol:
+  the direct-runtime K-sharded GEMM reduction is no longer an implicit
+  `logical_grid_z + GEMM output` special case.  The owner truth is
+  `TTReducerPlan -> ExecutableSpec.reducer_plans`: target `C`, scratch
+  `C__partial_k`, `scratch_lifetime=one_producer_wave`,
+  `route_kind=local_same_device_sharded_tile`,
+  `transport_kind=device_tile_add`,
+  `accumulation_order=ascending_producer_id`, and
+  `final_writer_timing=producer_0_writes_final_then_later_producers_reduce`.
+  Runtime still uses the existing local host-sequenced device tile-add
+  implementation, but it must consume the typed reducer plan; deleting the
+  admitted plan produces the typed unsupported reason
+  `K-sharded GEMM requires an admitted TTReducerPlan partial_k_sum record`.
+  The reducer `tile_shape` should come from the target C distribution shard
+  shape, not from the GEMM compute op's 3D tile shape.
 - 2026-05-04 T8 design boundary:
   Do not turn grouped / ragged / sparse workload parameters into a metadata
   registry or a parallel domain IR.  First analyze existing TIR loops,

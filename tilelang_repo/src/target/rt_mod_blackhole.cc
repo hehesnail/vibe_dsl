@@ -314,6 +314,8 @@ static std::vector<CBConfig> ExtractCBConfig(const tir::PrimFunc& f) {
 static std::vector<int64_t> ExtractIntegerVector(const ffi::Map<ffi::String, ffi::Any>& item,
                                                  const char* key);
 static bool HasPositiveIntegerShape(const std::vector<int64_t>& shape);
+static bool SpecHasKShardedGemmWithoutAdmittedReducerPlan(
+    const ExecutableSpec& spec);
 
 static CorePlan ExtractCorePlan(const tir::PrimFunc& f) {
   CorePlan plan;
@@ -1498,6 +1500,141 @@ static std::vector<CollectivePlanSpec> ExtractCollectivePlans(
   return plans;
 }
 
+static std::vector<ReducerPlanSpec> ExtractReducerPlans(
+    const tir::PrimFunc& f) {
+  std::vector<ReducerPlanSpec> plans;
+  auto items = tl::tt_program_projection::GetExecutableArrayField(
+      f, "Blackhole executable spec extraction",
+      tl::tt_program_projection::executable_key::kReducerPlans);
+  for (const auto& item_any : items) {
+    auto item = RequireMap(item_any, "Blackhole executable reducer_plans item");
+    ReducerPlanSpec plan;
+    if (auto value = item.Get("name")) plan.name = Downcast<String>(value.value());
+    if (auto value = item.Get("reducer_kind")) {
+      plan.reducer_kind = Downcast<String>(value.value());
+    }
+    if (auto value = item.Get("compute_op_plan")) {
+      plan.compute_op_plan = Downcast<String>(value.value());
+    }
+    if (auto value = item.Get("compute_op_plan_index")) {
+      plan.compute_op_plan_index = Downcast<Integer>(value.value())->value;
+    }
+    if (auto value = item.Get("target_buffer")) {
+      plan.target_buffer = Downcast<String>(value.value());
+    }
+    if (auto value = item.Get("target_buffer_distribution")) {
+      plan.target_buffer_distribution = Downcast<String>(value.value());
+    }
+    if (auto value = item.Get("target_buffer_distribution_index")) {
+      plan.target_buffer_distribution_index =
+          Downcast<Integer>(value.value())->value;
+    }
+    if (auto value = item.Get("scratch_buffer")) {
+      plan.scratch_buffer = Downcast<String>(value.value());
+    }
+    if (auto value = item.Get("scratch_scope")) {
+      plan.scratch_scope = Downcast<String>(value.value());
+    }
+    if (auto value = item.Get("scratch_layout")) {
+      plan.scratch_layout = Downcast<String>(value.value());
+    }
+    if (auto value = item.Get("scratch_memory_space")) {
+      plan.scratch_memory_space = Downcast<String>(value.value());
+    }
+    if (auto value = item.Get("scratch_lifetime")) {
+      plan.scratch_lifetime = Downcast<String>(value.value());
+    }
+    if (auto value = item.Get("producer_axis")) {
+      plan.producer_axis = Downcast<String>(value.value());
+    }
+    if (auto value = item.Get("producer_count")) {
+      plan.producer_count = Downcast<Integer>(value.value())->value;
+    }
+    plan.logical_grid = ExtractIntegerVector(item, "logical_grid");
+    plan.tile_shape = ExtractIntegerVector(item, "tile_shape");
+    if (auto value = item.Get("reduction_op")) {
+      plan.reduction_op = Downcast<String>(value.value());
+    }
+    if (auto value = item.Get("transport_kind")) {
+      plan.transport_kind = Downcast<String>(value.value());
+    }
+    if (auto value = item.Get("route_kind")) {
+      plan.route_kind = Downcast<String>(value.value());
+    }
+    if (auto value = item.Get("accumulation_order")) {
+      plan.accumulation_order = Downcast<String>(value.value());
+    }
+    if (auto value = item.Get("final_writer_timing")) {
+      plan.final_writer_timing = Downcast<String>(value.value());
+    }
+    if (auto value = item.Get("final_writer_producer")) {
+      plan.final_writer_producer = Downcast<Integer>(value.value())->value;
+    }
+    plan.required_semaphore_plan_indices =
+        ExtractIntegerVector(item, "required_semaphore_plan_indices");
+    plan.required_sync_plan_indices =
+        ExtractIntegerVector(item, "required_sync_plan_indices");
+    plan.remote_core_descriptor_indices =
+        ExtractIntegerVector(item, "remote_core_descriptor_indices");
+    if (auto value = item.Get("admission_status")) {
+      plan.admission_status = Downcast<String>(value.value());
+    }
+    if (auto value = item.Get("unsupported_reason")) {
+      plan.unsupported_reason = Downcast<String>(value.value());
+    }
+    ICHECK(!plan.name.empty())
+        << "Blackhole executable reducer_plans item requires name";
+    ICHECK(!plan.reducer_kind.empty())
+        << "Blackhole executable reducer_plans item requires reducer_kind";
+    ICHECK(!plan.compute_op_plan.empty())
+        << "Blackhole executable reducer_plans item requires compute_op_plan";
+    ICHECK_GE(plan.compute_op_plan_index, 0)
+        << "Blackhole executable reducer_plans item requires compute_op_plan_index";
+    ICHECK(!plan.target_buffer.empty())
+        << "Blackhole executable reducer_plans item requires target_buffer";
+    ICHECK(!plan.target_buffer_distribution.empty())
+        << "Blackhole executable reducer_plans item requires target distribution";
+    ICHECK_GE(plan.target_buffer_distribution_index, 0)
+        << "Blackhole executable reducer_plans item requires target distribution index";
+    ICHECK(!plan.scratch_buffer.empty())
+        << "Blackhole executable reducer_plans item requires scratch_buffer";
+    ICHECK(!plan.scratch_scope.empty())
+        << "Blackhole executable reducer_plans item requires scratch_scope";
+    ICHECK(!plan.scratch_layout.empty())
+        << "Blackhole executable reducer_plans item requires scratch_layout";
+    ICHECK(!plan.scratch_memory_space.empty())
+        << "Blackhole executable reducer_plans item requires scratch_memory_space";
+    ICHECK(!plan.scratch_lifetime.empty())
+        << "Blackhole executable reducer_plans item requires scratch_lifetime";
+    ICHECK(!plan.producer_axis.empty())
+        << "Blackhole executable reducer_plans item requires producer_axis";
+    ICHECK_GE(plan.producer_count, 2)
+        << "Blackhole executable reducer_plans item requires producer_count";
+    ICHECK(HasPositiveIntegerShape(plan.logical_grid) &&
+           plan.logical_grid.size() == 3U)
+        << "Blackhole executable reducer_plans item requires rank-3 logical_grid";
+    ICHECK(HasPositiveIntegerShape(plan.tile_shape) &&
+           plan.tile_shape.size() == 2U)
+        << "Blackhole executable reducer_plans item requires rank-2 tile_shape";
+    ICHECK(!plan.reduction_op.empty())
+        << "Blackhole executable reducer_plans item requires reduction_op";
+    ICHECK(!plan.transport_kind.empty())
+        << "Blackhole executable reducer_plans item requires transport_kind";
+    ICHECK(!plan.route_kind.empty())
+        << "Blackhole executable reducer_plans item requires route_kind";
+    ICHECK(!plan.accumulation_order.empty())
+        << "Blackhole executable reducer_plans item requires accumulation_order";
+    ICHECK(!plan.final_writer_timing.empty())
+        << "Blackhole executable reducer_plans item requires final_writer_timing";
+    ICHECK_GE(plan.final_writer_producer, 0)
+        << "Blackhole executable reducer_plans item requires final_writer_producer";
+    ICHECK(!plan.admission_status.empty())
+        << "Blackhole executable reducer_plans item requires admission_status";
+    plans.push_back(std::move(plan));
+  }
+  return plans;
+}
+
 static std::vector<TensorMemoryConfigSpec> ExtractTensorMemoryConfigPlans(
     const tir::PrimFunc& f) {
   std::vector<TensorMemoryConfigSpec> plans;
@@ -2290,6 +2427,7 @@ static ExecutableSpec ExtractExecutableSpecFromDeviceFunc(const tir::PrimFunc& f
   spec.semaphores = ExtractSemaphorePlan(f);
   spec.buffer_distribution_plans = ExtractBufferDistributionPlans(f);
   spec.collective_plans = ExtractCollectivePlans(f);
+  spec.reducer_plans = ExtractReducerPlans(f);
   spec.tensor_memory_config_plans = ExtractTensorMemoryConfigPlans(f);
   spec.reshard_plans = ExtractReshardPlans(f);
   spec.runtime_args = ExtractRuntimeArgs(f);
@@ -2316,6 +2454,11 @@ static ExecutableSpec ExtractExecutableSpecFromDeviceFunc(const tir::PrimFunc& f
         "collective_plans require T10.1 CCL runtime correctness support");
   }
   ExtractSegmentPlan(f, &spec);
+  if (SpecHasKShardedGemmWithoutAdmittedReducerPlan(spec)) {
+    AppendUniqueUnsupportedReason(
+        &spec.direct_runtime_unsupported_reasons,
+        "K-sharded GEMM requires an admitted TTReducerPlan partial_k_sum record");
+  }
   return spec;
 }
 
@@ -2876,6 +3019,16 @@ static void AppendDirectRuntimeUnsupportedReason(ExecutableSpec* spec,
   spec->direct_runtime_unsupported_reasons.push_back(reason);
 }
 
+static void EnforcePartialKReducerPlanGate(ExecutableSpec* spec) {
+  ICHECK(spec != nullptr);
+  if (!SpecHasKShardedGemmWithoutAdmittedReducerPlan(*spec)) {
+    return;
+  }
+  AppendDirectRuntimeUnsupportedReason(
+      spec,
+      "K-sharded GEMM requires an admitted TTReducerPlan partial_k_sum record");
+}
+
 static void EnforceExplicitPerWorkAccessDescriptorGate(
     const BufferLogicalShapeMap& logical_shape_by_buffer,
     ExecutableSpec* spec) {
@@ -3002,6 +3155,38 @@ static bool SpecHasEnabledGemmComputeOp(const ExecutableSpec& spec) {
       if (compute_op.enabled && compute_op.kind == "gemm") {
         return true;
       }
+    }
+  }
+  return false;
+}
+
+static bool HasAdmittedPartialKReducerPlanForTarget(
+    const ExecutableSpec& spec,
+    const std::string& target_buffer) {
+  return std::any_of(
+      spec.reducer_plans.begin(), spec.reducer_plans.end(),
+      [&](const ReducerPlanSpec& plan) {
+        return plan.reducer_kind == "partial_k_sum" &&
+               plan.admission_status == "admitted" &&
+               plan.target_buffer == target_buffer;
+      });
+}
+
+static bool SpecHasKShardedGemmWithoutAdmittedReducerPlan(
+    const ExecutableSpec& spec) {
+  if (spec.core_plan.logical_grid_z <= 1) {
+    return false;
+  }
+  for (const auto& kernel : spec.kernels) {
+    for (const auto& compute_op : kernel.compute_ops) {
+      if (!compute_op.enabled || compute_op.kind != "gemm") {
+        continue;
+      }
+      if (!compute_op.c_buffer.empty() &&
+          HasAdmittedPartialKReducerPlanForTarget(spec, compute_op.c_buffer)) {
+        continue;
+      }
+      return true;
     }
   }
   return false;
@@ -4180,6 +4365,7 @@ ffi::Module BuildTileLangBlackhole(IRModule mod, Target target) {
                                      &spec_it->second);
     const auto logical_shape_by_buffer =
         CollectTensorLogicalShapesByBuffer(spec_it->second);
+    EnforcePartialKReducerPlanGate(&spec_it->second);
     PopulateBufferMaterializationSpecs(logical_shape_by_buffer, &spec_it->second);
     EnforceBufferDistributionAddressContractGate(&spec_it->second);
     EnforceProjectedReshardAdmissionGate(&spec_it->second);
@@ -4270,6 +4456,7 @@ ffi::Module BuildTileLangBlackholeWithoutHost(IRModule mod, Target target) {
                                      &spec_it->second);
     const auto logical_shape_by_buffer =
         CollectTensorLogicalShapesByBuffer(spec_it->second);
+    EnforcePartialKReducerPlanGate(&spec_it->second);
     PopulateBufferMaterializationSpecs(logical_shape_by_buffer, &spec_it->second);
     EnforceBufferDistributionAddressContractGate(&spec_it->second);
     EnforceProjectedReshardAdmissionGate(&spec_it->second);

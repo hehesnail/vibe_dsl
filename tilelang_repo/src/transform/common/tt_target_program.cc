@@ -217,6 +217,96 @@ TTCollectivePlan::TTCollectivePlan(
   data_ = std::move(n);
 }
 
+void TTReducerPlanNode::RegisterReflection() {
+  namespace refl = tvm::ffi::reflection;
+  refl::ObjectDef<TTReducerPlanNode>()
+      .def_ro("name", &TTReducerPlanNode::name)
+      .def_ro("reducer_kind", &TTReducerPlanNode::reducer_kind)
+      .def_ro("compute_op_plan", &TTReducerPlanNode::compute_op_plan)
+      .def_ro("compute_op_plan_index",
+              &TTReducerPlanNode::compute_op_plan_index)
+      .def_ro("target_buffer", &TTReducerPlanNode::target_buffer)
+      .def_ro("target_buffer_distribution",
+              &TTReducerPlanNode::target_buffer_distribution)
+      .def_ro("target_buffer_distribution_index",
+              &TTReducerPlanNode::target_buffer_distribution_index)
+      .def_ro("scratch_buffer", &TTReducerPlanNode::scratch_buffer)
+      .def_ro("scratch_scope", &TTReducerPlanNode::scratch_scope)
+      .def_ro("scratch_layout", &TTReducerPlanNode::scratch_layout)
+      .def_ro("scratch_memory_space",
+              &TTReducerPlanNode::scratch_memory_space)
+      .def_ro("scratch_lifetime", &TTReducerPlanNode::scratch_lifetime)
+      .def_ro("producer_axis", &TTReducerPlanNode::producer_axis)
+      .def_ro("producer_count", &TTReducerPlanNode::producer_count)
+      .def_ro("logical_grid", &TTReducerPlanNode::logical_grid)
+      .def_ro("tile_shape", &TTReducerPlanNode::tile_shape)
+      .def_ro("reduction_op", &TTReducerPlanNode::reduction_op)
+      .def_ro("transport_kind", &TTReducerPlanNode::transport_kind)
+      .def_ro("route_kind", &TTReducerPlanNode::route_kind)
+      .def_ro("accumulation_order", &TTReducerPlanNode::accumulation_order)
+      .def_ro("final_writer_timing",
+              &TTReducerPlanNode::final_writer_timing)
+      .def_ro("final_writer_producer",
+              &TTReducerPlanNode::final_writer_producer)
+      .def_ro("required_semaphore_plan_indices",
+              &TTReducerPlanNode::required_semaphore_plan_indices)
+      .def_ro("required_sync_plan_indices",
+              &TTReducerPlanNode::required_sync_plan_indices)
+      .def_ro("remote_core_descriptor_indices",
+              &TTReducerPlanNode::remote_core_descriptor_indices)
+      .def_ro("admission_status", &TTReducerPlanNode::admission_status)
+      .def_ro("unsupported_reason", &TTReducerPlanNode::unsupported_reason);
+}
+
+TTReducerPlan::TTReducerPlan(
+    ffi::String name, ffi::String reducer_kind, ffi::String compute_op_plan,
+    int64_t compute_op_plan_index, ffi::String target_buffer,
+    ffi::String target_buffer_distribution,
+    int64_t target_buffer_distribution_index, ffi::String scratch_buffer,
+    ffi::String scratch_scope, ffi::String scratch_layout,
+    ffi::String scratch_memory_space, ffi::String scratch_lifetime,
+    ffi::String producer_axis, int64_t producer_count,
+    ffi::Array<Integer> logical_grid, ffi::Array<Integer> tile_shape,
+    ffi::String reduction_op, ffi::String transport_kind,
+    ffi::String route_kind, ffi::String accumulation_order,
+    ffi::String final_writer_timing, int64_t final_writer_producer,
+    ffi::Array<Integer> required_semaphore_plan_indices,
+    ffi::Array<Integer> required_sync_plan_indices,
+    ffi::Array<Integer> remote_core_descriptor_indices,
+    ffi::String admission_status, ffi::String unsupported_reason) {
+  auto n = ffi::make_object<TTReducerPlanNode>();
+  n->name = std::move(name);
+  n->reducer_kind = std::move(reducer_kind);
+  n->compute_op_plan = std::move(compute_op_plan);
+  n->compute_op_plan_index = compute_op_plan_index;
+  n->target_buffer = std::move(target_buffer);
+  n->target_buffer_distribution = std::move(target_buffer_distribution);
+  n->target_buffer_distribution_index = target_buffer_distribution_index;
+  n->scratch_buffer = std::move(scratch_buffer);
+  n->scratch_scope = std::move(scratch_scope);
+  n->scratch_layout = std::move(scratch_layout);
+  n->scratch_memory_space = std::move(scratch_memory_space);
+  n->scratch_lifetime = std::move(scratch_lifetime);
+  n->producer_axis = std::move(producer_axis);
+  n->producer_count = producer_count;
+  n->logical_grid = std::move(logical_grid);
+  n->tile_shape = std::move(tile_shape);
+  n->reduction_op = std::move(reduction_op);
+  n->transport_kind = std::move(transport_kind);
+  n->route_kind = std::move(route_kind);
+  n->accumulation_order = std::move(accumulation_order);
+  n->final_writer_timing = std::move(final_writer_timing);
+  n->final_writer_producer = final_writer_producer;
+  n->required_semaphore_plan_indices =
+      std::move(required_semaphore_plan_indices);
+  n->required_sync_plan_indices = std::move(required_sync_plan_indices);
+  n->remote_core_descriptor_indices =
+      std::move(remote_core_descriptor_indices);
+  n->admission_status = std::move(admission_status);
+  n->unsupported_reason = std::move(unsupported_reason);
+  data_ = std::move(n);
+}
+
 void TTTensorMemoryConfigPlanNode::RegisterReflection() {
   namespace refl = tvm::ffi::reflection;
   refl::ObjectDef<TTTensorMemoryConfigPlanNode>()
@@ -1742,6 +1832,7 @@ void TTProgramNode::RegisterReflection() {
       .def_ro("buffer_distribution_plans",
               &TTProgramNode::buffer_distribution_plans)
       .def_ro("collective_plans", &TTProgramNode::collective_plans)
+      .def_ro("reducer_plans", &TTProgramNode::reducer_plans)
       .def_ro("tensor_memory_config_plans",
               &TTProgramNode::tensor_memory_config_plans)
       .def_ro("op_sharding_contracts",
@@ -1783,6 +1874,7 @@ TTProgram::TTProgram(
     ffi::Array<TTMeshPlan> mesh_plans,
     ffi::Array<TTBufferDistributionPlan> buffer_distribution_plans,
     ffi::Array<TTCollectivePlan> collective_plans,
+    ffi::Array<TTReducerPlan> reducer_plans,
     ffi::Array<TTTensorMemoryConfigPlan> tensor_memory_config_plans,
     ffi::Array<TTOpShardingContract> op_sharding_contracts,
     ffi::Array<TTPlacementResolutionPlan> placement_resolution_plans,
@@ -1812,6 +1904,7 @@ TTProgram::TTProgram(
   n->mesh_plans = std::move(mesh_plans);
   n->buffer_distribution_plans = std::move(buffer_distribution_plans);
   n->collective_plans = std::move(collective_plans);
+  n->reducer_plans = std::move(reducer_plans);
   n->tensor_memory_config_plans = std::move(tensor_memory_config_plans);
   n->op_sharding_contracts = std::move(op_sharding_contracts);
   n->placement_resolution_plans = std::move(placement_resolution_plans);
@@ -1846,6 +1939,7 @@ TVM_FFI_STATIC_INIT_BLOCK() {
   RegisterNodeReflection<TTMeshPlanNode>();
   RegisterNodeReflection<TTBufferDistributionPlanNode>();
   RegisterNodeReflection<TTCollectivePlanNode>();
+  RegisterNodeReflection<TTReducerPlanNode>();
   RegisterNodeReflection<TTTensorMemoryConfigPlanNode>();
   RegisterNodeReflection<TTOpShardingContractNode>();
   RegisterNodeReflection<TTPlacementResolutionPlanNode>();
@@ -1967,8 +2061,41 @@ TVM_FFI_STATIC_INIT_BLOCK() {
             std::move(required_sync_plan_indices),
             std::move(admission_status), std::move(unsupported_reason));
       });
-	  refl::GlobalDef().def(
-	      "tl.TTTensorMemoryConfigPlan",
+  refl::GlobalDef().def(
+      "tl.TTReducerPlan",
+      [](ffi::String name, ffi::String reducer_kind,
+         ffi::String compute_op_plan, int64_t compute_op_plan_index,
+         ffi::String target_buffer, ffi::String target_buffer_distribution,
+         int64_t target_buffer_distribution_index, ffi::String scratch_buffer,
+         ffi::String scratch_scope, ffi::String scratch_layout,
+         ffi::String scratch_memory_space, ffi::String scratch_lifetime,
+         ffi::String producer_axis, int64_t producer_count,
+         ffi::Array<Integer> logical_grid, ffi::Array<Integer> tile_shape,
+         ffi::String reduction_op, ffi::String transport_kind,
+         ffi::String route_kind, ffi::String accumulation_order,
+         ffi::String final_writer_timing, int64_t final_writer_producer,
+         ffi::Array<Integer> required_semaphore_plan_indices,
+         ffi::Array<Integer> required_sync_plan_indices,
+         ffi::Array<Integer> remote_core_descriptor_indices,
+         ffi::String admission_status, ffi::String unsupported_reason) {
+        return TTReducerPlan(
+            std::move(name), std::move(reducer_kind),
+            std::move(compute_op_plan), compute_op_plan_index,
+            std::move(target_buffer), std::move(target_buffer_distribution),
+            target_buffer_distribution_index, std::move(scratch_buffer),
+            std::move(scratch_scope), std::move(scratch_layout),
+            std::move(scratch_memory_space), std::move(scratch_lifetime),
+            std::move(producer_axis), producer_count, std::move(logical_grid),
+            std::move(tile_shape), std::move(reduction_op),
+            std::move(transport_kind), std::move(route_kind),
+            std::move(accumulation_order), std::move(final_writer_timing),
+            final_writer_producer, std::move(required_semaphore_plan_indices),
+            std::move(required_sync_plan_indices),
+            std::move(remote_core_descriptor_indices),
+            std::move(admission_status), std::move(unsupported_reason));
+      });
+  refl::GlobalDef().def(
+      "tl.TTTensorMemoryConfigPlan",
       [](ffi::String name, ffi::String subject, ffi::String value_identity,
          ffi::Array<PrimExpr> logical_shape, ffi::String dtype,
          ffi::String memory_layout, ffi::String buffer_type,
@@ -2586,6 +2713,7 @@ TVM_FFI_STATIC_INIT_BLOCK() {
          ffi::Array<TTMeshPlan> mesh_plans,
          ffi::Array<TTBufferDistributionPlan> buffer_distribution_plans,
          ffi::Array<TTCollectivePlan> collective_plans,
+         ffi::Array<TTReducerPlan> reducer_plans,
          ffi::Array<TTTensorMemoryConfigPlan> tensor_memory_config_plans,
          ffi::Array<TTOpShardingContract> op_sharding_contracts,
          ffi::Array<TTPlacementResolutionPlan> placement_resolution_plans,
@@ -2615,6 +2743,7 @@ TVM_FFI_STATIC_INIT_BLOCK() {
             std::move(entry_name), std::move(member_func),
             std::move(mesh_plans), std::move(buffer_distribution_plans),
             std::move(collective_plans),
+            std::move(reducer_plans),
             std::move(tensor_memory_config_plans),
             std::move(op_sharding_contracts),
             std::move(placement_resolution_plans),

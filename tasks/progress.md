@@ -8,7 +8,7 @@
 ## Status
 
 - Date: `2026-05-18`
-- Active lane: `P2 / T10 single-card multi-tile CCL semantics`
+- Active lane: `P2 / T10 complete`
 - Main chain:
   `Normalized Tile TIR -> SpatialPlan -> TTProgram -> ExecutableSpec`
 
@@ -20,7 +20,7 @@
 | `P0` target execution contract | Complete | Covered execution facts are owned by `TTProgram` typed fields/objects and projected once to `ExecutableSpec`; leaf consumers reject source/body/name recovery. |
 | `T8` irregular/indexed access | Complete | Indexed, sparse, ragged, paged, segmented, and grouped-feed paths use generic `AccessRegion` plus `value_expr` evidence. |
 | `P1 / T9` workload-first paths | Complete | T9.1-T9.6 are admitted on current bf16 direct-runtime surfaces, including grouped GEMM, paged decode, sparse/ragged attention, chunk scan, and split-block flash decode. |
-| `P2 / T10` scoped collective semantics | Complete under single-card multi-tile scope | Mesh / multi-device placement is typed through `TTProgram -> ExecutableSpec` and direct runtime currently fails closed for non-unit mesh placements.  Per user scope change on 2026-05-18, T10.1-T10.3 completion is defined as single-card multi-tile bf16 value semantics and local `BlackholeModule` equivalents for all-gather, reduce-scatter, and all-to-all plus typed owner truth and fail-closed unsupported forms.  Multi-device fabric CCL remains an external blocker, not the active completion gate. |
+| `P2 / T10` collectives and reducer protocol | Complete under current local scope | Mesh / multi-device placement is typed through `TTProgram -> ExecutableSpec` and direct runtime currently fails closed for non-unit mesh placements.  Per user scope change on 2026-05-18, T10.1-T10.3 completion is defined as single-card multi-tile bf16 value semantics and local `BlackholeModule` equivalents for all-gather, reduce-scatter, and all-to-all plus typed owner truth and fail-closed unsupported forms.  T10.4 now moves partial-K GEMM reducer ownership into `TTReducerPlan -> ExecutableSpec.reducer_plans`; the direct runtime consumes the typed plan for scratch placement/lifetime, local route, transport choice, accumulation order, and final-writer timing.  Multi-device fabric CCL remains an external blocker, not the active completion gate. |
 
 ## Current Protocol Snapshot
 
@@ -98,11 +98,12 @@
 
 ## Next Work Queue
 
-Current ordering follows the 2026-05-18 scope change: T10.1-T10.3 are judged
-by single-card multi-tile collective value semantics plus local
-`BlackholeModule` runtime equivalents.  A typed contract, projection,
-validator, or fail-closed diagnostic is supporting evidence, not a standalone
-completion target.
+Completed ordering follows the 2026-05-18 scope change: T10.1-T10.3 are
+judged by single-card multi-tile collective value semantics plus local
+`BlackholeModule` runtime equivalents, and T10.4 is judged by typed
+partial-K reducer ownership plus bf16 direct-runtime correctness.  A typed
+contract, projection, validator, or fail-closed diagnostic is supporting
+evidence, not a standalone completion target.
 
 ### External Multi-Device Blocker
 
@@ -152,10 +153,15 @@ completion target.
    logical collective operation kinds on multi-tile bf16 shapes with
    host-reference comparisons and direct-runtime local equivalents.  Status:
    complete under the scoped single-card definition.
-4. `T10.4` Replace the current K-sharded GEMM blocking z-wave tile-add path
-   with a typed production reducer protocol: reducer ownership, partial-C
-   scratch placement and lifetime, semaphore IDs, remote NOC routes,
-   transport choice, accumulation order, and final writer timing.
+4. `T10.4` Partial-K GEMM reducer protocol: K-sharded GEMM now materializes
+   `TTReducerPlan` records and projects them to
+   `ExecutableSpec.reducer_plans`.  The admitted local direct-runtime
+   protocol owns reducer target buffer, partial-C scratch buffer name,
+   placement, lifetime, local same-device route, `device_tile_add`
+   transport, ascending producer accumulation order, and producer-0 final
+   writer timing.  Missing admitted reducer plans fail closed before direct
+   runtime execution.  Status: complete for the current single-card/local
+   direct-runtime protocol.
 
 ### Standing Guardrails
 
@@ -195,6 +201,14 @@ Current baseline:
   runs local multi-tile all-gather / reduce-scatter / all-to-all equivalents
   through `BlackholeModule` on the repository TT-Sim bf16 direct path with
   `8x8x4` logical tile work items per collective.
+- T10.4 partial-K reducer runtime:
+  `tilelang_repo/testing/python/target/blackhole/test_blackhole_gemm.py`
+  checks that K-sharded GEMM projects exactly one `reducer_plans` record for
+  both small `2x2x2` and many-core `11x10x2` logical grids, runs both bf16
+  direct-runtime paths through TT-Sim against torch references, and verifies
+  that deleting the admitted reducer plan produces the typed unsupported
+  reason
+  `K-sharded GEMM requires an admitted TTReducerPlan partial_k_sum record`.
 - Direct-runtime correctness:
   admitted T7/T8/T9 positive paths run through `BlackholeModule` with the
   repository TT-Sim bf16 baseline where tensor values are involved, including

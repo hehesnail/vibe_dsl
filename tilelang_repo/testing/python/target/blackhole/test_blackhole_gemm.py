@@ -174,6 +174,38 @@ def _require_tt_program_compute_kernel(func):
     return require_tt_kernel(tt_program, kind="compute", core_type="trisc")
 
 
+def _assert_t10_partial_k_reducer_plan(executable_spec, *, expected_logical_grid):
+    assert "reducer_plans" in executable_spec
+    reducer_plans = list(executable_spec["reducer_plans"])
+    assert len(reducer_plans) == 1
+    reducer = reducer_plans[0]
+    assert str(reducer["reducer_kind"]) == "partial_k_sum"
+    assert str(reducer["target_buffer"]) == "C"
+    assert str(reducer["scratch_buffer"]) == "C__partial_k"
+    assert str(reducer["scratch_scope"]) == "per_target_buffer"
+    assert str(reducer["scratch_layout"]) == "sharded"
+    assert str(reducer["scratch_memory_space"]) == "l1"
+    assert str(reducer["scratch_lifetime"]) == "one_producer_wave"
+    assert str(reducer["producer_axis"]) == "logical_grid_z"
+    assert int(reducer["producer_count"]) == expected_logical_grid[2]
+    assert [int(value) for value in reducer["logical_grid"]] == expected_logical_grid
+    assert [int(value) for value in reducer["tile_shape"]] == [32, 32]
+    assert str(reducer["reduction_op"]) == "sum"
+    assert str(reducer["transport_kind"]) == "device_tile_add"
+    assert str(reducer["route_kind"]) == "local_same_device_sharded_tile"
+    assert str(reducer["accumulation_order"]) == "ascending_producer_id"
+    assert (
+        str(reducer["final_writer_timing"])
+        == "producer_0_writes_final_then_later_producers_reduce"
+    )
+    assert int(reducer["final_writer_producer"]) == 0
+    assert str(reducer["admission_status"]) == "admitted"
+    assert "unsupported_reason" not in reducer
+    assert list(reducer.get("required_semaphore_plan_indices", [])) == []
+    assert list(reducer.get("required_sync_plan_indices", [])) == []
+    assert list(reducer.get("remote_core_descriptor_indices", [])) == []
+
+
 def _typed_gemm_schema(func):
     item = encode_tt_compute_op_plan(require_gemm_compute_op(func))
     item.update(tt_compute_config_to_dict(_require_tt_program_compute_kernel(func).compute_config))
@@ -2225,6 +2257,9 @@ def test_blackhole_t5_external_k_sharded_l1_gemm_direct_runtime_partial_sum_bf16
     assert int(core_plan["logical_grid_x"]) == 2
     assert int(core_plan["logical_grid_y"]) == 2
     assert int(core_plan["logical_grid_z"]) == 2
+    _assert_t10_partial_k_reducer_plan(
+        executable, expected_logical_grid=[2, 2, 2]
+    )
     sharded_accessors = {}
     for segment in executable["segment_plan"]:
         for accessor in segment.get("accessors", []):
@@ -2280,6 +2315,9 @@ def test_blackhole_t5_manycore_external_k_sharded_l1_gemm_direct_runtime_partial
     assert int(core_plan["logical_grid_z"]) == 2
     assert len(core_plan["physical_cores"]) == 110
     assert sum(int(packet["work_count"]) for packet in core_plan["work_packets"]) == 220
+    _assert_t10_partial_k_reducer_plan(
+        executable, expected_logical_grid=[11, 10, 2]
+    )
 
     sharded_accessors = {}
     for segment in executable["segment_plan"]:
@@ -2303,6 +2341,30 @@ def test_blackhole_t5_manycore_external_k_sharded_l1_gemm_direct_runtime_partial
         failure_message=(
             "Manycore K-sharded external L1 GEMM partial-sum direct-call output mismatch"
         ),
+    )
+
+
+def test_blackhole_t10_partial_k_reducer_plan_required_for_direct_runtime():
+    kernel = external_k_sharded_l1_gemm_kernel(M=64, N=64, K=128, k_shards=2)
+    target = Target("blackhole")
+
+    with target:
+        artifact = lower(kernel, target=target)
+
+    def drop_reducer_plans(tt_program):
+        return rebuild_tt_program(tt_program, reducer_plans=[])
+
+    mutated_mod = _rebuild_codegen_module_with_tt_program(
+        artifact, tt_program_mutator=drop_reducer_plans
+    )
+    metadata = mutated_mod.get_function_metadata("main")
+    reasons = [
+        str(reason)
+        for reason in metadata.get("direct_runtime_unsupported_reasons", [])
+    ]
+    assert (
+        "K-sharded GEMM requires an admitted TTReducerPlan partial_k_sum record"
+        in reasons
     )
 
 

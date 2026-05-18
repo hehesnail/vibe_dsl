@@ -10,6 +10,7 @@
 #include <tvm/tir/stmt_functor.h>
 
 #include <algorithm>
+#include <cctype>
 #include <limits>
 #include <optional>
 #include <string>
@@ -453,6 +454,7 @@ struct TTProgramSlices {
   Array<TTMeshPlan> mesh_plans;
   Array<TTBufferDistributionPlan> buffer_distribution_plans;
   Array<TTCollectivePlan> collective_plans;
+  Array<TTReducerPlan> reducer_plans;
   Array<TTTensorMemoryConfigPlan> tensor_memory_config_plans;
   Array<TTOpShardingContract> op_sharding_contracts;
   Array<TTPlacementResolutionPlan> placement_resolution_plans;
@@ -489,6 +491,7 @@ TTProgramSlices UnpackTTProgram(const TTProgram &program) {
   slices.mesh_plans = program->mesh_plans;
   slices.buffer_distribution_plans = program->buffer_distribution_plans;
   slices.collective_plans = program->collective_plans;
+  slices.reducer_plans = program->reducer_plans;
   slices.tensor_memory_config_plans = program->tensor_memory_config_plans;
   slices.op_sharding_contracts = program->op_sharding_contracts;
   slices.placement_resolution_plans = program->placement_resolution_plans;
@@ -524,6 +527,7 @@ TTProgram PackTTProgram(TTProgramSlices slices) {
       std::move(slices.entry_name), std::move(slices.member_func),
       std::move(slices.mesh_plans), std::move(slices.buffer_distribution_plans),
       std::move(slices.collective_plans),
+      std::move(slices.reducer_plans),
       std::move(slices.tensor_memory_config_plans),
       std::move(slices.op_sharding_contracts),
       std::move(slices.placement_resolution_plans),
@@ -1725,6 +1729,14 @@ std::vector<int64_t> PositiveIntegerVectorFromShape(
   return result;
 }
 
+std::string LowerAscii(std::string value) {
+  std::transform(value.begin(), value.end(), value.begin(),
+                 [](unsigned char c) {
+                   return static_cast<char>(std::tolower(c));
+                 });
+  return value;
+}
+
 int64_t CeilDivPositive(int64_t value, int64_t divisor) {
   ICHECK_GT(value, 0);
   ICHECK_GT(divisor, 0);
@@ -2310,6 +2322,129 @@ Array<TTReshardPlan> BuildReshardPlans(
   return reshard_plans;
 }
 
+std::string FindGemmOutputHostBuffer(const TTComputeOpPlan &compute_op) {
+  for (const TTComputeOperandBindingPlan &binding :
+       compute_op->operand_bindings) {
+    if (str(binding->role) != "c") {
+      continue;
+    }
+    if (!binding->host_buffer.empty()) {
+      return str(binding->host_buffer);
+    }
+    return str(binding->buffer);
+  }
+  return "";
+}
+
+int64_t ResolveComputeOpCoreGroupIndex(
+    const TTComputeOpPlan &compute_op,
+    const Array<TTKernelPlan> &kernel_plans,
+    const Array<TTBlockPlan> &block_plans,
+    int64_t core_group_count) {
+  if (compute_op->kernel_plan_index >= 0 &&
+      compute_op->kernel_plan_index <
+          static_cast<int64_t>(kernel_plans.size())) {
+    const TTKernelPlan &kernel_plan =
+        kernel_plans[static_cast<size_t>(compute_op->kernel_plan_index)];
+    if (kernel_plan->block_plan_index >= 0 &&
+        kernel_plan->block_plan_index <
+            static_cast<int64_t>(block_plans.size())) {
+      const TTBlockPlan &block_plan =
+          block_plans[static_cast<size_t>(kernel_plan->block_plan_index)];
+      if (block_plan->core_group_index >= 0 &&
+          block_plan->core_group_index < core_group_count) {
+        return block_plan->core_group_index;
+      }
+    }
+  }
+  return core_group_count > 0 ? 0 : -1;
+}
+
+Array<TTReducerPlan> BuildPartialKReducerPlans(
+    const Array<TTComputeOpPlan> &compute_op_plans,
+    const Array<TTKernelPlan> &kernel_plans,
+    const Array<TTBlockPlan> &block_plans,
+    const Array<TTCoreGroup> &core_groups,
+    const Array<TTBufferDistributionPlan> &buffer_distribution_plans) {
+  std::unordered_map<std::string, TTBufferDistributionPlan>
+      distribution_by_buffer;
+  std::unordered_map<std::string, int64_t> distribution_index_by_buffer;
+  for (int64_t index = 0;
+       index < static_cast<int64_t>(buffer_distribution_plans.size());
+       ++index) {
+    const TTBufferDistributionPlan &distribution =
+        buffer_distribution_plans[static_cast<size_t>(index)];
+    distribution_by_buffer.emplace(str(distribution->buffer), distribution);
+    distribution_index_by_buffer.emplace(str(distribution->buffer), index);
+  }
+
+  Array<TTReducerPlan> reducer_plans;
+  for (int64_t compute_index = 0;
+       compute_index < static_cast<int64_t>(compute_op_plans.size());
+       ++compute_index) {
+    const TTComputeOpPlan &compute_op =
+        compute_op_plans[static_cast<size_t>(compute_index)];
+    if (!compute_op->enabled || compute_op->kind != "gemm") {
+      continue;
+    }
+    const int64_t core_group_index = ResolveComputeOpCoreGroupIndex(
+        compute_op, kernel_plans, block_plans,
+        static_cast<int64_t>(core_groups.size()));
+    if (core_group_index < 0) {
+      continue;
+    }
+    const TTCoreGroup &core_group =
+        core_groups[static_cast<size_t>(core_group_index)];
+    if (core_group->logical_grid_z <= 1) {
+      continue;
+    }
+    const std::string target_buffer = FindGemmOutputHostBuffer(compute_op);
+    if (target_buffer.empty()) {
+      continue;
+    }
+    auto distribution_it = distribution_by_buffer.find(target_buffer);
+    if (distribution_it == distribution_by_buffer.end()) {
+      continue;
+    }
+    const TTBufferDistributionPlan &target_distribution =
+        distribution_it->second;
+    const int64_t target_distribution_index =
+        distribution_index_by_buffer.at(target_buffer);
+    const std::string target_memory_space =
+        LowerAscii(str(target_distribution->memory_space));
+    const bool admitted = str(target_distribution->layout) == "sharded" &&
+                          target_memory_space == "l1";
+    Array<Integer> logical_grid{
+        Integer(core_group->logical_grid_x),
+        Integer(core_group->logical_grid_y),
+        Integer(core_group->logical_grid_z)};
+    Array<Integer> tile_shape = target_distribution->shard_shape;
+    if (tile_shape.size() != 2U && compute_op->tile_shape.size() >= 2U) {
+      tile_shape = Array<Integer>{compute_op->tile_shape[0],
+                                  compute_op->tile_shape[1]};
+    }
+    if (tile_shape.empty()) {
+      tile_shape = Array<Integer>{Integer(32), Integer(32)};
+    }
+    reducer_plans.push_back(TTReducerPlan(
+        String("reducer_" + str(compute_op->name) + "_partial_k_sum"),
+        String("partial_k_sum"), compute_op->name, compute_index,
+        String(target_buffer), target_distribution->name,
+        target_distribution_index, String(target_buffer + "__partial_k"),
+        String("per_target_buffer"), target_distribution->layout,
+        String(target_memory_space), String("one_producer_wave"),
+        String("logical_grid_z"), core_group->logical_grid_z, logical_grid,
+        tile_shape, String("sum"), String("device_tile_add"),
+        String("local_same_device_sharded_tile"),
+        String("ascending_producer_id"),
+        String("producer_0_writes_final_then_later_producers_reduce"),
+        /*final_writer_producer=*/0, Array<Integer>(), Array<Integer>(),
+        Array<Integer>(), admitted ? String("admitted") : String("unsupported"),
+        admitted ? String("") : String("partial_k_sum_requires_sharded_l1_target")));
+  }
+  return reducer_plans;
+}
+
 Array<TTMaterializationPlan> RemapMaterializationCBRequirementIndices(
     const Array<TTMaterializationPlan> &materialization_plans,
     const Array<TTCBPlan> &cb_plans) {
@@ -2614,6 +2749,9 @@ tvm::transform::Pass PlanTTABI() {
           BuildReshardPlans(slices.buffer_distribution_plans,
                             slices.tensor_memory_config_plans,
                             slices.materialization_plans);
+      slices.reducer_plans = BuildPartialKReducerPlans(
+          slices.compute_op_plans, slices.kernel_plans, slices.block_plans,
+          slices.core_groups, slices.buffer_distribution_plans);
       RefreshResourcePlanningSlices(&slices, maybe_hardware_model);
       tir::PrimFunc planned =
           WithTTProgramAttr(func.value(), PackTTProgram(std::move(slices)));

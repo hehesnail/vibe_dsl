@@ -154,6 +154,63 @@ public:
                                              TTCollectivePlanNode);
 };
 
+class TTReducerPlanNode : public Object {
+public:
+  ffi::String name;
+  ffi::String reducer_kind;
+  ffi::String compute_op_plan;
+  int64_t compute_op_plan_index = -1;
+  ffi::String target_buffer;
+  ffi::String target_buffer_distribution;
+  int64_t target_buffer_distribution_index = -1;
+  ffi::String scratch_buffer;
+  ffi::String scratch_scope;
+  ffi::String scratch_layout;
+  ffi::String scratch_memory_space;
+  ffi::String scratch_lifetime;
+  ffi::String producer_axis;
+  int64_t producer_count = 0;
+  ffi::Array<Integer> logical_grid;
+  ffi::Array<Integer> tile_shape;
+  ffi::String reduction_op;
+  ffi::String transport_kind;
+  ffi::String route_kind;
+  ffi::String accumulation_order;
+  ffi::String final_writer_timing;
+  int64_t final_writer_producer = -1;
+  ffi::Array<Integer> required_semaphore_plan_indices;
+  ffi::Array<Integer> required_sync_plan_indices;
+  ffi::Array<Integer> remote_core_descriptor_indices;
+  ffi::String admission_status;
+  ffi::String unsupported_reason;
+
+  static void RegisterReflection();
+  TVM_FFI_DECLARE_OBJECT_INFO_FINAL("tl.TTReducerPlan",
+                                    TTReducerPlanNode, Object);
+};
+
+class TTReducerPlan : public ObjectRef {
+public:
+  TVM_DLL TTReducerPlan(
+      ffi::String name, ffi::String reducer_kind,
+      ffi::String compute_op_plan, int64_t compute_op_plan_index,
+      ffi::String target_buffer, ffi::String target_buffer_distribution,
+      int64_t target_buffer_distribution_index, ffi::String scratch_buffer,
+      ffi::String scratch_scope, ffi::String scratch_layout,
+      ffi::String scratch_memory_space, ffi::String scratch_lifetime,
+      ffi::String producer_axis, int64_t producer_count,
+      ffi::Array<Integer> logical_grid, ffi::Array<Integer> tile_shape,
+      ffi::String reduction_op, ffi::String transport_kind,
+      ffi::String route_kind, ffi::String accumulation_order,
+      ffi::String final_writer_timing, int64_t final_writer_producer,
+      ffi::Array<Integer> required_semaphore_plan_indices,
+      ffi::Array<Integer> required_sync_plan_indices,
+      ffi::Array<Integer> remote_core_descriptor_indices,
+      ffi::String admission_status, ffi::String unsupported_reason);
+  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(TTReducerPlan, ObjectRef,
+                                             TTReducerPlanNode);
+};
+
 class TTTensorMemoryConfigPlanNode : public Object {
 public:
   ffi::String name;
@@ -1380,6 +1437,7 @@ public:
   ffi::Array<TTMeshPlan> mesh_plans;
   ffi::Array<TTBufferDistributionPlan> buffer_distribution_plans;
   ffi::Array<TTCollectivePlan> collective_plans;
+  ffi::Array<TTReducerPlan> reducer_plans;
   ffi::Array<TTTensorMemoryConfigPlan> tensor_memory_config_plans;
   ffi::Array<TTOpShardingContract> op_sharding_contracts;
   ffi::Array<TTPlacementResolutionPlan> placement_resolution_plans;
@@ -1419,6 +1477,7 @@ public:
             ffi::Array<TTMeshPlan> mesh_plans,
             ffi::Array<TTBufferDistributionPlan> buffer_distribution_plans,
             ffi::Array<TTCollectivePlan> collective_plans,
+            ffi::Array<TTReducerPlan> reducer_plans,
             ffi::Array<TTTensorMemoryConfigPlan> tensor_memory_config_plans,
             ffi::Array<TTOpShardingContract> op_sharding_contracts,
             ffi::Array<TTPlacementResolutionPlan> placement_resolution_plans,

@@ -578,6 +578,136 @@ void ValidateCollectivePlan(
   }
 }
 
+void ValidateReducerPlan(
+    const TTReducerPlan &plan,
+    const Array<TTComputeOpPlan> &compute_op_plans,
+    const std::unordered_map<std::string, int64_t> &distribution_index_by_name,
+    const std::unordered_map<std::string, TTBufferDistributionPlan>
+        &distribution_by_name,
+    int64_t semaphore_plan_count, int64_t sync_plan_count) {
+  ICHECK(!plan->name.empty()) << "TTReducerPlan requires name";
+  ICHECK(plan->reducer_kind == "partial_k_sum")
+      << "TTReducerPlan " << plan->name
+      << " has unsupported reducer_kind " << plan->reducer_kind;
+  ICHECK(!plan->compute_op_plan.empty())
+      << "TTReducerPlan " << plan->name << " requires compute_op_plan";
+  ICHECK_GE(plan->compute_op_plan_index, 0)
+      << "TTReducerPlan " << plan->name << " requires compute_op_plan_index";
+  ICHECK_LT(plan->compute_op_plan_index,
+            static_cast<int64_t>(compute_op_plans.size()))
+      << "TTReducerPlan " << plan->name
+      << " compute_op_plan_index out of bounds";
+  const TTComputeOpPlan &compute_op =
+      compute_op_plans[static_cast<size_t>(plan->compute_op_plan_index)];
+  ICHECK_EQ(compute_op->name, plan->compute_op_plan)
+      << "TTReducerPlan " << plan->name
+      << " compute_op_plan_index must match compute_op_plan";
+  ICHECK(compute_op->enabled && compute_op->kind == "gemm")
+      << "TTReducerPlan " << plan->name
+      << " partial_k_sum requires an enabled GEMM compute op";
+  ICHECK(!plan->target_buffer.empty())
+      << "TTReducerPlan " << plan->name << " requires target_buffer";
+  ICHECK(!plan->target_buffer_distribution.empty())
+      << "TTReducerPlan " << plan->name
+      << " requires target_buffer_distribution";
+  auto dist_index_it =
+      distribution_index_by_name.find(str(plan->target_buffer_distribution));
+  ICHECK(dist_index_it != distribution_index_by_name.end())
+      << "TTReducerPlan " << plan->name
+      << " references unknown target_buffer_distribution "
+      << plan->target_buffer_distribution;
+  ICHECK_EQ(dist_index_it->second, plan->target_buffer_distribution_index)
+      << "TTReducerPlan " << plan->name
+      << " target_buffer_distribution_index must match distribution name";
+  auto dist_it =
+      distribution_by_name.find(str(plan->target_buffer_distribution));
+  ICHECK(dist_it != distribution_by_name.end())
+      << "TTReducerPlan " << plan->name
+      << " missing target_buffer_distribution record";
+  const TTBufferDistributionPlan &distribution = dist_it->second;
+  ICHECK_EQ(distribution->buffer, plan->target_buffer)
+      << "TTReducerPlan " << plan->name
+      << " target distribution buffer must match target_buffer";
+  ICHECK(!plan->scratch_buffer.empty())
+      << "TTReducerPlan " << plan->name << " requires scratch_buffer";
+  ICHECK_EQ(plan->scratch_buffer, str(plan->target_buffer) + "__partial_k")
+      << "TTReducerPlan " << plan->name
+      << " scratch_buffer must be target_buffer + __partial_k";
+  ICHECK(plan->scratch_scope == "per_target_buffer")
+      << "TTReducerPlan " << plan->name
+      << " has unsupported scratch_scope " << plan->scratch_scope;
+  ICHECK_EQ(plan->scratch_layout, distribution->layout)
+      << "TTReducerPlan " << plan->name
+      << " scratch_layout must match target distribution layout";
+  ICHECK(plan->scratch_memory_space == "l1" ||
+         plan->scratch_memory_space == "L1")
+      << "TTReducerPlan " << plan->name
+      << " has unsupported scratch_memory_space "
+      << plan->scratch_memory_space;
+  ICHECK(plan->scratch_lifetime == "one_producer_wave")
+      << "TTReducerPlan " << plan->name
+      << " has unsupported scratch_lifetime " << plan->scratch_lifetime;
+  ICHECK(plan->producer_axis == "logical_grid_z")
+      << "TTReducerPlan " << plan->name
+      << " partial_k_sum requires producer_axis logical_grid_z";
+  ICHECK_GE(plan->producer_count, 2)
+      << "TTReducerPlan " << plan->name
+      << " requires producer_count >= 2";
+  ValidatePositiveIntegerArray(plan->logical_grid,
+                               "TTReducerPlan logical_grid");
+  ICHECK_EQ(plan->logical_grid.size(), 3U)
+      << "TTReducerPlan " << plan->name << " logical_grid must have rank 3";
+  ICHECK_EQ(plan->producer_count, plan->logical_grid[2]->value)
+      << "TTReducerPlan " << plan->name
+      << " producer_count must equal logical_grid[2]";
+  ValidatePositiveIntegerArray(plan->tile_shape, "TTReducerPlan tile_shape");
+  ICHECK_EQ(plan->tile_shape.size(), 2U)
+      << "TTReducerPlan " << plan->name << " tile_shape must have rank 2";
+  ICHECK(plan->reduction_op == "sum")
+      << "TTReducerPlan " << plan->name
+      << " has unsupported reduction_op " << plan->reduction_op;
+  ICHECK(plan->transport_kind == "device_tile_add")
+      << "TTReducerPlan " << plan->name
+      << " has unsupported transport_kind " << plan->transport_kind;
+  ICHECK(plan->route_kind == "local_same_device_sharded_tile")
+      << "TTReducerPlan " << plan->name
+      << " has unsupported route_kind " << plan->route_kind;
+  ICHECK(plan->accumulation_order == "ascending_producer_id")
+      << "TTReducerPlan " << plan->name
+      << " has unsupported accumulation_order " << plan->accumulation_order;
+  ICHECK(plan->final_writer_timing ==
+         "producer_0_writes_final_then_later_producers_reduce")
+      << "TTReducerPlan " << plan->name
+      << " has unsupported final_writer_timing "
+      << plan->final_writer_timing;
+  ICHECK_EQ(plan->final_writer_producer, 0)
+      << "TTReducerPlan " << plan->name
+      << " final_writer_producer must be 0";
+  ValidateIndexArrayBounds(plan->required_semaphore_plan_indices,
+                           semaphore_plan_count,
+                           "TTReducerPlan required_semaphore_plan_indices");
+  ValidateIndexArrayBounds(plan->required_sync_plan_indices, sync_plan_count,
+                           "TTReducerPlan required_sync_plan_indices");
+  for (const Integer &index : plan->remote_core_descriptor_indices) {
+    ICHECK_GE(index->value, 0)
+        << "TTReducerPlan remote_core_descriptor_indices requires "
+           "non-negative indices";
+  }
+  ICHECK(plan->admission_status == "admitted" ||
+         plan->admission_status == "unsupported")
+      << "TTReducerPlan " << plan->name
+      << " has invalid admission_status " << plan->admission_status;
+  if (plan->admission_status == "admitted") {
+    ICHECK(plan->unsupported_reason.empty())
+        << "TTReducerPlan " << plan->name
+        << " admitted record cannot carry unsupported_reason";
+  } else {
+    ICHECK(!plan->unsupported_reason.empty())
+        << "TTReducerPlan " << plan->name
+        << " unsupported record requires unsupported_reason";
+  }
+}
+
 std::string ExpectedTensorMemoryLayout(const TTBufferDistributionPlan &distribution) {
   const std::string kind = distribution->distribution_kind;
   if (kind == "interleaved" || kind == "replicated") {
@@ -2310,6 +2440,16 @@ void CheckTTProgram(
       expected_op_contract_keys.insert(str(compute_op_plan->name) + "|" +
                                        str(binding->role));
     }
+  }
+  std::unordered_set<std::string> reducer_plan_names;
+  for (const TTReducerPlan &reducer_plan : program->reducer_plans) {
+    ValidateReducerPlan(
+        reducer_plan, program->compute_op_plans, distribution_index_by_name,
+        distribution_by_name,
+        static_cast<int64_t>(program->semaphore_plans.size()),
+        static_cast<int64_t>(program->sync_plans.size()));
+    ICHECK(reducer_plan_names.insert(str(reducer_plan->name)).second)
+        << "duplicate TTReducerPlan name " << reducer_plan->name;
   }
   std::unordered_set<std::string> op_contract_names;
   std::unordered_set<std::string> op_contract_keys;

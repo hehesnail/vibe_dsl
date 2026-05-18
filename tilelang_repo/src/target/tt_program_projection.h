@@ -37,6 +37,7 @@ constexpr const char *kMemberFunc = "member_func";
 constexpr const char *kMeshPlans = "mesh_plans";
 constexpr const char *kBufferDistributionPlans = "buffer_distribution_plans";
 constexpr const char *kCollectivePlans = "collective_plans";
+constexpr const char *kReducerPlans = "reducer_plans";
 constexpr const char *kTensorMemoryConfigPlans =
     "tensor_memory_config_plans";
 constexpr const char *kOpShardingContracts = "op_sharding_contracts";
@@ -291,6 +292,57 @@ EncodeCollectivePlans(const Array<TTCollectivePlan> &collective_plans) {
     if (!plan->required_sync_plan_indices.empty()) {
       item.Set("required_sync_plan_indices",
                plan->required_sync_plan_indices);
+    }
+    item.Set("admission_status", plan->admission_status);
+    if (!plan->unsupported_reason.empty()) {
+      item.Set("unsupported_reason", plan->unsupported_reason);
+    }
+    encoded.push_back(item);
+  }
+  return encoded;
+}
+
+inline Array<Any> EncodeReducerPlans(
+    const Array<TTReducerPlan> &reducer_plans) {
+  Array<Any> encoded;
+  for (const TTReducerPlan &plan : reducer_plans) {
+    Map<String, Any> item;
+    item.Set("name", plan->name);
+    item.Set("reducer_kind", plan->reducer_kind);
+    item.Set("compute_op_plan", plan->compute_op_plan);
+    item.Set("compute_op_plan_index", Integer(plan->compute_op_plan_index));
+    item.Set("target_buffer", plan->target_buffer);
+    item.Set("target_buffer_distribution",
+             plan->target_buffer_distribution);
+    item.Set("target_buffer_distribution_index",
+             Integer(plan->target_buffer_distribution_index));
+    item.Set("scratch_buffer", plan->scratch_buffer);
+    item.Set("scratch_scope", plan->scratch_scope);
+    item.Set("scratch_layout", plan->scratch_layout);
+    item.Set("scratch_memory_space", plan->scratch_memory_space);
+    item.Set("scratch_lifetime", plan->scratch_lifetime);
+    item.Set("producer_axis", plan->producer_axis);
+    item.Set("producer_count", Integer(plan->producer_count));
+    item.Set("logical_grid", plan->logical_grid);
+    item.Set("tile_shape", plan->tile_shape);
+    item.Set("reduction_op", plan->reduction_op);
+    item.Set("transport_kind", plan->transport_kind);
+    item.Set("route_kind", plan->route_kind);
+    item.Set("accumulation_order", plan->accumulation_order);
+    item.Set("final_writer_timing", plan->final_writer_timing);
+    item.Set("final_writer_producer",
+             Integer(plan->final_writer_producer));
+    if (!plan->required_semaphore_plan_indices.empty()) {
+      item.Set("required_semaphore_plan_indices",
+               plan->required_semaphore_plan_indices);
+    }
+    if (!plan->required_sync_plan_indices.empty()) {
+      item.Set("required_sync_plan_indices",
+               plan->required_sync_plan_indices);
+    }
+    if (!plan->remote_core_descriptor_indices.empty()) {
+      item.Set("remote_core_descriptor_indices",
+               plan->remote_core_descriptor_indices);
     }
     item.Set("admission_status", plan->admission_status);
     if (!plan->unsupported_reason.empty()) {
@@ -1612,6 +1664,11 @@ MaterializeBlackholeExecutableProjection(const TTProgram &program) {
   if (!collective_plans.empty()) {
     executable.Set(String(executable_key::kCollectivePlans),
                    collective_plans);
+  }
+
+  Array<Any> reducer_plans = EncodeReducerPlans(program->reducer_plans);
+  if (!reducer_plans.empty()) {
+    executable.Set(String(executable_key::kReducerPlans), reducer_plans);
   }
 
   Array<Any> tensor_memory_config_plans =
