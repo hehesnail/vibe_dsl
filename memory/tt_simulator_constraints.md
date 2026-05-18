@@ -264,14 +264,16 @@ mesh：
 
 但 CCL fabric execution 仍被当前 simulator 卡住：
 
-- 最小 `ttnn.all_gather(..., topology=ttnn.Topology.Linear)` smoke 设置
-  `ttnn.FabricConfig.FABRIC_1D`
+- 最小 TTNN bf16 CCL probe 设置 `ttnn.FabricConfig.FABRIC_1D`
 - Fabric 在两个 simulated devices 上初始化成功
-- 进入 fabric command handling 后 fatal：
+- 在第一个 all-gather step 进入 fabric command handling 后 fatal：
   `UnimplementedFunctionality: eth_txq_regs_wr32: eth_txq_cmd=0x2`
 - 不设置 fabric config 不能作为 fallback：同一 all-gather smoke 会失败于
   `Trying to get un-initialized fabric context`
 - 设置 `TTSIM_SEMIHOSTING=1` 不改变该 fatal
+- 临时下载上游 TT-Sim `v1.6.1` 的 `libttsim_bh.so` 并通过
+  `TT_SIM_LIB_OVERRIDE=/tmp/ttsim-v1.6.1/libttsim.so` 跑同一 probe，仍命中
+  相同 `eth_txq_cmd=0x2` fatal
 
 可重复 probe：
 
@@ -281,8 +283,9 @@ mesh：
 
 该 probe 默认 source 仓库固定的 TT-Sim 环境入口、设置 Blackhole P300 mock
 cluster descriptor，先在独立 Python 子进程里确认 no-fabric `1x2` mesh
-可打开，再在另一个 Python 子进程里跑最小 `1x2` bf16 all-gather。退出码
-`0` 表示 all-gather 数值等于 host reference；当前本地预期结果是非零并打印：
+可打开，再在另一个 Python 子进程里跑最小 `1x2` bf16 all-gather、
+reduce-scatter、all-to-all。退出码 `0` 表示三种 collective 数值都等于
+host reference；当前本地预期结果是非零并打印：
 
 ```text
 probe_status=fabric_ccl_unsupported

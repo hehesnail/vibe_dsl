@@ -111,13 +111,19 @@ prerequisite of the active CCL task, not a standalone completion target.
     `TT_METAL_MOCK_CLUSTER_DESC_PATH=tt_metal_repo/tt_metal/third_party/umd/tests/cluster_descriptor_examples/blackhole_P300_both_mmio.yaml`
     lets TT-Sim open a `1x2` Blackhole mesh, and `ttnn.get_num_devices()`
     reports `2`;
-  - a minimal TTNN all-gather smoke with `ttnn.FabricConfig.FABRIC_1D` reaches
-    Fabric initialization on both simulated devices, then fails with
+  - the TTNN CCL runtime probe with `ttnn.FabricConfig.FABRIC_1D` reaches
+    Fabric initialization on both simulated devices before the first
+    all-gather step, then fails with
     `UnimplementedFunctionality: eth_txq_regs_wr32: eth_txq_cmd=0x2`;
   - `scripts/probe_tt_sim_ccl.sh` is the reusable probe for this boundary:
-    exit `0` means the minimal `1x2` bf16 all-gather runtime route is
-    numerically correct; the current expected local result is
+    exit `0` means the minimal `1x2` bf16 all-gather, reduce-scatter, and
+    all-to-all runtime routes are numerically correct; the current expected
+    local result is
     `probe_status=fabric_ccl_unsupported`;
+  - a temporary probe against upstream TT-Sim `v1.6.1` on `2026-05-18`
+    reaches the same `eth_txq_cmd=0x2` fatal, so the current blocker is not
+    removed by swapping from the local `v1.4.x`-era simulator binary to the
+    latest published Blackhole TT-Sim release;
   - running the same all-gather smoke without fabric config is not a fallback:
     it fails with `Trying to get un-initialized fabric context`;
   - `TTSIM_SEMIHOSTING=1` does not change that fabric fatal.

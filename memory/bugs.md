@@ -14,13 +14,16 @@
     `TT_METAL_MOCK_CLUSTER_DESC_PATH=tt_metal_repo/tt_metal/third_party/umd/tests/cluster_descriptor_examples/blackhole_P300_both_mmio.yaml`
     后，TT-Sim 可以打开 `1x2` Blackhole mesh，`ttnn.get_num_devices()`
     返回 `2`。
-  - 但最小 `ttnn.all_gather` smoke 设置 `FABRIC_1D` 后，Fabric 在两个
-    simulated devices 上初始化成功，随后命中 simulator fatal：
+  - 但最小 TTNN bf16 CCL probe 设置 `FABRIC_1D` 后，Fabric 在两个
+    simulated devices 上初始化成功，随后在第一个 all-gather step 命中
+    simulator fatal：
     `UnimplementedFunctionality: eth_txq_regs_wr32: eth_txq_cmd=0x2`。
   - 不设置 fabric config 时，同一 all-gather smoke 会失败于
     `Trying to get un-initialized fabric context`，不能作为 correctness
     fallback。
   - `TTSIM_SEMIHOSTING=1` 不改变该 fatal。
+  - 临时测试上游 TT-Sim `v1.6.1` 的 `libttsim_bh.so` 仍命中同一
+    `eth_txq_cmd=0x2` fatal。
 - **复现 / probe**:
   - `scripts/probe_tt_sim_ccl.sh`
   - 当前预期输出包含 `mesh_without_fabric_ok=true`、
