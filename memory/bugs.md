@@ -5,6 +5,38 @@
 
 ## 1. 当前未解决
 
+### partial-K GEMM reducer 需要 temporal wave-local output ownership 才能支持超过单波的输出 tile 网格
+
+- **现象**:
+  - `M=640,N=640,K=1024,k_shards=4`
+    对应 `20x20x4` partial-K GEMM，在 TT-Metal allocator 阶段失败：
+    `Expected number of shards 400 to be less than or equal to total number of L1 banks 130 in compute cores`。
+  - `M=320,N=416,K=1024,k_shards=4`
+    对应 `13x10x4`，可以完整执行 direct runtime 和 device partial-K
+    reductions，但结果错误：
+    `max diff ~= 107-154`、`mean diff ~= 3.4-4.7`。
+  - tile-wise 诊断显示错误集中在第二个 temporal wave：
+    logical output tile ids `110..129`，前 `0..109` 仍正确。
+  - `M=320,N=352,K=2048,k_shards=4`
+    对应 `11x10x4`，仍通过 bf16 correctness；问题不是 K 深度本身。
+- **根因 / 当前判断**:
+  - 当前 direct runtime 能 temporal 地复用 physical workers 发多波 launch，
+    但 partial-K reducer 的 sharded L1 final output / scratch ownership 仍按
+    full logical output grid 解释。
+  - 当 `logical_grid_x * logical_grid_y > physical launch cores` 时，后续
+    output tiles 复用物理 core，却没有 typed wave-local output/scratch
+    映射把“计算逻辑 tile id”和“当前波本地 L1 shard owner”分开。
+  - 这不是单纯增大 tolerances 或多跑几波可以解决的问题；需要
+    `TTProgram -> ExecutableSpec` 里显式表达 temporal output ownership、
+    scratch lifetime/range 和 final logical tile mapping。
+- **当前处理**:
+  - direct runtime 现在对该形状 fail closed，typed reason 为：
+    `partial-K GEMM reducer direct runtime requires temporal wave-local output ownership when logical output tiles exceed physical launch cores`。
+  - 已验证 `13x10x4` 不再执行错误数值，而是在 runtime 创建 device 前失败；
+    已有 `11x10x2` / small positive partial-K correctness 仍通过。
+  - 后续若要支持更大 partial-K GEMM，需要先设计 typed temporal reducer
+    ownership，不能在 runtime 里靠 full-grid sharded L1 accessor 猜。
+
 ### 当前 TT-Sim fabric path 无法完成 multi-device CCL runtime correctness
 
 - **现象**:

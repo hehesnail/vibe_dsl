@@ -173,6 +173,15 @@
   `ExecutableSpec`
   的 typed resource planning /
   admission surface。
+- Oversubscribed direct-runtime launch waves are not automatically safe for
+  every sharded-L1 protocol.  Plain per-work kernels can reuse physical cores
+  temporally when all state is wave-local, but partial-K GEMM reducers also
+  need final-output and scratch ownership to be temporal-wave-aware.  If
+  `logical_grid_x * logical_grid_y` exceeds the physical launch core count,
+  later logical output tiles reuse workers whose local L1 ownership no longer
+  matches full-grid sharded output ownership.  Until a typed wave-local
+  output/scratch mapping exists, this must be an `ExecutableSpec`
+  unsupported reason, not a runtime best-effort path.
 - CB allocation 更像寄存器分配：
   第一版优先用 live-interval / linear-scan
   模型和 arch-aware CB limits，

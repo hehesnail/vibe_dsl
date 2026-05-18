@@ -120,6 +120,20 @@ runtime invokes the typed `transport_kind` reducer to add scratch into final
 `C`.  The scratch buffer is allocated according to the plan and is released
 after the producer wave is reduced.
 
+Current direct-runtime admission additionally requires one wave of output
+tiles per producer:
+
+```text
+logical_grid[0] * logical_grid[1] <= physical launch cores
+```
+
+If a partial-K GEMM needs multiple temporal waves per producer, the executable
+must fail closed with a typed unsupported reason.  Reusing physical workers for
+later logical output tiles is not enough: sharded L1 target ownership and the
+device tile-add reducer must agree on a wave-local output/scratch mapping and
+the final logical tile mapping.  That temporal ownership protocol is not part
+of the current admitted T10.4 reducer slice.
+
 If a K-sharded GEMM reaches runtime without an admitted matching reducer plan,
 the executable must fail closed with a typed unsupported reason before
 launching.  Runtime must not fall back to the old implicit z-wave inference.
@@ -135,6 +149,8 @@ This slice is verified by:
   GEMM cases proving numerical correctness through `BlackholeModule`;
 - source/runtime guards proving partial-K direct runtime consumes a reducer
   plan and fails closed when a K-sharded GEMM has no admitted reducer plan;
+- temporal-admission guard proving multi-wave partial-K output grids fail
+  closed instead of running with incorrect later-wave tiles;
 - compile gate: `cmake --build build -j32`.
 
 ## Completion Criteria
@@ -143,4 +159,7 @@ T10.4 is complete only when the current K-sharded GEMM correctness path is
 owned by `TTReducerPlan -> ExecutableSpec.reducer_plans`, positive direct
 runtime correctness still passes for bf16 partial-K GEMM, malformed or missing
 reducer contracts fail closed, and the old implicit reducer inference is no
-longer a public runtime protocol.
+longer a public runtime protocol.  Multi-wave temporal reducer ownership is a
+future resource-planning expansion and is explicitly outside the current
+admitted direct-runtime subset until represented as typed output/scratch
+temporal ownership.

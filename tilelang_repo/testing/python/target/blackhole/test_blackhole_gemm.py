@@ -2344,6 +2344,31 @@ def test_blackhole_t5_manycore_external_k_sharded_l1_gemm_direct_runtime_partial
     )
 
 
+def test_blackhole_t10_partial_k_reducer_rejects_temporal_wave_oversubscription():
+    target = Target("blackhole")
+    kernel = external_k_sharded_l1_gemm_kernel(M=320, N=416, K=1024, k_shards=4)
+    with target:
+        artifact = lower(kernel, target=target)
+
+    device_main = artifact.device_mod["main_kernel"]
+    executable = _extract_materialized_blackhole_executable(device_main)
+    core_plan = executable["core_plan"]
+    assert int(core_plan["logical_grid_x"]) == 13
+    assert int(core_plan["logical_grid_y"]) == 10
+    assert int(core_plan["logical_grid_z"]) == 4
+    assert len(core_plan["physical_cores"]) == 110
+    assert sum(int(packet["work_count"]) for packet in core_plan["work_packets"]) == 520
+    _assert_t10_partial_k_reducer_plan(
+        executable, expected_logical_grid=[13, 10, 4]
+    )
+
+    reasons = _direct_runtime_unsupported_reasons(artifact)
+    assert (
+        "partial-K GEMM reducer direct runtime requires temporal wave-local output "
+        "ownership when logical output tiles exceed physical launch cores"
+    ) in reasons
+
+
 def test_blackhole_t10_partial_k_reducer_plan_required_for_direct_runtime():
     kernel = external_k_sharded_l1_gemm_kernel(M=64, N=64, K=128, k_shards=2)
     target = Target("blackhole")

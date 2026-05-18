@@ -5140,6 +5140,12 @@ void BlackholeModuleNode::ExecuteDirect(
         << "Blackhole partial-K direct GEMM reduction requires ascending producer order";
     ICHECK_EQ(reducer_plan->final_writer_producer, 0)
         << "Blackhole partial-K direct GEMM reduction requires producer 0 final writer";
+    const uint64_t reducer_logical_output_tiles =
+        static_cast<uint64_t>(CheckedReducerPlanGridDim(*reducer_plan, 0, "x")) *
+        static_cast<uint64_t>(CheckedReducerPlanGridDim(*reducer_plan, 1, "y"));
+    ICHECK_LE(reducer_logical_output_tiles, spec.core_plan.physical_cores.size())
+        << "Blackhole partial-K direct GEMM reduction requires temporal wave-local "
+           "output ownership when logical output tiles exceed physical launch cores";
     ICHECK_EQ(gemm.c_tensor_dtype, "Float32")
         << "Blackhole partial-K direct GEMM device reduction currently requires float32 output tensors";
     ICHECK_EQ(gemm.c_cb_dtype, "Float32")
