@@ -274,6 +274,12 @@ mesh：
 - 临时下载上游 TT-Sim `v1.6.1` 的 `libttsim_bh.so` 并通过
   `TT_SIM_LIB_OVERRIDE=/tmp/ttsim-v1.6.1/libttsim.so` 跑同一 probe，仍命中
   相同 `eth_txq_cmd=0x2` fatal
+- 上游 `tenstorrent/ttsim` public tag `v1.6.1` 只包含 README/license 等
+  文档和 release binaries；README 明确 source 未来才公开、PR 不收，所以
+  当前 checkout 不能通过 patch TT-Sim source 修这个 command
+- GitHub public issue search（`repo:tenstorrent/ttsim eth_txq`、
+  `repo:tenstorrent/ttsim CCL Blackhole`、`repo:tenstorrent/ttsim fabric`）
+  当前无命中，未找到公开 workaround
 
 可重复 probe：
 

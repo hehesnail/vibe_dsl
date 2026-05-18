@@ -24,6 +24,9 @@
   - `TTSIM_SEMIHOSTING=1` 不改变该 fatal。
   - 临时测试上游 TT-Sim `v1.6.1` 的 `libttsim_bh.so` 仍命中同一
     `eth_txq_cmd=0x2` fatal。
+  - 上游 `tenstorrent/ttsim` public tag 当前只发布二进制和文档；没有可在本地
+    patch/build 的 simulator source。公开 issue 搜索也未发现 `eth_txq` / CCL
+    / fabric workaround。
 - **复现 / probe**:
   - `scripts/probe_tt_sim_ccl.sh`
   - 当前预期输出包含 `mesh_without_fabric_ok=true`、
