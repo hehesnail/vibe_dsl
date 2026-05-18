@@ -25,21 +25,27 @@ this task.
 
 ## Ordered Work
 
-1. Prove the local runtime support boundary:
+This task is ordered as a single correctness gate.  Typed contracts,
+projection, validators, and unsupported diagnostics are prerequisites inside
+the gate; they do not close the task without positive tensor-value checks.
+
+1. `T10.1a` Prove the runtime support boundary:
    TT-Sim can create the required multi-device mesh shape and the selected
    TileLang/TT-Metal runtime route can launch a distributed collective without
-   using the legacy external runner.
-2. Add the typed CCL owner truth needed by runtime:
+   using the legacy external runner.  In the current local setup, the known
+   blocker is the TT-Sim fabric fatal during CCL command handling; a real
+   multi-device Blackhole target is an equivalent unblocker for this step.
+2. `T10.1b` Add the typed CCL owner truth needed by runtime:
    `TTCollectivePlan -> ExecutableSpec.collective_plans`, validators, and
    direct-runtime admission reasons.
-3. Add the minimum route / synchronization / launch-order records required by
-   the three admitted CCL operations.  These records are scoped to the CCL
-   positive path; wider NoC / multicast / global scheduling generalization
-   remains the next task after the correctness gate is green.
-4. Execute all-gather, reduce-scatter, and all-to-all through
+3. `T10.1c` Add the minimum route / synchronization / launch-order records
+   required by the three admitted CCL operations.  These records are scoped to
+   the CCL positive path; wider NoC / multicast / global scheduling
+   generalization remains the next task after the correctness gate is green.
+4. `T10.1d` Execute all-gather, reduce-scatter, and all-to-all through
    `BlackholeModule` on TT-Sim with bf16 inputs and compare against host
    references.
-5. Keep malformed or unsupported CCL variants fail-closed with typed
+5. `T10.1e` Keep malformed or unsupported CCL variants fail-closed with typed
    diagnostics before source/runtime guessing.
 
 ## Representation Contract

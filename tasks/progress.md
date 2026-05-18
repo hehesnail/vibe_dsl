@@ -98,9 +98,9 @@
 
 ## Next Work Queue
 
-Current ordering is correctness-first.  A typed contract or fail-closed
-projection is a prerequisite inside the active CCL task, not a standalone
-completion target.
+Current ordering is correctness-first and dependency-ordered.  A typed
+contract, projection, validator, or fail-closed diagnostic is an internal
+prerequisite of the active CCL task, not a standalone completion target.
 
 ### Current Blocker
 
@@ -118,35 +118,43 @@ completion target.
     it fails with `Trying to get un-initialized fabric context`;
   - `TTSIM_SEMIHOSTING=1` does not change that fabric fatal.
 
-  Until that simulator boundary changes, T10.1/T10.2/T10.3 can only make
-  protocol progress, not the required
-  `BlackholeModule + TT-Sim bf16 + host reference` runtime correctness claim.
+  Until that simulator boundary changes, T10.1 cannot be completed, and
+  T10.2/T10.3 must not be counted as complete or promoted as production
+  distributed work.  Protocol work may be prepared only as support for the
+  required `BlackholeModule + TT-Sim bf16 + host reference` CCL correctness
+  gate.
 
-### Active
+### Ordered Queue
 
-- `T10.1` CCL runtime correctness for all-gather, reduce-scatter, and
-  all-to-all:
-  1. prove the TT-Sim multi-device / CCL runtime support boundary;
-  2. add `TTCollectivePlan -> ExecutableSpec.collective_plans` owner truth,
-     validators, and typed admission diagnostics;
-  3. add the minimum route / synchronization / launch-order records required
-     by the admitted CCL positive path;
-  4. run all three collectives through `BlackholeModule` under TT-Sim with
-     bf16 inputs and host-reference comparisons;
-  5. keep unsupported CCL variants fail-closed before source/runtime guessing.
-
-### Queued
-
-- `T10.2` Generalize NoC / multicast / global scheduling records for remote
-  routes, semaphores, and producer/consumer timing beyond the minimal CCL
-  correctness path.
-- `T10.3` Broaden distributed runtime coverage beyond the first admitted CCL
-  shapes/topologies, preserving TT-Sim bf16 correctness gates for tensor
-  values.
-- Replace the current K-sharded GEMM blocking z-wave tile-add path with a
-  typed production reducer protocol: reducer ownership, partial-C scratch
-  placement and lifetime, semaphore IDs, remote NOC routes, transport choice,
-  accumulation order, and final writer timing.
+1. `T10.1` CCL runtime correctness for all-gather, reduce-scatter, and
+   all-to-all.  This is the active gate and closes only when all three
+   collectives pass `BlackholeModule` TT-Sim bf16 numerical comparisons
+   against host references.
+   - `T10.1a` Runtime support proof: establish a usable multi-device
+     Blackhole target for CCL, either by a TT-Sim fabric path that gets past
+     the current `eth_txq_cmd=0x2` fatal or by a real multi-device Blackhole
+     target.
+   - `T10.1b` Typed CCL owner truth: add
+     `TTCollectivePlan -> ExecutableSpec.collective_plans`, validators, and
+     typed admission diagnostics required by the positive runtime path.
+   - `T10.1c` Minimal CCL execution records: add only the route,
+     synchronization, and launch-order records needed for the admitted
+     all-gather / reduce-scatter / all-to-all cases.
+   - `T10.1d` Runtime correctness: run all three collectives through
+     `BlackholeModule` under the repository TT-Sim bf16 baseline and compare
+     outputs to host references.
+   - `T10.1e` Negative coverage: keep malformed or unsupported CCL variants
+     fail-closed before source/runtime guessing.
+2. `T10.2` Generalize NoC / multicast / global scheduling records for remote
+   routes, semaphores, and producer/consumer timing beyond the minimal CCL
+   correctness path.  This starts only after `T10.1d` is green.
+3. `T10.3` Broaden distributed runtime coverage beyond the first admitted CCL
+   shapes/topologies, preserving TT-Sim bf16 correctness gates for tensor
+   values.  This starts only after the minimal CCL path has real value checks.
+4. `T10.4` Replace the current K-sharded GEMM blocking z-wave tile-add path
+   with a typed production reducer protocol: reducer ownership, partial-C
+   scratch placement and lifetime, semaphore IDs, remote NOC routes,
+   transport choice, accumulation order, and final writer timing.
 
 ### Standing Guardrails
 
