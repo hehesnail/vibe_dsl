@@ -110,6 +110,7 @@ TIR_DEFINE_BUILTIN(pack_untilize_tile)
 TIR_DEFINE_BUILTIN(tilize_local_fragment_slice)
 TIR_DEFINE_BUILTIN(tilize_cast_fragment_slice)
 TIR_DEFINE_BUILTIN(pack_fill_fragment_to_tiled_cb)
+TIR_DEFINE_BUILTIN(generate_reduce_scaler_to_cb)
 TIR_DEFINE_BUILTIN(untilize_cb_front_tile)
 TIR_DEFINE_BUILTIN(untilize_cb_front_tile_fragment)
 TIR_DEFINE_BUILTIN(fill_fragment)
@@ -607,6 +608,12 @@ TVM_REGISTER_OP("tl.blackhole.pack_fill_fragment_to_tiled_cb")
     .add_argument("num_elements", "int", "Number of logical elements to fill")
     .add_argument("row_width", "int", "Logical row width of the destination tiled tensor")
     .add_argument("value", "float", "Scalar fill value");
+
+TVM_REGISTER_OP("tl.blackhole.generate_reduce_scaler_to_cb")
+    .set_num_inputs(2)
+    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque))
+    .add_argument("dst_cb_id", "int", "Destination CB ID")
+    .add_argument("packed_bf16_pair", "int", "Scaler value packed as two bf16 lanes");
 
 TVM_REGISTER_OP("tl.blackhole.untilize_cb_front_tile")
     .set_num_inputs(5)

@@ -125,7 +125,8 @@ class PlanTTCBAlloc : public tvm::tir::StmtExprMutator {
   /*! \brief Assign CB IDs to requirements */
   std::vector<CBConfig> AssignCBIds(const std::vector<CBRequirement>& requirements,
                                     const std::vector<bool>& referenced_requirements,
-                                    const std::vector<bool>& exclusive_requirements);
+                                    const std::vector<bool>& exclusive_requirements,
+                                    const std::vector<std::vector<bool>>& requirement_conflicts);
 
   /*! \brief Validate CB allocation constraints */
   bool Validate(const std::vector<CBConfig>& configs) const;

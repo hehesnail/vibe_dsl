@@ -1000,7 +1000,7 @@ Stmt PlanTTKernelABI::GenerateRowReductionSequence(const RowReductionMatch& matc
     if (value->cb_id >= 0) {
       ICHECK_LT(value->cb_id, static_cast<int>(cb_requirements_.size()));
       const DataType storage_dtype =
-          value->buffer.defined() ? ExactTiledCBStorageDType(value->buffer->dtype)
+          value->buffer.defined() ? ExactTiledCBStorageDType(value->buffer)
                                   : DataType::BFloat(16);
       SetRequirementPageLayout(
           value->cb_id,
@@ -1009,6 +1009,9 @@ Stmt PlanTTKernelABI::GenerateRowReductionSequence(const RowReductionMatch& matc
       auto& req = cb_requirements_.at(value->cb_id);
       req.publish_pages_per_event = logical_tiles;
       req.consume_pages_per_event = logical_tiles;
+      req.data_format =
+          value->buffer.defined() ? ExactTiledCBStorageDataFormat(value->buffer)
+                                  : "Float16_b";
     }
   };
   constrain_reduce_output_shape(&reduced);
@@ -1241,7 +1244,7 @@ Stmt PlanTTKernelABI::GenerateGuardMaskApplySequence(
     const GuardMaskApplyMatch& match) {
   ICHECK(match.dst.defined())
       << "Blackhole guard mask apply requires a destination buffer";
-  const DataType storage_dtype = ExactTiledCBStorageDType(match.dst->dtype);
+  const DataType storage_dtype = ExactTiledCBStorageDType(match.dst);
   ICHECK(storage_dtype.is_bfloat16())
       << "Blackhole guard mask apply currently admits bf16 exact-CB storage";
   ICHECK(IsSingleFullTileLogicalMatrix(match.dst))
@@ -1483,7 +1486,7 @@ Stmt PlanTTKernelABI::GenerateCopyTileSequence(const Buffer& src, const Buffer& 
   };
   const bool force_local_loop_carried =
       (IsActiveLoopCarriedBuffer(src) || IsCompletedLoopCarriedBuffer(src)) &&
-      !IsSingleFullTileLogicalMatrix(src);
+      (!IsSingleFullTileLogicalMatrix(src) || IsThreadLocalRank1RowVector(src));
   if (!force_local_loop_carried &&
       (TryCreateExactOutputLiveTiledCBValue(src, &live_value) ||
        TryCreateLiveExactTiledCBValue(src, &live_value) ||
@@ -1548,10 +1551,15 @@ Stmt PlanTTKernelABI::GenerateBinaryMaxTileSequence(const Buffer& dst, const Buf
                                                current_lowering_order_index_);
   MarkExactCBValuesOverlap({lhs_in.cb_id, rhs_in.cb_id, out.cb_id});
   ExactTileComputeEmitter emit(&stmts);
+  const bool shared_input_cb = lhs_in.cb_id >= 0 && lhs_in.cb_id == rhs_in.cb_id;
   emit.UnaryOpInitCommon(lhs_in.cb_id, out.cb_id);
   emit.Reserve(out.cb_id, out.num_tiles);
-  emit.Wait(lhs_in.cb_id, lhs_in.num_tiles);
-  emit.Wait(rhs_in.cb_id, rhs_in.num_tiles);
+  if (shared_input_cb) {
+    emit.Wait(lhs_in.cb_id, std::max(lhs_in.num_tiles, rhs_in.num_tiles));
+  } else {
+    emit.Wait(lhs_in.cb_id, lhs_in.num_tiles);
+    emit.Wait(rhs_in.cb_id, rhs_in.num_tiles);
+  }
   emit.ReconfigDataFormat(lhs_in.cb_id, rhs_in.cb_id);
   emit.EmitPackedTileLoop(out.cb_id, out.num_tiles, "tile",
                           [&](ExactTileComputeEmitter& tile_emit,
@@ -1572,9 +1580,11 @@ Stmt PlanTTKernelABI::GenerateBinaryMaxTileSequence(const Buffer& dst, const Buf
       release.defined()) {
     stmts.push_back(release);
   }
-  if (Stmt release = ReleaseExactInputAfterUse(rhs_in, current_lowering_order_index_);
-      release.defined()) {
-    stmts.push_back(release);
+  if (!shared_input_cb) {
+    if (Stmt release = ReleaseExactInputAfterUse(rhs_in, current_lowering_order_index_);
+        release.defined()) {
+      stmts.push_back(release);
+    }
   }
   emit.Push(out.cb_id, out.num_tiles);
   const bool materialize_loop_carried = ShouldMaterializeLoopCarriedExactOutput(dst);
@@ -1643,6 +1653,10 @@ Stmt PlanTTKernelABI::GenerateBinaryTileSequence(const Buffer& dst,
   const bool inplace_loop_carried_output =
       !mirror_loop_carried_transport_output && out.num_tiles == 1 &&
       IsActiveLoopCarriedExactCBValue(out) && out.cb_id == lhs_in.cb_id;
+  if (out.num_tiles > 0) {
+    lhs_in.num_tiles = std::min(lhs_in.num_tiles, out.num_tiles);
+    rhs_in.num_tiles = std::min(rhs_in.num_tiles, out.num_tiles);
+  }
   if (mirror_loop_carried_transport_output) {
     const int out_page_bytes =
         out.cb_id >= 0 && out.cb_id < static_cast<int>(cb_requirements_.size())
@@ -1716,6 +1730,32 @@ Stmt PlanTTKernelABI::GenerateBinaryTileSequence(const Buffer& dst,
                             loop_carried_alternate_state.cb_id,
                             loop_carried_second_alternate_state.cb_id});
   ExactTileComputeEmitter emit(&stmts);
+  const bool shared_input_cb = lhs_in.cb_id >= 0 && lhs_in.cb_id == rhs_in.cb_id;
+  auto emit_input_waits = [&](ExactTileComputeEmitter* target_emit) {
+    ICHECK(target_emit != nullptr);
+    if (shared_input_cb) {
+      target_emit->Wait(lhs_in.cb_id,
+                        std::max(lhs_in.num_tiles, rhs_in.num_tiles));
+    } else {
+      target_emit->Wait(lhs_in.cb_id, lhs_in.num_tiles);
+      target_emit->Wait(rhs_in.cb_id, rhs_in.num_tiles);
+    }
+  };
+  auto append_input_releases = [&](std::vector<Stmt>* target) {
+    ICHECK(target != nullptr);
+    if (Stmt release = ReleaseExactInputAfterUse(
+            lhs_in, current_lowering_order_index_);
+        release.defined()) {
+      target->push_back(release);
+    }
+    if (!shared_input_cb) {
+      if (Stmt release = ReleaseExactInputAfterUse(
+              rhs_in, current_lowering_order_index_);
+          release.defined()) {
+        target->push_back(release);
+      }
+    }
+  };
   const bool use_ping_pong_loop_carried_transport =
       mirror_loop_carried_transport_output && final_serial_iteration.defined() &&
       !active_serial_loop_vars_.empty() &&
@@ -1895,8 +1935,7 @@ Stmt PlanTTKernelABI::GenerateBinaryTileSequence(const Buffer& dst,
       stmts.push_back(reserve_writer_one);
     }
   }
-  emit.Wait(lhs_in.cb_id, lhs_in.num_tiles);
-  emit.Wait(rhs_in.cb_id, rhs_in.num_tiles);
+  emit_input_waits(&emit);
   emit.ReconfigDataFormat(lhs_in.cb_id, rhs_in.cb_id);
   emit.Append(init_op, {IntImm32(lhs_in.cb_id), IntImm32(rhs_in.cb_id)});
   auto emit_binary_tile = [&](ExactTileComputeEmitter& tile_emit,
@@ -1917,16 +1956,7 @@ Stmt PlanTTKernelABI::GenerateBinaryTileSequence(const Buffer& dst,
     emit.Append(blackhole_tile_regs_acquire(), {});
     emit_binary_tile(emit, IntImm32(0));
     emit.Append(blackhole_tile_regs_commit(), {});
-    if (Stmt release = ReleaseExactInputAfterUse(
-            lhs_in, current_lowering_order_index_);
-        release.defined()) {
-      stmts.push_back(release);
-    }
-    if (Stmt release = ReleaseExactInputAfterUse(
-            rhs_in, current_lowering_order_index_);
-        release.defined()) {
-      stmts.push_back(release);
-    }
+    append_input_releases(&stmts);
     emit.Reserve(out.cb_id, out.num_tiles);
     emit.Append(blackhole_tile_regs_wait(), {});
     emit.PackTile(out.cb_id, 0);
@@ -1937,16 +1967,7 @@ Stmt PlanTTKernelABI::GenerateBinaryTileSequence(const Buffer& dst,
                                 const PrimExpr& tile) {
         emit_binary_tile(tile_emit, tile);
       });
-    if (Stmt release = ReleaseExactInputAfterUse(
-            lhs_in, current_lowering_order_index_);
-        release.defined()) {
-      stmts.push_back(release);
-    }
-    if (Stmt release = ReleaseExactInputAfterUse(
-            rhs_in, current_lowering_order_index_);
-        release.defined()) {
-      stmts.push_back(release);
-    }
+    append_input_releases(&stmts);
   }
   if (mirror_loop_carried_transport_output) {
     Stmt push_writer_one = MakeBlackholeCall(
@@ -1956,17 +1977,11 @@ Stmt PlanTTKernelABI::GenerateBinaryTileSequence(const Buffer& dst,
         blackhole_cb_push_back(),
         {IntImm32(loop_carried_transport_publication.cb_id), IntImm32(2)});
 
-    Stmt release_lhs = ReleaseExactInputAfterUse(
-        lhs_in, current_lowering_order_index_);
-    Stmt release_rhs = ReleaseExactInputAfterUse(
-        rhs_in, current_lowering_order_index_);
-
     std::vector<Stmt> final_publish_stmts;
     ExactTileComputeEmitter final_publish_emit(&final_publish_stmts);
     final_publish_emit.BinaryOpInitCommon(lhs_in.cb_id, rhs_in.cb_id,
                                           loop_carried_transport_publication.cb_id);
-    final_publish_emit.Wait(lhs_in.cb_id, lhs_in.num_tiles);
-    final_publish_emit.Wait(rhs_in.cb_id, rhs_in.num_tiles);
+    emit_input_waits(&final_publish_emit);
     final_publish_emit.ReconfigDataFormat(lhs_in.cb_id, rhs_in.cb_id);
     final_publish_emit.Append(init_op,
                               {IntImm32(lhs_in.cb_id), IntImm32(rhs_in.cb_id)});
@@ -1975,24 +1990,19 @@ Stmt PlanTTKernelABI::GenerateBinaryTileSequence(const Buffer& dst,
         [&](ExactTileComputeEmitter& tile_emit) {
           emit_binary_tile(tile_emit, IntImm32(0));
         });
-    final_publish_emit.AppendStmt(release_lhs);
-    final_publish_emit.AppendStmt(release_rhs);
     final_publish_emit.AppendStmt(push_writer_two);
     Stmt final_publish = SeqStmt::Flatten(final_publish_stmts);
 
     std::vector<Stmt> state_update_stmts;
     ExactTileComputeEmitter state_update_emit(&state_update_stmts);
     state_update_emit.BinaryOpInitCommon(lhs_in.cb_id, rhs_in.cb_id, out.cb_id);
-    state_update_emit.Wait(lhs_in.cb_id, lhs_in.num_tiles);
-    state_update_emit.Wait(rhs_in.cb_id, rhs_in.num_tiles);
+    emit_input_waits(&state_update_emit);
     state_update_emit.ReconfigDataFormat(lhs_in.cb_id, rhs_in.cb_id);
     state_update_emit.Append(init_op,
                              {IntImm32(lhs_in.cb_id), IntImm32(rhs_in.cb_id)});
     state_update_emit.Append(blackhole_tile_regs_acquire(), {});
     emit_binary_tile(state_update_emit, IntImm32(0));
     state_update_emit.Append(blackhole_tile_regs_commit(), {});
-    state_update_emit.AppendStmt(release_lhs);
-    state_update_emit.AppendStmt(release_rhs);
     state_update_emit.Reserve(out.cb_id, out.num_tiles);
     state_update_emit.Append(blackhole_tile_regs_wait(), {});
     state_update_emit.PackTile(out.cb_id, 0);
@@ -2007,6 +2017,7 @@ Stmt PlanTTKernelABI::GenerateBinaryTileSequence(const Buffer& dst,
     } else {
       stmts.push_back(state_update);
     }
+    append_input_releases(&stmts);
   } else {
     emit.Push(out.cb_id, out.num_tiles);
   }
@@ -2083,10 +2094,15 @@ Stmt PlanTTKernelABI::GenerateBroadcastColsBinaryTileSequence(
                                                current_lowering_order_index_);
   MarkExactCBValuesOverlap({lhs_in.cb_id, rhs_in.cb_id, out.cb_id});
   ExactTileComputeEmitter emit(&stmts);
+  const bool shared_input_cb = lhs_in.cb_id >= 0 && lhs_in.cb_id == rhs_in.cb_id;
   emit.BinaryOpInitCommon(lhs_in.cb_id, rhs_in.cb_id, out.cb_id);
   emit.Reserve(out.cb_id, out.num_tiles);
-  emit.Wait(lhs_in.cb_id, lhs_in.num_tiles);
-  emit.Wait(rhs_in.cb_id, rhs_in.num_tiles);
+  if (shared_input_cb) {
+    emit.Wait(lhs_in.cb_id, std::max(lhs_in.num_tiles, rhs_in.num_tiles));
+  } else {
+    emit.Wait(lhs_in.cb_id, lhs_in.num_tiles);
+    emit.Wait(rhs_in.cb_id, rhs_in.num_tiles);
+  }
   emit.ReconfigDataFormat(lhs_in.cb_id, rhs_in.cb_id);
   emit.Append(init_op, {IntImm32(lhs_in.cb_id), IntImm32(rhs_in.cb_id)});
   emit.EmitPackedTileLoop(out.cb_id, out.num_tiles, "tile",
@@ -2105,9 +2121,11 @@ Stmt PlanTTKernelABI::GenerateBroadcastColsBinaryTileSequence(
       release.defined()) {
     stmts.push_back(release);
   }
-  if (Stmt release = ReleaseExactInputAfterUse(rhs_in, current_lowering_order_index_);
-      release.defined()) {
-    stmts.push_back(release);
+  if (!shared_input_cb) {
+    if (Stmt release = ReleaseExactInputAfterUse(rhs_in, current_lowering_order_index_);
+        release.defined()) {
+      stmts.push_back(release);
+    }
   }
   emit.Push(out.cb_id, out.num_tiles);
   const bool materialize_local_state =

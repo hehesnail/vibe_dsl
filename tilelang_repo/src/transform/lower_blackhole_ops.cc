@@ -1981,6 +1981,9 @@ std::unordered_map<std::string, Stmt> PlanTTKernelABI::BuildRecordedSegmentBodie
 	        body, logical_tile_layout_specs_by_buffer_);
 	    body = RewriteRetainedStreamInputMatmulTileOffsetsForRequirements(
 	        body, cb_requirements_);
+	    if (kind == "compute") {
+	      body = AppendSerialLoopLocalComputeOutputPops(body);
+	    }
 	    bodies.emplace(kind, body);
   }
   return bodies;
@@ -1989,6 +1992,16 @@ std::unordered_map<std::string, Stmt> PlanTTKernelABI::BuildRecordedSegmentBodie
 Array<TTKernelQueueEvent> PlanTTKernelABI::BuildRecordedSegmentQueueEvents(
     const std::string& segment_kind) const {
   Array<TTKernelQueueEvent> events;
+  const std::unordered_map<std::string, Stmt> segment_bodies =
+      BuildRecordedSegmentBodies();
+  auto body_it = segment_bodies.find(segment_kind);
+  if (body_it != segment_bodies.end() && body_it->second.defined()) {
+    for (const TTKernelQueueEvent& event :
+         CollectTypedCBQueueEventsFromEmittedStmt(body_it->second)) {
+      events.push_back(event);
+    }
+    return events;
+  }
   auto seeded = seeded_queue_events_by_kind_.find(segment_kind);
   if (seeded != seeded_queue_events_by_kind_.end()) {
     for (const TTKernelQueueEvent& event : seeded->second) {
@@ -2206,6 +2219,7 @@ PrimFunc PlanTTKernelABI::SelectComputeBuiltins(const PrimFunc& func) {
   active_serial_loop_vars_.clear();
   active_serial_loop_static_extents_.clear();
   active_serial_loop_order_ranges_.clear();
+  has_serial_loop_carried_rank1_row_state_ = false;
   serial_loop_retained_input_pop_pages_stack_.clear();
   serial_loop_retained_input_offsets_stack_.clear();
   serial_loop_terminal_transport_publications_stack_.clear();
@@ -2368,7 +2382,7 @@ void PlanTTKernelABI::LoadLogicalBufferShapes(
     register_shape(fact.target_buffer,
                    {fact.logical_element_count / fact.logical_row_width,
                     fact.logical_row_width},
-                   /*priority=*/1);
+                   /*priority=*/0);
   };
   for (const auto& [_, spec] : BuildLogicalTileLayoutSpecMap(spatial_plan)) {
     register_tile_bridge_shape(spec);
@@ -2481,6 +2495,21 @@ bool PlanTTKernelABI::IsSingleFullTileLogicalMatrix(const Buffer& buffer) const 
   return rows == kBlackholeTileRows && cols == kBlackholeTileCols;
 }
 
+bool PlanTTKernelABI::IsThreadLocalRank1RowVector(const Buffer& buffer) const {
+  if (!buffer.defined()) {
+    return false;
+  }
+  const auto [rows, cols] = GetLogicalMatrixShape(buffer);
+  if (rows <= 0 || rows > kBlackholeTileRows || cols != kBlackholeTileCols) {
+    return false;
+  }
+  auto static_shape = ExtractStaticShape(buffer->shape);
+  if (!static_shape.has_value() || static_shape.value().size() != 1U) {
+    return false;
+  }
+  return static_shape.value().front() == rows;
+}
+
 PrimFunc PlanTTKernelABI::Transform(const PrimFunc& func) {
   current_func_ = func;
   buffer_to_req_.clear();
@@ -2520,6 +2549,7 @@ PrimFunc PlanTTKernelABI::Transform(const PrimFunc& func) {
   active_serial_loop_vars_.clear();
   active_serial_loop_static_extents_.clear();
   active_serial_loop_order_ranges_.clear();
+  has_serial_loop_carried_rank1_row_state_ = false;
   serial_loop_retained_input_pop_pages_stack_.clear();
   serial_loop_retained_input_offsets_stack_.clear();
   serial_loop_terminal_transport_publications_stack_.clear();
@@ -5470,7 +5500,8 @@ Stmt PlanTTKernelABI::InitializeLoopCarriedExactLiveForms(
     }
     Buffer buffer = resolve_identity_buffer(identity);
     if (!buffer.defined() || GetStorageScope(buffer) != "blackhole.acc" ||
-        !IsSingleFullTileLogicalMatrix(buffer)) {
+        !IsSingleFullTileLogicalMatrix(buffer) ||
+        IsThreadLocalRank1RowVector(buffer)) {
       continue;
     }
     ExactTiledCBValue state_value;
@@ -5489,7 +5520,8 @@ Stmt PlanTTKernelABI::InitializeLoopCarriedExactLiveForms(
       continue;
     }
     Buffer buffer = resolve_identity_buffer(identity);
-    if (!buffer.defined() || !IsSingleFullTileLogicalMatrix(buffer)) {
+    if (!buffer.defined() || !IsSingleFullTileLogicalMatrix(buffer) ||
+        IsThreadLocalRank1RowVector(buffer)) {
       continue;
     }
 
@@ -5522,7 +5554,7 @@ Stmt PlanTTKernelABI::InitializeLoopCarriedExactLiveForms(
         BufferIdentityName(buffer) + "_loop_carried_live_form_" +
         std::to_string(next_requirement_index_);
     Buffer live_form_buffer =
-        tir::decl_buffer(buffer->shape, ExactTiledCBStorageDType(buffer->dtype),
+        tir::decl_buffer(buffer->shape, ExactTiledCBStorageDType(buffer),
                          live_form_name, GetStorageScope(buffer));
     const int live_form_cb_id = AllocateRequirementIndex(live_form_buffer, CBType::kIntermediate);
     ExactTiledCBValue initial_value;
@@ -5533,7 +5565,7 @@ Stmt PlanTTKernelABI::InitializeLoopCarriedExactLiveForms(
     PopulateExactTiledCBValueShape(buffer, &initial_value);
     RefineExactTiledCBValueShapeFromRequirement(&initial_value);
 
-    const DataType storage_dtype = ExactTiledCBStorageDType(buffer->dtype);
+    const DataType storage_dtype = ExactTiledCBStorageDType(buffer);
     SetRequirementPageLayout(live_form_cb_id,
                              kBlackholeTileRows * kBlackholeTileCols * storage_dtype.bytes(),
                              initial_value.num_tiles);
@@ -5704,6 +5736,9 @@ bool PlanTTKernelABI::IsCompletedLoopCarriedBuffer(const Buffer& buffer) const {
 
 bool PlanTTKernelABI::ShouldMaterializeLoopCarriedExactOutput(const Buffer& dst) const {
   if (IsActiveLoopCarriedBuffer(dst)) {
+    if (IsThreadLocalRank1RowVector(dst)) {
+      return true;
+    }
     if (IsSingleFullTileLogicalMatrix(dst)) {
       const FutureBufferUses future_uses =
           ClassifyFutureBufferUses(dst, current_lowering_order_index_);
@@ -5964,6 +5999,41 @@ Stmt PlanTTKernelABI::VisitStmt_(const ForNode* op) {
   active_serial_loop_order_ranges_.push_back(compute_loop_body_order_range());
   const std::unordered_set<std::string> loop_carried_identities =
       CollectLoopCarriedBufferIdentities(op->body);
+  auto buffer_is_rank1_row_state = [&](const Buffer& buffer) -> bool {
+    if (!buffer.defined() || !buffer->dtype.is_float() || buffer->dtype.bits() != 32) {
+      return false;
+    }
+    if (IsThreadLocalRank1RowVector(buffer)) {
+      return true;
+    }
+    auto static_shape = ExtractStaticShape(buffer->shape);
+    return static_shape.has_value() && static_shape.value().size() == 1U &&
+           static_shape.value().front() == kBlackholeTileRows;
+  };
+  auto identity_resolves_to_rank1_row_state = [&](const std::string& identity) -> bool {
+    if (identity.empty()) {
+      return false;
+    }
+    auto physical_it = compute_physical_buffers_by_identity_.find(identity);
+    if (physical_it != compute_physical_buffers_by_identity_.end() &&
+        buffer_is_rank1_row_state(physical_it->second)) {
+      return true;
+    }
+    auto buffer_it = buffer_by_identity_.find(identity);
+    if (buffer_it != buffer_by_identity_.end() &&
+        buffer_is_rank1_row_state(buffer_it->second)) {
+      return true;
+    }
+    return false;
+  };
+  if (active_loop_extent > 1) {
+    for (const std::string& identity : loop_carried_identities) {
+      if (identity_resolves_to_rank1_row_state(identity)) {
+        has_serial_loop_carried_rank1_row_state_ = true;
+        break;
+      }
+    }
+  }
   active_loop_carried_buffer_identity_stack_.push_back(loop_carried_identities);
   auto collect_loop_carried_transport_publication_identities = [&]() {
     std::unordered_set<std::string> identities;
@@ -6112,7 +6182,9 @@ Stmt PlanTTKernelABI::VisitStmt_(const ForNode* op) {
       const Buffer physical = ResolvePhysicalComputeBuffer(buffer);
       const Buffer state_buffer = physical.defined() ? physical : buffer;
       if (!state_buffer.defined() || GetStorageScope(state_buffer) != "blackhole.acc" ||
-          !IsSingleFullTileLogicalMatrix(state_buffer)) {
+          !IsSingleFullTileLogicalMatrix(state_buffer) ||
+          IsThreadLocalRank1RowVector(buffer) ||
+          IsThreadLocalRank1RowVector(state_buffer)) {
         continue;
       }
       const auto& loop_range = active_serial_loop_order_ranges_.back();
@@ -6210,7 +6282,9 @@ Stmt PlanTTKernelABI::VisitStmt_(const EvaluateNode* op) {
       const Buffer physical = ResolvePhysicalComputeBuffer(buffer);
       const Buffer state_buffer = physical.defined() ? physical : buffer;
       if (!state_buffer.defined() || GetStorageScope(state_buffer) != "blackhole.acc" ||
-          !IsSingleFullTileLogicalMatrix(state_buffer)) {
+          !IsSingleFullTileLogicalMatrix(state_buffer) ||
+          IsThreadLocalRank1RowVector(buffer) ||
+          IsThreadLocalRank1RowVector(state_buffer)) {
         continue;
       }
       const FutureBufferUses future_uses =

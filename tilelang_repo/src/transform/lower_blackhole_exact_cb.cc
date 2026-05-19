@@ -50,6 +50,7 @@ using tir::builtin::blackhole_cb_push_back;
 using tir::builtin::blackhole_cb_reserve_back;
 using tir::builtin::blackhole_cb_wait_front;
 using tir::builtin::blackhole_fill_fragment;
+using tir::builtin::blackhole_generate_reduce_scaler_to_cb;
 using tir::builtin::blackhole_pack_fill_fragment_to_tiled_cb;
 using tir::builtin::blackhole_tilize_cast_fragment_slice;
 using tir::builtin::blackhole_tilize_local_fragment_slice;
@@ -94,6 +95,14 @@ int CeilDivToInt(int64_t value, int64_t divisor) {
   return static_cast<int>((value + divisor - 1) / divisor);
 }
 
+bool HasStaticRank1Extent(const Array<PrimExpr>& shape, int64_t extent) {
+  if (shape.size() != 1U) {
+    return false;
+  }
+  const auto* dim = shape[0].as<IntImmNode>();
+  return dim != nullptr && dim->value == extent;
+}
+
 std::string DataTypeToDataFormatForBlackhole(DataType dtype) {
   if (dtype.is_bfloat16()) return "Float16_b";
   if (dtype.is_float16()) return "Float16";
@@ -120,7 +129,7 @@ Buffer PlanTTKernelABI::CreateEphemeralBufferLike(const Buffer& buffer,
                                                   const std::string& suffix) const {
   const std::string name =
       BufferIdentityName(buffer) + "_" + suffix + "_" + std::to_string(next_requirement_index_);
-  return tir::decl_buffer(buffer->shape, ExactTiledCBStorageDType(buffer->dtype), name,
+  return tir::decl_buffer(buffer->shape, ExactTiledCBStorageDType(buffer), name,
                           GetStorageScope(buffer));
 }
 
@@ -138,17 +147,38 @@ DataType PlanTTKernelABI::ExactTiledCBStorageDType(DataType dtype) const {
   return dtype;
 }
 
+DataType PlanTTKernelABI::ExactTiledCBStorageDType(const Buffer& buffer) const {
+  if (buffer.defined() && IsThreadLocalRank1RowVector(buffer) &&
+      buffer->dtype.is_float() && buffer->dtype.bits() == 32) {
+    return buffer->dtype;
+  }
+  if (has_serial_loop_carried_rank1_row_state_ && buffer.defined() &&
+      buffer->dtype.is_float() && buffer->dtype.bits() == 32 &&
+      HasStaticRank1Extent(buffer->shape, kBlackholeTileRows)) {
+    return buffer->dtype;
+  }
+  return ExactTiledCBStorageDType(buffer->dtype);
+}
+
+std::string PlanTTKernelABI::ExactTiledCBStorageDataFormat(DataType dtype) const {
+  return DataTypeToDataFormatForBlackhole(ExactTiledCBStorageDType(dtype));
+}
+
+std::string PlanTTKernelABI::ExactTiledCBStorageDataFormat(const Buffer& buffer) const {
+  return DataTypeToDataFormatForBlackhole(ExactTiledCBStorageDType(buffer));
+}
+
 int PlanTTKernelABI::PrepareExactTiledCBRequirement(const Buffer& buffer,
                                                     CBType type) {
   const int cb_id = AllocateRequirementIndex(buffer, type);
   ICHECK_GE(cb_id, 0);
   ICHECK_LT(cb_id, static_cast<int>(cb_requirements_.size()));
   const int num_tiles = GetLogicalBufferTileCount(buffer);
-  const DataType storage_dtype = ExactTiledCBStorageDType(buffer->dtype);
+  const DataType storage_dtype = ExactTiledCBStorageDType(buffer);
   const int tile_bytes = kBlackholeTileRows * kBlackholeTileCols * storage_dtype.bytes();
   SetRequirementPageLayout(cb_id, tile_bytes, num_tiles);
   auto& req = cb_requirements_.at(cb_id);
-  req.data_format = DataTypeToDataFormatForBlackhole(storage_dtype);
+  req.data_format = ExactTiledCBStorageDataFormat(buffer);
   req.publish_pages_per_event = std::max(req.publish_pages_per_event, num_tiles);
   req.consume_pages_per_event = std::max(req.consume_pages_per_event, num_tiles);
   return cb_id;
@@ -206,10 +236,13 @@ void PlanTTKernelABI::RefineExactTiledCBValueShapeFromRequirement(
     return;
   }
   const CBRequirement& req = cb_requirements_.at(value->cb_id);
-  const int event_tiles = std::max({req.publish_pages_per_event,
-                                    req.consume_pages_per_event,
-                                    value->num_tiles});
-  value->num_tiles = std::max(1, event_tiles);
+  const int event_tiles = std::max({1, req.publish_pages_per_event,
+                                    req.consume_pages_per_event});
+  if (req.num_pages <= event_tiles) {
+    value->num_tiles = event_tiles;
+  } else {
+    value->num_tiles = std::max(1, std::max(event_tiles, value->num_tiles));
+  }
   if (value->num_elements <= 0) {
     value->num_elements =
         static_cast<int64_t>(value->num_tiles) * kBlackholeTileRows *
@@ -235,10 +268,10 @@ void PlanTTKernelABI::RefineExactTiledCBValueShapeFromNumElements(
   }
   value->num_tiles = std::max(value->num_tiles, required_tiles);
   value->num_elements = std::max<int64_t>(value->num_elements, logical_elements);
-  ICHECK_LT(value->cb_id, static_cast<int>(cb_requirements_.size()));
-  const DataType storage_dtype =
-      value->buffer.defined() ? ExactTiledCBStorageDType(value->buffer->dtype)
-                              : DataType::BFloat(16);
+      ICHECK_LT(value->cb_id, static_cast<int>(cb_requirements_.size()));
+      const DataType storage_dtype =
+          value->buffer.defined() ? ExactTiledCBStorageDType(value->buffer)
+                                  : DataType::BFloat(16);
   SetRequirementPageLayout(
       value->cb_id,
       kBlackholeTileRows * kBlackholeTileCols * storage_dtype.bytes(),
@@ -503,11 +536,15 @@ bool PlanTTKernelABI::TryCreateExactOutputLiveTiledCBValue(const Buffer& buffer,
 bool PlanTTKernelABI::TryCreateLoopCarriedExactInputStateCBValue(
     const Buffer& buffer, ExactTiledCBValue* value) const {
   ICHECK(value != nullptr);
-  if (!buffer.defined() || !IsSingleFullTileLogicalMatrix(buffer)) {
+  if (!buffer.defined() || !IsSingleFullTileLogicalMatrix(buffer) ||
+      IsThreadLocalRank1RowVector(buffer)) {
     return false;
   }
   const Buffer physical = ResolvePhysicalComputeBuffer(buffer);
   const Buffer state_buffer = physical.defined() ? physical : buffer;
+  if (IsThreadLocalRank1RowVector(state_buffer)) {
+    return false;
+  }
   if (GetStorageScope(state_buffer) != "blackhole.acc") {
     return false;
   }
@@ -605,7 +642,8 @@ bool PlanTTKernelABI::TryCreateLoopCarriedExactOutputStateCBValue(
     const Buffer& buffer, ExactTiledCBValue* value) const {
   ICHECK(value != nullptr);
   if (!buffer.defined() || active_loop_carried_buffer_identity_stack_.empty() ||
-      active_serial_loop_order_ranges_.empty() || !IsSingleFullTileLogicalMatrix(buffer)) {
+      active_serial_loop_order_ranges_.empty() || !IsSingleFullTileLogicalMatrix(buffer) ||
+      IsThreadLocalRank1RowVector(buffer)) {
     return false;
   }
   const auto& loop_range = active_serial_loop_order_ranges_.back();
@@ -1105,9 +1143,11 @@ PlanTTKernelABI::ExactTiledCBValue PlanTTKernelABI::CreateRowReductionInputCBVal
     const Buffer& src) {
   ExactTiledCBValue live_value;
   const bool force_local_loop_carried =
-      IsActiveLoopCarriedBuffer(src) && !IsSingleFullTileLogicalMatrix(src);
+      IsActiveLoopCarriedBuffer(src) &&
+      (!IsSingleFullTileLogicalMatrix(src) || IsThreadLocalRank1RowVector(src));
   const bool prefer_completed_loop_carried_state =
-      IsCompletedLoopCarriedBuffer(src) && IsSingleFullTileLogicalMatrix(src);
+      IsCompletedLoopCarriedBuffer(src) && IsSingleFullTileLogicalMatrix(src) &&
+      !IsThreadLocalRank1RowVector(src);
   auto has_transport_backed_direct_source = [&]() {
     auto is_transport_backed_scope = [&](const Buffer& buffer) {
       if (!buffer.defined()) {
@@ -1174,10 +1214,10 @@ PlanTTKernelABI::ExactTiledCBValue PlanTTKernelABI::CreateRowReductionInputCBVal
     return true;
   };
   if (!force_local_loop_carried) {
-    if (TryCreateSelectedSourceLiveExactTiledCBValue(src, &live_value) ||
-        TryCreateExactOutputLiveTiledCBValue(src, &live_value) ||
-        (prefer_completed_loop_carried_state &&
+    if ((prefer_completed_loop_carried_state &&
          TryCreateLoopCarriedExactInputStateCBValue(src, &live_value)) ||
+        TryCreateExactOutputLiveTiledCBValue(src, &live_value) ||
+        TryCreateSelectedSourceLiveExactTiledCBValue(src, &live_value) ||
         TryCreateLiveExactTiledCBValue(src, &live_value) ||
         (!prefer_completed_loop_carried_state &&
          TryCreateLoopCarriedExactInputStateCBValue(src, &live_value))) {
@@ -1194,9 +1234,11 @@ PlanTTKernelABI::ExactTiledCBValue PlanTTKernelABI::CreateExactInputCBValue(
     const Buffer& src, const std::string& suffix) {
   ExactTiledCBValue live_value;
   const bool force_local_loop_carried =
-      IsActiveLoopCarriedBuffer(src) && !IsSingleFullTileLogicalMatrix(src);
+      IsActiveLoopCarriedBuffer(src) &&
+      (!IsSingleFullTileLogicalMatrix(src) || IsThreadLocalRank1RowVector(src));
   const bool prefer_completed_loop_carried_state =
-      IsCompletedLoopCarriedBuffer(src) && IsSingleFullTileLogicalMatrix(src);
+      IsCompletedLoopCarriedBuffer(src) && IsSingleFullTileLogicalMatrix(src) &&
+      !IsThreadLocalRank1RowVector(src);
   auto has_transport_backed_direct_source = [&]() {
     auto is_transport_backed_scope = [&](const Buffer& buffer) {
       if (!buffer.defined()) {
@@ -1266,6 +1308,7 @@ PlanTTKernelABI::ExactTiledCBValue PlanTTKernelABI::CreateExactInputCBValue(
     const Buffer physical_src = ResolvePhysicalComputeBuffer(src);
     const Buffer state_src = physical_src.defined() ? physical_src : src;
     if (!IsActiveLoopCarriedBuffer(src) || !IsSingleFullTileLogicalMatrix(src) ||
+        IsThreadLocalRank1RowVector(src) || IsThreadLocalRank1RowVector(state_src) ||
         GetStorageScope(state_src) != "blackhole.acc" || live_value.cb_id < 0) {
       return;
     }
@@ -1283,10 +1326,10 @@ PlanTTKernelABI::ExactTiledCBValue PlanTTKernelABI::CreateExactInputCBValue(
     }
   };
   if (!force_local_loop_carried) {
-    if (TryCreateSelectedSourceLiveExactTiledCBValue(src, &live_value) ||
-        TryCreateExactOutputLiveTiledCBValue(src, &live_value) ||
-        (prefer_completed_loop_carried_state &&
+    if ((prefer_completed_loop_carried_state &&
          TryCreateLoopCarriedExactInputStateCBValue(src, &live_value)) ||
+        TryCreateExactOutputLiveTiledCBValue(src, &live_value) ||
+        TryCreateSelectedSourceLiveExactTiledCBValue(src, &live_value) ||
         TryCreateLiveExactTiledCBValue(src, &live_value) ||
         (!prefer_completed_loop_carried_state &&
          TryCreateLoopCarriedExactInputStateCBValue(src, &live_value))) {
@@ -1345,15 +1388,20 @@ Stmt PlanTTKernelABI::PublishConstantToExactTiledCB(const Buffer& buffer,
                                                    const PrimExpr& fill_value,
                                                    const ExactTiledCBValue& cb_value) {
   ICHECK(cb_value.cb_id >= 0);
-  const Buffer physical_buffer = ResolvePhysicalComputeBuffer(buffer);
   std::vector<Stmt> stmts;
   stmts.push_back(MakeBlackholeCall(blackhole_cb_reserve_back(),
                                     {IntImm32(cb_value.cb_id), IntImm32(cb_value.num_tiles)}));
-  stmts.push_back(MakeBlackholeCall(
-      blackhole_pack_fill_fragment_to_tiled_cb(),
-      {physical_buffer->data, IntImm32(cb_value.cb_id), IntImm32(0),
-       IntImm32(static_cast<int>(cb_value.num_elements)),
-       IntImm32(static_cast<int>(cb_value.row_width)), fill_value}));
+  if (cb_value.reduce_scaler) {
+    stmts.push_back(MakeBlackholeCall(blackhole_generate_reduce_scaler_to_cb(),
+                                      {IntImm32(cb_value.cb_id), IntImm32(0x3F803F80)}));
+  } else {
+    const Buffer physical_buffer = ResolvePhysicalComputeBuffer(buffer);
+    stmts.push_back(MakeBlackholeCall(
+        blackhole_pack_fill_fragment_to_tiled_cb(),
+        {physical_buffer->data, IntImm32(cb_value.cb_id), IntImm32(0),
+         IntImm32(static_cast<int>(cb_value.num_elements)),
+         IntImm32(static_cast<int>(cb_value.row_width)), fill_value}));
+  }
   stmts.push_back(MakeBlackholeCall(blackhole_cb_push_back(),
                                     {IntImm32(cb_value.cb_id), IntImm32(cb_value.num_tiles)}));
   return SeqStmt::Flatten(stmts);
@@ -1366,14 +1414,16 @@ Stmt PlanTTKernelABI::PublishExactInputToTiledCB(const Buffer& src,
     return Stmt();
   }
   const bool force_local_loop_carried =
-      IsActiveLoopCarriedBuffer(src) && !IsSingleFullTileLogicalMatrix(src);
+      IsActiveLoopCarriedBuffer(src) &&
+      (!IsSingleFullTileLogicalMatrix(src) || IsThreadLocalRank1RowVector(src));
   ExactTiledCBValue live_value;
   const bool prefer_completed_loop_carried_state =
-      IsCompletedLoopCarriedBuffer(src) && IsSingleFullTileLogicalMatrix(src);
+      IsCompletedLoopCarriedBuffer(src) && IsSingleFullTileLogicalMatrix(src) &&
+      !IsThreadLocalRank1RowVector(src);
   if (!force_local_loop_carried) {
-    if (TryCreateExactOutputLiveTiledCBValue(src, &live_value) ||
-        (prefer_completed_loop_carried_state &&
+    if ((prefer_completed_loop_carried_state &&
          TryCreateLoopCarriedExactInputStateCBValue(src, &live_value)) ||
+        TryCreateExactOutputLiveTiledCBValue(src, &live_value) ||
         TryCreateLiveExactTiledCBValue(src, &live_value) ||
         (!prefer_completed_loop_carried_state &&
          TryCreateLoopCarriedExactInputStateCBValue(src, &live_value))) {
@@ -1613,7 +1663,15 @@ Stmt PlanTTKernelABI::AttachExactOutputLiveFormMarker(const Buffer& dst,
 PlanTTKernelABI::ExactTiledCBValue PlanTTKernelABI::CreatePublishedExactTiledCBValue(
     const Buffer& src, const std::string& suffix, CBType type) {
   ExactTiledCBValue value;
-  value.buffer = CreateEphemeralBufferLike(src, suffix);
+  const bool force_casted_loop_carried_row_vector = false;
+  if (force_casted_loop_carried_row_vector) {
+    const std::string name =
+        BufferIdentityName(src) + "_" + suffix + "_" + std::to_string(next_requirement_index_);
+    value.buffer = tir::decl_buffer(src->shape, ExactTiledCBStorageDType(src->dtype),
+                                    name, GetStorageScope(src));
+  } else {
+    value.buffer = CreateEphemeralBufferLike(src, suffix);
+  }
   PopulateExactTiledCBValueShape(src, &value);
   value.cb_id = PrepareExactTiledCBRequirement(value.buffer, type);
   SetRequirementPageLayout(value.cb_id,
@@ -1649,6 +1707,7 @@ PlanTTKernelABI::ExactTiledCBValue PlanTTKernelABI::CreateReduceScalerExactTiled
                            cb_value.num_tiles);
   auto& req = cb_requirements_.at(cb_value.cb_id);
   req.data_format = DataTypeToDataFormatForBlackhole(scaler_cb_dtype);
+  cb_value.reduce_scaler = true;
   return cb_value;
 }
 

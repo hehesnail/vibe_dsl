@@ -19,7 +19,7 @@
 | Foundation `T1-T7.5` | Complete | Buffer ABI, leaf compute/GEMM, sharding/materialization, exact-CB lifecycle, and admitted non-workload direct-runtime paths use typed `TTProgram -> ExecutableSpec` records or fail closed. |
 | `P0` target execution contract | Complete | Covered execution facts are owned by `TTProgram` typed fields/objects and projected once to `ExecutableSpec`; leaf consumers reject source/body/name recovery. |
 | `T8` irregular/indexed access | Complete | Indexed, sparse, ragged, paged, segmented, and grouped-feed paths use generic `AccessRegion` plus `value_expr` evidence. |
-| `P1 / T9` workload-first paths | Complete for typed workload contracts; admitted runtime subset is narrower | T9.1-T9.5 typed/source coverage remains complete and admitted bf16 direct-runtime paths include grouped/page-addressed GEMM-style routes and chunk scan.  Current flash paths that require `tilize_cast_fragment_slice` exact-CB republish fail closed on a typed TT-Sim PACR boundary instead of running to a simulator fatal, and T9.6 split-block flash decode currently stops at a `ValidateTTProgram` materialization source-live-form boundary rather than reaching runtime. |
+| `P1 / T9` workload-first paths | Complete for typed workload contracts and admitted bf16 runtime | T9.1-T9.6 typed/source coverage remains complete and admitted bf16 direct-runtime paths include grouped/page-addressed GEMM-style routes, chunk scan, seq32/64/128/256/512 MHA, GQA, paged GQA, sparse/ragged GQA, paged MLA dual-score/decode, and split-block flash decode.  These admitted flash paths now assert empty `direct_runtime_unsupported_reasons` and run positive TT-Sim value comparisons instead of using PACR/materialization fail-closed gates. |
 | `P2 / T10` collectives and reducer protocol | Complete under current local scope | Mesh / multi-device placement is typed through `TTProgram -> ExecutableSpec` and direct runtime currently fails closed for non-unit mesh placements.  Per user scope change on 2026-05-18, T10.1-T10.3 completion is defined as single-card multi-tile bf16 value semantics and local `BlackholeModule` equivalents for all-gather, reduce-scatter, and all-to-all plus typed owner truth and fail-closed unsupported forms.  T10.4 now moves partial-K GEMM reducer ownership into `TTReducerPlan -> ExecutableSpec.reducer_plans`; the direct runtime consumes the typed plan for scratch placement/lifetime, local route, transport choice, accumulation order, and final-writer timing.  Multi-device fabric CCL remains an external blocker, not the active completion gate. |
 
 ## Current Protocol Snapshot
@@ -92,21 +92,22 @@
   current TIR-derived structural indices, but consumers must not reattach it
   from names, arg kinds, helper state, or first same-buffer fallbacks.
 - Current simulator gates must also be typed by `ExecutableSpec` facts.  The
-  old T7/T9 `t_tile_mmio_wr32` classifier is gone; remaining PACR gates are
-  limited to proven simulator capability boundaries, and admitted T9.5 paths
-  publish through typed exact/live CB records rather than PACR skips.  Current
-  T9.6 split-block flash decode is a TTProgram validation boundary, not an
-  admitted runtime correctness path.
+  old T7/T9 `t_tile_mmio_wr32` classifier is gone; PACR gates are not allowed
+  for currently admitted bf16 flash-attention paths.  Seq32/64/128/256/512
+  MHA, GQA, paged GQA, sparse/ragged GQA, paged MLA dual-score/decode, and
+  split-block flash decode all publish through typed exact/live CB records
+  and run as positive direct-runtime correctness paths.
 - Direct-runtime correctness admission is part of the contract.  Runtime tests
   must not rely on broad relative tolerances to hide wrong values.  The
-  current audited unsupported boundaries are:
-  `tilize_cast_fragment_slice` CB-republish in TT-Sim
-  (`tensix_execute_pacr: intermediate_format=0 late_from_format=5`),
-  loop-carried input exact-CB `pacr count=1`, non-unit mesh / fabric paths,
-  malformed schemas, and explicit buffer/access metadata gaps.  Previously
-  audited wrong-value paths for GEMM `transpose_A`, multi-tile per-work tile
-  compute, existing-TIR TopK repeated row-reduction, and standalone leaf
-  compute copy/reduce now run as admitted positive runtime cases instead of
+  current audited unsupported boundaries are non-unit mesh / fabric paths,
+  malformed schemas, explicit buffer/access metadata gaps, TT-Sim fp16
+  capability gaps, and automatic temporal lowering for a single monolithic
+  large-K GEMM whose K extent exceeds the current safe matmul window.  The
+  former `tilize_cast_fragment_slice` and T9.6 split-block flash blockers are
+  no longer current admitted-path boundaries.  Previously audited wrong-value
+  paths for GEMM `transpose_A`, multi-tile per-work tile compute, existing-TIR
+  TopK repeated row-reduction, standalone leaf compute copy/reduce, and
+  admitted bf16 flash attention now run as positive runtime cases instead of
   publishing unsupported reasons.  Copy/direct transport runtime checks are
   exact-value gates, including page-addressed stick, ragged/segmented/indexed
   copy, worker-semaphore copy, and projected T3 reshard copies.
@@ -310,14 +311,36 @@ Current baseline:
   comparisons.  TopK value/index selection and copy-runtime selectors now also
   use exact comparisons; no Blackhole runtime correctness test keeps a
   non-zero relative tolerance.
+- Flash-attention runtime correctness:
+  `tilelang_repo/testing/python/target/blackhole/test_blackhole_flash_attention_runtime.py`
+  covers the admitted bf16 flash family through `BlackholeModule`: small
+  seq32 H1, MHA H4 seq32/64/128/256/512, GQA seq64, exact-CB partial combine,
+  T9 paged GQA, sparse/ragged GQA, paged MLA dual-score/decode, and
+  split-block decode.  Admitted paths assert empty
+  `direct_runtime_unsupported_reasons` and compare against torch/host
+  references with absolute-only gates.  Latest measured precision for the
+  main flash sweep was: seq32 H1 max/mean/p99
+  `0.011719/0.001298/0.005859`, MHA seq32
+  `0.015625/0.001396/0.007812`, MHA seq64
+  `0.015625/0.001132/0.005859`, MHA seq128
+  `0.019531/0.000990/0.003906`, MHA seq256
+  `0.027344/0.000817/0.003906`, MHA seq512
+  `0.013672/0.000740/0.002930`, GQA seq64
+  `0.011719/0.001212/0.005859`, T9 paged GQA
+  `0.015625/0.001124/0.005859`, sparse/ragged GQA
+  `0.011719/0.001273/0.005859`, paged MLA dual-score
+  `0.010296/0.001575/0.007178`, paged MLA decode
+  `0.015625/0.001191/0.005859`, and split-block decode
+  `0.009766/0.000993/0.005859`.
 - Typed unsupported coverage:
   malformed schema, missing page/address metadata, invalid exact-CB lifecycle,
   non-unit mesh placement, and current simulator capability boundaries
   fail closed before source or runtime guessing.  Current runtime-correctness
-  audit coverage keeps `tilize_cast_fragment_slice` PACR as a typed simulator
-  boundary; GEMM `transpose_A`, T3 multi-tile per-work tile compute, TopK
-  repeated row-reduction value/index selection, and standalone leaf compute
-  are now covered by positive TT-Sim runtime checks.
+  audit coverage no longer treats `tilize_cast_fragment_slice` PACR or T9.6
+  split-block materialization as admitted bf16 flash boundaries; those paths
+  are covered by positive TT-Sim runtime checks, along with GEMM
+  `transpose_A`, T3 multi-tile per-work tile compute, TopK repeated
+  row-reduction value/index selection, and standalone leaf compute.
 
 Historical checkpoint logs, exact selector counts, and patch notes belong in
 git history and `memory/`, not in this file.

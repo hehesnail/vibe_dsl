@@ -1604,12 +1604,12 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   are the same violation if they encode composite semantics.
   The fix is explicit leaf TIR sequence normalization before DAG covering.
 - For exact CB live-form republish, distinguish total CB capacity from
-  per-event lifetime and from runtime correctness admission. Seq64 flash-attn
-  uses multi-page CBs and has compile/source/spec support for one-page
-  publish/consume events, but multi-block direct-runtime correctness remains
-  behind the typed unsupported-reason metadata gate. Stage2/block64 shapes
-  that require one event to publish or consume multiple pages still need a
-  wider support contract and should fail closed.
+  per-event lifetime and from runtime correctness admission. Seq64 and the
+  current admitted extended bf16 flash-attn paths use multi-page CBs with
+  one-page publish/consume events and now run as positive direct-runtime
+  correctness gates. New shapes that require one event to publish or consume
+  multiple pages still need an explicit typed event contract rather than a
+  broad workload skip.
 - When a borrowed live source CB is copied/repacked into a new CB, pop the
   borrowed source as soon as there is no future read before the next write.
   Events at the next write boundary are a redefinition, not a consumer of the
@@ -1625,11 +1625,11 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   skipped because the reader already pushed the page, but the compute consumer
   still owns the pop when the value is not borrowed from another compute
   consumer.
-- Larger loop-carried / multi-block flash-attn direct runtime must stay gated
-  until the relevant exact-CB backedge and multi-block event-lifetime contract
-  is admitted.  Compile/source/spec stability is independent from
-  direct-runtime correctness; do not reopen a gated path by bypassing the typed
-  unsupported reason.
+- Larger loop-carried / multi-block flash-attn direct runtime must be held to
+  value correctness once the relevant exact-CB backedge and multi-block
+  event-lifetime contract is admitted.  Compile/source/spec stability is
+  independent from direct-runtime correctness; for admitted bf16 flash paths,
+  assert no unsupported reason and compare TT-Sim output to the host reference.
 - 文档收口时，
   `tasks/progress.md`
   是唯一当前状态 /
@@ -3039,3 +3039,27 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   resident-buffer identity and drops projected reshard records; do not reuse a
   physical CB across distinct logical requirement names when those names are
   part of the typed protocol.
+- 2026-05-19 physical CB FIFO front-order:
+  A non-overlapping lifetime interval is not enough to reuse a physical CB.
+  Circular buffers are FIFO queues, so a later requirement's `wait_front` can
+  still see an older requirement's live front page if the allocator only
+  reasons about name/role intervals.  `PlanTTCBAlloc` must build physical reuse
+  conflicts from typed queue events: if requirement A has live front pages, a
+  requirement B `wait_front` cannot share that physical CB until A's pages are
+  popped.  Source cleanup may collapse duplicate wait/pop/reserve events, but
+  it must preserve pops required for FIFO order.
+- 2026-05-19 flash-attn accumulator live-form precision:
+  Keep logical float32 softmax intermediates in `Float16_b` tiled CB pages for
+  ordinary admitted flash softmax state, but do not apply that rule to a
+  compute-local accumulator that is later reloaded by another
+  `clear_accum=false` GEMM or consumed as the direct fp32 output continuation.
+  That continuation must keep `Float32` live-form CB storage; otherwise paged
+  MLA dual-score can run without fatal errors while returning visibly wrong
+  values.
+- 2026-05-19 admitted flash runtime gate:
+  For current bf16 flash attention, seq32/64/128/256/512 MHA, GQA, paged GQA,
+  sparse/ragged GQA, paged MLA dual-score/decode, and split-block decode are
+  runtime correctness cases, not fail-closed simulator boundaries.  Tests
+  should assert empty `ExecutableSpec.direct_runtime_unsupported_reasons`,
+  inspect key CB dtypes/page sizes where precision depends on them, and report
+  measured absolute max/mean/p99 diffs against the host reference.

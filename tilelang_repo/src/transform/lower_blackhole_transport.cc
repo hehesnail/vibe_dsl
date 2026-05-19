@@ -237,7 +237,11 @@ static bool ShouldUseFullTileCBToDramGeometry(
   }
   if (shared_rows != kBlackholeTileRows ||
       shared_cols != kBlackholeTileCols) {
-    return false;
+    const int64_t shared_elements = shared_rows * shared_cols;
+    const int64_t tile_elements = kBlackholeTileRows * kBlackholeTileCols;
+    return shared_elements == tile_elements &&
+           global_rows == kBlackholeTileRows &&
+           global_cols == kBlackholeTileCols;
   }
   return global_rows >= kBlackholeTileRows &&
          global_cols >= kBlackholeTileCols &&
@@ -355,7 +359,9 @@ static StagedCopyTransportGeometry BuildStagedCopyTransportGeometry(
     int64_t global_cols,
     bool use_page_transport) {
   ICHECK_EQ(shared_rows % kBlackholeTileRows, 0)
-      << "Blackhole staged copy currently expects shared tile height aligned to 32";
+      << "Blackhole staged copy currently expects shared tile height aligned to 32"
+      << " for buffer " << BufferIdentityName(shared_buffer)
+      << " with shared shape [" << shared_rows << ", " << shared_cols << "]";
   if (!use_page_transport) {
     ICHECK_EQ(shared_cols % kBlackholeTileCols, 0)
         << "Blackhole staged copy currently expects shared tile width aligned to 32"
@@ -410,12 +416,12 @@ static std::pair<int64_t, int64_t> ResolveStagedCopySharedShape(
     ICHECK_GT(gemm_n, 0);
     return {gemm_m, gemm_n};
   }
+  if (logical_matrix_shape.first > 0 && logical_matrix_shape.second > 0) {
+    return logical_matrix_shape;
+  }
   if (shared_buffer->shape.size() < 2U && fallback_shape.size() >= 2U) {
     return {fallback_shape[fallback_shape.size() - 2]->value,
             fallback_shape[fallback_shape.size() - 1]->value};
-  }
-  if (logical_matrix_shape.first > 0 && logical_matrix_shape.second > 0) {
-    return logical_matrix_shape;
   }
   return ResolveStaticShape2DFromBufferOrMetadata(
       shared_buffer, fallback_shape,
@@ -1462,7 +1468,7 @@ Stmt PlanTTKernelABI::GenerateCopySequence(const BufferStoreNode* op,
         const int cb_page_bytes =
             bcast_cols_source
                 ? kBlackholeTileRows * kBlackholeTileCols *
-                      ExactTiledCBStorageDType(op->buffer->dtype).bytes()
+                      ExactTiledCBStorageDType(op->buffer).bytes()
                 : page_bytes;
         SetRequirementPageLayout(cb_id, cb_page_bytes, 1);
         RecordStagedCopyBufferBinding(op, direction);
@@ -1807,7 +1813,7 @@ PlanTTKernelABI::GetOrCreateLoopCarriedTransportPublicationValue(
 
   ExactTiledCBValue publication;
   publication.buffer =
-      tir::decl_buffer(source_buffer->shape, ExactTiledCBStorageDType(source_buffer->dtype),
+      tir::decl_buffer(source_buffer->shape, ExactTiledCBStorageDType(source_buffer),
                        identity + "_loop_carried_transport_publish",
                        GetStorageScope(source_buffer));
   PopulateExactTiledCBValueShape(source_buffer, &publication);
@@ -1843,7 +1849,7 @@ bool PlanTTKernelABI::TryGetLoopCarriedTransportPublicationValue(
       return false;
     }
     publication->buffer =
-        tir::decl_buffer(source_buffer->shape, ExactTiledCBStorageDType(source_buffer->dtype),
+        tir::decl_buffer(source_buffer->shape, ExactTiledCBStorageDType(source_buffer),
                          publication_name, GetStorageScope(source_buffer));
     PopulateExactTiledCBValueShape(source_buffer, publication);
     publication->cb_id = req_it->second;

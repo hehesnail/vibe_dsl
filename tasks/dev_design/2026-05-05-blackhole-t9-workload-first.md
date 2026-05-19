@@ -410,6 +410,11 @@ Runtime:
 - full GEMM/online-softmax flash paths that contain GEMM plus
   `reduce_tile` and `exp2_tile` / `recip_tile` must run as positive bf16
   direct-runtime correctness gates for the admitted T9.2/T9.3 shapes.
+- admitted bf16 flash paths must assert empty
+  `ExecutableSpec.direct_runtime_unsupported_reasons` and run TT-Sim value
+  comparisons for seq32/64/128/256/512 MHA, GQA, paged GQA,
+  sparse/ragged GQA, paged MLA dual-score/decode, exact-CB partial combine,
+  and split-block decode.
 - a non-softmax MLA score-only slice remains a positive direct-runtime gate so
   the T9.3 additive GEMM chain is covered independently from the full
   online-softmax decode.

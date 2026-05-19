@@ -810,31 +810,41 @@ void PlanTTKernelABI::RecordFragmentCastMaterializationPlans(
                               source_boundary_ref->index,
                               std::move(live_boundary_graph)});
 
-  auto has_live_form = [&](const std::string& name) {
+  auto live_form_name_for = [&](const TTLiveFormValueDecision& decision) {
+    const std::string base_name =
+        "live_form_" + SanitizeExactCBNameComponent(decision.logical_value);
+    for (const TTLiveFormPlan& plan : tt_live_form_plans_) {
+      if (static_cast<std::string>(plan->name) != base_name) {
+        continue;
+      }
+      if (static_cast<std::string>(plan->logical_value) == decision.logical_value &&
+          static_cast<std::string>(plan->spatial_live_value) == decision.spatial_live_value &&
+          plan->spatial_live_value_index == decision.spatial_live_value_index) {
+        return base_name;
+      }
+      return base_name + "_" +
+             SanitizeExactCBNameComponent(decision.spatial_live_value);
+    }
+    return base_name;
+  };
+  auto ensure_live_form = [&](const TTLiveFormValueDecision& decision) {
+    const std::string name = live_form_name_for(decision);
     for (const TTLiveFormPlan& plan : tt_live_form_plans_) {
       if (static_cast<std::string>(plan->name) == name) {
-        return true;
+        return name;
       }
-    }
-    return false;
-  };
-  auto push_live_form = [&](const TTLiveFormValueDecision& decision) {
-    const std::string name = "live_form_" + decision.logical_value;
-    if (has_live_form(name)) {
-      return;
     }
     tt_live_form_plans_.push_back(TTLiveFormPlan(
         String(name), String(decision.logical_value), String(decision.spatial_live_value),
         decision.spatial_live_value_index, String(kernel_name), String(decision.physical_form),
         String(decision.execution_topology), decision.physical_local_extent,
         decision.logical_element_count, String(decision.ownership_kind)));
+    return name;
   };
 
-  push_live_form(live_form_solution.source_value);
-  push_live_form(live_form_solution.target_value);
+  const std::string source_live_form = ensure_live_form(live_form_solution.source_value);
+  const std::string produced_live_form = ensure_live_form(live_form_solution.target_value);
 
-  const std::string source_live_form = live_form_solution.materialization.source_live_form;
-  const std::string produced_live_form = live_form_solution.materialization.produced_live_form;
   const std::string materialization_name = "materialize_" + source_name + "_to_" + target_name;
   bool has_materialization = false;
   for (const TTMaterializationPlan& plan : tt_materialization_plans_) {
@@ -1190,15 +1200,21 @@ void PlanTTKernelABI::RecordTiledCBLiveFormAliases(const Buffer& buffer, int cb_
     if (identity.empty()) {
       return false;
     }
+    const LoopCarriedExactCBState* existing_state =
+        FindLoopCarriedExactCBState(identity);
+    if (existing_state != nullptr) {
+      return existing_state->cb_id == cb_id;
+    }
     const Buffer physical = ResolvePhysicalComputeBuffer(candidate);
     const Buffer state_buffer = physical.defined() ? physical : candidate;
     if (!state_buffer.defined() || GetStorageScope(state_buffer) != "blackhole.acc" ||
-        !IsSingleFullTileLogicalMatrix(state_buffer)) {
+        !IsSingleFullTileLogicalMatrix(state_buffer) ||
+        IsThreadLocalRank1RowVector(candidate) ||
+        IsThreadLocalRank1RowVector(state_buffer)) {
       return false;
     }
     if (!IsActiveLoopCarriedBuffer(candidate) && !IsCompletedLoopCarriedBuffer(candidate) &&
-        !IsActiveLoopCarriedBuffer(state_buffer) && !IsCompletedLoopCarriedBuffer(state_buffer) &&
-        !HasLoopCarriedExactCBState(identity)) {
+        !IsActiveLoopCarriedBuffer(state_buffer) && !IsCompletedLoopCarriedBuffer(state_buffer)) {
       return false;
     }
     return true;
@@ -1646,8 +1662,12 @@ bool PlanTTKernelABI::TryCreateBroadcastColsSourceLiveExactTiledCBValue(
       continue;
     }
     const CBRequirement& req = cb_requirements_.at(cb_id);
+    const std::string expected_format = ExactTiledCBStorageDataFormat(buffer);
     if (req.page_size <
-        kBlackholeTileRows * kBlackholeTileCols * ExactTiledCBStorageDType(buffer->dtype).bytes()) {
+        kBlackholeTileRows * kBlackholeTileCols * ExactTiledCBStorageDType(buffer).bytes()) {
+      continue;
+    }
+    if (req.data_format != expected_format) {
       continue;
     }
     int live_order_index = -1;
@@ -1685,8 +1705,12 @@ bool PlanTTKernelABI::TryCreateBroadcastColsSourceLiveExactTiledCBValue(
       continue;
     }
     const CBRequirement& req = cb_requirements_.at(cb_id);
+    const std::string expected_format = ExactTiledCBStorageDataFormat(buffer);
     if (req.page_size <
-        kBlackholeTileRows * kBlackholeTileCols * ExactTiledCBStorageDType(buffer->dtype).bytes()) {
+        kBlackholeTileRows * kBlackholeTileCols * ExactTiledCBStorageDType(buffer).bytes()) {
+      continue;
+    }
+    if (req.data_format != expected_format) {
       continue;
     }
     populate_bcast_source_live_value(cb_id, /*borrowed_live=*/false, identity);
@@ -1694,12 +1718,16 @@ bool PlanTTKernelABI::TryCreateBroadcastColsSourceLiveExactTiledCBValue(
   }
   for (int cb_id = 0; cb_id < static_cast<int>(cb_requirements_.size()); ++cb_id) {
     const CBRequirement& req = cb_requirements_.at(cb_id);
+    const std::string expected_format = ExactTiledCBStorageDataFormat(buffer);
     if (std::find(producer_candidates.begin(), producer_candidates.end(), req.name) ==
         producer_candidates.end()) {
       continue;
     }
     if (req.page_size <
-        kBlackholeTileRows * kBlackholeTileCols * ExactTiledCBStorageDType(buffer->dtype).bytes()) {
+        kBlackholeTileRows * kBlackholeTileCols * ExactTiledCBStorageDType(buffer).bytes()) {
+      continue;
+    }
+    if (req.data_format != expected_format) {
       continue;
     }
     populate_bcast_source_live_value(cb_id, /*borrowed_live=*/false, req.name);
@@ -1712,11 +1740,12 @@ bool PlanTTKernelABI::TryCreateBroadcastColsSourceLiveExactTiledCBValue(
     }
     const int cb_id = AllocateRequirementIndex(buffer_it->second, CBType::kIntermediate);
     const int tile_bytes =
-        kBlackholeTileRows * kBlackholeTileCols * ExactTiledCBStorageDType(buffer->dtype).bytes();
+        kBlackholeTileRows * kBlackholeTileCols * ExactTiledCBStorageDType(buffer).bytes();
     SetRequirementPageLayout(cb_id, tile_bytes, 1);
     auto& req = cb_requirements_.at(cb_id);
     req.publish_pages_per_event = std::max(req.publish_pages_per_event, 1);
     req.consume_pages_per_event = std::max(req.consume_pages_per_event, 1);
+    req.data_format = ExactTiledCBStorageDataFormat(buffer);
     populate_bcast_source_live_value(cb_id, /*borrowed_live=*/false, identity);
     return true;
   }
@@ -2376,56 +2405,118 @@ Stmt PlanTTKernelABI::AppendSerialLoopLocalComputeOutputPops(
   if (!body.defined()) {
     return body;
   }
-  class Collector final : public tir::StmtExprVisitor {
+  class Rewriter final : public tir::StmtExprMutator {
    public:
-    explicit Collector(const std::vector<CBRequirement>& requirements)
+    explicit Rewriter(const std::vector<CBRequirement>& requirements)
         : requirements_(requirements),
-          pushed_pages_(requirements.size(), 0),
-          popped_pages_(requirements.size(), 0),
           locally_available_pages_(requirements.size(), 0),
-          waits_after_local_publish_(requirements.size(), 0) {}
+          waited_after_local_publish_(requirements.size(), false) {}
 
-    using tir::StmtExprVisitor::VisitExpr_;
+    using tir::StmtExprMutator::VisitExpr_;
 
-    void Collect(const Stmt& stmt) { VisitStmt(stmt); }
-
-    std::vector<int> Take() const {
-      std::vector<int> pop_pages(requirements_.size(), 0);
-      for (size_t i = 0; i < requirements_.size(); ++i) {
-        const CBRequirement& req = requirements_[i];
-        if (req.type == CBType::kInput || req.flow_class == CBFlowClass::kState) {
-          continue;
-        }
-        const int net_local_front = pushed_pages_[i] - popped_pages_[i];
-        if (net_local_front <= 0 || waits_after_local_publish_[i] <= 0) {
-          continue;
-        }
-        pop_pages[i] = net_local_front;
-      }
-      return pop_pages;
+    Stmt Rewrite(const Stmt& stmt) {
+      Stmt rewritten = VisitStmt(stmt);
+      std::vector<Stmt> stmts{rewritten};
+      AppendRemainingLocalPops(&stmts);
+      return stmts.size() == 1U ? rewritten : SeqStmt::Flatten(stmts);
     }
 
-    void VisitExpr_(const tir::CallNode* op) final {
+    Stmt VisitStmt(const Stmt& stmt) final {
+      std::vector<Stmt> prefix;
+      AppendPopBeforeLocalReuse(stmt, &prefix);
+      Stmt lowered = tir::StmtExprMutator::VisitStmt(stmt);
+      if (prefix.empty()) {
+        return lowered;
+      }
+      prefix.push_back(lowered);
+      return SeqStmt::Flatten(prefix);
+    }
+
+    PrimExpr VisitExpr_(const tir::CallNode* op) final {
       const int cb_id = StaticCBId(op);
       const int pages = StaticPages(op);
       if (cb_id >= 0 && pages > 0) {
         if (IsBlackholeOpName(op, "tl.blackhole.cb_push_back")) {
-          pushed_pages_[cb_id] += pages;
           locally_available_pages_[cb_id] += pages;
         } else if (IsBlackholeOpName(op, "tl.blackhole.cb_pop_front")) {
-          popped_pages_[cb_id] += pages;
           locally_available_pages_[cb_id] =
               std::max(0, locally_available_pages_[cb_id] - pages);
+          if (locally_available_pages_[cb_id] == 0) {
+            waited_after_local_publish_[cb_id] = false;
+          }
         } else if (IsBlackholeOpName(op, "tl.blackhole.cb_wait_front") &&
                    locally_available_pages_[cb_id] > 0) {
-          waits_after_local_publish_[cb_id] =
-              std::max(waits_after_local_publish_[cb_id], pages);
+          waited_after_local_publish_[cb_id] = true;
         }
       }
-      tir::StmtExprVisitor::VisitExpr_(op);
+      return tir::StmtExprMutator::VisitExpr_(op);
+    }
+
+    Stmt VisitStmt_(const tir::SeqStmtNode* op) final {
+      std::vector<Stmt> rewritten;
+      rewritten.reserve(op->seq.size());
+      for (const Stmt& child : op->seq) {
+        AppendPopBeforeLocalReuse(child, &rewritten);
+        Stmt lowered = VisitStmt(child);
+        if (lowered.defined()) {
+          rewritten.push_back(lowered);
+        }
+      }
+      return SeqStmt::Flatten(rewritten);
     }
 
    private:
+    bool IsEligibleLocalFront(int cb_id) const {
+      if (cb_id < 0 || cb_id >= static_cast<int>(requirements_.size())) {
+        return false;
+      }
+      const CBRequirement& req = requirements_[cb_id];
+      return req.type != CBType::kInput && req.flow_class != CBFlowClass::kState;
+    }
+
+    void AppendPopBeforeLocalReuse(const Stmt& stmt, std::vector<Stmt>* out) {
+      ICHECK(out != nullptr);
+      const int cb_id = ReserveBackCBId(stmt);
+      if (!IsEligibleLocalFront(cb_id) || locally_available_pages_[cb_id] <= 0 ||
+          !waited_after_local_publish_[cb_id]) {
+        return;
+      }
+      const int pages = locally_available_pages_[cb_id];
+      out->push_back(MakeBlackholeCall(blackhole_cb_pop_front(),
+                                       {IntImm32(cb_id), IntImm32(pages)}));
+      locally_available_pages_[cb_id] = 0;
+      waited_after_local_publish_[cb_id] = false;
+    }
+
+    void AppendRemainingLocalPops(std::vector<Stmt>* out) {
+      ICHECK(out != nullptr);
+      for (size_t i = 0; i < requirements_.size(); ++i) {
+        const int cb_id = static_cast<int>(i);
+        if (!IsEligibleLocalFront(cb_id) || locally_available_pages_[i] <= 0 ||
+            !waited_after_local_publish_[i]) {
+          continue;
+        }
+        out->push_back(MakeBlackholeCall(
+            blackhole_cb_pop_front(),
+            {IntImm32(cb_id), IntImm32(locally_available_pages_[i])}));
+        locally_available_pages_[i] = 0;
+        waited_after_local_publish_[i] = false;
+      }
+    }
+
+    int ReserveBackCBId(const Stmt& stmt) const {
+      const auto* eval = stmt.as<tir::EvaluateNode>();
+      if (eval == nullptr) {
+        return -1;
+      }
+      const auto* call = eval->value.as<tir::CallNode>();
+      if (call == nullptr ||
+          !IsBlackholeOpName(call, "tl.blackhole.cb_reserve_back")) {
+        return -1;
+      }
+      return StaticCBId(call);
+    }
+
     int StaticCBId(const tir::CallNode* op) const {
       if (op == nullptr || op->args.empty()) {
         return -1;
@@ -2447,28 +2538,12 @@ Stmt PlanTTKernelABI::AppendSerialLoopLocalComputeOutputPops(
     }
 
     const std::vector<CBRequirement>& requirements_;
-    std::vector<int> pushed_pages_;
-    std::vector<int> popped_pages_;
     std::vector<int> locally_available_pages_;
-    std::vector<int> waits_after_local_publish_;
+    std::vector<bool> waited_after_local_publish_;
   };
 
-  Collector collector(cb_requirements_);
-  collector.Collect(body);
-  const std::vector<int> pop_pages = collector.Take();
-  std::vector<Stmt> stmts;
-  stmts.push_back(body);
-  for (size_t i = 0; i < pop_pages.size(); ++i) {
-    if (pop_pages[i] > 0) {
-      stmts.push_back(MakeBlackholeCall(blackhole_cb_pop_front(),
-                                        {IntImm32(static_cast<int>(i)),
-                                         IntImm32(pop_pages[i])}));
-    }
-  }
-  if (stmts.size() == 1U) {
-    return body;
-  }
-  return SeqStmt::Flatten(stmts);
+  Rewriter rewriter(cb_requirements_);
+  return rewriter.Rewrite(body);
 }
 
 bool PlanTTKernelABI::ShouldRetainComputeInputBuffer(const Buffer& buffer,

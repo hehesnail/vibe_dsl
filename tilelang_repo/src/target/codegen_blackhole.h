@@ -210,6 +210,7 @@ class CodeGenBlackhole : public CodeGenCHost {
   void PrintTilizeLocalFragmentSlice(const tvm::tir::CallNode *op, std::ostream &os);
   void PrintTilizeCastFragmentSlice(const tvm::tir::CallNode *op, std::ostream &os);
   void PrintPackFillFragmentToTiledCB(const tvm::tir::CallNode *op, std::ostream &os);
+  void PrintGenerateReduceScalerToCB(const tvm::tir::CallNode *op, std::ostream &os);
   void PrintUntilizeCBFrontTile(const tvm::tir::CallNode *op, std::ostream &os);
   void PrintUntilizeCBFrontTileFragment(const tvm::tir::CallNode *op, std::ostream &os);
   void PrintCastFragmentSlice(const tvm::tir::CallNode *op, std::ostream &os);
@@ -251,6 +252,8 @@ class CodeGenBlackhole : public CodeGenCHost {
                                        const std::string& type_name);
   void UnregisterActiveCBWritePtrBinding(int cb_id, const std::string& var_name);
   void EmitActiveCBWritePtrRefreshes(int cb_id);
+  void MaybeEmitConsumedCBPopBeforeReserve(int cb_id);
+  void RecordEmittedCBQueueEvent(const std::string& kind, int cb_id, int pages);
   void LoadLogicalTileLayouts(const tvm::tir::PrimFunc& f);
   const LogicalTileLayoutBinding* FindLogicalTileLayoutBinding(const tvm::tir::VarNode* var) const;
   bool LogicalTileLayoutRequiresGenericBridge(const LogicalTileLayoutBinding& binding) const;
@@ -315,6 +318,9 @@ class CodeGenBlackhole : public CodeGenCHost {
   std::unordered_map<int, int> cb_id_by_requirement_index_;
   std::unordered_map<int, int> cb_num_pages_by_requirement_index_;
   std::unordered_map<int, int> cb_initial_reserve_pages_by_requirement_index_;
+  std::unordered_set<int> local_non_input_cb_ids_;
+  std::unordered_map<int, int> emitted_cb_front_pages_;
+  std::unordered_map<int, int> emitted_cb_consumed_front_pages_;
   std::unordered_map<int, std::vector<ActiveCBWritePtrBinding>> active_cb_write_ptr_bindings_;
   std::unordered_map<int, int> active_cb_allocation_reserved_pages_;
   std::unordered_map<std::string, LogicalTileLayoutBinding> logical_tile_layout_bindings_by_buffer_name_;

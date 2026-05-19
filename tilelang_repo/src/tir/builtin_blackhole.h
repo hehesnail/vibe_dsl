@@ -589,6 +589,13 @@ TVM_DLL const Op& blackhole_tilize_cast_fragment_slice();
 TVM_DLL const Op& blackhole_pack_fill_fragment_to_tiled_cb();
 
 /*!
+ * \brief Generate one TT-Metal reduce scaler tile in the reserved CB write window.
+ * \param dst_cb_id Destination CB id
+ * \param packed_bf16_pair Scaler value packed as two bf16 lanes in one u32 word
+ */
+TVM_DLL const Op& blackhole_generate_reduce_scaler_to_cb();
+
+/*!
  * \brief Untilize a tile from the current CB front window into a local fragment slice.
  * \param dst_buffer Destination local fragment buffer handle
  * \param src_cb_id Source CB id

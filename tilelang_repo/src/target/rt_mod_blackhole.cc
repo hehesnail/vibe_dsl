@@ -314,6 +314,9 @@ static std::vector<CBConfig> ExtractCBConfig(const tir::PrimFunc& f) {
 static std::vector<int64_t> ExtractIntegerVector(const ffi::Map<ffi::String, ffi::Any>& item,
                                                  const char* key);
 static bool HasPositiveIntegerShape(const std::vector<int64_t>& shape);
+static const BufferDistributionSpec* FindBufferDistributionSpec(
+    const ExecutableSpec& spec, const std::string& buffer_name);
+static std::string NormalizeMemorySpace(std::string value);
 static bool SpecHasKShardedGemmWithoutAdmittedReducerPlan(
     const ExecutableSpec& spec);
 
@@ -3172,6 +3175,24 @@ static bool HasAdmittedPartialKReducerPlanForTarget(
       });
 }
 
+static bool IsPartialKReducerEligibleTargetBuffer(
+    const ExecutableSpec& spec,
+    const std::string& target_buffer) {
+  const BufferDistributionSpec* distribution =
+      FindBufferDistributionSpec(spec, target_buffer);
+  if (distribution == nullptr) {
+    return false;
+  }
+  const std::string memory_space =
+      NormalizeMemorySpace(distribution->memory_space);
+  return (distribution->distribution_kind == "sharded" &&
+          distribution->layout == "sharded" &&
+          memory_space == "l1") ||
+         (distribution->distribution_kind == "interleaved" &&
+          distribution->layout == "interleaved" &&
+          memory_space == "dram");
+}
+
 static bool SpecHasKShardedGemmWithoutAdmittedReducerPlan(
     const ExecutableSpec& spec) {
   if (spec.core_plan.logical_grid_z <= 1) {
@@ -3182,8 +3203,11 @@ static bool SpecHasKShardedGemmWithoutAdmittedReducerPlan(
       if (!compute_op.enabled || compute_op.kind != "gemm") {
         continue;
       }
-      if (!compute_op.c_buffer.empty() &&
-          HasAdmittedPartialKReducerPlanForTarget(spec, compute_op.c_buffer)) {
+      if (compute_op.c_buffer.empty() ||
+          !IsPartialKReducerEligibleTargetBuffer(spec, compute_op.c_buffer)) {
+        continue;
+      }
+      if (HasAdmittedPartialKReducerPlanForTarget(spec, compute_op.c_buffer)) {
         continue;
       }
       return true;
@@ -3481,45 +3505,6 @@ static void EnforceComputeOnlyTerminalPublishPacrSimulatorGate(
   }
 }
 
-static bool HasLoopCarriedInputExactCBBackedgeRelease(const ExecutableSpec& spec) {
-  std::unordered_map<std::string, const ExactCBAllocationSpec*> allocation_by_name;
-  for (const ExactCBAllocationSpec& allocation : spec.exact_cb_allocations) {
-    allocation_by_name.emplace(allocation.name, &allocation);
-  }
-  std::unordered_map<uint32_t, const CBConfig*> cb_config_by_id;
-  for (const CBConfig& cb : spec.cb_configs) {
-    cb_config_by_id.emplace(cb.cb_id, &cb);
-  }
-  for (const ExactCBReleaseEventSpec& event : spec.exact_cb_release_events) {
-    if (event.reason != "loop_backedge_transfer") {
-      continue;
-    }
-    auto allocation_it = allocation_by_name.find(event.allocation);
-    if (allocation_it == allocation_by_name.end()) {
-      continue;
-    }
-    auto cb_it = cb_config_by_id.find(allocation_it->second->physical_cb_id);
-    if (cb_it == cb_config_by_id.end()) {
-      continue;
-    }
-    if (cb_it->second->role == "input") {
-      return true;
-    }
-  }
-  return false;
-}
-
-static void EnforceLoopCarriedExactCBPacrSimulatorGate(ExecutableSpec* spec) {
-  ICHECK(spec != nullptr);
-  if (!HasLoopCarriedInputExactCBBackedgeRelease(*spec)) {
-    return;
-  }
-  AppendDirectRuntimeUnsupportedReason(
-      spec,
-      "loop-carried exact-CB backedge direct runtime is gated: TT-Sim reports "
-      "tensix_execute_pacr: count=1 for the admitted compute-side pack path");
-}
-
 struct CBQueueState {
   int64_t visible_front_pages = 0;
   int64_t reserved_back_pages = 0;
@@ -3591,13 +3576,14 @@ static void EnforcePhysicalCBQueueEventGate(ExecutableSpec* spec) {
               << "capacity in " << kernel.name << " for CB " << cb_id
               << ": wait=" << pages << " capacity=" << cb.num_pages;
         } else if (!has_external_producer) {
-          ICHECK_GE(state.visible_front_pages, pages)
-              << "physical CB queue wait_front exceeds visible pages in "
-              << kernel.name << " for CB " << cb_id << ": front="
-              << state.visible_front_pages << " wait=" << pages
-              << " role=" << cb.role
-              << " external_push="
-              << (externally_produced_cb_ids.count(cb_id) != 0U);
+          if (state.visible_front_pages < pages) {
+            AppendDirectRuntimeUnsupportedReason(
+                spec,
+                "physical CB queue event contract is not admitted: wait_front exceeds "
+                "visible pages in " +
+                    kernel.name + " for CB " + std::to_string(cb_id));
+            return;
+          }
         }
       } else if (kind == "pop_front") {
         const bool has_external_producer =
@@ -3608,10 +3594,14 @@ static void EnforcePhysicalCBQueueEventGate(ExecutableSpec* spec) {
               << "capacity in " << kernel.name << " for CB " << cb_id
               << ": pop=" << pages << " capacity=" << cb.num_pages;
         } else if (!has_external_producer) {
-          ICHECK_GE(state.visible_front_pages, pages)
-              << "physical CB queue pop_front exceeds visible pages in "
-              << kernel.name << " for CB " << cb_id << ": front="
-              << state.visible_front_pages << " pop=" << pages;
+          if (state.visible_front_pages < pages) {
+            AppendDirectRuntimeUnsupportedReason(
+                spec,
+                "physical CB queue event contract is not admitted: pop_front exceeds "
+                "visible pages in " +
+                    kernel.name + " for CB " + std::to_string(cb_id));
+            return;
+          }
         }
         state.visible_front_pages =
             std::max<int64_t>(0, state.visible_front_pages - pages);
@@ -3965,8 +3955,7 @@ static void PopulateBufferMaterializationSpecs(
 
   for (const auto& plan : spec->materialization_plans) {
     if (plan.host_buffer.empty()) {
-      ICHECK(plan.publication_protocol != buffer_materialization::kPackThreadDirectStore &&
-             plan.publication_protocol != buffer_materialization::kPackTile)
+      ICHECK(plan.publication_protocol != buffer_materialization::kPackThreadDirectStore)
           << "Blackhole buffer materialization plan requires explicit host_buffer for target "
           << plan.target_buffer;
       continue;
@@ -4427,7 +4416,6 @@ ffi::Module BuildTileLangBlackhole(IRModule mod, Target target) {
     EnforceExplicitBufferRoleSchemaGate(&spec_it->second);
     EnforcePhysicalCBQueueEventGate(&spec_it->second);
     EnforceComputeOnlyTerminalPublishPacrSimulatorGate(&spec_it->second);
-    EnforceLoopCarriedExactCBPacrSimulatorGate(&spec_it->second);
   }
   for (const auto& kv : host_to_devices) {
     PopulateHostSpecFromLaunchedDevices(kv.first, kv.second, &func_info_map);
@@ -4519,7 +4507,6 @@ ffi::Module BuildTileLangBlackholeWithoutHost(IRModule mod, Target target) {
     EnforceExplicitBufferRoleSchemaGate(&spec_it->second);
     EnforcePhysicalCBQueueEventGate(&spec_it->second);
     EnforceComputeOnlyTerminalPublishPacrSimulatorGate(&spec_it->second);
-    EnforceLoopCarriedExactCBPacrSimulatorGate(&spec_it->second);
   }
   for (const auto& kv : host_to_devices) {
     PopulateHostSpecFromLaunchedDevices(kv.first, kv.second, &func_info_map);

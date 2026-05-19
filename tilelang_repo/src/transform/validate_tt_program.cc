@@ -1760,8 +1760,7 @@ void ValidateMaterializationPlans(
              "publication_protocol "
           << plan->publication_protocol;
       if (plan->publication_protocol ==
-              buffer_materialization::kPackThreadDirectStore ||
-          plan->publication_protocol == buffer_materialization::kPackTile) {
+          buffer_materialization::kPackThreadDirectStore) {
         ICHECK(!plan->host_buffer.empty())
             << "TTMaterializationPlan requires host_buffer";
       }

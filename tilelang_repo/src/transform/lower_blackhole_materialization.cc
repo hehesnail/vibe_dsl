@@ -522,11 +522,6 @@ Stmt PlanTTKernelABI::GenerateFragmentCastSequence(const FragmentCastMatch& matc
                    match.dst->dtype.is_bfloat16() && tir::is_zero(match.src_offset)) {
           pack_thread_direct_fill_value = fill_data_value_it->second;
         }
-        RecordFragmentCastMaterializationPlans(
-            match, *fact, cb_id, num_elements_expr,
-            pack_thread_direct_fill_value.defined()
-                ? buffer_materialization::kPackThreadDirectStore
-                : buffer_materialization::kTilizeCastFragmentSlice);
       }
     }
     const int64_t logical_elements = StaticIntValueOrDefault(num_elements_expr, int64_t{0});
@@ -547,6 +542,13 @@ Stmt PlanTTKernelABI::GenerateFragmentCastSequence(const FragmentCastMatch& matc
     }
   }
   if (use_tiled_republish_materialization) {
+    auto record_tiled_republish_materialization_plan =
+        [&](const std::string& publication_protocol) {
+          ICHECK(materialization_fact != nullptr)
+              << "PlanTTKernelABI requires materialization fact for tiled CB republish";
+          RecordFragmentCastMaterializationPlans(match, *materialization_fact, cb_id,
+                                                 num_elements_expr, publication_protocol);
+        };
     ExactTiledCBValue live_source;
     auto try_exact_source_live_by_fact = [&]() -> bool {
       if (materialization_fact == nullptr || materialization_fact->source_buffer.empty()) {
@@ -618,7 +620,25 @@ Stmt PlanTTKernelABI::GenerateFragmentCastSequence(const FragmentCastMatch& matc
          TryCreateLiveExactTiledCBValue(match.src, &live_source) ||
          try_live_source_from_requirement()) &&
         live_source.num_tiles == num_pages;
+    auto live_cb_matches_target_requirement = [&]() -> bool {
+      if (live_source.cb_id < 0 || cb_id < 0 ||
+          live_source.cb_id >= static_cast<int>(cb_requirements_.size()) ||
+          cb_id >= static_cast<int>(cb_requirements_.size())) {
+        return false;
+      }
+      const CBRequirement& source_req = cb_requirements_.at(live_source.cb_id);
+      const CBRequirement& target_req = cb_requirements_.at(cb_id);
+      return source_req.page_size == target_req.page_size &&
+             source_req.data_format == target_req.data_format &&
+             live_source.num_tiles == num_pages;
+    };
+    if (can_republish_from_live_cb && !pack_thread_direct_fill_value.defined() &&
+        live_cb_matches_target_requirement()) {
+      RecordTiledCBLiveFormAliases(match.dst, live_source.cb_id);
+      return Evaluate(IntImm32(0));
+    }
     if (can_republish_from_live_cb && !pack_thread_direct_fill_value.defined()) {
+      record_tiled_republish_materialization_plan(buffer_materialization::kPackTile);
       auto make_source_wait = [&]() {
         return MakeBlackholeCall(blackhole_cb_wait_front(),
                                  {IntImm32(live_source.cb_id),
@@ -703,6 +723,8 @@ Stmt PlanTTKernelABI::GenerateFragmentCastSequence(const FragmentCastMatch& matc
     stmts.push_back(MakeBlackholeCall(blackhole_cb_reserve_back(),
                                       {IntImm32(cb_id), IntImm32(num_pages)}));
     if (pack_thread_direct_fill_value.defined()) {
+      record_tiled_republish_materialization_plan(
+          buffer_materialization::kPackThreadDirectStore);
       stmts.push_back(MakeBlackholeCall(
           blackhole_pack_fill_fragment_to_tiled_cb(),
           {physical_dst->data, IntImm32(cb_id), match.dst_offset, num_elements_expr,
@@ -710,6 +732,8 @@ Stmt PlanTTKernelABI::GenerateFragmentCastSequence(const FragmentCastMatch& matc
       last_fragment_fill_value_by_buffer_identity_.erase(BufferIdentityName(match.src));
       last_fragment_fill_value_by_data_.erase(BufferDataIdentity(match.src));
     } else {
+      record_tiled_republish_materialization_plan(
+          buffer_materialization::kTilizeCastFragmentSlice);
       stmts.push_back(
           MakeBlackholeCall(tir::builtin::blackhole_tilize_cast_fragment_slice(),
                             {physical_dst->data, physical_src->data, IntImm32(cb_id),

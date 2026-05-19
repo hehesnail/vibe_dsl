@@ -427,6 +427,11 @@ void PlanTTKernelABI::ExtractGemmInfo(const CallNode* op) {
   gemm_a_req_index_ = AllocateRequirementIndex(a_region->buffer, CBType::kInput);
   gemm_b_req_index_ = AllocateRequirementIndex(b_region->buffer, CBType::kInput);
   gemm_c_req_index_ = AllocateRequirementIndex(c_region->buffer, CBType::kOutput);
+  if (gemm_c_req_index_ >= 0 &&
+      gemm_c_req_index_ < static_cast<int>(cb_requirements_.size()) &&
+      cb_requirements_[gemm_c_req_index_].type != CBType::kInput) {
+    cb_requirements_[gemm_c_req_index_].type = CBType::kOutput;
+  }
 
   auto set_requirement_fields = [&](int requirement_index, int page_size, int num_pages,
                                     const std::string& data_format) {
@@ -536,6 +541,8 @@ Stmt PlanTTKernelABI::LowerMatmulCallWithFlowAnalysis(
   bool publish_transport_out = true;
   bool preserve_out_local_state = false;
   bool output_requires_separate_compute_live_form = false;
+  bool keep_compute_only_gemm_output_cb = false;
+  bool require_float32_compute_live_form = false;
   if (IsBufferLikeExpr(op->args[2])) {
     const Buffer logical_out_buffer = NormalizeToBufferRegion(op->args[2])->buffer;
     const Buffer out_buffer = ResolvePhysicalComputeBuffer(logical_out_buffer);
@@ -607,10 +614,59 @@ Stmt PlanTTKernelABI::LowerMatmulCallWithFlowAnalysis(
       }
       return false;
     };
+    auto has_future_accumulating_gemm_output = [&](const Buffer& buffer) {
+      const VarNode* target_data = BufferDataIdentity(buffer);
+      for (const Stmt& stmt : execution_ordered_stmts_) {
+        auto order_it = stmt_order_index_by_node_.find(stmt.get());
+        const int order_index =
+            order_it != stmt_order_index_by_node_.end() ? order_it->second : -1;
+        if (order_index <= current_order_index) {
+          continue;
+        }
+        bool accumulates_same_output = false;
+        tir::PostOrderVisit(stmt, [&](const ObjectRef& node) {
+          if (accumulates_same_output) {
+            return;
+          }
+          const auto* call = node.as<CallNode>();
+          if (call == nullptr || call == op || !IsMatmulCall(call) ||
+              call->args.size() <= 9U || !IsBufferLikeExpr(call->args[2])) {
+            return;
+          }
+          const auto* clear_accum = call->args[9].as<IntImmNode>();
+          if (clear_accum == nullptr || clear_accum->value != 0) {
+            return;
+          }
+          const Buffer future_logical_out = NormalizeToBufferRegion(call->args[2])->buffer;
+          const Buffer future_out = ResolvePhysicalComputeBuffer(future_logical_out);
+          if (SameBufferIdentity(future_out, buffer) ||
+              SameBufferIdentity(future_logical_out, buffer)) {
+            accumulates_same_output = true;
+            return;
+          }
+          const VarNode* future_out_data = BufferDataIdentity(future_out);
+          const VarNode* future_logical_out_data = BufferDataIdentity(future_logical_out);
+          if (target_data != nullptr &&
+              (future_out_data == target_data || future_logical_out_data == target_data)) {
+            accumulates_same_output = true;
+          }
+        });
+        if (accumulates_same_output) {
+          return true;
+        }
+      }
+      return false;
+    };
+    const bool future_accumulating_gemm_output =
+        has_future_accumulating_gemm_output(out_buffer) ||
+        (logical_out_buffer.defined() &&
+         has_future_accumulating_gemm_output(logical_out_buffer));
+    const bool future_compute_produce =
+        has_future_compute_produce(out_buffer) ||
+        (logical_out_buffer.defined() && has_future_compute_produce(logical_out_buffer)) ||
+        future_accumulating_gemm_output;
     const bool future_compute_produce_before_direct_transport =
-        direct_transport_consumer &&
-        (has_future_compute_produce(out_buffer) ||
-         (logical_out_buffer.defined() && has_future_compute_produce(logical_out_buffer)));
+        direct_transport_consumer && future_compute_produce;
     const bool planned_output_cb_compute_consume =
         gemm_c_req_index_ >= 0 && gemm_c_req_index_ < static_cast<int>(cb_requirements_.size()) &&
         cb_requirements_.at(gemm_c_req_index_).flow_class == CBFlowClass::kRepublish &&
@@ -697,14 +753,36 @@ Stmt PlanTTKernelABI::LowerMatmulCallWithFlowAnalysis(
       preserve_out_local_state = true;
       output_requires_separate_compute_live_form = false;
     }
+    const bool compute_only_fragment_output =
+        IsUnsupportedResidualLocalScope(out_buffer) ||
+        (logical_out_buffer.defined() && IsUnsupportedResidualLocalScope(logical_out_buffer));
+    const bool output_uses_tiled_cb_live_form =
+        BufferUsesTiledCBLiveForm(out_buffer) ||
+        (logical_out_buffer.defined() && BufferUsesTiledCBLiveForm(logical_out_buffer));
     const bool compute_only_tiled_cb_output =
-        !publish_transport_out && GetStorageScope(out_buffer) == "blackhole.acc" &&
+        !publish_transport_out && compute_only_fragment_output &&
         (future_uses.has_compute_consume || future_exact_live_form_compute_consume ||
          planned_output_cb_compute_consume || planned_output_tile_compute_consume ||
-         loop_carried_output || post_merge_cast != nullptr);
+         output_uses_tiled_cb_live_form || loop_carried_output || post_merge_cast != nullptr);
     if (compute_only_tiled_cb_output && gemm_c_req_index_ >= 0 &&
         gemm_c_req_index_ < static_cast<int>(cb_requirements_.size())) {
-      const DataType storage_dtype = gemm_c_dtype_;
+      const bool compute_consume_without_fragment_cast =
+          direct_transport_consumer && future_uses.has_compute_consume &&
+          post_merge_cast == nullptr &&
+          FindBufferMaterializationFact(out_buffer) == nullptr;
+      const bool needs_float32_compute_live_form =
+          gemm_c_dtype_.is_float() && gemm_c_dtype_.bits() == 32 &&
+          (future_accumulating_gemm_output ||
+           compute_consume_without_fragment_cast ||
+           loop_carried_output);
+      require_float32_compute_live_form = needs_float32_compute_live_form;
+      DataType storage_dtype = needs_float32_compute_live_form
+                                   ? gemm_c_dtype_
+                                   : ExactTiledCBStorageDType(gemm_c_buffer_);
+      if (!needs_float32_compute_live_form &&
+          post_merge_cast != nullptr && post_merge_cast->dst.defined()) {
+        storage_dtype = ExactTiledCBStorageDType(post_merge_cast->dst);
+      }
       if (storage_dtype != gemm_c_cb_dtype_) {
         gemm_c_cb_dtype_ = storage_dtype;
         const int num_c_tiles =
@@ -751,7 +829,7 @@ Stmt PlanTTKernelABI::LowerMatmulCallWithFlowAnalysis(
       ICHECK(c_req.type != CBType::kInput)
           << "GEMM output CB requirement cannot be an input requirement";
       c_req.type = CBType::kOutput;
-    } else if (c_req.type == CBType::kOutput) {
+    } else if (c_req.type == CBType::kOutput && !keep_compute_only_gemm_output_cb) {
       c_req.type = CBType::kIntermediate;
     }
   }
@@ -759,6 +837,7 @@ Stmt PlanTTKernelABI::LowerMatmulCallWithFlowAnalysis(
   return GenerateMatmulSequence(op, retain_in0, retain_in1, publish_out,
                                 publish_transport_out, preserve_out_local_state, reacquire_in0,
                                 reacquire_in1, output_requires_separate_compute_live_form,
+                                require_float32_compute_live_form,
                                 post_merge_cast, post_merge_cast_order_index);
 }
 
@@ -771,6 +850,7 @@ Stmt PlanTTKernelABI::GenerateMatmulSequence(const CallNode* op,
                                                bool reacquire_in0,
                                                bool reacquire_in1,
                                                bool output_requires_separate_compute_live_form,
+                                               bool require_float32_compute_live_form,
                                                const FragmentCastMatch* post_merge_cast,
                                                int post_merge_cast_order_index) {
   ICHECK_GE(gemm_a_req_index_, 0);
@@ -832,7 +912,8 @@ Stmt PlanTTKernelABI::GenerateMatmulSequence(const CallNode* op,
                                            post_merge_cast, post_merge_cast_order_index,
                                            merge_with_zero_reload,
                                            can_reload_loop_carried_local_state,
-                                           output_requires_separate_compute_live_form);
+                                           output_requires_separate_compute_live_form,
+                                           require_float32_compute_live_form);
     if (logical_gemm_c_buffer.defined() && preserve_out_local_state) {
       ExactTiledCBValue live_value;
       if (TryCreateLiveExactTiledCBValue(gemm_c_buffer_, &live_value)) {
@@ -984,26 +1065,50 @@ Stmt PlanTTKernelABI::GenerateMatmulSequenceForOutputRequirement(int out_req_ind
   }
   stmts.push_back(MakeBlackholeCall(blackhole_mm_init(), mm_init_args));
 
-  // 2. Acquire tile registers
-  stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_acquire(), {}));
-
-  // 3. Wait for the full staged tile sets and execute the logical tile grid.
+  // 2. Wait for the full staged tile sets and reserve the output event.
   stmts.push_back(MakeBlackholeCall(
       blackhole_cb_wait_front(),
       {IntImm32(in0_id), IntImm32(in0_tile_offset + in0_event_tiles)}));
   stmts.push_back(MakeBlackholeCall(
       blackhole_cb_wait_front(),
       {IntImm32(in1_id), IntImm32(in1_tile_offset + in1_event_tiles)}));
+  if (reserve_out && !publish_out) {
+    stmts.push_back(MakeBlackholeCall(
+        blackhole_cb_reserve_back(),
+        {IntImm32(out_id), IntImm32(num_c_tiles)}));
+  }
 
+  // 3-8. Compute and pack one C tile per DST acquire.  This keeps the
+  // fp32-DST -> bf16-CB packer path inside the same shape used by the TTNN
+  // SDPA kernels and avoids a multi-tile PACR sequence that TT-Sim rejects.
   for (int mt = 0; mt < num_m_tiles; ++mt) {
     for (int nt = 0; nt < num_n_tiles; ++nt) {
+      if (reserve_out && publish_out) {
+        stmts.push_back(MakeBlackholeCall(
+            blackhole_cb_reserve_back(),
+            {IntImm32(out_id), IntImm32(1)}));
+      }
+      stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_acquire(), {}));
       for (int kt = 0; kt < num_k_tiles; ++kt) {
         stmts.push_back(MakeBlackholeCall(
             blackhole_matmul_tiles(),
             {IntImm32(in0_id), IntImm32(in1_id),
              IntImm32(in0_tile_offset + mt * num_k_tiles + kt),
              IntImm32(in1_tile_offset + kt * num_n_tiles + nt),
-             IntImm32(mt * num_n_tiles + nt)}));
+             IntImm32(0)}));
+      }
+      stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_commit(), {}));
+      stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_wait(), {}));
+      const int out_tile = mt * num_n_tiles + nt;
+      stmts.push_back(MakeBlackholeCall(
+          blackhole_pack_tile(),
+          {IntImm32(0), IntImm32(out_id),
+           IntImm32(publish_out ? 0 : out_tile)}));
+      stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_release(), {}));
+      if (publish_out) {
+        stmts.push_back(MakeBlackholeCall(
+            blackhole_cb_push_back(),
+            {IntImm32(out_id), IntImm32(1)}));
       }
     }
   }
@@ -1028,31 +1133,6 @@ Stmt PlanTTKernelABI::GenerateMatmulSequenceForOutputRequirement(int out_req_ind
     }
   }
 
-  // 4-5. Commit and wait
-  stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_commit(), {}));
-  stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_wait(), {}));
-
-  // 6-8. Pack and push output
-  if (reserve_out) {
-    stmts.push_back(MakeBlackholeCall(
-        blackhole_cb_reserve_back(),
-        {IntImm32(out_id), IntImm32(num_c_tiles)}));
-  }
-  for (int out_tile = 0; out_tile < num_c_tiles; ++out_tile) {
-    std::vector<PrimExpr> pack_args = {IntImm32(out_tile), IntImm32(out_id)};
-    if (!publish_out) {
-      pack_args.push_back(IntImm32(out_tile));
-    }
-    stmts.push_back(MakeBlackholeCall(blackhole_pack_tile(), pack_args));
-  }
-  if (publish_out) {
-    stmts.push_back(MakeBlackholeCall(
-        blackhole_cb_push_back(),
-        {IntImm32(out_id), IntImm32(num_c_tiles)}));
-  }
-
-  // 9. Release tile registers
-  stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_release(), {}));
   for (const Stmt& reacquire : deferred_reacquire_stmts) {
     stmts.push_back(reacquire);
   }
@@ -1295,7 +1375,8 @@ Stmt PlanTTKernelABI::GenerateMergeFragmentTilesSequence(const Buffer& dst,
       stmts.push_back(MakeBlackholeCall(blackhole_pack_reconfig_data_format(),
                                         {IntImm32(live_form_cb_id)}));
       stmts.push_back(MakeBlackholeCall(blackhole_pack_tile(),
-                                        {IntImm32(0), IntImm32(live_form_cb_id)}));
+                                        {IntImm32(0), IntImm32(live_form_cb_id),
+                                         IntImm32(tile)}));
     }
     if (live_form_cb_id < 0 && in_place_publish_reload_publication) {
       stmts.push_back(MakeBlackholeCall(blackhole_cb_pop_front(),
@@ -1309,13 +1390,15 @@ Stmt PlanTTKernelABI::GenerateMergeFragmentTilesSequence(const Buffer& dst,
       stmts.push_back(MakeBlackholeCall(blackhole_pack_reconfig_data_format(),
                                         {IntImm32(publish_cb_id)}));
       stmts.push_back(MakeBlackholeCall(blackhole_pack_tile(),
-                                        {IntImm32(0), IntImm32(publish_cb_id)}));
+                                        {IntImm32(0), IntImm32(publish_cb_id),
+                                         IntImm32(tile)}));
     }
     if (materialized_cast_cb_id >= 0) {
       stmts.push_back(MakeBlackholeCall(blackhole_pack_reconfig_data_format(),
                                         {IntImm32(materialized_cast_cb_id)}));
       stmts.push_back(MakeBlackholeCall(
-          blackhole_pack_tile(), {IntImm32(0), IntImm32(materialized_cast_cb_id)}));
+          blackhole_pack_tile(), {IntImm32(0), IntImm32(materialized_cast_cb_id),
+                                  IntImm32(tile)}));
     }
     stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_release(), {}));
   }
@@ -1497,10 +1580,8 @@ Stmt PlanTTKernelABI::GenerateMatmulSequenceWithPartialReload(int out_req_index,
                                       {IntImm32(out_id), IntImm32(num_c_tiles)}));
   }
   for (int out_tile = 0; out_tile < num_c_tiles; ++out_tile) {
-    std::vector<PrimExpr> pack_args = {IntImm32(out_tile), IntImm32(out_id)};
-    if (!publish_out) {
-      pack_args.push_back(IntImm32(out_tile));
-    }
+    std::vector<PrimExpr> pack_args = {
+        IntImm32(out_tile), IntImm32(out_id), IntImm32(out_tile)};
     stmts.push_back(MakeBlackholeCall(blackhole_pack_tile(), pack_args));
   }
   if (publish_out) {
@@ -1599,7 +1680,8 @@ Stmt PlanTTKernelABI::GenerateAccumulatingMatmulSequence(const CallNode* op,
                                                            int post_merge_cast_order_index,
                                                            bool merge_with_zero_reload,
                                                            bool reload_from_loop_carried_local_state,
-                                                           bool output_requires_separate_compute_live_form) {
+                                                           bool output_requires_separate_compute_live_form,
+                                                           bool require_float32_compute_live_form) {
   ICHECK(op != nullptr);
   ICHECK(IsUnsupportedResidualLocalScope(gemm_c_buffer_))
       << "Blackhole clear_accum=false lowering currently requires a compute-local accumulator "
@@ -1609,6 +1691,41 @@ Stmt PlanTTKernelABI::GenerateAccumulatingMatmulSequence(const CallNode* op,
   const int num_m_tiles = CeilDivToInt(gemm_m_, kBlackholeTileRows);
   const int num_n_tiles = CeilDivToInt(gemm_n_, kBlackholeTileCols);
   const int num_c_tiles = num_m_tiles * num_n_tiles;
+  Buffer logical_gemm_c_buffer_for_storage;
+  if (IsBufferLikeExpr(op->args[2])) {
+    logical_gemm_c_buffer_for_storage = NormalizeToBufferRegion(op->args[2])->buffer;
+  }
+  const bool loop_carried_accumulating_output =
+      ShouldMaterializeLoopCarriedExactOutput(gemm_c_buffer_) ||
+      IsActiveLoopCarriedBuffer(gemm_c_buffer_) ||
+      IsCompletedLoopCarriedBuffer(gemm_c_buffer_) ||
+      (logical_gemm_c_buffer_for_storage.defined() &&
+       (ShouldMaterializeLoopCarriedExactOutput(logical_gemm_c_buffer_for_storage) ||
+        IsActiveLoopCarriedBuffer(logical_gemm_c_buffer_for_storage) ||
+        IsCompletedLoopCarriedBuffer(logical_gemm_c_buffer_for_storage)));
+  const bool use_bf16_compute_only_cb_storage =
+      !publish_transport_out && (preserve_out_local_state || merge_with_zero_reload ||
+                                 post_merge_cast != nullptr ||
+                                 output_requires_separate_compute_live_form) &&
+      !require_float32_compute_live_form &&
+      !loop_carried_accumulating_output &&
+      gemm_a_dtype_.is_bfloat16() && gemm_b_dtype_.is_bfloat16() &&
+      gemm_c_dtype_.is_float() && gemm_c_dtype_.bits() == 32;
+  if (use_bf16_compute_only_cb_storage) {
+    gemm_c_cb_dtype_ = DataType::BFloat(16);
+    const int output_tile_bytes =
+        kBlackholeTileRows * kBlackholeTileCols * gemm_c_cb_dtype_.bytes();
+    CBRequirement& c_req = cb_requirements_.at(gemm_c_req_index_);
+    SetRequirementPageLayout(gemm_c_req_index_, output_tile_bytes,
+                             std::max(c_req.num_pages, num_c_tiles));
+    c_req.data_format = DataTypeToDataFormat(gemm_c_cb_dtype_);
+    if (gemm_current_compute_op_fact_index_ >= 0 &&
+        gemm_current_compute_op_fact_index_ <
+            static_cast<int>(gemm_compute_op_facts_.size())) {
+      gemm_compute_op_facts_[gemm_current_compute_op_fact_index_].c_cb_dtype =
+          gemm_c_cb_dtype_;
+    }
+  }
   const int c_tile_bytes = kBlackholeTileRows * kBlackholeTileCols * gemm_c_cb_dtype_.bytes();
   Buffer logical_gemm_c_buffer;
   if (IsBufferLikeExpr(op->args[2])) {
@@ -1906,6 +2023,31 @@ Stmt PlanTTKernelABI::GenerateAccumulatingMatmulSequence(const CallNode* op,
         use_live_reload ? live_reload_value.buffer : Buffer(),
         reload_from_loop_carried_local_state));
   }
+  if (live_form_req_index >= 0 && !materialize_live_form_to_local_state) {
+    auto record_latest_output_live_form =
+        [&](const Buffer& buffer, const std::string& identity) {
+          if (!buffer.defined()) {
+            return;
+          }
+          ExactTiledCBValue live_form_value;
+          live_form_value.buffer =
+              live_form_buffer.defined() ? live_form_buffer : buffer;
+          live_form_value.cb_id = live_form_req_index;
+          live_form_value.borrowed_live = true;
+          live_form_value.live_identity =
+              identity.empty() ? BufferIdentityName(buffer) : identity;
+          PopulateExactTiledCBValueShape(buffer, &live_form_value);
+          live_form_value.num_tiles =
+              std::max<int>(live_form_value.num_tiles, num_c_tiles);
+          RefineExactTiledCBValueShapeFromRequirement(&live_form_value);
+          RecordExactOutputLiveForm(buffer, live_form_value);
+        };
+    record_latest_output_live_form(gemm_c_buffer_, BufferIdentityName(gemm_c_buffer_));
+    if (logical_gemm_c_buffer.defined()) {
+      record_latest_output_live_form(logical_gemm_c_buffer,
+                                     BufferIdentityName(logical_gemm_c_buffer));
+    }
+  }
   if (materialize_live_form_to_local_state && !use_tiled_cb_live_form) {
     ClearSelectedSourceLiveProducer(gemm_c_buffer_);
     ClearTiledCBLiveFormAliases(gemm_c_buffer_);
@@ -1919,7 +2061,29 @@ Stmt PlanTTKernelABI::GenerateAccumulatingMatmulSequence(const CallNode* op,
       InvalidateLastFragmentFillValue(logical_gemm_c_buffer);
     }
   } else if (use_tiled_cb_live_form && !direct_zero_preclear_used_separate_live_form) {
-    RecordTiledCBLiveFormAliases(gemm_c_buffer_, live_form_req_index);
+    auto record_latest_output_live_form =
+        [&](const Buffer& buffer, const std::string& identity) {
+          if (!buffer.defined() || live_form_req_index < 0) {
+            return;
+          }
+          ExactTiledCBValue live_form_value;
+          live_form_value.buffer =
+              live_form_buffer.defined() ? live_form_buffer : buffer;
+          live_form_value.cb_id = live_form_req_index;
+          live_form_value.borrowed_live = true;
+          live_form_value.live_identity =
+              identity.empty() ? BufferIdentityName(buffer) : identity;
+          PopulateExactTiledCBValueShape(buffer, &live_form_value);
+          live_form_value.num_tiles =
+              std::max<int>(live_form_value.num_tiles, num_c_tiles);
+          RefineExactTiledCBValueShapeFromRequirement(&live_form_value);
+          RecordExactOutputLiveForm(buffer, live_form_value);
+        };
+    record_latest_output_live_form(gemm_c_buffer_, BufferIdentityName(gemm_c_buffer_));
+    if (logical_gemm_c_buffer.defined()) {
+      record_latest_output_live_form(logical_gemm_c_buffer,
+                                     BufferIdentityName(logical_gemm_c_buffer));
+    }
     if (reuse_loop_carried_live_form_cb || completed_loop_carried_output) {
       auto record_loop_carried_output_lifecycle =
           [&](const std::string& identity, const Buffer& identity_buffer) {

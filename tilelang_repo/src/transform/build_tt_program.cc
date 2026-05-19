@@ -2427,14 +2427,13 @@ Array<TTReducerPlan> BuildPartialKReducerPlans(
     const bool target_interleaved_dram =
         str(target_distribution->layout) == "interleaved" &&
         target_memory_space == "dram";
-    const bool admitted = target_sharded_l1 || target_interleaved_dram;
+    if (!target_sharded_l1 && !target_interleaved_dram) {
+      continue;
+    }
     const String route_kind =
         target_interleaved_dram
             ? String("local_same_device_interleaved_tile")
             : String("local_same_device_sharded_tile");
-    const String unsupported_reason =
-        admitted ? String("")
-                 : String("partial_k_sum_requires_sharded_l1_or_interleaved_dram_target");
     Array<Integer> logical_grid{
         Integer(core_group->logical_grid_x),
         Integer(core_group->logical_grid_y),
@@ -2464,8 +2463,7 @@ Array<TTReducerPlan> BuildPartialKReducerPlans(
         String("ascending_producer_id"),
         String("producer_0_writes_final_then_later_producers_reduce"),
         /*final_writer_producer=*/0, Array<Integer>(), Array<Integer>(),
-        Array<Integer>(), admitted ? String("admitted") : String("unsupported"),
-        unsupported_reason));
+        Array<Integer>(), String("admitted"), String("")));
   }
   return reducer_plans;
 }

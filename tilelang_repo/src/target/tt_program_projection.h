@@ -134,8 +134,13 @@ inline Array<Any> EncodeTTKernelQueueEvents(
     return events;
   }
 
-  const std::unordered_map<int64_t, int64_t> physical_cb_by_requirement_index =
-      BuildPhysicalCBIdByRequirementIndex(cb_plans);
+  std::unordered_set<int64_t> physical_cb_ids;
+  for (const TTCBPlan &cb : cb_plans) {
+    ICHECK_GE(cb->cb_id, 0)
+        << "TTProgram CB queue projection requires physical cb_id for "
+        << cb->name;
+    physical_cb_ids.insert(cb->cb_id);
+  }
   for (const TTKernelQueueEvent &queue_event : kernel->queue_events) {
     ICHECK(IsValidKernelQueueEventKind(queue_event->kind))
         << "TTProgram CB queue event projection found invalid event kind "
@@ -145,11 +150,10 @@ inline Array<Any> EncodeTTKernelQueueEvents(
         << "TTProgram CB queue event projection requires non-negative cb_id";
     ICHECK_GT(queue_event->pages, 0)
         << "TTProgram CB queue event projection requires positive page count";
-
-    auto remap_it = physical_cb_by_requirement_index.find(cb_id);
-    if (remap_it != physical_cb_by_requirement_index.end()) {
-      cb_id = remap_it->second;
-    }
+    ICHECK(physical_cb_ids.count(cb_id) != 0U)
+        << "TTProgram CB queue event projection requires refreshed physical "
+           "cb_id, got "
+        << cb_id << " in kernel " << kernel->name;
 
     Map<String, Any> event;
     event.Set("kind", queue_event->kind);

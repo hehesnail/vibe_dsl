@@ -1179,6 +1179,15 @@ LogicalTileLayoutInfo DeriveThreadLocalComputeLayout(
     info.inverse_logical_index_exprs.push_back(IntImm(DataType::Int(32), 0));
     return info;
   }
+  if (layout_shape.size() == 1U && metadata.shape.size() == 1U &&
+      layout_shape[0] == metadata.shape[0] && layout_shape[0] <= 32) {
+    info.logical_shape.push_back(IntImm(DataType::Int(32), layout_shape[0]));
+    info.logical_shape.push_back(IntImm(DataType::Int(32), 32));
+    info.inverse_logical_index_exprs.push_back(local_index);
+    info.inverse_logical_index_exprs.push_back(thread_index);
+    info.inverse_logical_index_exprs.push_back(IntImm(DataType::Int(32), 0));
+    return info;
+  }
   if (layout_shape.size() == 2U) {
     info.logical_shape.push_back(IntImm(DataType::Int(32), layout_shape[0]));
     info.logical_shape.push_back(IntImm(DataType::Int(32), layout_shape[1]));

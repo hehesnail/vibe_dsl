@@ -63,39 +63,6 @@
     还是 TileLang target contract 回归，再继续分析
   - 当前已确认 `fp16` unpack 只是其中一个显式 gate，不是唯一约束面
 
-### `tilize_cast_fragment_slice` CB republish 在当前 TT-Sim 上会 PACR fatal
-
-- **现象**:
-  - bf16 flash-attn / paged decode 等路径能投出 typed
-    `TTMaterializationPlan` / `ExecutableSpec.materialization_plans`：
-    `materialization_protocol=cb_republish`，
-    `publication_protocol=tilize_cast_fragment_slice`。
-  - 若 direct runtime 放行，当前 TT-Sim 会在执行时进程级 fatal：
-    `UnsupportedFunctionality: tensix_execute_pacr: intermediate_format=0 late_from_format=5`。
-- **当前结论**:
-  - 这不是精度容差问题；不能让测试跑到 simulator fatal，也不能把该路径算作
-    runtime correctness 正例。
-  - admission gate 应基于 typed materialization records，而不是 workload 名字。
-  - 当前 direct runtime 通过
-    `ExecutableSpec.direct_runtime_unsupported_reasons`
-    fail closed：
-    `tilize_cast_fragment_slice CB-republish direct runtime is gated: TT-Sim reports tensix_execute_pacr: intermediate_format=0 late_from_format=5 for the current fragment publication path`。
-  - 后续若 TT-Sim / TT-Metal API 支持该 PACR 形态，删除 gate 前必须先恢复
-    small MHA / GQA / paged decode runtime correctness 正向数值比较。
-
-### T9.6 split-block flash decode 当前停在 TTProgram materialization validator
-
-- **现象**:
-  - `test_blackhole_t9_split_block_flash_decode_bf16_direct_runtime`
-    当前 lower 阶段触发：
-    `TTMaterializationPlan source_live_form must refer to boundary source_live_value`
-    (`live_carry_acc_s_6` vs `live_carry_acc_s_12`)。
-- **当前结论**:
-  - 该 case 还没有进入 direct runtime / TT-Sim 数值比较；不能把它纳入
-    runtime correctness admitted set。
-  - 这是 TTProgram materialization-boundary owner-truth 问题，不应通过
-    Python skip 或 runtime arg 猜测兜底。
-
 ### 单个 monolithic `T.gemm` 的超大 K 仍需要自动 temporal K lowering
 
 - **现象**:
@@ -116,40 +83,19 @@
     时，必须新增自动 temporal K lowering / partial reload guard，不能把
     当前 explicit `k_tile` 路径当成该能力已经完成。
 
-### loop-carried input exact-CB backedge 在 TT-Sim 上需要 typed `pacr count=1` gate
-
-- **现象**:
-  - bf16 flash-attn seq128/256/512 source/spec 已能投出 loop-carried
-    exact-CB virtual value、interval、allocation、release event，但 direct
-    runtime 在当前 TT-Sim 上会进程级 fatal：
-    `UnimplementedFunctionality: tensix_execute_pacr: count=1`
-  - seq64 accumulator-only loop-carried exact-CB state 仍能 direct runtime
-    正确执行，不应被同一个 gate 误伤
-- **当前结论**:
-  - admission gate 应看 typed ExecutableSpec：只有
-    `loop_backedge_transfer` release 对应 input-role physical CB 时才加
-    simulator boundary reason
-  - 不要用 workload 名字、buffer 名字或 Python test skip 来兜底；先证明
-    exact-CB lifecycle/source/spec admission，再由 runtime metadata 暴露 typed
-    simulator reason
-  - 如果后续 TT-Sim 支持该 PACR 形态，删除这个 gate 时要保留 seq64 正例和
-    seq128/256/512 source/spec exact-CB metadata 断言
-
 ### TT-Sim 上的较大 `float16` flash-attn runtime 属于 simulator fp16 boundary
 
 - **现象**:
-  - `flash-attn` small bf16 MHA direct runtime 已能真实执行并和 reference 对齐
+  - 当前 bf16 flash-attn direct runtime 已覆盖 small / MHA / GQA /
+    paged / sparse / MLA / split-block admitted subset，并和 reference 对齐。
   - 但较大 `float16` MHA case 在当前 TT-Sim 上仍会命中
     `UntestedFunctionality: tensix_execute_unpacr: fp16`
 - **根因**:
   - 失败点来自 simulator 自身对该 `fp16` 执行路径的能力边界，
     不是 `direct_runtime_unsupported_reasons`
 - **当前结论**:
-  - 现阶段应把 small bf16 runtime case 当作 correctness gate
+  - 现阶段应把 bf16 runtime suite 当作 correctness gate
   - 不要把 TT-Sim `float16` 能力边界直接误判成 TileLang target contract 回归
-  - 更宽 `MHA / GQA` / 大 shape runtime payoff
-    当前不属于第一性原理收口集；
-    归到后续 support-surface / workload payoff backlog
   - 该问题的 simulator-side 旁证和更宽 fatal taxonomy 扫描，
     统一见 `memory/tt_simulator_constraints.md`
 
@@ -272,6 +218,61 @@
     不能进入生产 compute op 协议
 
 ## 2. 已解决但值得记住的模式
+
+### flash-attn admitted runtime 不能长期停在 PACR / materialization gate
+
+- **症状**:
+  - seq64 MHA、exact-CB partial-combine、extended seq128/256/512 MHA、
+    paged GQA、sparse/ragged GQA、paged MLA、split-block decode 曾分别被
+    `tilize_cast_fragment_slice` PACR、loop-carried exact-CB PACR、或
+    `TTMaterializationPlan source_live_form` validator 边界挡住。
+- **修复模式**:
+  - 不把这些当前 scope 的 admitted bf16 flash 路径继续写成
+    `direct_runtime_unsupported_reasons`；修 typed CB lifecycle、source
+    queue events、materialization live-form ownership 和 runtime execution
+    path，直到它们进入 TT-Sim 数值比较。
+  - 测试里要同时断言 admitted flash executable 没有 unsupported reason，
+    并运行 `BlackholeModule` bf16 direct runtime 对 host/torch reference。
+- **验证**:
+  - `test_blackhole_flash_attention_runtime.py` 全文件通过，覆盖 44 个
+    bf16 direct-runtime flash-attention case。
+
+### Physical CB reuse 必须尊重 FIFO front-order，不只是 lifetime interval
+
+- **症状**:
+  - paged GQA decode 曾在 TT-Sim 命中
+    `UnsupportedFunctionality: tensix_execute_gmpool: src_b_val=0x0 must be 1.0f`。
+  - 根因不是 reducer 数值或 page-size 本身，而是两个不同 logical
+    requirement 被分配到同一个 physical CB 后，后来的 `wait_front`
+    读到了仍在队首的旧 binary-output page，而不是新 scaler page。
+- **修复模式**:
+  - `PlanTTCBAlloc` 的 physical reuse conflict 要重放 queue-event
+    front-order：当 requirement A 还有 live front pages 时，requirement B
+    的 `wait_front` 不能和 A 复用同一个 physical CB。
+  - cleanup pass 可以删除空 cleanup wait/pop、合并重复 queue events，但不能
+    删除解决 FIFO 顺序的必要 pop。
+- **验证**:
+  - paged GQA、sparse/ragged GQA、paged MLA、split-block decode 都进入
+    正向 TT-Sim correctness；不再靠 broad CB over-allocation 绕过。
+
+### Float32 accumulator continuation 不能被默认压成 bf16 live form
+
+- **症状**:
+  - paged MLA dual-score 在 TT-Sim 上可运行但数值错，曾测到 max abs diff
+    `0.05773735046386719`、mean abs diff `0.006195078603923321`。
+  - 第一段 GEMM 的 clear-accum live form 被投成 `Float16_b` CB，第二段
+    `clear_accum=false` GEMM reload 后把 final fp32 accumulator 的连续性
+    打断。
+- **修复模式**:
+  - 对会被后续 accumulating GEMM 继续写入、或被 direct fp32 output
+    continuation 消费的 compute-local accumulator，live-form CB 必须保持
+    `Float32`。
+  - 不能把这条规则泛化到所有 flash softmax 内部状态；内部 bf16-published
+    softmax state 仍要维持当前已验证的 `Float16_b` 路径。
+- **验证**:
+  - paged MLA dual-score 修复后 max/mean/p99 abs diff 为
+    `0.010296/0.001575/0.007178`，并和 split-block decode 一起通过
+    focused runtime selector。
 
 ### exact-CB direct input copies 不能退回未初始化 local fragment republish
 

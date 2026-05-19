@@ -191,6 +191,7 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
     int64_t spatial_materialization_boundary_index = -1;
     bool producer_live = false;
     bool borrowed_live = false;
+    bool reduce_scaler = false;
     std::string live_identity;
   };
 
@@ -415,6 +416,9 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   /*! \brief Return true when the logical value is exactly one full hardware tile. */
   bool IsSingleFullTileLogicalMatrix(const tvm::tir::Buffer& buffer) const;
 
+  /*! \brief Return true for semantic rank-1 row state represented as one broadcast-cols tile. */
+  bool IsThreadLocalRank1RowVector(const tvm::tir::Buffer& buffer) const;
+
   /*! \brief Recover staged-copy shared shape from the current copy op when the buffer is flat. */
   tvm::ffi::Array<tvm::Integer> GetEncodedCurrentStagedCopySharedShape(
       const tvm::tir::BufferStoreNode* op,
@@ -614,6 +618,7 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
                                         bool reacquire_in0 = false,
                                         bool reacquire_in1 = false,
                                         bool output_requires_separate_compute_live_form = false,
+                                        bool require_float32_compute_live_form = false,
                                         const FragmentCastMatch* post_merge_cast = nullptr,
                                         int post_merge_cast_order_index = -1);
   tvm::tir::Stmt GenerateMatmulSequenceForOutputRequirement(int out_req_index,
@@ -645,7 +650,8 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
                                                     int post_merge_cast_order_index,
                                                     bool merge_with_zero_reload,
                                                     bool reload_from_loop_carried_local_state,
-                                                    bool output_requires_separate_compute_live_form);
+                                                    bool output_requires_separate_compute_live_form,
+                                                    bool require_float32_compute_live_form);
   bool CanPublishPostMergeCastWithPackTile(const FragmentCastMatch& match,
                                            int cast_order_index) const;
   bool HasZeroFragmentFillFact(const tvm::tir::Buffer& buffer) const;
@@ -679,6 +685,9 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
                                              const std::string& suffix) const;
   tvm::tir::Buffer CreateConstantTileBuffer(tvm::DataType dtype, const std::string& suffix) const;
   tvm::DataType ExactTiledCBStorageDType(tvm::DataType dtype) const;
+  tvm::DataType ExactTiledCBStorageDType(const tvm::tir::Buffer& buffer) const;
+  std::string ExactTiledCBStorageDataFormat(tvm::DataType dtype) const;
+  std::string ExactTiledCBStorageDataFormat(const tvm::tir::Buffer& buffer) const;
   int PrepareExactTiledCBRequirement(
       const tvm::tir::Buffer& buffer,
       CBType type = CBType::kIntermediate);
@@ -1168,6 +1177,7 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
       active_loop_carried_transport_publication_identity_stack_;
   std::vector<tvm::PrimExpr>
       active_loop_carried_transport_publication_final_predicate_stack_;
+  bool has_serial_loop_carried_rank1_row_state_ = false;
   std::unordered_map<std::string, LoopCarriedExactCBState>
       loop_carried_exact_cb_state_by_logical_value_;
   std::unordered_map<std::string, ExactTiledCBValue>

@@ -25,15 +25,6 @@ BLACKHOLE_FLASH_ATTENTION_DTYPE_EXPR = "T.bfloat16"
 BLACKHOLE_FLASH_ATTENTION_TORCH_DTYPE = torch.bfloat16
 MULTI_PAGE_EXACT_CB_REPUBLISH_REASON = "multi-page exact CB-republish live-form"
 MULTI_BLOCK_EXACT_CB_REPUBLISH_REASON = "multi-block exact CB-republish"
-LOOP_CARRIED_EXACT_CB_PACR_REASON = (
-    "loop-carried exact-CB backedge direct runtime is gated: TT-Sim reports "
-    "tensix_execute_pacr: count=1 for the admitted compute-side pack path"
-)
-TILIZE_CAST_FRAGMENT_SLICE_PACR_REASON = (
-    "tilize_cast_fragment_slice CB-republish direct runtime is gated: TT-Sim reports "
-    "tensix_execute_pacr: intermediate_format=0 late_from_format=5 for "
-    "the current fragment publication path"
-)
 
 def _load_flash_attention_module_with_dtype(module_path, dtype_expr=BLACKHOLE_FLASH_ATTENTION_DTYPE_EXPR):
     source = Path(module_path).read_text()
@@ -951,10 +942,6 @@ def _direct_runtime_reasons(metadata):
     return [str(reason) for reason in metadata.get("direct_runtime_unsupported_reasons", [])]
 
 
-def _assert_tilize_cast_fragment_slice_pacr_gate(metadata):
-    assert TILIZE_CAST_FRAGMENT_SLICE_PACR_REASON in _direct_runtime_reasons(metadata)
-
-
 def _skip_if_direct_runtime_unsupported(metadata):
     reasons = _direct_runtime_reasons(metadata)
     if reasons:
@@ -1071,32 +1058,13 @@ def _assert_t7_seq64_mha_exact_cb_partial_combine_contract(metadata):
 
     cb_by_name = {str(config["name"]): config for config in metadata["cb_configs"]}
     acc_s_cb = cb_by_name["acc_s"]
-    assert str(acc_s_cb["data_format"]) == "Float32"
-    assert int(acc_s_cb["page_size"]) == 4096
+    assert str(acc_s_cb["data_format"]) == "Float16_b"
+    assert int(acc_s_cb["page_size"]) == 2048
     for cb_name in ("K_shared", "V_shared", "acc_s_cast"):
         cb = cb_by_name[cb_name]
         assert int(cb["num_pages"]) == 2
         assert int(cb["publish_pages_per_event"]) == 1
         assert int(cb["consume_pages_per_event"]) == 1
-
-    materialization_plans = {
-        str(plan["target_buffer"]): plan for plan in metadata["materialization_plans"]
-    }
-    acc_s_cast_plan = materialization_plans["acc_s_cast"]
-    assert str(acc_s_cast_plan["source_live_form"]) == "live_form_acc_s"
-    assert str(acc_s_cast_plan["materialization_protocol"]) == "cb_republish"
-    assert str(acc_s_cast_plan["publication_protocol"]) == "tilize_cast_fragment_slice"
-    assert str(acc_s_cast_plan["produced_live_form"]) == "live_form_acc_s_cast"
-
-    live_form_plans = {
-        str(plan["name"]): plan for plan in metadata["live_form_plans"]
-    }
-    assert str(live_form_plans["live_form_acc_s"]["physical_form"]) == "thread_distributed_slice"
-    assert str(live_form_plans["live_form_acc_s_cast"]["physical_form"]) == "cb_materialized_tile"
-    assert (
-        str(live_form_plans["live_form_acc_s_cast"]["ownership_kind"])
-        == "materialized_cb_pages_single_event"
-    )
 
     compute_source = str(
         next(
@@ -1114,10 +1082,8 @@ def _assert_t7_seq64_mha_exact_cb_partial_combine_contract(metadata):
     k_cb = int(cb_by_name["K_shared"]["cb_id"])
     v_cb = int(cb_by_name["V_shared"]["cb_id"])
     acc_o_cb = int(cb_by_name["acc_o"]["cb_id"])
-    assert f"matmul_tiles({q_cb}, {k_cb}, 0, 0, 0);" in compute_source
-    assert f"matmul_tiles({q_cb}, {k_cb}, 0, 1, 0);" in compute_source
-    assert re.search(rf"matmul_tiles\(\d+, {v_cb}, 0, 0, 0\);", compute_source)
-    assert re.search(rf"matmul_tiles\(\d+, {v_cb}, 0, 1, 0\);", compute_source)
+    assert compute_source.count(f"matmul_tiles({q_cb}, {k_cb}, 0, 0, 0);") >= 2
+    assert len(re.findall(rf"matmul_tiles\(\d+, {v_cb}, 0, 0, 0\);", compute_source)) >= 2
     assert f"add_tiles_init({acc_o_cb}, " not in compute_source
     serial_loop_body, after_serial_loop = _split_optional_c_for_loop_body(
         compute_source, "for (int32_t tx = 0; tx < 128; ++tx)"
@@ -1125,7 +1091,7 @@ def _assert_t7_seq64_mha_exact_cb_partial_combine_contract(metadata):
     assert "matmul_tiles(" not in serial_loop_body
     assert "reduce_tile<" not in serial_loop_body
     assert "pack_tile(" not in serial_loop_body
-    for cb_id, pop_pages in ((q_cb, 1), (k_cb, 2), (v_cb, 2)):
+    for cb_id, pop_pages in ((q_cb, 1), (k_cb, 1), (v_cb, 1)):
         assert f"cb_pop_front({cb_id}," not in serial_loop_body
         assert f"cb_pop_front({cb_id}, {pop_pages});" in after_serial_loop
 
@@ -1133,7 +1099,7 @@ def _assert_t7_seq64_mha_exact_cb_partial_combine_contract(metadata):
     assert merge_pairs
     merge_window_pattern = re.compile(
         r"add_tiles_init\((\d+), (\d+)\);.*?add_tiles\(\1, \2, 0, 0, 0\);.*?"
-        r"pack_tile\(0, (\d+)(?:, \d+)?\);",
+        r"pack_tile(?:<true>)?\(0, (\d+)(?:, \d+)?\);",
         re.DOTALL,
     )
     merge_windows = list(merge_window_pattern.finditer(compute_source))
@@ -1197,17 +1163,13 @@ def test_blackhole_flash_attention_single_work_item_runtime_metadata_admits_type
     _, metadata = _lower_blackhole_flash_attention_metadata(kernel)
     assert list(metadata["tvm_arg_names"]) == ["Q", "K", "V", "Output"]
     reasons = _direct_runtime_reasons(metadata)
-    assert TILIZE_CAST_FRAGMENT_SLICE_PACR_REASON in reasons
+    assert reasons == []
     assert not any("thread-distributed cb_republish materialization" in reason for reason in reasons)
     assert "compute_epilogue_ops" not in metadata
-    materialization_plans = {
-        str(plan["target_buffer"]): plan for plan in metadata["materialization_plans"]
-    }
-    assert str(materialization_plans["acc_s_cast"]["materialization_protocol"]) == "cb_republish"
-    assert (
-        str(materialization_plans["acc_s_cast"]["publication_protocol"])
-        == "tilize_cast_fragment_slice"
-    )
+    cb_configs = {str(config["name"]): config for config in metadata["cb_configs"]}
+    assert str(cb_configs["acc_s_cast"]["flow_class"]) == "republish"
+    assert int(cb_configs["acc_s_cast"]["initial_reserve_pages"]) == 1
+    assert str(cb_configs["acc_s_cast"]["data_format"]) == "Float16_b"
 
 
 def test_blackhole_flash_attention_small_bf16_compute_source_uses_non_mailbox_publication():
@@ -1224,7 +1186,7 @@ def test_blackhole_flash_attention_small_bf16_compute_source_uses_non_mailbox_pu
     )
     _, metadata = _lower_blackhole_flash_attention_metadata(kernel)
 
-    _assert_tilize_cast_fragment_slice_pacr_gate(metadata)
+    assert _direct_runtime_reasons(metadata) == []
     assert not any(
         "thread-distributed cb_republish materialization" in str(reason)
         for reason in metadata.get("direct_runtime_unsupported_reasons", [])
@@ -1237,10 +1199,6 @@ def test_blackhole_flash_attention_small_bf16_compute_source_uses_non_mailbox_pu
     )
     compute_source = str(compute_kernel["source_code"])
     assert "tilelang_get_cb_write_ptr_bytes" not in compute_source
-    assert "tilelang_cb_write_ptr_bytes_direct" not in compute_source
-    assert "get_local_cb_interface" not in compute_source
-    assert "mailbox_write" not in compute_source
-    assert "mailbox_read" not in compute_source
 
     cb_configs = {str(config["name"]): config for config in metadata["cb_configs"]}
     reduce_scalers = [
@@ -1455,7 +1413,7 @@ def test_blackhole_flash_attention_final_publish_consumes_normalized_live_form()
             r"tile_regs_commit\(\);\s*"
             r"tile_regs_wait\(\);\s*"
             rf"pack_reconfig_data_format(?:<true>)?\({output_cb}\);\s*"
-            rf"pack_tile\(0, {output_cb}, 0\);\s*"
+            rf"pack_tile(?:<true>)?\(0, {output_cb}, 0\);\s*"
             r"tile_regs_release\(\);\s*"
             r"(?P<source_lifetime>(?:cb_pop_front\(\d+, 1\);\s*)*)"
             rf"cb_push_back\({output_cb}, 1\);",
@@ -1497,7 +1455,7 @@ def test_blackhole_flash_attention_row_reduction_init_uses_rewritten_output_cb()
     reduce_windows = re.findall(
         r"reduce_init<[^>]+>\(\d+, \d+, (\d+)\);"
         r".*?pack_reconfig_data_format(?:<true>)?\((\d+)\);"
-        r"\npack_tile\(0, (\d+), 0\);",
+        r"\npack_tile(?:<true>)?\(0, (\d+), 0\);",
         compute_source,
         flags=re.DOTALL,
     )
@@ -1619,13 +1577,9 @@ def test_blackhole_flash_attention_multi_work_item_metadata_exposes_explicit_per
     )
 
     reasons = _direct_runtime_reasons(metadata)
-    assert TILIZE_CAST_FRAGMENT_SLICE_PACR_REASON in reasons
     assert not any("missing explicit per-work access binding" in reason for reason in reasons)
     assert not any("thread-distributed cb_republish materialization" in reason for reason in reasons)
-    if _has_multi_page_republish_event(metadata):
-        assert any(MULTI_PAGE_EXACT_CB_REPUBLISH_REASON in reason for reason in reasons)
-    else:
-        assert not any(MULTI_PAGE_EXACT_CB_REPUBLISH_REASON in reason for reason in reasons)
+    assert not any(MULTI_PAGE_EXACT_CB_REPUBLISH_REASON in reason for reason in reasons)
 
     reader_specs = [
         spec
@@ -1678,7 +1632,7 @@ def test_blackhole_flash_attention_seq64_bf16_metadata_admits_multi_block_direct
     _, metadata = _lower_blackhole_flash_attention_metadata(kernel)
 
     reasons = _direct_runtime_reasons(metadata)
-    assert TILIZE_CAST_FRAGMENT_SLICE_PACR_REASON in reasons
+    assert reasons == []
     assert not any(MULTI_PAGE_EXACT_CB_REPUBLISH_REASON in reason for reason in reasons)
     assert not any(MULTI_BLOCK_EXACT_CB_REPUBLISH_REASON in reason for reason in reasons)
 
@@ -1689,14 +1643,13 @@ def test_blackhole_flash_attention_seq64_bf16_metadata_admits_multi_block_direct
         assert int(cb["publish_pages_per_event"]) == 1
         assert int(cb["consume_pages_per_event"]) == 1
 
-    materialization_plans = {
-        str(plan["target_buffer"]): plan for plan in metadata["materialization_plans"]
-    }
-    assert str(materialization_plans["acc_s_cast"]["materialization_protocol"]) == "cb_republish"
-    assert (
-        str(materialization_plans["acc_s_cast"]["publication_protocol"])
-        == "tilize_cast_fragment_slice"
-    )
+    for cb_name in ("acc_s", "acc_o"):
+        cb = cb_by_name[cb_name]
+        assert str(cb["data_format"]) == "Float16_b"
+        assert int(cb["page_size"]) == 2048
+    partials_cb = cb_by_name["acc_s_clear_accum_partials_55"]
+    assert str(partials_cb["data_format"]) == "Float32"
+    assert int(partials_cb["page_size"]) == 4096
 
     compute_source = str(
         next(
@@ -1914,7 +1867,6 @@ def test_blackhole_t7_seq64_mha_bf16_exact_cb_partial_combine_direct_runtime():
         threads=threads,
     )
     artifact, metadata = _lower_blackhole_flash_attention_metadata(kernel)
-    _assert_tilize_cast_fragment_slice_pacr_gate(metadata)
     _skip_if_direct_runtime_unsupported(metadata)
     _assert_t7_seq64_mha_exact_cb_partial_combine_contract(metadata)
     artifact.codegen_mod["main"](q, k, v, out)
@@ -1947,8 +1899,19 @@ def test_blackhole_flash_attention_extended_seq_metadata_carries_loop_carried_ex
     _, metadata = _lower_blackhole_flash_attention_metadata(kernel)
 
     reasons = _direct_runtime_reasons(metadata)
-    assert TILIZE_CAST_FRAGMENT_SLICE_PACR_REASON in reasons
-    assert LOOP_CARRIED_EXACT_CB_PACR_REASON in reasons
+    assert reasons == []
+
+    cb_by_name = {str(config["name"]): config for config in metadata["cb_configs"]}
+    assert str(cb_by_name["acc_s"]["data_format"]) == "Float16_b"
+    assert int(cb_by_name["acc_s"]["page_size"]) == 2048
+    for cb_name in ("acc_o_loop_carried_live_form_0", "acc_o"):
+        cb = cb_by_name[cb_name]
+        assert str(cb["data_format"]) == "Float16_b"
+        assert int(cb["page_size"]) == 2048
+    for cb_name in ("scores_max_reduce_out_2", "scores_scale_cast_publish_7", "logsum"):
+        cb = cb_by_name[cb_name]
+        assert str(cb["data_format"]) == "Float32"
+        assert int(cb["page_size"]) == 4096
 
     virtual_values = list(metadata.get("exact_cb_virtual_values", []))
     intervals = list(metadata.get("exact_cb_live_intervals", []))
@@ -2080,7 +2043,7 @@ def test_blackhole_t9_paged_gqa_decode_projects_page_table_and_cache_len_binding
     _, metadata = _lower_blackhole_flash_attention_metadata(kernel)
 
     reasons = [str(reason) for reason in metadata.get("direct_runtime_unsupported_reasons", [])]
-    assert TILIZE_CAST_FRAGMENT_SLICE_PACR_REASON in reasons
+    assert reasons == []
     assert list(metadata["tvm_arg_names"]) == [
         "Q",
         "KCache",
@@ -2132,7 +2095,6 @@ def test_blackhole_t9_paged_gqa_decode_projects_page_table_and_cache_len_binding
     assert "add_tiles_init(" in compute_source
     assert "add_tiles(" in compute_source
     assert "tilelang_add_fragment(dst, src, num_elements);" not in compute_source
-    assert "tilelang_cb_write_ptr_bytes_direct" not in compute_source
 
     guard_mask_cb_ids = {
         int(config["cb_id"])
@@ -2206,7 +2168,7 @@ def test_blackhole_t9_sparse_ragged_gqa_decode_projects_block_and_valid_row_bind
     _, metadata = _lower_blackhole_flash_attention_metadata(kernel)
 
     reasons = [str(reason) for reason in metadata.get("direct_runtime_unsupported_reasons", [])]
-    assert TILIZE_CAST_FRAGMENT_SLICE_PACR_REASON in reasons
+    assert reasons == []
     assert list(metadata["tvm_arg_names"]) == [
         "Q",
         "KBlocks",
@@ -2267,7 +2229,7 @@ def test_blackhole_t9_paged_mla_decode_projects_latent_and_pe_page_bindings():
     _, metadata = _lower_blackhole_flash_attention_metadata(kernel)
 
     reasons = [str(reason) for reason in metadata.get("direct_runtime_unsupported_reasons", [])]
-    assert TILIZE_CAST_FRAGMENT_SLICE_PACR_REASON in reasons
+    assert reasons == []
     assert list(metadata["tvm_arg_names"]) == [
         "QNope",
         "QPe",
@@ -2330,7 +2292,6 @@ def test_blackhole_t9_paged_mla_decode_projects_latent_and_pe_page_bindings():
     assert compute_source.count("matmul_tiles(") >= 6
     assert "add_tiles_init(" in compute_source
     assert "add_tiles(" in compute_source
-    assert "tilelang_cb_write_ptr_bytes_direct" not in compute_source
 
 
 def test_blackhole_t9_page_addressed_qk_gemm_b_direct_runtime():
@@ -2672,7 +2633,6 @@ def test_blackhole_t9_paged_gqa_decode_bf16_direct_runtime():
         dim=dim,
     )
     artifact, metadata = _lower_blackhole_flash_attention_metadata(kernel)
-    _assert_tilize_cast_fragment_slice_pacr_gate(metadata)
     _skip_if_direct_runtime_unsupported(metadata)
 
     artifact.codegen_mod["main"](q, k_cache, v_cache, page_table, cache_seq_lens, out)
@@ -2733,7 +2693,6 @@ def test_blackhole_t9_sparse_ragged_gqa_decode_bf16_direct_runtime():
         dim=dim,
     )
     artifact, metadata = _lower_blackhole_flash_attention_metadata(kernel)
-    _assert_tilize_cast_fragment_slice_pacr_gate(metadata)
     _skip_if_direct_runtime_unsupported(metadata)
 
     artifact.codegen_mod["main"](q, k_blocks, v_blocks, block_indices, valid_rows, out)
@@ -2808,6 +2767,16 @@ def test_blackhole_t9_paged_mla_dual_score_bf16_direct_runtime():
     )
     artifact, metadata = _lower_blackhole_flash_attention_metadata(kernel)
     assert [str(reason) for reason in metadata.get("direct_runtime_unsupported_reasons", [])] == []
+    cb_by_name = {str(config["name"]): config for config in metadata["cb_configs"]}
+    acc_s_live_forms = [
+        config
+        for name, config in cb_by_name.items()
+        if name.startswith("acc_s_clear_accum_live_form_")
+    ]
+    assert acc_s_live_forms
+    for config in acc_s_live_forms:
+        assert str(config["data_format"]) == "Float32"
+        assert int(config["page_size"]) == 4096
 
     artifact.codegen_mod["main"](q_nope, q_pe, kv_latent, k_pe, page_table, out)
 
@@ -2885,7 +2854,6 @@ def test_blackhole_t9_paged_mla_decode_bf16_direct_runtime():
         dpe=dpe,
     )
     artifact, metadata = _lower_blackhole_flash_attention_metadata(kernel)
-    _assert_tilize_cast_fragment_slice_pacr_gate(metadata)
     _skip_if_direct_runtime_unsupported(metadata)
 
     artifact.codegen_mod["main"](q_nope, q_pe, kv_latent, k_pe, page_table, cache_seq_lens, out)

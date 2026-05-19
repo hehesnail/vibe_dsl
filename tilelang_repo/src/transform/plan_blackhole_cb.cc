@@ -146,11 +146,32 @@ bool ConfigHasExclusiveRequirement(const CBConfig& config,
                      });
 }
 
+bool RequirementConflictsWithConfig(
+    int req_index, const CBConfig& config,
+    const std::vector<std::vector<bool>>& requirement_conflicts) {
+  if (req_index < 0 ||
+      req_index >= static_cast<int>(requirement_conflicts.size())) {
+    return false;
+  }
+  for (int config_req_index : config.requirement_indices) {
+    if (config_req_index >= 0 &&
+        config_req_index < static_cast<int>(requirement_conflicts[req_index].size()) &&
+        requirement_conflicts[req_index][config_req_index]) {
+      return true;
+    }
+  }
+  return false;
+}
+
 bool IsCompatibleForReuse(const CBRequirement& req, int req_index,
                           const CBConfig& config,
-                          const std::vector<bool>& exclusive_requirements) {
+                          const std::vector<bool>& exclusive_requirements,
+                          const std::vector<std::vector<bool>>& requirement_conflicts) {
   if (IsExclusiveRequirement(req_index, exclusive_requirements) ||
       ConfigHasExclusiveRequirement(config, exclusive_requirements)) {
+    return false;
+  }
+  if (RequirementConflictsWithConfig(req_index, config, requirement_conflicts)) {
     return false;
   }
   if ((req.initial_reserve_pages > 0 && req.flow_class == CBFlowClass::kState) ||
@@ -158,9 +179,6 @@ bool IsCompatibleForReuse(const CBRequirement& req, int req_index,
     return false;
   }
   if (config.role != RoleForType(req.type)) {
-    return false;
-  }
-  if (config.name != req.name) {
     return false;
   }
   if (req.type == CBType::kInput) {
@@ -188,6 +206,31 @@ bool IsCompatibleForReuse(const CBRequirement& req, int req_index,
     return false;
   }
   return req.lifetime_begin > config.lifetime_end;
+}
+
+std::vector<int> GetSimultaneousInputCBArgPositions(const std::string& op_name) {
+  if (op_name == "tl.blackhole.mm_init" ||
+      op_name == "tl.blackhole.matmul_tiles" ||
+      op_name == "tl.blackhole.binary_op_init_common" ||
+      op_name == "tl.blackhole.add_tiles_init" ||
+      op_name == "tl.blackhole.add_tiles" ||
+      op_name == "tl.blackhole.sub_tiles_init" ||
+      op_name == "tl.blackhole.sub_tiles" ||
+      op_name == "tl.blackhole.mul_tiles_init" ||
+      op_name == "tl.blackhole.mul_tiles" ||
+      op_name == "tl.blackhole.add_bcast_rows_init_short" ||
+      op_name == "tl.blackhole.add_tiles_bcast_rows" ||
+      op_name == "tl.blackhole.add_bcast_cols_init_short" ||
+      op_name == "tl.blackhole.add_tiles_bcast_cols" ||
+      op_name == "tl.blackhole.mul_bcast_rows_init_short" ||
+      op_name == "tl.blackhole.mul_bcast_cols_init_short" ||
+      op_name == "tl.blackhole.mul_tiles_bcast_rows" ||
+      op_name == "tl.blackhole.mul_tiles_bcast_cols" ||
+      op_name == "tl.blackhole.reduce_init" ||
+      op_name == "tl.blackhole.reduce_tile") {
+    return {0, 1};
+  }
+  return {};
 }
 
 std::vector<int> GetCBArgPositions(const std::string& op_name) {
@@ -290,6 +333,9 @@ std::vector<int> GetCBArgPositions(const std::string& op_name) {
   }
   if (op_name == "tl.blackhole.pack_fill_fragment_to_tiled_cb") {
     return {1};  // args: (dst_handle, cb_id, dst_offset, num_elements, row_width, value)
+  }
+  if (op_name == "tl.blackhole.generate_reduce_scaler_to_cb") {
+    return {0};  // args: (dst_cb_id, packed_bf16_pair)
   }
   if (op_name == "tl.blackhole.add_fragment_from_cb_front") {
     return {1};  // args: (dst_handle, src_cb_id, num_elements)
@@ -441,6 +487,21 @@ std::vector<bool> CollectExclusiveRequirementMask(const tir::Stmt& body,
           }
         }
       }
+      if ((IsBlackholeOp(op, "tl.blackhole.read_tile_to_cb") ||
+           IsBlackholeOp(op, "tl.blackhole.read_page_to_cb") ||
+           IsBlackholeOp(op, "tl.blackhole.read_bcast_cols_to_cb")) &&
+          op->args.size() >= 3U) {
+        if (const auto* cb_id = op->args[2].as<IntImmNode>()) {
+          if (cb_id->value >= 0 &&
+              cb_id->value < static_cast<int64_t>(exclusive_.size())) {
+            // The current source-buffer/materialized-target projection binds a
+            // physical reader event back to a single logical target.  Until that
+            // target binding is a separate typed record, these requirements
+            // must not share a physical CB with another target requirement.
+            exclusive_[static_cast<size_t>(cb_id->value)] = true;
+          }
+        }
+      }
       tir::StmtExprVisitor::VisitExpr_(op);
     }
 
@@ -451,6 +512,170 @@ std::vector<bool> CollectExclusiveRequirementMask(const tir::Stmt& body,
   };
 
   Collector collector(requirement_count);
+  collector.Collect(body);
+  return collector.Take();
+}
+
+std::vector<std::vector<bool>> CollectRequirementConflictMatrix(
+    const tir::Stmt& body, int requirement_count) {
+  const int count = std::max(0, requirement_count);
+  class Collector final : public tir::StmtExprVisitor {
+   public:
+    explicit Collector(int requirement_count)
+        : conflicts_(requirement_count,
+                     std::vector<bool>(requirement_count, false)) {}
+
+    using tir::StmtExprVisitor::VisitExpr_;
+
+    void Collect(const tir::Stmt& body) { VisitStmt(body); }
+
+    void VisitExpr_(const tir::CallNode* op) final {
+      if (op->op->IsInstance<OpNode>()) {
+        const std::string op_name = Downcast<Op>(op->op)->name;
+        const std::vector<int> positions =
+            GetSimultaneousInputCBArgPositions(op_name);
+        std::vector<int> requirement_indices;
+        for (int pos : positions) {
+          if (pos < 0 || pos >= static_cast<int>(op->args.size())) {
+            continue;
+          }
+          const auto* imm = op->args[pos].as<IntImmNode>();
+          if (imm == nullptr || imm->value < 0) {
+            continue;
+          }
+          const int64_t requirement_index = imm->value;
+          if (requirement_index < static_cast<int64_t>(conflicts_.size())) {
+            requirement_indices.push_back(
+                static_cast<int>(requirement_index));
+          }
+        }
+        for (size_t i = 0; i < requirement_indices.size(); ++i) {
+          for (size_t j = i + 1; j < requirement_indices.size(); ++j) {
+            const int lhs = requirement_indices[i];
+            const int rhs = requirement_indices[j];
+            if (lhs == rhs) {
+              continue;
+            }
+            conflicts_[lhs][rhs] = true;
+            conflicts_[rhs][lhs] = true;
+          }
+        }
+      }
+      tir::StmtExprVisitor::VisitExpr_(op);
+    }
+
+    std::vector<std::vector<bool>> Take() { return std::move(conflicts_); }
+
+   private:
+    std::vector<std::vector<bool>> conflicts_;
+  };
+
+  Collector collector(count);
+  collector.Collect(body);
+  return collector.Take();
+}
+
+void MergeRequirementConflictMatrix(
+    std::vector<std::vector<bool>>* target,
+    const std::vector<std::vector<bool>>& source) {
+  ICHECK(target != nullptr);
+  ICHECK_EQ(target->size(), source.size());
+  for (size_t i = 0; i < source.size(); ++i) {
+    ICHECK_EQ((*target)[i].size(), source[i].size());
+    for (size_t j = 0; j < source[i].size(); ++j) {
+      (*target)[i][j] = (*target)[i][j] || source[i][j];
+    }
+  }
+}
+
+std::vector<std::vector<bool>> CollectFIFOFrontOrderConflictMatrix(
+    const tir::Stmt& body, const std::vector<CBRequirement>& requirements) {
+  const int requirement_count = static_cast<int>(requirements.size());
+  class Collector final : public tir::StmtExprVisitor {
+   public:
+    explicit Collector(const std::vector<CBRequirement>& requirements)
+        : requirements_(requirements),
+          conflicts_(requirements.size(),
+                     std::vector<bool>(requirements.size(), false)),
+          live_front_pages_(requirements.size(), 0) {}
+
+    using tir::StmtExprVisitor::VisitExpr_;
+
+    void Collect(const tir::Stmt& body) { VisitStmt(body); }
+
+    void VisitExpr_(const tir::CallNode* op) final {
+      const int cb_id = StaticCBId(op);
+      const int pages = StaticPages(op);
+      if (cb_id >= 0 && pages > 0) {
+        if (IsBlackholeOp(op, "tl.blackhole.cb_wait_front")) {
+          RecordFrontOrderConflicts(cb_id);
+        } else if (IsBlackholeOp(op, "tl.blackhole.cb_push_back")) {
+          live_front_pages_[static_cast<size_t>(cb_id)] += pages;
+        } else if (IsBlackholeOp(op, "tl.blackhole.cb_pop_front")) {
+          int& live_pages = live_front_pages_[static_cast<size_t>(cb_id)];
+          live_pages = std::max(0, live_pages - pages);
+        }
+      }
+      tir::StmtExprVisitor::VisitExpr_(op);
+    }
+
+    std::vector<std::vector<bool>> Take() { return std::move(conflicts_); }
+
+   private:
+    int StaticCBId(const tir::CallNode* op) const {
+      if (op == nullptr || op->args.empty()) {
+        return -1;
+      }
+      const auto* cb_id = op->args[0].as<IntImmNode>();
+      if (cb_id == nullptr || cb_id->value < 0 ||
+          cb_id->value >= static_cast<int64_t>(requirements_.size())) {
+        return -1;
+      }
+      return static_cast<int>(cb_id->value);
+    }
+
+    int StaticPages(const tir::CallNode* op) const {
+      if (op == nullptr || op->args.size() < 2U) {
+        return 0;
+      }
+      const auto* pages = op->args[1].as<IntImmNode>();
+      return pages != nullptr ? static_cast<int>(pages->value) : 0;
+    }
+
+    bool CanSharePhysicalCB(int requirement_index) const {
+      if (requirement_index < 0 ||
+          requirement_index >= static_cast<int>(requirements_.size())) {
+        return false;
+      }
+      return requirements_[static_cast<size_t>(requirement_index)].type !=
+             CBType::kInput;
+    }
+
+    void RecordFrontOrderConflicts(int waiting_requirement) {
+      if (!CanSharePhysicalCB(waiting_requirement)) {
+        return;
+      }
+      for (size_t live_requirement = 0;
+           live_requirement < live_front_pages_.size(); ++live_requirement) {
+        if (static_cast<int>(live_requirement) == waiting_requirement ||
+            live_front_pages_[live_requirement] <= 0 ||
+            !CanSharePhysicalCB(static_cast<int>(live_requirement))) {
+          continue;
+        }
+        conflicts_[live_requirement][static_cast<size_t>(waiting_requirement)] =
+            true;
+        conflicts_[static_cast<size_t>(waiting_requirement)][live_requirement] =
+            true;
+      }
+    }
+
+    const std::vector<CBRequirement>& requirements_;
+    std::vector<std::vector<bool>> conflicts_;
+    std::vector<int> live_front_pages_;
+  };
+
+  (void)requirement_count;
+  Collector collector(requirements);
   collector.Collect(body);
   return collector.Take();
 }
@@ -1462,6 +1687,209 @@ Array<TTKernelQueueEvent> CollectTTKernelQueueEventsFromBody(
   return events;
 }
 
+bool TryGetQueueEventStmt(const tir::Stmt& stmt, std::string* kind,
+                          int64_t* cb_id, int64_t* pages) {
+  const auto* eval = stmt.as<tir::EvaluateNode>();
+  if (eval == nullptr) {
+    return false;
+  }
+  const auto* call = eval->value.as<tir::CallNode>();
+  if (call == nullptr) {
+    return false;
+  }
+  const char* event_kind = TTKernelQueueEventKindName(call);
+  if (event_kind == nullptr || call->args.size() < 2U) {
+    return false;
+  }
+  int64_t event_cb_id = -1;
+  int64_t event_pages = 0;
+  if (!TryReadNonNegativeIntImm(call->args[0], &event_cb_id) ||
+      !TryReadNonNegativeIntImm(call->args[1], &event_pages) ||
+      event_pages <= 0) {
+    return false;
+  }
+  if (kind != nullptr) {
+    *kind = event_kind;
+  }
+  if (cb_id != nullptr) {
+    *cb_id = event_cb_id;
+  }
+  if (pages != nullptr) {
+    *pages = event_pages;
+  }
+  return true;
+}
+
+bool IsCollapsibleDuplicateQueueEvent(const tir::Stmt& previous,
+                                      const tir::Stmt& current) {
+  std::string previous_kind;
+  std::string current_kind;
+  int64_t previous_cb_id = -1;
+  int64_t current_cb_id = -1;
+  int64_t previous_pages = 0;
+  int64_t current_pages = 0;
+  if (!TryGetQueueEventStmt(previous, &previous_kind, &previous_cb_id,
+                            &previous_pages) ||
+      !TryGetQueueEventStmt(current, &current_kind, &current_cb_id,
+                            &current_pages)) {
+    return false;
+  }
+  if (previous_kind != current_kind || previous_cb_id != current_cb_id ||
+      previous_pages != current_pages) {
+    return false;
+  }
+  return current_kind == "wait_front" || current_kind == "pop_front";
+}
+
+tir::Stmt CollapseDuplicatePhysicalCBQueueEvents(const tir::Stmt& body) {
+  if (!body.defined()) {
+    return body;
+  }
+  class Rewriter final : public tir::StmtExprMutator {
+   public:
+    using tir::StmtExprMutator::VisitStmt_;
+
+    tir::Stmt Rewrite(const tir::Stmt& stmt) { return VisitStmt(stmt); }
+
+    tir::Stmt VisitStmt_(const tir::SeqStmtNode* op) final {
+      std::vector<tir::Stmt> rewritten;
+      rewritten.reserve(op->seq.size());
+      for (const tir::Stmt& child : op->seq) {
+        tir::Stmt next = VisitStmt(child);
+        if (!rewritten.empty() &&
+            IsCollapsibleDuplicateQueueEvent(rewritten.back(), next)) {
+          continue;
+        }
+        rewritten.push_back(next);
+      }
+      return tir::SeqStmt::Flatten(rewritten);
+    }
+  };
+  return Rewriter().Rewrite(body);
+}
+
+tir::Stmt RewriteQueueEventStmtPages(const tir::Stmt& stmt, int64_t pages) {
+  ICHECK_GT(pages, 0);
+  const auto* eval = stmt.as<tir::EvaluateNode>();
+  ICHECK(eval != nullptr);
+  const auto* call = eval->value.as<tir::CallNode>();
+  ICHECK(call != nullptr);
+  Array<PrimExpr> args = call->args;
+  args.Set(1, tvm::IntImm(args[1].dtype(), pages));
+  return tir::Evaluate(tir::Call(call->dtype, call->op, args,
+                                 call->annotations, call->span));
+}
+
+tir::Stmt DropEmptyCleanupWaitPopsBeforeReserve(
+    const tir::Stmt& body, const std::vector<CBConfig>& configs) {
+  if (!body.defined()) {
+    return body;
+  }
+  int max_cb_id = -1;
+  for (const CBConfig& config : configs) {
+    max_cb_id = std::max(max_cb_id, config.cb_id);
+  }
+  std::vector<bool> is_local_cb(std::max(0, max_cb_id + 1), false);
+  for (const CBConfig& config : configs) {
+    if (config.cb_id >= 0 && config.cb_id < static_cast<int>(is_local_cb.size()) &&
+        config.role != "input") {
+      is_local_cb[config.cb_id] = true;
+    }
+  }
+
+  class Rewriter final : public tir::StmtExprMutator {
+   public:
+    explicit Rewriter(std::vector<bool> is_local_cb)
+        : is_local_cb_(std::move(is_local_cb)),
+          front_pages_(is_local_cb_.size(), 0) {}
+
+    using tir::StmtExprMutator::VisitStmt_;
+
+    tir::Stmt Rewrite(const tir::Stmt& stmt) { return VisitStmt(stmt); }
+
+    tir::Stmt VisitStmt_(const tir::SeqStmtNode* op) final {
+      std::vector<tir::Stmt> children;
+      children.reserve(op->seq.size());
+      for (const tir::Stmt& child : op->seq) {
+        tir::Stmt next = VisitStmt(child);
+        if (const auto* seq = next.as<tir::SeqStmtNode>()) {
+          for (const tir::Stmt& nested : seq->seq) {
+            children.push_back(nested);
+          }
+        } else {
+          children.push_back(next);
+        }
+      }
+
+      std::vector<tir::Stmt> rewritten;
+      rewritten.reserve(children.size());
+      for (size_t i = 0; i < children.size();) {
+        std::string wait_kind;
+        std::string pop_kind;
+        std::string reserve_kind;
+        int64_t wait_cb = -1;
+        int64_t pop_cb = -1;
+        int64_t reserve_cb = -1;
+        int64_t wait_pages = 0;
+        int64_t pop_pages = 0;
+        int64_t reserve_pages = 0;
+        const bool cleanup_before_reserve =
+            i + 2 < children.size() &&
+            TryGetQueueEventStmt(children[i], &wait_kind, &wait_cb, &wait_pages) &&
+            TryGetQueueEventStmt(children[i + 1], &pop_kind, &pop_cb, &pop_pages) &&
+            TryGetQueueEventStmt(children[i + 2], &reserve_kind, &reserve_cb, &reserve_pages) &&
+            wait_kind == "wait_front" && pop_kind == "pop_front" &&
+            reserve_kind == "reserve_back" && wait_cb == pop_cb &&
+            wait_cb == reserve_cb && wait_pages == pop_pages &&
+            IsTracked(wait_cb);
+        if (cleanup_before_reserve &&
+            front_pages_[static_cast<size_t>(wait_cb)] < wait_pages) {
+          const int visible_pages = front_pages_[static_cast<size_t>(wait_cb)];
+          if (visible_pages > 0) {
+            rewritten.push_back(RewriteQueueEventStmtPages(children[i], visible_pages));
+            rewritten.push_back(RewriteQueueEventStmtPages(children[i + 1], visible_pages));
+            front_pages_[static_cast<size_t>(wait_cb)] = 0;
+          }
+          i += 2;
+          continue;
+        }
+
+        rewritten.push_back(children[i]);
+        RecordQueueMutation(children[i]);
+        ++i;
+      }
+      return tir::SeqStmt::Flatten(rewritten);
+    }
+
+   private:
+    bool IsTracked(int64_t cb_id) const {
+      return cb_id >= 0 && cb_id < static_cast<int64_t>(is_local_cb_.size()) &&
+             is_local_cb_[static_cast<size_t>(cb_id)];
+    }
+
+    void RecordQueueMutation(const tir::Stmt& stmt) {
+      std::string kind;
+      int64_t cb_id = -1;
+      int64_t pages = 0;
+      if (!TryGetQueueEventStmt(stmt, &kind, &cb_id, &pages) ||
+          !IsTracked(cb_id)) {
+        return;
+      }
+      if (kind == "push_back") {
+        front_pages_[static_cast<size_t>(cb_id)] += static_cast<int>(pages);
+      } else if (kind == "pop_front") {
+        int& front = front_pages_[static_cast<size_t>(cb_id)];
+        front = std::max<int>(0, front - static_cast<int>(pages));
+      }
+    }
+
+    std::vector<bool> is_local_cb_;
+    std::vector<int> front_pages_;
+  };
+
+  return Rewriter(std::move(is_local_cb)).Rewrite(body);
+}
+
 tir::Stmt RetainLocalCBFrontForFutureWaits(
     const tir::Stmt& body, const std::vector<CBConfig>& configs,
     const std::unordered_map<int, int>& cb_id_by_requirement_index = {}) {
@@ -1498,11 +1926,17 @@ tir::Stmt RetainLocalCBFrontForFutureWaits(
   std::vector<int> adjusted_pop_pages(events.size(), -1);
   std::vector<int> inserted_pop_before_event_pages(events.size(), 0);
   std::vector<bool> can_retain_front(queue_view.LocalCBCount(), true);
+  std::vector<bool> can_pop_before_reuse(queue_view.LocalCBCount(), true);
   for (const CBConfig& config : configs) {
     if (config.cb_id >= 0 &&
         config.cb_id < static_cast<int>(can_retain_front.size()) &&
         (config.role == "input" || config.role == "output")) {
       can_retain_front[config.cb_id] = false;
+    }
+    if (config.cb_id >= 0 &&
+        config.cb_id < static_cast<int>(can_pop_before_reuse.size()) &&
+        config.role == "input") {
+      can_pop_before_reuse[config.cb_id] = false;
     }
   }
   std::vector<int> front_pages(queue_view.LocalCBCount(), 0);
@@ -1514,7 +1948,7 @@ tir::Stmt RetainLocalCBFrontForFutureWaits(
       continue;
     }
     if (event.kind == CBQueueEvent::Kind::kReserve) {
-      if (!can_retain_front[cb_id]) {
+      if (!can_pop_before_reuse[cb_id]) {
         continue;
       }
       const int required_front =
@@ -1607,6 +2041,133 @@ tir::Stmt RetainLocalCBFrontForFutureWaits(
   Rewriter rewriter(queue_view, adjusted_pop_pages,
                     inserted_pop_before_event_pages);
   return rewriter.Rewrite(body);
+}
+
+tir::Stmt PopConsumedLocalCBFrontBeforeReuse(
+    const tir::Stmt& body, const std::vector<CBConfig>& configs,
+    const std::unordered_map<int, int>& cb_id_by_requirement_index = {}) {
+  const PhysicalCBQueueView queue_view(configs, cb_id_by_requirement_index);
+  if (queue_view.LocalCBCount() == 0) {
+    return body;
+  }
+
+  class Rewriter final : public tir::StmtExprMutator {
+   public:
+    explicit Rewriter(PhysicalCBQueueView queue_view)
+        : queue_view_(std::move(queue_view)),
+          front_pages_(queue_view_.LocalCBCount(), 0),
+          consumed_front_pages_(queue_view_.LocalCBCount(), 0) {}
+
+    using tir::StmtExprMutator::VisitStmt_;
+
+    tir::Stmt Rewrite(const tir::Stmt& body) { return VisitStmt(body); }
+
+    tir::Stmt VisitStmt_(const tir::SeqStmtNode* op) final {
+      Array<tir::Stmt> rewritten;
+      rewritten.reserve(op->seq.size());
+      for (size_t i = 0; i < op->seq.size(); ++i) {
+        tir::Stmt new_child = VisitStmt(op->seq[i]);
+        if (const auto* eval = new_child.as<tir::EvaluateNode>()) {
+          if (const auto* call = eval->value.as<tir::CallNode>()) {
+            MaybePopConsumedFrontBeforeReserve(call, op->seq, i + 1, &rewritten);
+          }
+        }
+        rewritten.push_back(new_child);
+        if (const auto* eval = new_child.as<tir::EvaluateNode>()) {
+          if (const auto* call = eval->value.as<tir::CallNode>()) {
+            RecordQueueEvent(call);
+          }
+        }
+      }
+      return tir::SeqStmt::Flatten(rewritten);
+    }
+
+   private:
+    bool HasFutureWaitBeforeNextPush(const Array<tir::Stmt>& seq, size_t start,
+                                     int physical_cb_id) const {
+      for (size_t i = start; i < seq.size(); ++i) {
+        std::vector<CBQueueEvent> events;
+        CollectCBQueueEvents(seq[i], queue_view_, &events);
+        for (const CBQueueEvent& event : events) {
+          if (event.physical_cb_id != physical_cb_id) {
+            continue;
+          }
+          if (event.kind == CBQueueEvent::Kind::kWait) {
+            return true;
+          }
+          if (event.kind == CBQueueEvent::Kind::kPush) {
+            return false;
+          }
+        }
+      }
+      return false;
+    }
+
+    void MaybePopConsumedFrontBeforeReserve(const tir::CallNode* op,
+                                            const Array<tir::Stmt>& seq,
+                                            size_t next_index,
+                                            Array<tir::Stmt>* stmts) {
+      ICHECK(stmts != nullptr);
+      CBQueueEvent event;
+      if (!queue_view_.GetEvent(op, &event) ||
+          event.kind != CBQueueEvent::Kind::kReserve) {
+        return;
+      }
+      const int cb_id = event.physical_cb_id;
+      if (!IsTracked(cb_id) || front_pages_[cb_id] <= 0 ||
+          consumed_front_pages_[cb_id] <= 0) {
+        return;
+      }
+      if (HasFutureWaitBeforeNextPush(seq, next_index, cb_id)) {
+        return;
+      }
+      const int pop_pages =
+          std::min(front_pages_[cb_id], consumed_front_pages_[cb_id]);
+      if (pop_pages <= 0) {
+        return;
+      }
+      stmts->push_back(MakeCBPopFrontStmt(event.logical_cb_id, pop_pages));
+      front_pages_[cb_id] = std::max(0, front_pages_[cb_id] - pop_pages);
+      consumed_front_pages_[cb_id] =
+          std::max(0, consumed_front_pages_[cb_id] - pop_pages);
+    }
+
+    void RecordQueueEvent(const tir::CallNode* op) {
+      CBQueueEvent event;
+      if (!queue_view_.GetEvent(op, &event) || !IsTracked(event.physical_cb_id)) {
+        return;
+      }
+      const int cb_id = event.physical_cb_id;
+      if (event.kind == CBQueueEvent::Kind::kPush) {
+        front_pages_[cb_id] += event.pages;
+        return;
+      }
+      if (event.kind == CBQueueEvent::Kind::kWait) {
+        if (front_pages_[cb_id] > 0) {
+          consumed_front_pages_[cb_id] = std::max(
+              consumed_front_pages_[cb_id],
+              std::min(front_pages_[cb_id], event.pages));
+        }
+        return;
+      }
+      if (event.kind == CBQueueEvent::Kind::kPop) {
+        front_pages_[cb_id] = std::max(0, front_pages_[cb_id] - event.pages);
+        consumed_front_pages_[cb_id] =
+            std::max(0, consumed_front_pages_[cb_id] - event.pages);
+      }
+    }
+
+    bool IsTracked(int cb_id) const {
+      return cb_id >= 0 && cb_id < static_cast<int>(front_pages_.size()) &&
+             queue_view_.IsLocalCB(cb_id);
+    }
+
+    PhysicalCBQueueView queue_view_;
+    std::vector<int> front_pages_;
+    std::vector<int> consumed_front_pages_;
+  };
+
+  return Rewriter(queue_view).Rewrite(body);
 }
 
 tir::Stmt RewriteRetainedStreamInputMatmulTileOffsets(
@@ -1856,8 +2417,29 @@ PrimFunc PlanTTCBAlloc::Transform(const PrimFunc& func) {
   const std::vector<bool> exclusive_requirements =
       CollectExclusiveRequirementMask(body_with_auto_pops,
                                       static_cast<int>(requirements.size()));
+  std::vector<std::vector<bool>> requirement_conflicts =
+      CollectRequirementConflictMatrix(body_with_auto_pops,
+                                       static_cast<int>(requirements.size()));
+  MergeRequirementConflictMatrix(
+      &requirement_conflicts,
+      CollectFIFOFrontOrderConflictMatrix(body_with_auto_pops, requirements));
+  if (auto staged_program = func->GetAttr<TTProgram>(attr::kTLTTProgram)) {
+    for (const TTKernel& kernel : staged_program.value()->kernels) {
+      if (!kernel->body.defined()) {
+        continue;
+      }
+      MergeRequirementConflictMatrix(
+          &requirement_conflicts,
+          CollectRequirementConflictMatrix(kernel->body,
+                                           static_cast<int>(requirements.size())));
+      MergeRequirementConflictMatrix(
+          &requirement_conflicts,
+          CollectFIFOFrontOrderConflictMatrix(kernel->body, requirements));
+    }
+  }
   std::vector<CBConfig> configs =
-      AssignCBIds(requirements, referenced_requirements, exclusive_requirements);
+      AssignCBIds(requirements, referenced_requirements, exclusive_requirements,
+                  requirement_conflicts);
 
   // Create mutable copy and store CB configuration
   PrimFunc new_func = func;
@@ -1904,7 +2486,10 @@ PrimFunc PlanTTCBAlloc::Transform(const PrimFunc& func) {
   StoreCBConfig(new_func, configs);
   physical_cb_body = InsertPhysicalPopsBeforeBlockingReserve(physical_cb_body, configs);
   physical_cb_body = RetainLocalCBFrontForFutureWaits(physical_cb_body, configs);
+  physical_cb_body = PopConsumedLocalCBFrontBeforeReuse(physical_cb_body, configs);
+  physical_cb_body = DropEmptyCleanupWaitPopsBeforeReserve(physical_cb_body, configs);
   physical_cb_body = ClampIntermediatePopsToAvailableFront(physical_cb_body, configs);
+  physical_cb_body = CollapseDuplicatePhysicalCBQueueEvents(physical_cb_body);
   new_func.CopyOnWrite()->body = physical_cb_body;
   cb_configs_ = configs;
 
@@ -1992,10 +2577,12 @@ std::vector<CBRequirement> PlanTTCBAlloc::GetCBRequirements(
 std::vector<CBConfig> PlanTTCBAlloc::AssignCBIds(
     const std::vector<CBRequirement>& requirements,
     const std::vector<bool>& referenced_requirements,
-    const std::vector<bool>& exclusive_requirements) {
+    const std::vector<bool>& exclusive_requirements,
+    const std::vector<std::vector<bool>>& requirement_conflicts) {
   std::vector<CBConfig> configs;
   ICHECK_EQ(referenced_requirements.size(), requirements.size());
   ICHECK_EQ(exclusive_requirements.size(), requirements.size());
+  ICHECK_EQ(requirement_conflicts.size(), requirements.size());
 
   int next_input_id = kInputCBStart;
   int next_compute_cb_id = kOutputCBStart;
@@ -2039,7 +2626,8 @@ std::vector<CBConfig> PlanTTCBAlloc::AssignCBIds(
     bool reused = false;
     for (auto& config : configs) {
       if (!IsCompatibleForReuse(req, static_cast<int>(req_index), config,
-                                exclusive_requirements)) {
+                                exclusive_requirements,
+                                requirement_conflicts)) {
         continue;
       }
       config.lifetime_end = std::max(config.lifetime_end, req.lifetime_end);
@@ -2207,10 +2795,15 @@ tvm::tir::Stmt PlanTTCBAlloc::RewriteBodyWithFinalCBAllocation(
   if (!body.defined() || cb_configs_.empty()) {
     return body;
   }
-  tir::Stmt rewritten = body;
+  tir::Stmt rewritten = RewriteCBIdsInIR(body, cb_id_by_requirement_index_);
   rewritten = RewriteRetainedStreamInputMatmulTileOffsets(rewritten, cb_configs_);
-  rewritten = RetainLocalCBFrontForFutureWaits(rewritten, cb_configs_,
-                                               cb_id_by_requirement_index_);
+  rewritten = RetainLocalCBFrontForFutureWaits(rewritten, cb_configs_);
+  rewritten = InsertPhysicalPopsBeforeBlockingReserve(rewritten, cb_configs_);
+  rewritten = RetainLocalCBFrontForFutureWaits(rewritten, cb_configs_);
+  rewritten = PopConsumedLocalCBFrontBeforeReuse(rewritten, cb_configs_);
+  rewritten = DropEmptyCleanupWaitPopsBeforeReserve(rewritten, cb_configs_);
+  rewritten = ClampIntermediatePopsToAvailableFront(rewritten, cb_configs_);
+  rewritten = CollapseDuplicatePhysicalCBQueueEvents(rewritten);
   return rewritten;
 }
 
@@ -2231,10 +2824,6 @@ tvm::ffi::Array<TTKernel> PlanTTCBAlloc::RewriteKernelBodies(
       std::vector<int> max_outstanding_pages(std::max(0, max_physical_cb_id + 1), 0);
       for (const TTKernelQueueEvent& event : queue_events) {
         int cb_id = static_cast<int>(event->cb_id);
-        auto remap_it = cb_id_by_requirement_index_.find(cb_id);
-        if (remap_it != cb_id_by_requirement_index_.end()) {
-          cb_id = remap_it->second;
-        }
         const int pages = static_cast<int>(event->pages);
         if (cb_id < 0 || cb_id >= static_cast<int>(max_outstanding_pages.size()) ||
             pages <= 0) {
