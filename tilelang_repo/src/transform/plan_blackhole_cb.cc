@@ -160,6 +160,9 @@ bool IsCompatibleForReuse(const CBRequirement& req, int req_index,
   if (config.role != RoleForType(req.type)) {
     return false;
   }
+  if (config.name != req.name) {
+    return false;
+  }
   if (req.type == CBType::kInput) {
     return false;
   }

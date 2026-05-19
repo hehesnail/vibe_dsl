@@ -298,6 +298,35 @@
     reduce 累加顺序与 torch row sum 有最多 `0.0625` abs diff，使用
     `atol=8e-2,rtol=0.0`。
 
+### Copy runtime exact gate 暴露出的 stick / reshard / remote-core ABI 问题
+
+- **现象**:
+  - 将 `test_blackhole_copy_runtime.py` 中 copy 结果对比从
+    `1e-3` / `1e-5` 收紧为 `atol=0,rtol=0` 后，
+    `tall_stick_copy` 输出不是微小误差，而是把 `64x16` stick 写成了
+    错误区域，max diff `4.570222854614258`。
+  - 同一轮 full-suite 还暴露出两个非数值 contract gap：多 resident
+    projected reshard 丢失 `reshard_plans`，手动 worker semaphore test 追加
+    `logical_core_noc_x/y` runtime args 但没有 matching remote-core
+    descriptor。
+- **根因**:
+  - writer-side full-tile normalization 只比较元素总数，
+    `64*16 == 32*32` 被错当成 full tile。
+  - CB allocator 复用不同 requirement name 的 physical CB，只保留第一个
+    logical target name，导致 `resident_a` / `resident_c` 的 source binding
+    和 reshard projection 被吞掉。
+  - 测试 helper 构造半截 ABI，validator 正确拒绝缺失 descriptor 的
+    logical-core NOC runtime args。
+- **修复**:
+  - full-tile normalization 现在要求实际 `shared_rows == 32` 且
+    `shared_cols == 32`。
+  - CB allocator 不再跨不同 requirement name 复用 CB，保留 typed target
+    identity 和多个 projected reshard records。
+  - copy runtime helper 从 `logical_core_noc_x/y` runtime args 派生
+    `remote_core_descriptors`，保持手动重建的 ABI 完整。
+  - `test_blackhole_copy_runtime.py` 全文件通过 exact comparison：
+    `49 passed`。
+
 ### 多 tile per-work tile-compute local fragment 已改为 admitted runtime 正例
 
 - **旧现象**:

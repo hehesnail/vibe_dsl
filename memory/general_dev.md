@@ -3029,3 +3029,13 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   same transport-backed input CB for `reduce_tile`.  Keep these tests
   absolute-only (`rtol=0.0`); the current bf16 row-reduction measured max abs
   diff is `0.0625` against torch row-sum due TT reduce accumulation order.
+- 2026-05-19 copy-runtime exactness:
+  Copy/direct transport paths should use exact comparisons, not numeric
+  tolerance.  Tightening `test_blackhole_copy_runtime.py` to `atol=0,rtol=0`
+  exposed a real `64x16` stick-copy bug: writer-side full-tile normalization
+  used element count (`64*16 == 32*32`) and wrote a `32x32` tile.  Full-tile
+  normalization must require actual `32x32` geometry.  The same sweep also
+  exposed that CB allocator reuse across different requirement names erases
+  resident-buffer identity and drops projected reshard records; do not reuse a
+  physical CB across distinct logical requirement names when those names are
+  part of the typed protocol.

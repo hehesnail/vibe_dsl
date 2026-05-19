@@ -235,8 +235,8 @@ static bool ShouldUseFullTileCBToDramGeometry(
       !IsBlackholeCBLikeScope(shared_buffer)) {
     return false;
   }
-  if (shared_rows * shared_cols !=
-      kBlackholeTileRows * kBlackholeTileCols) {
+  if (shared_rows != kBlackholeTileRows ||
+      shared_cols != kBlackholeTileCols) {
     return false;
   }
   return global_rows >= kBlackholeTileRows &&

@@ -107,7 +107,9 @@
   audited wrong-value paths for GEMM `transpose_A`, multi-tile per-work tile
   compute, existing-TIR TopK repeated row-reduction, and standalone leaf
   compute copy/reduce now run as admitted positive runtime cases instead of
-  publishing unsupported reasons.
+  publishing unsupported reasons.  Copy/direct transport runtime checks are
+  exact-value gates, including page-addressed stick, ragged/segmented/indexed
+  copy, worker-semaphore copy, and projected T3 reshard copies.
 - Current partial-K GEMM reducer admission supports temporal output waves in
   the single-card direct runtime.  Producer shards run in z order; in-physical
   output waves use the typed `device_tile_add` reducer, and later temporal
@@ -305,7 +307,9 @@ Current baseline:
   uses `atol=8e-2,rtol=0.0` after measuring max abs diff `0.0625` against
   the torch bf16 row-sum reference.  Single-card T10 local CCL
   all-gather / reduce-scatter / all-to-all now use exact `atol=0,rtol=0`
-  comparisons.
+  comparisons.  TopK value/index selection and copy-runtime selectors now also
+  use exact comparisons; no Blackhole runtime correctness test keeps a
+  non-zero relative tolerance.
 - Typed unsupported coverage:
   malformed schema, missing page/address metadata, invalid exact-CB lifecycle,
   non-unit mesh placement, and current simulator capability boundaries

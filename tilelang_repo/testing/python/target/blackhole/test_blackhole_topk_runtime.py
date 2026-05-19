@@ -351,8 +351,8 @@ def test_blackhole_existing_tir_value_index_selection_direct_runtime_fp32_single
         blk_m=64,
         tir_dtype=T.float32,
         torch_dtype=torch.float32,
-        atol=1e-5,
-        rtol=1e-5,
+        atol=0.0,
+        rtol=0.0,
     )
 
 
@@ -364,8 +364,8 @@ def test_blackhole_existing_tir_value_index_selection_direct_runtime_fp32_multi_
         blk_m=64,
         tir_dtype=T.float32,
         torch_dtype=torch.float32,
-        atol=1e-5,
-        rtol=1e-5,
+        atol=0.0,
+        rtol=0.0,
     )
 
 

@@ -39,6 +39,7 @@ from .common import (
     require_tt_program,
     staged_copy_kernel,
     staged_stick_copy_kernel,
+    tt_remote_core_descriptor_specs_to_list,
     tt_per_work_arg_specs_to_list,
     tt_runtime_arg_specs_to_list,
 )
@@ -84,6 +85,12 @@ def _assert_row_page_cb_owned_by_single_active_thread(artifact, cb_ids):
     executable_spec = _extract_blackhole_executable_spec(artifact)
     source = str(executable_spec["kernels"][0]["source_code"])
     thread_loop = "for (int32_t tx = 0;"
+    def assert_single_owner(position):
+        thread_loop_pos = source.rfind(thread_loop, 0, position)
+        if thread_loop_pos < 0:
+            return
+        assert source.rfind("if (tx == 0)", 0, position) > thread_loop_pos
+
     for cb_id in cb_ids:
         reserve = f"cb_reserve_back({cb_id}, 1);"
         wait = f"cb_wait_front({cb_id}, 1);"
@@ -91,12 +98,8 @@ def _assert_row_page_cb_owned_by_single_active_thread(artifact, cb_ids):
         assert source.count(wait) == 1
         reserve_pos = source.index(reserve)
         wait_pos = source.index(wait)
-        assert source.rfind("if (tx == 0)", 0, reserve_pos) > source.rfind(
-            thread_loop, 0, reserve_pos
-        )
-        assert source.rfind("if (tx == 0)", 0, wait_pos) > source.rfind(
-            thread_loop, 0, wait_pos
-        )
+        assert_single_owner(reserve_pos)
+        assert_single_owner(wait_pos)
 
 
 def _normalize_semaphore_plan_for_tt_program(semaphore_plan):
@@ -156,13 +159,43 @@ def _rebuild_semaphore_plans(tt_program, semaphore_plan):
 def _rebuild_direct_runtime_module_with_body_and_attrs(
     artifact, *, body_mutator=None, semaphore_plan=None, runtime_args=None
 ):
+    def remote_core_descriptors_from_runtime_args(abi_plan):
+        descriptors = tt_remote_core_descriptor_specs_to_list(
+            abi_plan.remote_core_descriptors
+        )
+        seen = {str(item.get("identity", "")) for item in descriptors}
+        for arg in runtime_args or []:
+            if str(arg.get("kind", "")) not in {
+                "logical_core_noc_x",
+                "logical_core_noc_y",
+            }:
+                continue
+            identity = str(arg.get("identity", ""))
+            if not identity or identity in seen:
+                continue
+            descriptors.append(
+                {
+                    "identity": identity,
+                    "core_x": int(arg.get("core_x", -1)),
+                    "core_y": int(arg.get("core_y", -1)),
+                }
+            )
+            seen.add(identity)
+        return descriptors
+
     def mutate(tt_program):
         kwargs = {}
         if semaphore_plan is not None:
             kwargs["semaphore_plans"] = _rebuild_semaphore_plans(tt_program, semaphore_plan)
         if runtime_args is not None:
             kwargs["abi_plans"] = [
-                rebuild_tt_abi_plan(abi_plan, runtime_args=runtime_args)
+                rebuild_tt_abi_plan(
+                    abi_plan,
+                    runtime_args=runtime_args,
+                    remote_core_descriptors=remote_core_descriptors_from_runtime_args(
+                        abi_plan
+                    ),
+                )
                 for abi_plan in tt_program.abi_plans
             ]
         return rebuild_tt_program(tt_program, **kwargs)
@@ -524,7 +557,7 @@ def test_blackhole_module_direct_call():
 
     artifact.codegen_mod["main"](a_torch, b_output)
     assert_tensors_close_or_dump(
-        b_output, b_ref, atol=1e-3, rtol=1e-3, failure_message="Direct-call output mismatch"
+        b_output, b_ref, atol=0.0, rtol=0.0, failure_message="Direct-call output mismatch"
     )
 
 
@@ -599,8 +632,8 @@ def test_blackhole_module_direct_call_rectangular_tiles():
     assert_tensors_close_or_dump(
         b_output,
         b_ref,
-        atol=1e-3,
-        rtol=1e-3,
+        atol=0.0,
+        rtol=0.0,
         failure_message="Rectangular direct-call output mismatch",
     )
 
@@ -623,8 +656,8 @@ def test_blackhole_t4_external_sharded_l1_accessor_direct_runtime_bf16():
     assert_tensors_close_or_dump(
         b_output,
         a_torch,
-        atol=1e-3,
-        rtol=1e-3,
+        atol=0.0,
+        rtol=0.0,
         failure_message="External sharded L1 accessor direct-runtime output mismatch",
     )
 
@@ -675,8 +708,8 @@ def test_blackhole_module_direct_call_stick_copy():
     assert_tensors_close_or_dump(
         b_output,
         b_ref,
-        atol=1e-5,
-        rtol=1e-5,
+        atol=0.0,
+        rtol=0.0,
         failure_message="Stick direct-call output mismatch",
     )
 
@@ -702,8 +735,8 @@ def test_blackhole_module_direct_call_tall_stick_copy():
     assert_tensors_close_or_dump(
         b_output,
         b_ref,
-        atol=1e-5,
-        rtol=1e-5,
+        atol=0.0,
+        rtol=0.0,
         failure_message="Tall stick direct-call output mismatch",
     )
 
@@ -731,8 +764,8 @@ def test_blackhole_module_direct_call_offset_stick_copy():
     assert_tensors_close_or_dump(
         b_output,
         b_ref,
-        atol=1e-5,
-        rtol=1e-5,
+        atol=0.0,
+        rtol=0.0,
         failure_message="Offset stick direct-call output mismatch",
     )
 
@@ -790,8 +823,8 @@ def test_blackhole_module_direct_call_grid_indexed_copy_multicore_launch():
     assert_tensors_close_or_dump(
         b_output,
         b_ref,
-        atol=1e-3,
-        rtol=1e-3,
+        atol=0.0,
+        rtol=0.0,
         failure_message="Grid-indexed direct-call output mismatch",
     )
 
@@ -819,8 +852,8 @@ def test_blackhole_module_direct_call_block_indexed_copy_uses_index_table():
     assert_tensors_close_or_dump(
         b_output,
         b_ref,
-        atol=1e-3,
-        rtol=1e-3,
+        atol=0.0,
+        rtol=0.0,
         failure_message="Block-indexed direct-call output mismatch",
     )
 
@@ -882,8 +915,8 @@ def test_blackhole_module_direct_call_block_indexed_2d_copy_uses_table_addressin
     assert_tensors_close_or_dump(
         b_output,
         b_ref,
-        atol=1e-3,
-        rtol=1e-3,
+        atol=0.0,
+        rtol=0.0,
         failure_message="2D block-indexed direct-call output mismatch",
     )
 
@@ -921,8 +954,8 @@ def test_blackhole_module_direct_call_block_indexed_2tile_copy_uses_scaled_table
     assert_tensors_close_or_dump(
         b_output,
         b_ref,
-        atol=1e-3,
-        rtol=1e-3,
+        atol=0.0,
+        rtol=0.0,
         failure_message="2-tile block-indexed direct-call output mismatch",
     )
 
@@ -965,8 +998,8 @@ def test_blackhole_module_direct_call_sparse_2tile_copy_uses_two_table_entries()
     assert_tensors_close_or_dump(
         b_output,
         b_ref,
-        atol=1e-3,
-        rtol=1e-3,
+        atol=0.0,
+        rtol=0.0,
         failure_message="Sparse 2-tile block-indexed direct-call output mismatch",
     )
 
@@ -1020,8 +1053,8 @@ def test_blackhole_module_direct_call_sparse_2tile_ragged_copy_uses_per_entry_bo
     assert_tensors_close_or_dump(
         b_output,
         b_ref,
-        atol=1e-3,
-        rtol=1e-3,
+        atol=0.0,
+        rtol=0.0,
         failure_message="Sparse 2-tile ragged direct-call output mismatch",
     )
 
@@ -1074,8 +1107,8 @@ def test_blackhole_module_direct_call_sparse_3tile_ragged_copy_uses_per_entry_bo
     assert_tensors_close_or_dump(
         b_output,
         b_ref,
-        atol=1e-3,
-        rtol=1e-3,
+        atol=0.0,
+        rtol=0.0,
         failure_message="Sparse 3-tile ragged direct-call output mismatch",
     )
 
@@ -1132,8 +1165,8 @@ def test_blackhole_serialized_block_indexed_2d_copy_preserves_table_addressing()
     assert_tensors_close_or_dump(
         b_output,
         b_ref,
-        atol=1e-3,
-        rtol=1e-3,
+        atol=0.0,
+        rtol=0.0,
         failure_message="Serialized 2D block-indexed direct-call output mismatch",
     )
 
@@ -1169,8 +1202,8 @@ def test_blackhole_module_direct_call_ragged_row_copy_uses_row_count_predicate()
     assert_tensors_close_or_dump(
         b_output,
         b_ref,
-        atol=1e-3,
-        rtol=1e-3,
+        atol=0.0,
+        rtol=0.0,
         failure_message="Ragged row direct-call output mismatch",
     )
 
@@ -1210,8 +1243,8 @@ def test_blackhole_module_direct_call_segmented_row_copy_uses_start_and_count_ta
     assert_tensors_close_or_dump(
         b_output,
         b_ref,
-        atol=1e-3,
-        rtol=1e-3,
+        atol=0.0,
+        rtol=0.0,
         failure_message="Segmented row direct-call output mismatch",
     )
 
@@ -1268,8 +1301,8 @@ def test_blackhole_module_direct_call_two_segment_row_copy_uses_per_range_tables
     assert_tensors_close_or_dump(
         b_output,
         b_ref,
-        atol=1e-3,
-        rtol=1e-3,
+        atol=0.0,
+        rtol=0.0,
         failure_message="Two-segment row direct-call output mismatch",
     )
 
@@ -1326,8 +1359,8 @@ def test_blackhole_module_direct_call_three_segment_row_copy_uses_per_range_tabl
     assert_tensors_close_or_dump(
         b_output,
         b_ref,
-        atol=1e-3,
-        rtol=1e-3,
+        atol=0.0,
+        rtol=0.0,
         failure_message="Three-segment row direct-call output mismatch",
     )
 
@@ -1373,8 +1406,8 @@ def test_blackhole_module_direct_call_paged_cache_len_copy_uses_page_table_and_s
     assert_tensors_close_or_dump(
         b_output,
         b_ref,
-        atol=1e-3,
-        rtol=1e-3,
+        atol=0.0,
+        rtol=0.0,
         failure_message="Paged cache-len direct-call output mismatch",
     )
 
@@ -1430,8 +1463,8 @@ def test_blackhole_module_direct_call_paged_valid_rows_copy_uses_per_page_bounds
     assert_tensors_close_or_dump(
         b_output,
         b_ref,
-        atol=1e-3,
-        rtol=1e-3,
+        atol=0.0,
+        rtol=0.0,
         failure_message="Paged valid-row direct-call output mismatch",
     )
 
@@ -1707,8 +1740,8 @@ def test_blackhole_module_direct_call_page_addressed_copy_consumes_address_contr
     assert_tensors_close_or_dump(
         b_output,
         b_ref,
-        atol=1e-5,
-        rtol=1e-5,
+        atol=0.0,
+        rtol=0.0,
         failure_message="Page-addressed copy direct-call output mismatch",
     )
 
@@ -1820,8 +1853,8 @@ def test_blackhole_module_direct_call_grid_indexed_copy_worker_semaphore_handsha
     assert_tensors_close_or_dump(
         b_output,
         b_ref,
-        atol=1e-3,
-        rtol=1e-3,
+        atol=0.0,
+        rtol=0.0,
         failure_message="Worker semaphore producer-consumer copy mismatch",
     )
 
@@ -2189,8 +2222,8 @@ def test_blackhole_module_direct_call_large_shape_copy():
     assert_tensors_close_or_dump(
         b_output,
         b_ref,
-        atol=1e-3,
-        rtol=1e-3,
+        atol=0.0,
+        rtol=0.0,
         failure_message="Large-shape direct-call output mismatch",
     )
 
