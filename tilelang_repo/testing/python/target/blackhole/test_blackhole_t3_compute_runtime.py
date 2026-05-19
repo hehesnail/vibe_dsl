@@ -13,12 +13,6 @@ from .common import (
 from .test_blackhole_copy_pipeline import _extract_blackhole_executable_spec
 
 
-MULTI_TILE_ELEMENTWISE_LOCAL_FRAGMENT_REASON = (
-    "multi-tile per-work tile-compute local fragment direct runtime is gated; "
-    "current direct runtime only proves single 32x32-tile local fragment publication"
-)
-
-
 def _lower_blackhole(kernel):
     target = Target("blackhole")
     with target:
@@ -333,17 +327,8 @@ def test_blackhole_t3_sharded_elementwise_chain_bf16_direct_runtime(
         strategy=strategy,
         source_region_shape=(tile_m, tile_n),
         expected_ops={"add_tiles", "sub_tiles", "mul_tiles", "recip_tile"},
-        expected_direct_runtime_reasons=(
-            [MULTI_TILE_ELEMENTWISE_LOCAL_FRAGMENT_REASON]
-            if tile_m * tile_n > 32 * 32
-            else []
-        ),
+        expected_direct_runtime_reasons=[],
     )
-    if tile_m * tile_n > 32 * 32:
-        pytest.skip(
-            "Blackhole T3 direct runtime is not yet supported for this shape: "
-            + MULTI_TILE_ELEMENTWISE_LOCAL_FRAGMENT_REASON
-        )
 
     artifact.codegen_mod["main"](a, b, c, d, e, out)
     assert_tensors_close_or_dump(

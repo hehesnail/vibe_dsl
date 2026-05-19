@@ -83,51 +83,6 @@
   - 后续若 TT-Sim / TT-Metal API 支持该 PACR 形态，删除 gate 前必须先恢复
     small MHA / GQA / paged decode runtime correctness 正向数值比较。
 
-### 多 tile per-work tile-compute local fragment 当前不能作为 admitted runtime
-
-- **现象**:
-  - T3 elementwise `block_rect_128x512` 使用 `tile_m=32,tile_n=64`，
-    也就是每个 per-work fragment 覆盖两个 `32x32` tiles。
-  - 旧 direct runtime admission reasons 为空，但 TT-Sim 输出整块为 0；
-    实测 max abs diff `0.94140625`、mean abs diff 约 `0.356`，旧
-    `atol=0.08,rtol=0.08` 也无法通过。
-- **根因 / 当前判断**:
-  - 生成的 tile-compute local-fragment publication 只证明过单个 `32x32`
-    tile。对于 `32x64`，compute source 会从 local fragment 重新发布多个
-    tiles，但当前路径没有证明对应 local fragment 值已按多 tile 形态正确建立。
-- **当前结论**:
-  - 这不是“阈值太松”问题，而是未证明形态被错误 admitted。
-  - 当前用 typed buffer distribution `source_region_kind=per_work_tile`
-    且 `source_region_shape` 元素数大于 `32*32` 的 non-GEMM tile-compute
-    path fail closed：
-    `multi-tile per-work tile-compute local fragment direct runtime is gated; current direct runtime only proves single 32x32-tile local fragment publication`。
-  - 后续支持该形态时，应修 local-fragment materialization/publication 协议并
-    用 `32x64` 及更大 per-work tile-compute shape 恢复 runtime 正例。
-
-### Existing-TIR TopK repeated row-reduction 当前不能作为 admitted runtime
-
-- **现象**:
-  - `test_blackhole_topk_runtime.py` 的 direct runtime TopK value/index
-    selection 路径会执行，但 fp32 / bf16 输出都不正确。
-  - 对 `M=64,N=128,k=6` 的唯一值输入，首行实际 values 为
-    `[0.96875, 0.984375, 0.953125, 0.96875, 0.984375, 0.953125]`，
-    reference 为
-    `[0.9921875, 0.984375, 0.9765625, 0.96875, 0.9609375, 0.953125]`；
-    max abs diff `0.0234375`、mean abs diff `0.01171875`，indices 也不匹配。
-- **当前判断**:
-  - 这不是 bf16 精度容差问题；fp32 也错。
-  - typed compute records 暴露了 repeated row reduction：
-    `kind=reduce,reduction_dim=row,repeat_extent=6`。当前 direct runtime /
-    reduce local-fragment path 会重复 partial maxima，不能作为 TopK
-    correctness 正例。
-- **当前结论**:
-  - Direct runtime 通过 `ExecutableSpec.direct_runtime_unsupported_reasons`
-    fail closed：
-    `repeated row-reduction value/index selection direct runtime is gated; current reduce local-fragment path repeats partial maxima instead of producing stable top-k values`。
-  - 后续支持该路径时，必须修 repeated row-reduction local-fragment update /
-    index propagation，并恢复 fp32 与 bf16 TopK direct-runtime 正向数值和
-    index 比较；不能靠放宽 `rtol=1e-2` 接受该结果。
-
 ### T9.6 split-block flash decode 当前停在 TTProgram materialization validator
 
 - **现象**:
@@ -317,6 +272,65 @@
     不能进入生产 compute op 协议
 
 ## 2. 已解决但值得记住的模式
+
+### exact-CB direct input copies 不能退回未初始化 local fragment republish
+
+- **现象**:
+  - Standalone leaf compute 的 binary / broadcast / unary 正例在宽
+    `rtol=2e-2` 下没有暴露，但改成 absolute-only 后输出等价于丢掉 lhs：
+    `binary_add` max diff `2.953125`，`binary_mul` max diff `6.71875`。
+  - row-reduction 更明显，旧路径从未初始化 local fragment 发布输入，输出全 0，
+    max diff `12.625`。
+- **根因**:
+  - tile-compute copy / materialization 在 `T.copy(A_local -> C_local)` 这类
+    direct input alias 上没有继承 reader 已经发布的 typed input CB，而是从
+    `ResolvePhysicalComputeBuffer(...)` 后的 local fragment 重新 tilize。
+  - standalone row-reduction 的 input creation 也没有复用 transport-backed
+    direct input CB。
+- **修复**:
+  - copy lowering 对 tile-aligned、transport-backed direct input source 使用
+    `PrepareExactTiledCBRequirement(..., kInput)` 建立 live exact-CB alias。
+  - fragment materialization 对 identity copy publication 追踪 direct-copy
+    source 的 live/input CB，而不是从目标 local fragment republish。
+  - row-reduction input creation 同样复用 transport-backed direct input CB。
+  - `test_blackhole_leaf_compute_runtime.py` 改为 absolute-only gates：
+    binary/unary/broadcast `atol=2e-2,rtol=0.0`；bf16 row-reduction 因 TT
+    reduce 累加顺序与 torch row sum 有最多 `0.0625` abs diff，使用
+    `atol=8e-2,rtol=0.0`。
+
+### 多 tile per-work tile-compute local fragment 已改为 admitted runtime 正例
+
+- **旧现象**:
+  - T3 elementwise `block_rect_128x512` 使用 `tile_m=32,tile_n=64`，
+    每个 per-work fragment 覆盖两个 `32x32` tiles。
+  - 旧 direct runtime admission reasons 为空但 TT-Sim 输出整块为 0；
+    max abs diff `0.94140625`、mean abs diff 约 `0.356`。
+- **根因**:
+  - exact input CB live path 只接受单个 full tile，导致 tile-aligned 多页输入
+    落回 local fragment republish，而对应 local fragment 并没有按多 tile
+    形态被正确建立。
+- **修复**:
+  - exact input CB creation 现在接受 tile-aligned multi-tile logical matrix，
+    并直接消费 transport-backed input CB pages。
+  - `test_blackhole_t3_compute_runtime.py` 不再 skip 多 tile case；
+    `block_rect_128x512` 和 `block_large_1024x1024` 都作为 bf16
+    `BlackholeModule + TT-Sim` 正例运行。
+
+### Existing-TIR TopK repeated row-reduction page order 必须和 writer 消费顺序一致
+
+- **旧现象**:
+  - Existing-TIR TopK direct runtime 会重复 partial maxima，fp32 / bf16
+    values 和 indices 都错；`M=64,N=128,k=6` 的 max value diff 为
+    `0.0234375`，indices 不匹配。
+- **根因**:
+  - compute-side repeated row-reduction 发布输出页时按 `group -> repeat`
+    顺序写 CB，但 TopK writer 按 `repeat -> group` 消费 value/index pages。
+  - 这不是 bf16 误差问题；page order 错会直接重复旧 partial maxima。
+- **修复**:
+  - `EmitTypedReductionRegionIfSupported` 的输出 publication 顺序改为
+    repeat-major。
+  - TopK runtime 测试恢复为 admitted positive path；value 和 index 均 exact
+    compare，unsupported reasons 必须为空。
 
 ### partial-K 大 shape 的 logical work grid 不能直接当 L1 shard grid
 

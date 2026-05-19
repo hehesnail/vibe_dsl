@@ -3013,8 +3013,19 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   Runtime value tests must use measured absolute gates for admitted bf16 paths
   and exact/index checks for selection paths.  A broad relative tolerance can
   hide real runtime bugs: existing-TIR TopK repeated row-reduction returned
-  repeated partial maxima and wrong indices with max value diff `0.0234375`.
-  If a typed compute pattern is measured wrong, add an
-  `ExecutableSpec.direct_runtime_unsupported_reasons` gate before execution
-  until the compute/runtime protocol is fixed; do not keep it admitted by
-  relaxing tolerances.
+  repeated partial maxima and wrong indices with max value diff `0.0234375`,
+  and standalone leaf compute originally dropped lhs / reduction inputs when
+  copy materialization republished from uninitialized local fragments.  Fix the
+  runtime protocol when the path is in scope; only use
+  `ExecutableSpec.direct_runtime_unsupported_reasons` as a temporary fail-closed
+  boundary for genuinely unsupported simulator/runtime forms.  Do not keep a
+  wrong admitted path green by relaxing relative tolerance.
+- 2026-05-19 exact-CB direct input aliasing:
+  if a tile-compute copy or identity publication is backed by a typed DRAM/CB
+  input path, the downstream buffer must borrow that exact input CB instead of
+  tilizing from a local fragment that may never have been materialized.
+  Standalone binary/unary/broadcast leaf compute should therefore wait on the
+  reader-published input CBs directly; standalone row-reduction must use the
+  same transport-backed input CB for `reduce_tile`.  Keep these tests
+  absolute-only (`rtol=0.0`); the current bf16 row-reduction measured max abs
+  diff is `0.0625` against torch row-sum due TT reduce accumulation order.

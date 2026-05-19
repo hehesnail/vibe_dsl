@@ -102,10 +102,12 @@
   current audited unsupported boundaries are:
   `tilize_cast_fragment_slice` CB-republish in TT-Sim
   (`tensix_execute_pacr: intermediate_format=0 late_from_format=5`),
-  GEMM `transpose_A` in the current direct runtime, and multi-tile
-  per-work tile-compute local fragments larger than one `32x32` tile, and
-  repeated row-reduction value/index selection used by existing-TIR TopK.
-  These publish typed unsupported reasons before execution.
+  loop-carried input exact-CB `pacr count=1`, non-unit mesh / fabric paths,
+  malformed schemas, and explicit buffer/access metadata gaps.  Previously
+  audited wrong-value paths for GEMM `transpose_A`, multi-tile per-work tile
+  compute, existing-TIR TopK repeated row-reduction, and standalone leaf
+  compute copy/reduce now run as admitted positive runtime cases instead of
+  publishing unsupported reasons.
 - Current partial-K GEMM reducer admission supports temporal output waves in
   the single-card direct runtime.  Producer shards run in z order; in-physical
   output waves use the typed `device_tile_add` reducer, and later temporal
@@ -298,16 +300,20 @@ Current baseline:
   `3.815e-6`; T9 paged MLA dual-score runs with `atol=2e-2,rtol=0.0`
   after measuring max abs diff `0.010296`; T3 admitted tile-compute chains
   and T9.5 chunk scan run with `atol=2e-2,rtol=0.0`; T3 reduce-mix runs
-  with `atol=1e-3,rtol=0.0`.
+  with `atol=1e-3,rtol=0.0`.  Standalone leaf binary/unary/broadcast
+  runtime cases now use `atol=2e-2,rtol=0.0`; standalone bf16 row-reduction
+  uses `atol=8e-2,rtol=0.0` after measuring max abs diff `0.0625` against
+  the torch bf16 row-sum reference.  Single-card T10 local CCL
+  all-gather / reduce-scatter / all-to-all now use exact `atol=0,rtol=0`
+  comparisons.
 - Typed unsupported coverage:
   malformed schema, missing page/address metadata, invalid exact-CB lifecycle,
   non-unit mesh placement, and current simulator capability boundaries
   fail closed before source or runtime guessing.  Current runtime-correctness
-  audit coverage includes fail-closed reasons for `tilize_cast_fragment_slice`
-  PACR, GEMM `transpose_A`, and multi-tile per-work tile-compute local
-  fragments larger than one `32x32` tile, plus repeated row-reduction
-  value/index selection after measuring the TopK direct runtime repeating
-  partial maxima with max value diff `0.0234375` and wrong indices.
+  audit coverage keeps `tilize_cast_fragment_slice` PACR as a typed simulator
+  boundary; GEMM `transpose_A`, T3 multi-tile per-work tile compute, TopK
+  repeated row-reduction value/index selection, and standalone leaf compute
+  are now covered by positive TT-Sim runtime checks.
 
 Historical checkpoint logs, exact selector counts, and patch notes belong in
 git history and `memory/`, not in this file.

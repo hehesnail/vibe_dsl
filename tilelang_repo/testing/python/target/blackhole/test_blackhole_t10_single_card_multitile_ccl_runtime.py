@@ -238,8 +238,8 @@ def test_blackhole_t10_single_card_reduce_scatter_multitile_runtime_correctness(
     assert_tensors_close_or_dump(
         output,
         reference,
-        atol=1e-3,
-        rtol=1e-3,
+        atol=0,
+        rtol=0,
         failure_message="single-card reduce-scatter participant outputs mismatch",
     )
 

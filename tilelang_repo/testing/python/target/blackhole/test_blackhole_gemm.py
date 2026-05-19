@@ -2676,7 +2676,7 @@ def test_blackhole_gemm_clear_accum_false_preserves_float32_accumulator_bf16():
         c_output,
         c_ref,
         atol=4e-2,
-        rtol=1e-4,
+        rtol=0.0,
         failure_message=(
             "clear_accum=false GEMM must preserve float32 accumulator precision"
         ),
@@ -3291,8 +3291,21 @@ def test_blackhole_fragment_fill_cast_publish_build_reads_executable_without_low
     assert executable_spec["cb_configs"]
 
 
-def test_blackhole_gemm_direct_runtime_rejects_transpose_a_typed_compute_schema():
-    kernel = gemm_kernel_with_transpose_flags(transpose_A=True, transpose_B=True)
+def test_blackhole_gemm_direct_runtime_supports_transpose_a_typed_compute_schema():
+    can_run, msg = check_blackhole_direct_execution_requirements()
+    if not can_run:
+        pytest.skip(f"Blackhole requirements not met: {msg}")
+
+    m, n, k = 32, 32, 128
+    torch.manual_seed(405)
+    a_torch = torch.randn(k, m, dtype=torch.bfloat16)
+    b_torch = torch.randn(n, k, dtype=torch.bfloat16)
+    c_output = torch.zeros(m, n, dtype=torch.float32)
+    c_ref = torch.matmul(a_torch.float().transpose(0, 1), b_torch.float().transpose(0, 1))
+
+    kernel = gemm_kernel_with_transpose_flags(
+        M=m, N=n, K=k, transpose_A=True, transpose_B=True
+    )
     target = Target("blackhole")
 
     with target:
@@ -3308,10 +3321,16 @@ def test_blackhole_gemm_direct_runtime_rejects_transpose_a_typed_compute_schema(
     assert int(gemm_op["Kt"]) == 4
 
     reasons = _direct_runtime_unsupported_reasons(artifact)
-    assert reasons == [
-        "GEMM transpose_A is not admitted by Blackhole direct runtime; "
-        "current matmul_tiles lowering/runtime only proves non-transposed A"
-    ]
+    assert reasons == []
+
+    artifact.codegen_mod["main"](a_torch, b_torch, c_output)
+    assert_tensors_close_or_dump(
+        c_output,
+        c_ref,
+        atol=1e-4,
+        rtol=0.0,
+        failure_message="GEMM transpose_A direct-call output mismatch",
+    )
 
 
 def test_blackhole_multicore_gemm_lowering_respects_transposed_b_layout():

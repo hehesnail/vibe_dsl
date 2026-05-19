@@ -1108,6 +1108,71 @@ PlanTTKernelABI::ExactTiledCBValue PlanTTKernelABI::CreateRowReductionInputCBVal
       IsActiveLoopCarriedBuffer(src) && !IsSingleFullTileLogicalMatrix(src);
   const bool prefer_completed_loop_carried_state =
       IsCompletedLoopCarriedBuffer(src) && IsSingleFullTileLogicalMatrix(src);
+  auto has_transport_backed_direct_source = [&]() {
+    auto is_transport_backed_scope = [&](const Buffer& buffer) {
+      if (!buffer.defined()) {
+        return false;
+      }
+      const std::string scope = GetStorageScope(buffer);
+      if (scope.empty() || scope == "global") {
+        return true;
+      }
+      if (scope.rfind("shared", 0) == 0) {
+        return true;
+      }
+      return scope.rfind("blackhole.cb", 0) == 0;
+    };
+    for (const std::string& root : CollectBufferFlowIdentities(src)) {
+      std::string current = root;
+      std::unordered_set<std::string> seen;
+      while (!current.empty() && seen.insert(current).second) {
+        auto copy_it = direct_copy_source_by_buffer_identity_.find(current);
+        if (copy_it == direct_copy_source_by_buffer_identity_.end()) {
+          break;
+        }
+        current = copy_it->second;
+        auto buffer_it = buffer_by_identity_.find(current);
+        if (buffer_it != buffer_by_identity_.end() &&
+            is_transport_backed_scope(buffer_it->second)) {
+          return true;
+        }
+      }
+    }
+    return false;
+  };
+  auto try_create_transport_input_live = [&]() {
+    const auto [rows, cols] = GetLogicalMatrixShape(src);
+    const bool is_full_tile_logical_matrix =
+        rows > 0 && cols > 0 &&
+        rows % kBlackholeTileRows == 0 &&
+        cols % kBlackholeTileCols == 0;
+    if (!is_full_tile_logical_matrix || !has_transport_backed_direct_source()) {
+      return false;
+    }
+    bool is_compute_input = false;
+    for (const std::string& identity : CollectBufferFlowIdentities(src)) {
+      if (tile_compute_input_buffers_.count(identity) != 0U) {
+        is_compute_input = true;
+        break;
+      }
+    }
+    if (!is_compute_input) {
+      return false;
+    }
+    const int cb_id = PrepareExactTiledCBRequirement(src, CBType::kInput);
+    if (cb_requirements_.at(cb_id).initial_reserve_pages > 0) {
+      return false;
+    }
+    live_value.buffer = src;
+    live_value.cb_id = cb_id;
+    live_value.borrowed_live = true;
+    live_value.producer_live = true;
+    live_value.live_identity = BufferIdentityName(src);
+    PopulateExactTiledCBValueShape(src, &live_value);
+    RefineExactTiledCBValueShapeFromRequirement(&live_value);
+    RecordTiledCBLiveFormAliases(src, cb_id);
+    return true;
+  };
   if (!force_local_loop_carried) {
     if (TryCreateSelectedSourceLiveExactTiledCBValue(src, &live_value) ||
         TryCreateExactOutputLiveTiledCBValue(src, &live_value) ||
@@ -1116,6 +1181,9 @@ PlanTTKernelABI::ExactTiledCBValue PlanTTKernelABI::CreateRowReductionInputCBVal
         TryCreateLiveExactTiledCBValue(src, &live_value) ||
         (!prefer_completed_loop_carried_state &&
          TryCreateLoopCarriedExactInputStateCBValue(src, &live_value))) {
+      return live_value;
+    }
+    if (try_create_transport_input_live()) {
       return live_value;
     }
   }
@@ -1162,8 +1230,12 @@ PlanTTKernelABI::ExactTiledCBValue PlanTTKernelABI::CreateExactInputCBValue(
     return false;
   };
   auto try_create_transport_input_live = [&]() {
-    if (!IsSingleFullTileLogicalMatrix(src) ||
-        !has_transport_backed_direct_source()) {
+    const auto [rows, cols] = GetLogicalMatrixShape(src);
+    const bool is_full_tile_logical_matrix =
+        rows > 0 && cols > 0 &&
+        rows % kBlackholeTileRows == 0 &&
+        cols % kBlackholeTileCols == 0;
+    if (!is_full_tile_logical_matrix || !has_transport_backed_direct_source()) {
       return false;
     }
     bool is_compute_input = false;

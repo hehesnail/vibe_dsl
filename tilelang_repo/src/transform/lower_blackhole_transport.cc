@@ -1925,6 +1925,8 @@ Stmt PlanTTKernelABI::GenerateCopySequence(const BufferStoreNode* op,
           SelectStagedCopyTransportAxes(global_indices, {});
       const std::vector<int64_t> host_axis_order =
           BuildStagedCopyHostAxisOrder(global_indices, global_shape, row_axis, col_axis);
+      const bool transpose_2d =
+          gemm_transpose_a_ && BufferIdentityName(op->buffer) == gemm_a_buffer_name_;
       const int accessor_slot =
           GetReadAccessorSlot(segment_kind, load->buffer, direction);
       stmts.push_back(MakeBlackholeCall(
@@ -1934,7 +1936,8 @@ Stmt PlanTTKernelABI::GenerateCopySequence(const BufferStoreNode* op,
           {load->buffer->data, tile_index, IntImm32(cb_id), IntImm32(tile_bytes),
            IntImm32(accessor_slot)}));
       RegisterAccessor(segment_kind, load->buffer,
-                       accessor_slot, 2, 0, 0, 2, tile_bytes, host_axis_order);
+                       accessor_slot, 2, 0, 0, 2, tile_bytes, host_axis_order,
+                       transpose_2d);
       stmts.push_back(MakeBlackholeCall(
           blackhole_cb_push_back(), {IntImm32(cb_id), IntImm32(1)}));
       RecordTiledCBLiveFormAliases(cb_producer_buffer, cb_id);

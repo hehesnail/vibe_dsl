@@ -1961,6 +1961,12 @@ void PlanTTKernelABI::StoreAccessorDescriptors(PrimFunc &func) {
               accessor.Get("transpose_2d")
                   ? Downcast<Bool>(accessor.Get("transpose_2d").value())
                   : false;
+          const std::string gemm_a_host_buffer =
+              ResolveHostBufferForComputeOperand(gemm_a_buffer_);
+          const bool gemm_transpose_a_accessor =
+              gemm_transpose_a_ &&
+              (buffer_name == gemm_a_buffer_name_ ||
+               (!gemm_a_host_buffer.empty() && buffer_name == gemm_a_host_buffer));
           const AccessorDescriptor *matched_descriptor = nullptr;
           for (const AccessorDescriptor &desc : accessor_descriptors_) {
             const bool matches = desc.segment_kind == kind &&
@@ -1997,7 +2003,7 @@ void PlanTTKernelABI::StoreAccessorDescriptors(PrimFunc &func) {
           std::string resolved_memory_space = memory_space;
           int resolved_transport_page_size = transport_page_size;
           std::vector<int64_t> resolved_host_axis_order = host_axis_order;
-          bool resolved_transpose_2d = transpose_2d;
+          bool resolved_transpose_2d = transpose_2d || gemm_transpose_a_accessor;
           if (matched_descriptor != nullptr) {
             resolved_layout = matched_descriptor->layout;
             resolved_memory_space = matched_descriptor->memory_space;

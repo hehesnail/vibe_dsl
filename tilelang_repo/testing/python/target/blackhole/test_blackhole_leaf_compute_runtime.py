@@ -266,7 +266,7 @@ def test_blackhole_standalone_reduce_writer_consumes_reduce_output_cb():
 
 
 @pytest.mark.parametrize(
-    "case_name,kernel,input_builder,expected_builder",
+    "case_name,kernel,input_builder,expected_builder,atol",
     [
         (
             "binary_add",
@@ -276,6 +276,7 @@ def test_blackhole_standalone_reduce_writer_consumes_reduce_output_cb():
                 torch.randn(M, N, dtype=torch.bfloat16),
             ),
             lambda a, b: (a + b).to(torch.bfloat16),
+            2e-2,
         ),
         (
             "binary_mul",
@@ -285,6 +286,7 @@ def test_blackhole_standalone_reduce_writer_consumes_reduce_output_cb():
                 torch.randn(M, N, dtype=torch.bfloat16),
             ),
             lambda a, b: (a * b).to(torch.bfloat16),
+            2e-2,
         ),
         (
             "binary_max",
@@ -294,6 +296,7 @@ def test_blackhole_standalone_reduce_writer_consumes_reduce_output_cb():
                 torch.randn(M, N, dtype=torch.bfloat16),
             ),
             lambda a, b: torch.maximum(a, b).to(torch.bfloat16),
+            2e-2,
         ),
         (
             "broadcast_add_cols",
@@ -303,6 +306,7 @@ def test_blackhole_standalone_reduce_writer_consumes_reduce_output_cb():
                 torch.randn(M, dtype=torch.bfloat16),
             ),
             lambda a, b: (a + b.view(M, 1)).to(torch.bfloat16),
+            2e-2,
         ),
         (
             "broadcast_mul_cols",
@@ -312,29 +316,33 @@ def test_blackhole_standalone_reduce_writer_consumes_reduce_output_cb():
                 torch.randn(M, dtype=torch.bfloat16),
             ),
             lambda a, b: (a * b.view(M, 1)).to(torch.bfloat16),
+            2e-2,
         ),
         (
             "unary_exp2",
             unary_exp2_leaf_kernel(),
             lambda: (torch.randn(M, N, dtype=torch.bfloat16) * 0.125,),
             lambda a: torch.exp2(a.float()).to(torch.bfloat16),
+            2e-2,
         ),
         (
             "reduction_sum",
             reduction_sum_leaf_kernel(),
             lambda: (torch.randn(M, N, dtype=torch.bfloat16),),
             lambda a: torch.sum(a, dim=1).to(torch.bfloat16),
+            8e-2,
         ),
         (
             "typecast_publish",
             fragment_fill_cast_publish_kernel(),
             lambda: (),
             lambda: torch.full((M, N), 3.5, dtype=torch.bfloat16),
+            2e-2,
         ),
     ],
 )
 def test_blackhole_standalone_leaf_compute_bf16_direct_runtime(
-    case_name, kernel, input_builder, expected_builder
+    case_name, kernel, input_builder, expected_builder, atol
 ):
     can_run, msg = check_blackhole_direct_execution_requirements()
     if not can_run:
@@ -354,7 +362,7 @@ def test_blackhole_standalone_leaf_compute_bf16_direct_runtime(
     assert_tensors_close_or_dump(
         output,
         expected,
-        atol=2e-2,
-        rtol=2e-2,
+        atol=atol,
+        rtol=0.0,
         failure_message=f"{case_name} standalone leaf direct-runtime mismatch",
     )

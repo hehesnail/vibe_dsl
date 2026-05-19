@@ -1697,8 +1697,8 @@ bool CodeGenBlackhole::EmitTypedReductionRegionIfSupported(const tvm::tir::PrimF
   stream << "  }\n";
   stream << "})\n";
 
-  for (int group = 0; group < duplicate_groups; ++group) {
-    for (int repeat = 0; repeat < repeat_extent; ++repeat) {
+  for (int repeat = 0; repeat < repeat_extent; ++repeat) {
+    for (int group = 0; group < duplicate_groups; ++group) {
       stream << "{\n";
       for (const ReductionChannel& channel : channels) {
         stream << "cb_reserve_back(" << channel.output_cb.id << ", 1);\n";

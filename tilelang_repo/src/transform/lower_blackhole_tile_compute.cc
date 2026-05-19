@@ -36,6 +36,7 @@
 #include <numeric>
 #include <optional>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -839,9 +840,14 @@ Stmt BlackholeTileComputeSourceProjection::EmitCopy(
     const BlackholeTileComputeCoveringDecision& covering,
     const BlackholeTileComputePattern& pattern) {
   (void)pattern;
+  const size_t input_index = FindBlackholeTileComputeBufferArgIndex(
+      BlackholeTileComputeOperandRole::kInput, covering);
+  ICHECK_LT(input_index, op->args.size())
+      << "tl.tileop.blackhole_compute copy_tile missing input buffer argument";
+  const Buffer logical_input =
+      NormalizeToBufferRegion(op->args[input_index])->buffer;
   return abi->GenerateCopyTileSequence(
-      abi->GetBlackholeTileComputeBufferArg(op, BlackholeTileComputeOperandRole::kInput,
-                                            covering),
+      logical_input,
       abi->GetBlackholeTileComputeBufferArg(op, BlackholeTileComputeOperandRole::kOutput,
                                             covering),
       abi->GetBlackholeTileComputePrimArg(op, 3, covering));
@@ -1412,12 +1418,76 @@ Stmt PlanTTKernelABI::GenerateCopyTileSequence(const Buffer& src, const Buffer& 
                            {{"input", src, "identity"},
                             {"output", dst, "identity"}});
   ExactTiledCBValue live_value;
+  auto try_create_input_requirement_live_value = [&]() -> bool {
+    auto has_transport_backed_direct_source = [&]() {
+      auto is_transport_backed_scope = [&](const Buffer& buffer) {
+        if (!buffer.defined()) {
+          return false;
+        }
+        const std::string scope = GetStorageScope(buffer);
+        if (scope.empty() || scope == "global") {
+          return true;
+        }
+        if (scope.rfind("shared", 0) == 0) {
+          return true;
+        }
+        return scope.rfind("blackhole.cb", 0) == 0;
+      };
+      for (const std::string& root : CollectBufferFlowIdentities(src)) {
+        std::string current = root;
+        std::unordered_set<std::string> seen;
+        while (!current.empty() && seen.insert(current).second) {
+          auto copy_it = direct_copy_source_by_buffer_identity_.find(current);
+          if (copy_it == direct_copy_source_by_buffer_identity_.end()) {
+            break;
+          }
+          current = copy_it->second;
+          auto buffer_it = buffer_by_identity_.find(current);
+          if (buffer_it != buffer_by_identity_.end() &&
+              is_transport_backed_scope(buffer_it->second)) {
+            return true;
+          }
+        }
+      }
+      return false;
+    };
+    int requirement_index = FindRequirementIndexForBuffer(src);
+    if (requirement_index < 0) {
+      const auto [rows, cols] = GetLogicalMatrixShape(src);
+      const bool is_full_tile_logical_matrix =
+          rows > 0 && cols > 0 &&
+          rows % kBlackholeTileRows == 0 &&
+          cols % kBlackholeTileCols == 0;
+      if (!is_full_tile_logical_matrix || !has_transport_backed_direct_source()) {
+        return false;
+      }
+      requirement_index = PrepareExactTiledCBRequirement(src, CBType::kInput);
+    }
+    if (requirement_index < 0 ||
+        requirement_index >= static_cast<int>(cb_requirements_.size())) {
+      return false;
+    }
+    const CBRequirement& requirement = cb_requirements_.at(requirement_index);
+    if (requirement.type != CBType::kInput ||
+        requirement.initial_reserve_pages > 0 || requirement.page_size <= 0) {
+      return false;
+    }
+    live_value.buffer = src;
+    live_value.cb_id = requirement_index;
+    live_value.borrowed_live = true;
+    live_value.producer_live = true;
+    live_value.live_identity = BufferIdentityName(src);
+    PopulateExactTiledCBValueShape(src, &live_value);
+    RefineExactTiledCBValueShapeFromRequirement(&live_value);
+    return true;
+  };
   const bool force_local_loop_carried =
       (IsActiveLoopCarriedBuffer(src) || IsCompletedLoopCarriedBuffer(src)) &&
       !IsSingleFullTileLogicalMatrix(src);
   if (!force_local_loop_carried &&
       (TryCreateExactOutputLiveTiledCBValue(src, &live_value) ||
-       TryCreateLiveExactTiledCBValue(src, &live_value))) {
+       TryCreateLiveExactTiledCBValue(src, &live_value) ||
+       try_create_input_requirement_live_value())) {
     RecordTiledCBLiveFormAliases(dst, live_value.cb_id);
     InvalidateLastFragmentFillValue(dst);
     return Evaluate(IntImm32(0));

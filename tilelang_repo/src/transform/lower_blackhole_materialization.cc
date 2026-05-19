@@ -32,6 +32,7 @@
 #include <tvm/tir/stmt_functor.h>
 
 #include <algorithm>
+#include <unordered_set>
 #include <vector>
 
 #include "../tir/builtin_blackhole.h"
@@ -320,6 +321,76 @@ Stmt PlanTTKernelABI::GenerateFragmentCastSequence(const FragmentCastMatch& matc
     RecordExactComputeOpPlan("unary", "typecast_tile",
                              {{"input", match.src, "identity"},
                               {"output", match.dst, "identity"}});
+  }
+  auto try_create_direct_copy_source_live_value =
+      [&](ExactTiledCBValue* live_source) -> bool {
+    ICHECK(live_source != nullptr);
+    std::vector<std::string> candidates = CollectBufferFlowIdentities(match.dst);
+    for (const std::string& identity : CollectBufferFlowIdentities(match.src)) {
+      if (std::find(candidates.begin(), candidates.end(), identity) ==
+          candidates.end()) {
+        candidates.push_back(identity);
+      }
+    }
+    std::unordered_set<std::string> seen(candidates.begin(), candidates.end());
+    for (size_t index = 0; index < candidates.size(); ++index) {
+      const std::string current = candidates[index];
+      auto copy_it = direct_copy_source_by_buffer_identity_.find(current);
+      if (copy_it == direct_copy_source_by_buffer_identity_.end()) {
+        continue;
+      }
+      if (seen.insert(copy_it->second).second) {
+        candidates.push_back(copy_it->second);
+      }
+    }
+    for (const std::string& identity : candidates) {
+      auto copy_it = direct_copy_source_by_buffer_identity_.find(identity);
+      if (copy_it == direct_copy_source_by_buffer_identity_.end()) {
+        continue;
+      }
+      auto buffer_it = buffer_by_identity_.find(copy_it->second);
+      if (buffer_it == buffer_by_identity_.end() ||
+          !buffer_it->second.defined()) {
+        continue;
+      }
+      const Buffer& source_buffer = buffer_it->second;
+      if (TryCreateExactOutputLiveTiledCBValue(source_buffer, live_source) ||
+          TryCreateLiveExactTiledCBValue(source_buffer, live_source)) {
+        return true;
+      }
+      const int requirement_index = FindRequirementIndexForBuffer(source_buffer);
+      if (requirement_index < 0 ||
+          requirement_index >= static_cast<int>(cb_requirements_.size())) {
+        continue;
+      }
+      const CBRequirement& requirement = cb_requirements_.at(requirement_index);
+      if (requirement.type != CBType::kInput ||
+          requirement.initial_reserve_pages > 0 || requirement.page_size <= 0) {
+        continue;
+      }
+      live_source->buffer = source_buffer;
+      live_source->cb_id = requirement_index;
+      live_source->borrowed_live = true;
+      live_source->producer_live = true;
+      live_source->live_identity = BufferIdentityName(source_buffer);
+      PopulateExactTiledCBValueShape(source_buffer, live_source);
+      RefineExactTiledCBValueShapeFromRequirement(live_source);
+      return true;
+    }
+    return false;
+  };
+  Analyzer direct_copy_analyzer;
+  const bool is_full_identity_copy =
+      match.src->dtype == match.dst->dtype &&
+      tir::is_zero(direct_copy_analyzer.Simplify(match.src_offset)) &&
+      tir::is_zero(direct_copy_analyzer.Simplify(match.dst_offset));
+  if (publish_result && is_full_identity_copy) {
+    ExactTiledCBValue direct_copy_source_live;
+    if (try_create_direct_copy_source_live_value(&direct_copy_source_live)) {
+      RecordTiledCBLiveFormAliases(match.dst, direct_copy_source_live.cb_id);
+      InvalidateLastFragmentFillValue(match.dst);
+      return Evaluate(IntImm32(0));
+    }
   }
   if (publish_result) {
     publish_buffer = match.dst;

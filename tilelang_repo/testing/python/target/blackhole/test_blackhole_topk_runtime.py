@@ -19,13 +19,6 @@ VALUE_INDEX_SELECTION_MARKER = (
     "Existing TIR repeated reductions lowered from typed compute records."
 )
 
-REPEATED_ROW_REDUCTION_REASON = (
-    "repeated row-reduction value/index selection direct runtime is gated; "
-    "current reduce local-fragment path repeats partial maxima instead of "
-    "producing stable top-k values"
-)
-
-
 def existing_tir_value_index_selection_kernel(
     *,
     M=320,
@@ -187,7 +180,7 @@ def test_blackhole_existing_tir_value_index_selection_projects_contracts():
     ) not in compute_source
 
     reasons = _direct_runtime_unsupported_reasons(artifact)
-    assert reasons == [REPEATED_ROW_REDUCTION_REASON]
+    assert reasons == []
 
 
 def test_blackhole_existing_tir_value_index_selection_uses_generic_int32_reduction_source():
@@ -328,10 +321,7 @@ def _run_direct_topk_case(*, M, N, k, blk_m, tir_dtype, torch_dtype, atol, rtol)
     with target:
         artifact = lower(kernel, target=target)
 
-    reasons = _direct_runtime_unsupported_reasons(artifact)
-    if reasons:
-        assert reasons == [REPEATED_ROW_REDUCTION_REASON]
-        pytest.skip(REPEATED_ROW_REDUCTION_REASON)
+    assert _direct_runtime_unsupported_reasons(artifact) == []
 
     logits = _make_unique_topk_logits(M, N, torch_dtype)
     topk_gates = torch.full((M, k), -777.0, dtype=torch_dtype)
