@@ -48,6 +48,11 @@
 
 - 只做 codegen/reference compare 不算 true E2E
 - 当前支持面和 fail-fast 边界都应该在更早层被看见，不要全部压到 runtime
+- runtime correctness 的数值门槛要和实测误差同量级。对当前 bf16
+  direct-runtime 正例，优先使用绝对误差 gate；不要用 `rtol=0.2`
+  这类宽相对容差掩盖错数值。若路径会命中 simulator fatal 或未证明的
+  local-fragment publication 形态，先用 typed
+  `direct_runtime_unsupported_reasons` fail closed，再单独排支持任务。
 - Blackhole external accessor admission 要同时测结构层和 runtime 层：
   `TTABIPlan` / `ExecutableSpec` 里必须能看到 accessor kind、layout、
   memory space、compile-time offset/count、`args_config_bits`、
@@ -3004,3 +3009,12 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   TT live-form solver's source or target decision for that boundary; do not
   reintroduce subject-level live-value maps or hard-coded physical-form
   strings in `lower_blackhole_state.cc`.
+- 2026-05-19 direct-runtime correctness audit discipline:
+  Runtime value tests must use measured absolute gates for admitted bf16 paths
+  and exact/index checks for selection paths.  A broad relative tolerance can
+  hide real runtime bugs: existing-TIR TopK repeated row-reduction returned
+  repeated partial maxima and wrong indices with max value diff `0.0234375`.
+  If a typed compute pattern is measured wrong, add an
+  `ExecutableSpec.direct_runtime_unsupported_reasons` gate before execution
+  until the compute/runtime protocol is fixed; do not keep it admitted by
+  relaxing tolerances.

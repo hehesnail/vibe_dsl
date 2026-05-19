@@ -1766,7 +1766,7 @@ def test_blackhole_gemm_direct_runtime_uses_typed_compute_ops_without_contract_f
         c_output,
         expected,
         atol=1e-2,
-        rtol=1e-2,
+        rtol=0.0,
         failure_message="gemm_typed_compute_without_contract_family mismatch",
     )
 
@@ -2164,8 +2164,8 @@ def test_blackhole_t5_external_sharded_l1_gemm_direct_runtime_bf16():
     assert_tensors_close_or_dump(
         c_output,
         c_ref,
-        atol=2e-1,
-        rtol=2e-1,
+        atol=1e-2,
+        rtol=0.0,
         failure_message="External sharded L1 GEMM direct-call output mismatch",
     )
 
@@ -2214,8 +2214,8 @@ def test_blackhole_t9_grouped_gemm_direct_runtime_bf16():
     assert_tensors_close_or_dump(
         c_output,
         c_ref,
-        atol=2e-1,
-        rtol=2e-1,
+        atol=1e-2,
+        rtol=0.0,
         failure_message="T9 grouped GEMM direct-call output mismatch",
     )
 
@@ -2249,8 +2249,8 @@ def test_blackhole_t5_multicore_external_sharded_l1_gemm_direct_runtime_bf16():
     assert_tensors_close_or_dump(
         c_output,
         c_ref,
-        atol=2e-1,
-        rtol=2e-1,
+        atol=1e-2,
+        rtol=0.0,
         failure_message="Multicore external sharded L1 GEMM direct-call output mismatch",
     )
 
@@ -2301,8 +2301,8 @@ def test_blackhole_t5_multicore_external_sharded_l1_gemm_direct_runtime_all_bf16
     assert_tensors_close_or_dump(
         c_output,
         c_ref,
-        atol=2e-1,
-        rtol=2e-1,
+        atol=1e-2,
+        rtol=0.0,
         failure_message=(
             "All-bf16 multicore external sharded L1 GEMM direct-call output mismatch"
         ),
@@ -2344,8 +2344,8 @@ def test_blackhole_t5_manycore_external_sharded_l1_gemm_direct_runtime_all_bf16(
     assert_tensors_close_or_dump(
         c_output,
         c_ref,
-        atol=2e-1,
-        rtol=2e-1,
+        atol=1.5e-1,
+        rtol=0.0,
         failure_message=(
             "Manycore all-bf16 external sharded L1 GEMM direct-call output mismatch"
         ),
@@ -2400,8 +2400,8 @@ def test_blackhole_t5_external_k_sharded_l1_gemm_direct_runtime_partial_sum_bf16
     assert_tensors_close_or_dump(
         c_output,
         c_ref,
-        atol=2e-1,
-        rtol=2e-1,
+        atol=5e-2,
+        rtol=0.0,
         failure_message=(
             "K-sharded external L1 GEMM partial-sum direct-call output mismatch"
         ),
@@ -2454,8 +2454,8 @@ def test_blackhole_t5_manycore_external_k_sharded_l1_gemm_direct_runtime_partial
     assert_tensors_close_or_dump(
         c_output,
         c_ref,
-        atol=5e-1,
-        rtol=2e-1,
+        atol=8e-2,
+        rtol=0.0,
         failure_message=(
             "Manycore K-sharded external L1 GEMM partial-sum direct-call output mismatch"
         ),
@@ -2498,8 +2498,8 @@ def test_blackhole_t10_partial_k_reducer_supports_temporal_wave_output_tiles_bf1
     assert_tensors_close_or_dump(
         c_output,
         c_ref,
-        atol=8e-1,
-        rtol=2e-1,
+        atol=1.5e-1,
+        rtol=0.0,
         failure_message=(
             "Temporal-wave K-sharded external L1 GEMM partial-sum direct-call "
             "output mismatch"
@@ -2557,8 +2557,8 @@ def test_blackhole_t10_partial_k_reducer_supports_large_temporal_output_grid_bf1
     assert_tensors_close_or_dump(
         c_output,
         c_ref,
-        atol=1.2,
-        rtol=2e-1,
+        atol=1.5e-1,
+        rtol=0.0,
         failure_message=(
             "Large temporal-grid K-sharded external L1 GEMM partial-sum "
             "direct-call output mismatch"
@@ -2984,7 +2984,7 @@ def test_blackhole_gemm_direct_runtime_materializes_compile_time_abi_schema():
 
     mutated_mod["main"](a_torch, b_torch, c_output)
     assert_tensors_close_or_dump(
-        c_output, c_ref, atol=2e-1, rtol=2e-1, failure_message="GEMM direct-call output mismatch"
+        c_output, c_ref, atol=1e-2, rtol=0.0, failure_message="GEMM direct-call output mismatch"
     )
 
 
@@ -3022,8 +3022,8 @@ def test_blackhole_gemm_direct_runtime_preserves_richer_compute_config_correctne
     assert_tensors_close_or_dump(
         c_output,
         c_ref,
-        atol=2e-1,
-        rtol=2e-1,
+        atol=1e-2,
+        rtol=0.0,
         failure_message="GEMM richer compute-config direct-call output mismatch",
     )
 
@@ -3058,8 +3058,8 @@ def test_blackhole_precleared_fragment_gemm_canonicalizes_to_clear_accum_true():
     assert_tensors_close_or_dump(
         c_output,
         c_ref,
-        atol=2e-1,
-        rtol=2e-1,
+        atol=1e-2,
+        rtol=0.0,
         failure_message="Precleared GEMM canonicalized clear-accum direct-call output mismatch",
     )
 
@@ -3158,8 +3158,8 @@ def test_blackhole_t7_exact_cb_gemm_post_merge_cast_consumer_direct_runtime():
     assert_tensors_close_or_dump(
         d_output,
         d_ref,
-        atol=2e-1,
-        rtol=2e-1,
+        atol=0.0,
+        rtol=0.0,
         failure_message=(
             "T7 exact-CB GEMM post-merge cast-consumer direct-call output mismatch"
         ),
@@ -3210,8 +3210,8 @@ def test_blackhole_gemm_direct_runtime_preserves_clear_accum_false_fragment_for_
     assert_tensors_close_or_dump(
         d_output,
         d_ref,
-        atol=2e-1,
-        rtol=2e-1,
+        atol=0.0,
+        rtol=0.0,
         failure_message=(
             "GEMM clear-accum-false preserve-for-cast-consumer direct-call output mismatch"
         ),
@@ -3291,17 +3291,7 @@ def test_blackhole_fragment_fill_cast_publish_build_reads_executable_without_low
     assert executable_spec["cb_configs"]
 
 
-def test_blackhole_gemm_direct_runtime_supports_transpose_a_typed_compute_schema():
-    can_run, msg = check_blackhole_direct_execution_requirements()
-    if not can_run:
-        pytest.skip(f"Blackhole requirements not met: {msg}")
-
-    torch.manual_seed(0)
-    a_torch = torch.randn(128, 32, dtype=torch.bfloat16)
-    b_torch = torch.randn(32, 128, dtype=torch.bfloat16)
-    c_output = torch.zeros(32, 32, dtype=torch.float32)
-    c_ref = torch.matmul(a_torch.float().transpose(0, 1), b_torch.float().transpose(0, 1))
-
+def test_blackhole_gemm_direct_runtime_rejects_transpose_a_typed_compute_schema():
     kernel = gemm_kernel_with_transpose_flags(transpose_A=True, transpose_B=True)
     target = Target("blackhole")
 
@@ -3317,14 +3307,11 @@ def test_blackhole_gemm_direct_runtime_supports_transpose_a_typed_compute_schema
     assert int(gemm_op["Nt"]) == 1
     assert int(gemm_op["Kt"]) == 4
 
-    artifact.codegen_mod["main"](a_torch, b_torch, c_output)
-    assert_tensors_close_or_dump(
-        c_output,
-        c_ref,
-        atol=2e-1,
-        rtol=2e-1,
-        failure_message="GEMM transpose-A direct-call output mismatch",
-    )
+    reasons = _direct_runtime_unsupported_reasons(artifact)
+    assert reasons == [
+        "GEMM transpose_A is not admitted by Blackhole direct runtime; "
+        "current matmul_tiles lowering/runtime only proves non-transposed A"
+    ]
 
 
 def test_blackhole_multicore_gemm_lowering_respects_transposed_b_layout():
@@ -3422,7 +3409,7 @@ def test_blackhole_gemm_basic():
 
     artifact.codegen_mod["main"](a_torch, b_torch, c_output)
     assert_tensors_close_or_dump(
-        c_output, c_ref, atol=2e-1, rtol=2e-1, failure_message="GEMM direct-call output mismatch"
+        c_output, c_ref, atol=1e-2, rtol=0.0, failure_message="GEMM direct-call output mismatch"
     )
 
 
@@ -3469,8 +3456,8 @@ def test_blackhole_gemm_multicore_direct_call():
     assert_tensors_close_or_dump(
         c_output,
         c_ref,
-        atol=2e-1,
-        rtol=2e-1,
+        atol=1e-2,
+        rtol=0.0,
         failure_message="Multicore GEMM direct-call output mismatch",
     )
 
@@ -3508,8 +3495,8 @@ def test_blackhole_gemm_multicore_direct_call_supports_oversubscribed_work_packe
     assert_tensors_close_or_dump(
         c_output,
         c_ref,
-        atol=2e-1,
-        rtol=2e-1,
+        atol=1e-2,
+        rtol=0.0,
         failure_message="Oversubscribed multicore GEMM direct-call output mismatch",
     )
 

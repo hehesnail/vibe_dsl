@@ -170,14 +170,14 @@ def test_blackhole_t9_chunk_scan_bf16_direct_runtime():
     assert_tensors_close_or_dump(
         output,
         expected_output,
-        atol=8e-2,
-        rtol=8e-2,
+        atol=2e-2,
+        rtol=0.0,
         failure_message="Blackhole T9.5 chunk scan per-chunk output mismatch",
     )
     assert_tensors_close_or_dump(
         state_out,
         expected_state,
-        atol=8e-2,
-        rtol=8e-2,
+        atol=2e-2,
+        rtol=0.0,
         failure_message="Blackhole T9.5 chunk scan final state mismatch",
     )

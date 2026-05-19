@@ -233,6 +233,14 @@ Admission reasons must be typed and queryable:
 Backend admission cannot remove the need for schema-complete
 `ExecutableSpec` projection.
 
+Runtime correctness gates are only valid for admitted paths.  If a path is
+known to hit a simulator capability boundary or an unproven local-fragment
+publication shape, or if a typed compute-op pattern has measured wrong direct
+runtime values, `ExecutableSpec.direct_runtime_unsupported_reasons` must fail
+it closed before execution.  Admitted bf16 runtime comparisons should use
+measured absolute-error gates against host references; broad relative
+tolerances are not a substitute for proving the runtime path.
+
 ### Runtime Module Serialization
 
 If a runtime module advertises binary serialization, it must provide real

@@ -101,6 +101,10 @@
   说明当前 TT-Sim 明确把这条 `fp16` unpack 路径作为 `UntestedFunctionality`
 - `tensix_execute_pacr : fp16 data format`
   说明 pack 侧也有对应的 `fp16` data-format hard gate
+- `tensix_execute_pacr : intermediate_format=0 late_from_format=5`
+  已在 bf16 flash-attn `tilize_cast_fragment_slice` CB-republish 路径上复现为
+  `UnsupportedFunctionality` fatal；该路径需要 typed direct-runtime admission
+  gate，不能作为 runtime correctness 正例。
 - `noc_cmd_ctrl : atomic noc_at_data`
   说明某些 atomic NOC path 也在 current TT-Sim 约束面之外
 

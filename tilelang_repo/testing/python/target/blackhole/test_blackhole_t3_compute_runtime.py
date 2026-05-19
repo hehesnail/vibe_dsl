@@ -13,6 +13,12 @@ from .common import (
 from .test_blackhole_copy_pipeline import _extract_blackhole_executable_spec
 
 
+MULTI_TILE_ELEMENTWISE_LOCAL_FRAGMENT_REASON = (
+    "multi-tile per-work tile-compute local fragment direct runtime is gated; "
+    "current direct runtime only proves single 32x32-tile local fragment publication"
+)
+
+
 def _lower_blackhole(kernel):
     target = Target("blackhole")
     with target:
@@ -88,6 +94,7 @@ def _assert_t3_compute_contract(
     strategy,
     source_region_shape,
     expected_ops,
+    expected_direct_runtime_reasons=(),
 ):
     memory_configs = _memory_configs_by_subject(executable_spec)
     distributions = _distributions_by_buffer(executable_spec)
@@ -134,7 +141,10 @@ def _assert_t3_compute_contract(
         assert str(reshard["unsupported_reason"]) == ""
 
     assert expected_ops <= _compute_operation_names(executable_spec)
-    assert not executable_spec.get("direct_runtime_unsupported_reasons", [])
+    assert [
+        str(reason)
+        for reason in executable_spec.get("direct_runtime_unsupported_reasons", [])
+    ] == list(expected_direct_runtime_reasons)
 
 
 def _sharded_l1_config(strategy, grid_x, grid_y, tile_m, tile_n):
@@ -323,14 +333,24 @@ def test_blackhole_t3_sharded_elementwise_chain_bf16_direct_runtime(
         strategy=strategy,
         source_region_shape=(tile_m, tile_n),
         expected_ops={"add_tiles", "sub_tiles", "mul_tiles", "recip_tile"},
+        expected_direct_runtime_reasons=(
+            [MULTI_TILE_ELEMENTWISE_LOCAL_FRAGMENT_REASON]
+            if tile_m * tile_n > 32 * 32
+            else []
+        ),
     )
+    if tile_m * tile_n > 32 * 32:
+        pytest.skip(
+            "Blackhole T3 direct runtime is not yet supported for this shape: "
+            + MULTI_TILE_ELEMENTWISE_LOCAL_FRAGMENT_REASON
+        )
 
     artifact.codegen_mod["main"](a, b, c, d, e, out)
     assert_tensors_close_or_dump(
         out,
         expected,
-        atol=8e-2,
-        rtol=8e-2,
+        atol=2e-2,
+        rtol=0.0,
         failure_message=f"T3 {case_name} elementwise chain mismatch",
     )
 
@@ -393,7 +413,7 @@ def test_blackhole_t3_sharded_elementwise_reduce_mix_bf16_direct_runtime(
     assert_tensors_close_or_dump(
         out,
         expected,
-        atol=8e-2,
-        rtol=8e-2,
+        atol=1e-3,
+        rtol=0.0,
         failure_message=f"T3 {case_name} elementwise/reduce mix mismatch",
     )

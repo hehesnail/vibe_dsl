@@ -19,7 +19,7 @@
 | Foundation `T1-T7.5` | Complete | Buffer ABI, leaf compute/GEMM, sharding/materialization, exact-CB lifecycle, and admitted non-workload direct-runtime paths use typed `TTProgram -> ExecutableSpec` records or fail closed. |
 | `P0` target execution contract | Complete | Covered execution facts are owned by `TTProgram` typed fields/objects and projected once to `ExecutableSpec`; leaf consumers reject source/body/name recovery. |
 | `T8` irregular/indexed access | Complete | Indexed, sparse, ragged, paged, segmented, and grouped-feed paths use generic `AccessRegion` plus `value_expr` evidence. |
-| `P1 / T9` workload-first paths | Complete | T9.1-T9.6 are admitted on current bf16 direct-runtime surfaces, including grouped GEMM, paged decode, sparse/ragged attention, chunk scan, and split-block flash decode. |
+| `P1 / T9` workload-first paths | Complete for typed workload contracts; admitted runtime subset is narrower | T9.1-T9.5 typed/source coverage remains complete and admitted bf16 direct-runtime paths include grouped/page-addressed GEMM-style routes and chunk scan.  Current flash paths that require `tilize_cast_fragment_slice` exact-CB republish fail closed on a typed TT-Sim PACR boundary instead of running to a simulator fatal, and T9.6 split-block flash decode currently stops at a `ValidateTTProgram` materialization source-live-form boundary rather than reaching runtime. |
 | `P2 / T10` collectives and reducer protocol | Complete under current local scope | Mesh / multi-device placement is typed through `TTProgram -> ExecutableSpec` and direct runtime currently fails closed for non-unit mesh placements.  Per user scope change on 2026-05-18, T10.1-T10.3 completion is defined as single-card multi-tile bf16 value semantics and local `BlackholeModule` equivalents for all-gather, reduce-scatter, and all-to-all plus typed owner truth and fail-closed unsupported forms.  T10.4 now moves partial-K GEMM reducer ownership into `TTReducerPlan -> ExecutableSpec.reducer_plans`; the direct runtime consumes the typed plan for scratch placement/lifetime, local route, transport choice, accumulation order, and final-writer timing.  Multi-device fabric CCL remains an external blocker, not the active completion gate. |
 
 ## Current Protocol Snapshot
@@ -93,8 +93,19 @@
   from names, arg kinds, helper state, or first same-buffer fallbacks.
 - Current simulator gates must also be typed by `ExecutableSpec` facts.  The
   old T7/T9 `t_tile_mmio_wr32` classifier is gone; remaining PACR gates are
-  limited to proven simulator capability boundaries, and admitted T9.5/T9.6
-  paths publish through typed exact/live CB records rather than PACR skips.
+  limited to proven simulator capability boundaries, and admitted T9.5 paths
+  publish through typed exact/live CB records rather than PACR skips.  Current
+  T9.6 split-block flash decode is a TTProgram validation boundary, not an
+  admitted runtime correctness path.
+- Direct-runtime correctness admission is part of the contract.  Runtime tests
+  must not rely on broad relative tolerances to hide wrong values.  The
+  current audited unsupported boundaries are:
+  `tilize_cast_fragment_slice` CB-republish in TT-Sim
+  (`tensix_execute_pacr: intermediate_format=0 late_from_format=5`),
+  GEMM `transpose_A` in the current direct runtime, and multi-tile
+  per-work tile-compute local fragments larger than one `32x32` tile, and
+  repeated row-reduction value/index selection used by existing-TIR TopK.
+  These publish typed unsupported reasons before execution.
 - Current partial-K GEMM reducer admission supports temporal output waves in
   the single-card direct runtime.  Producer shards run in z order; in-physical
   output waves use the typed `device_tile_add` reducer, and later temporal
@@ -280,13 +291,23 @@ Current baseline:
   CB dtypes, and compares TT-Sim output with the torch bf16/fp32 reference.
 - Direct-runtime correctness:
   admitted T7/T8/T9 positive paths run through `BlackholeModule` with the
-  repository TT-Sim bf16 baseline where tensor values are involved, including
-  the small bf16 flash-attn path and the seq64 MHA exact-CB partial-combine
-  path.
+  repository TT-Sim bf16 baseline where tensor values are involved.  Current
+  admitted non-GEMM runtime gates use measured absolute tolerances: T9
+  page-addressed QK/AV and seq64 QK GEMM-style routes run with
+  `atol=1e-4,rtol=0.0` after measuring max abs diff at or below
+  `3.815e-6`; T9 paged MLA dual-score runs with `atol=2e-2,rtol=0.0`
+  after measuring max abs diff `0.010296`; T3 admitted tile-compute chains
+  and T9.5 chunk scan run with `atol=2e-2,rtol=0.0`; T3 reduce-mix runs
+  with `atol=1e-3,rtol=0.0`.
 - Typed unsupported coverage:
   malformed schema, missing page/address metadata, invalid exact-CB lifecycle,
   non-unit mesh placement, and current simulator capability boundaries
-  fail closed before source or runtime guessing.
+  fail closed before source or runtime guessing.  Current runtime-correctness
+  audit coverage includes fail-closed reasons for `tilize_cast_fragment_slice`
+  PACR, GEMM `transpose_A`, and multi-tile per-work tile-compute local
+  fragments larger than one `32x32` tile, plus repeated row-reduction
+  value/index selection after measuring the TopK direct runtime repeating
+  partial maxima with max value diff `0.0234375` and wrong indices.
 
 Historical checkpoint logs, exact selector counts, and patch notes belong in
 git history and `memory/`, not in this file.

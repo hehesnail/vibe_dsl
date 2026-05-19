@@ -63,6 +63,84 @@
     还是 TileLang target contract 回归，再继续分析
   - 当前已确认 `fp16` unpack 只是其中一个显式 gate，不是唯一约束面
 
+### `tilize_cast_fragment_slice` CB republish 在当前 TT-Sim 上会 PACR fatal
+
+- **现象**:
+  - bf16 flash-attn / paged decode 等路径能投出 typed
+    `TTMaterializationPlan` / `ExecutableSpec.materialization_plans`：
+    `materialization_protocol=cb_republish`，
+    `publication_protocol=tilize_cast_fragment_slice`。
+  - 若 direct runtime 放行，当前 TT-Sim 会在执行时进程级 fatal：
+    `UnsupportedFunctionality: tensix_execute_pacr: intermediate_format=0 late_from_format=5`。
+- **当前结论**:
+  - 这不是精度容差问题；不能让测试跑到 simulator fatal，也不能把该路径算作
+    runtime correctness 正例。
+  - admission gate 应基于 typed materialization records，而不是 workload 名字。
+  - 当前 direct runtime 通过
+    `ExecutableSpec.direct_runtime_unsupported_reasons`
+    fail closed：
+    `tilize_cast_fragment_slice CB-republish direct runtime is gated: TT-Sim reports tensix_execute_pacr: intermediate_format=0 late_from_format=5 for the current fragment publication path`。
+  - 后续若 TT-Sim / TT-Metal API 支持该 PACR 形态，删除 gate 前必须先恢复
+    small MHA / GQA / paged decode runtime correctness 正向数值比较。
+
+### 多 tile per-work tile-compute local fragment 当前不能作为 admitted runtime
+
+- **现象**:
+  - T3 elementwise `block_rect_128x512` 使用 `tile_m=32,tile_n=64`，
+    也就是每个 per-work fragment 覆盖两个 `32x32` tiles。
+  - 旧 direct runtime admission reasons 为空，但 TT-Sim 输出整块为 0；
+    实测 max abs diff `0.94140625`、mean abs diff 约 `0.356`，旧
+    `atol=0.08,rtol=0.08` 也无法通过。
+- **根因 / 当前判断**:
+  - 生成的 tile-compute local-fragment publication 只证明过单个 `32x32`
+    tile。对于 `32x64`，compute source 会从 local fragment 重新发布多个
+    tiles，但当前路径没有证明对应 local fragment 值已按多 tile 形态正确建立。
+- **当前结论**:
+  - 这不是“阈值太松”问题，而是未证明形态被错误 admitted。
+  - 当前用 typed buffer distribution `source_region_kind=per_work_tile`
+    且 `source_region_shape` 元素数大于 `32*32` 的 non-GEMM tile-compute
+    path fail closed：
+    `multi-tile per-work tile-compute local fragment direct runtime is gated; current direct runtime only proves single 32x32-tile local fragment publication`。
+  - 后续支持该形态时，应修 local-fragment materialization/publication 协议并
+    用 `32x64` 及更大 per-work tile-compute shape 恢复 runtime 正例。
+
+### Existing-TIR TopK repeated row-reduction 当前不能作为 admitted runtime
+
+- **现象**:
+  - `test_blackhole_topk_runtime.py` 的 direct runtime TopK value/index
+    selection 路径会执行，但 fp32 / bf16 输出都不正确。
+  - 对 `M=64,N=128,k=6` 的唯一值输入，首行实际 values 为
+    `[0.96875, 0.984375, 0.953125, 0.96875, 0.984375, 0.953125]`，
+    reference 为
+    `[0.9921875, 0.984375, 0.9765625, 0.96875, 0.9609375, 0.953125]`；
+    max abs diff `0.0234375`、mean abs diff `0.01171875`，indices 也不匹配。
+- **当前判断**:
+  - 这不是 bf16 精度容差问题；fp32 也错。
+  - typed compute records 暴露了 repeated row reduction：
+    `kind=reduce,reduction_dim=row,repeat_extent=6`。当前 direct runtime /
+    reduce local-fragment path 会重复 partial maxima，不能作为 TopK
+    correctness 正例。
+- **当前结论**:
+  - Direct runtime 通过 `ExecutableSpec.direct_runtime_unsupported_reasons`
+    fail closed：
+    `repeated row-reduction value/index selection direct runtime is gated; current reduce local-fragment path repeats partial maxima instead of producing stable top-k values`。
+  - 后续支持该路径时，必须修 repeated row-reduction local-fragment update /
+    index propagation，并恢复 fp32 与 bf16 TopK direct-runtime 正向数值和
+    index 比较；不能靠放宽 `rtol=1e-2` 接受该结果。
+
+### T9.6 split-block flash decode 当前停在 TTProgram materialization validator
+
+- **现象**:
+  - `test_blackhole_t9_split_block_flash_decode_bf16_direct_runtime`
+    当前 lower 阶段触发：
+    `TTMaterializationPlan source_live_form must refer to boundary source_live_value`
+    (`live_carry_acc_s_6` vs `live_carry_acc_s_12`)。
+- **当前结论**:
+  - 该 case 还没有进入 direct runtime / TT-Sim 数值比较；不能把它纳入
+    runtime correctness admitted set。
+  - 这是 TTProgram materialization-boundary owner-truth 问题，不应通过
+    Python skip 或 runtime arg 猜测兜底。
+
 ### 单个 monolithic `T.gemm` 的超大 K 仍需要自动 temporal K lowering
 
 - **现象**:

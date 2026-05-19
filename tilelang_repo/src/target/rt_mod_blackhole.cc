@@ -316,6 +316,7 @@ static std::vector<int64_t> ExtractIntegerVector(const ffi::Map<ffi::String, ffi
 static bool HasPositiveIntegerShape(const std::vector<int64_t>& shape);
 static bool SpecHasKShardedGemmWithoutAdmittedReducerPlan(
     const ExecutableSpec& spec);
+static bool SpecHasTransposeAGemm(const ExecutableSpec& spec);
 
 static CorePlan ExtractCorePlan(const tir::PrimFunc& f) {
   CorePlan plan;
@@ -2454,6 +2455,12 @@ static ExecutableSpec ExtractExecutableSpecFromDeviceFunc(const tir::PrimFunc& f
         "collective_plans require T10.1 CCL runtime correctness support");
   }
   ExtractSegmentPlan(f, &spec);
+  if (SpecHasTransposeAGemm(spec)) {
+    AppendUniqueUnsupportedReason(
+        &spec.direct_runtime_unsupported_reasons,
+        "GEMM transpose_A is not admitted by Blackhole direct runtime; "
+        "current matmul_tiles lowering/runtime only proves non-transposed A");
+  }
   if (SpecHasKShardedGemmWithoutAdmittedReducerPlan(spec)) {
     AppendUniqueUnsupportedReason(
         &spec.direct_runtime_unsupported_reasons,
@@ -3029,6 +3036,17 @@ static void EnforcePartialKReducerPlanGate(ExecutableSpec* spec) {
       "K-sharded GEMM requires an admitted TTReducerPlan partial_k_sum record");
 }
 
+static void EnforceGemmTransposeAGate(ExecutableSpec* spec) {
+  ICHECK(spec != nullptr);
+  if (!SpecHasTransposeAGemm(*spec)) {
+    return;
+  }
+  AppendDirectRuntimeUnsupportedReason(
+      spec,
+      "GEMM transpose_A is not admitted by Blackhole direct runtime; "
+      "current matmul_tiles lowering/runtime only proves non-transposed A");
+}
+
 static void EnforceExplicitPerWorkAccessDescriptorGate(
     const BufferLogicalShapeMap& logical_shape_by_buffer,
     ExecutableSpec* spec) {
@@ -3160,6 +3178,18 @@ static bool SpecHasEnabledGemmComputeOp(const ExecutableSpec& spec) {
   return false;
 }
 
+static bool SpecHasTransposeAGemm(const ExecutableSpec& spec) {
+  for (const auto& kernel : spec.kernels) {
+    for (const auto& compute_op : kernel.compute_ops) {
+      if (compute_op.enabled && compute_op.kind == "gemm" &&
+          compute_op.transpose_A) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 static bool HasAdmittedPartialKReducerPlanForTarget(
     const ExecutableSpec& spec,
     const std::string& target_buffer) {
@@ -3209,6 +3239,36 @@ static bool SpecHasThreadDistributedCastRepublishPlan(const ExecutableSpec& spec
     }
   }
   return false;
+}
+
+static bool SpecHasTilizeCastFragmentSliceRepublishPlan(const ExecutableSpec& spec) {
+  for (const auto& plan : spec.materialization_plans) {
+    if (plan.materialization_protocol == buffer_materialization::kCBRepublish &&
+        plan.publication_protocol == buffer_materialization::kTilizeCastFragmentSlice) {
+      return true;
+    }
+  }
+  for (const auto& materialization : spec.buffer_materializations) {
+    if (materialization.materialization_protocol == buffer_materialization::kCBRepublish &&
+        materialization.publication_protocol ==
+            buffer_materialization::kTilizeCastFragmentSlice) {
+      return true;
+    }
+  }
+  return false;
+}
+
+static void EnforceTilizeCastFragmentSlicePacrSimulatorGate(
+    ExecutableSpec* spec) {
+  ICHECK(spec != nullptr);
+  if (!SpecHasTilizeCastFragmentSliceRepublishPlan(*spec)) {
+    return;
+  }
+  AppendDirectRuntimeUnsupportedReason(
+      spec,
+      "tilize_cast_fragment_slice CB-republish direct runtime is gated: TT-Sim reports "
+      "tensix_execute_pacr: intermediate_format=0 late_from_format=5 for "
+      "the current fragment publication path");
 }
 
 static void EnforceExactLiveFormMultiPageRepublishGate(ExecutableSpec* spec) {
@@ -3497,6 +3557,9 @@ struct CBQueueState {
 
 static void EnforcePhysicalCBQueueEventGate(ExecutableSpec* spec) {
   ICHECK(spec != nullptr);
+  if (!spec->direct_runtime_unsupported_reasons.empty()) {
+    return;
+  }
   std::unordered_map<uint32_t, const CBConfig*> cb_by_id;
   for (const CBConfig& cb : spec->cb_configs) {
     cb_by_id.emplace(cb.cb_id, &cb);
@@ -3608,6 +3671,75 @@ static std::string NormalizeMemorySpace(std::string value) {
 static bool HasPositiveShape(const std::vector<int64_t>& shape) {
   return !shape.empty() &&
          std::all_of(shape.begin(), shape.end(), [](int64_t value) { return value > 0; });
+}
+
+static int64_t ShapeElementCount(const std::vector<int64_t>& shape) {
+  if (!HasPositiveShape(shape)) {
+    return 0;
+  }
+  int64_t product = 1;
+  for (int64_t dim : shape) {
+    product *= dim;
+  }
+  return product;
+}
+
+static bool SpecHasEnabledTileElementwiseComputeOp(const ExecutableSpec& spec) {
+  for (const auto& kernel : spec.kernels) {
+    for (const auto& compute_op : kernel.compute_ops) {
+      if (compute_op.enabled &&
+          (compute_op.kind == "binary" || compute_op.kind == "unary")) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+static bool SpecHasEnabledRepeatedRowReductionComputeOp(const ExecutableSpec& spec) {
+  for (const auto& kernel : spec.kernels) {
+    for (const auto& compute_op : kernel.compute_ops) {
+      if (compute_op.enabled && compute_op.kind == "reduce" &&
+          compute_op.reduction_dim == "row" && compute_op.repeat_extent > 1U) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+static void EnforceMultiTileTileComputeLocalFragmentGate(
+    ExecutableSpec* spec) {
+  ICHECK(spec != nullptr);
+  if (SpecHasEnabledGemmComputeOp(*spec) ||
+      !SpecHasEnabledTileElementwiseComputeOp(*spec)) {
+    return;
+  }
+  for (const auto& distribution : spec->buffer_distribution_plans) {
+    if (distribution.source_region_kind != "per_work_tile") {
+      continue;
+    }
+    if (ShapeElementCount(distribution.source_region_shape) <= 32 * 32) {
+      continue;
+    }
+    AppendDirectRuntimeUnsupportedReason(
+        spec,
+        "multi-tile per-work tile-compute local fragment direct runtime is gated; "
+        "current direct runtime only proves single 32x32-tile local fragment publication");
+    return;
+  }
+}
+
+static void EnforceRepeatedRowReductionRuntimeGate(ExecutableSpec* spec) {
+  ICHECK(spec != nullptr);
+  if (!SpecHasEnabledRepeatedRowReductionComputeOp(*spec)) {
+    return;
+  }
+  AppendDirectRuntimeUnsupportedReason(
+      spec,
+      "repeated row-reduction value/index selection direct runtime is gated; "
+      "current reduce local-fragment path repeats partial maxima instead of "
+      "producing stable top-k values");
 }
 
 static bool IsAdmittedRuntimeBufferDistribution(const BufferDistributionSpec& distribution,
@@ -4365,12 +4497,16 @@ ffi::Module BuildTileLangBlackhole(IRModule mod, Target target) {
                                      &spec_it->second);
     const auto logical_shape_by_buffer =
         CollectTensorLogicalShapesByBuffer(spec_it->second);
+    EnforceGemmTransposeAGate(&spec_it->second);
     EnforcePartialKReducerPlanGate(&spec_it->second);
     PopulateBufferMaterializationSpecs(logical_shape_by_buffer, &spec_it->second);
     EnforceBufferDistributionAddressContractGate(&spec_it->second);
     EnforceProjectedReshardAdmissionGate(&spec_it->second);
+    EnforceMultiTileTileComputeLocalFragmentGate(&spec_it->second);
+    EnforceRepeatedRowReductionRuntimeGate(&spec_it->second);
     EnforceExplicitPerWorkAccessDescriptorGate(logical_shape_by_buffer, &spec_it->second);
     EnforceTypedDstCbAccumulationGate(&spec_it->second);
+    EnforceTilizeCastFragmentSlicePacrSimulatorGate(&spec_it->second);
     EnforceExactLiveFormMultiPageRepublishGate(&spec_it->second);
     EnforceExplicitBufferRoleSchemaGate(&spec_it->second);
     EnforcePhysicalCBQueueEventGate(&spec_it->second);
@@ -4456,12 +4592,16 @@ ffi::Module BuildTileLangBlackholeWithoutHost(IRModule mod, Target target) {
                                      &spec_it->second);
     const auto logical_shape_by_buffer =
         CollectTensorLogicalShapesByBuffer(spec_it->second);
+    EnforceGemmTransposeAGate(&spec_it->second);
     EnforcePartialKReducerPlanGate(&spec_it->second);
     PopulateBufferMaterializationSpecs(logical_shape_by_buffer, &spec_it->second);
     EnforceBufferDistributionAddressContractGate(&spec_it->second);
     EnforceProjectedReshardAdmissionGate(&spec_it->second);
+    EnforceMultiTileTileComputeLocalFragmentGate(&spec_it->second);
+    EnforceRepeatedRowReductionRuntimeGate(&spec_it->second);
     EnforceExplicitPerWorkAccessDescriptorGate(logical_shape_by_buffer, &spec_it->second);
     EnforceTypedDstCbAccumulationGate(&spec_it->second);
+    EnforceTilizeCastFragmentSlicePacrSimulatorGate(&spec_it->second);
     EnforceExactLiveFormMultiPageRepublishGate(&spec_it->second);
     EnforceExplicitBufferRoleSchemaGate(&spec_it->second);
     EnforcePhysicalCBQueueEventGate(&spec_it->second);
