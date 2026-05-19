@@ -273,6 +273,12 @@
     验证 `M=N=512,K=2048,k_shards=4`，logical/core grid 是 `4x4x4`，
     每个 core 写 `4x4` output tiles，每个 K shard 由两个 `k_tile=256`
     chunks 组成，并通过 TT-Sim direct runtime 与 torch bf16 reference 对比。
+  - `test_blackhole_t10_partial_k_reducer_supports_full_core_core_tiled_large_mnk_bf16`
+    验证 `M=640,N=704,K=2048,k_shards=4`，logical/core grid 是
+    `11x10x4`，使用 `110` 个 unique Blackhole physical cores 和 `110` 个
+    work packets 覆盖 `440` 个 logical producer work items，每个 core 写
+    `2x2` output tiles，并通过 TT-Sim direct runtime 与 torch bf16
+    reference 对比。
 
 ### core-internal tiled GEMM 不能跨 serial loop 盲目 retain input CB pages
 

@@ -2631,6 +2631,79 @@ def test_blackhole_t10_partial_k_reducer_supports_core_tiled_large_mnk_bf16():
     )
 
 
+def test_blackhole_t10_partial_k_reducer_supports_full_core_core_tiled_large_mnk_bf16():
+    can_run, msg = check_blackhole_direct_execution_requirements()
+    if not can_run:
+        pytest.skip(f"Blackhole requirements not met: {msg}")
+
+    m, n, k, k_shards = 640, 704, 2048, 4
+    torch.manual_seed(37)
+    a_torch = torch.randn(m, k, dtype=torch.bfloat16)
+    b_torch = torch.randn(n, k, dtype=torch.bfloat16)
+    c_output = torch.zeros(m, n, dtype=torch.float32)
+    c_ref = torch.matmul(a_torch.float(), b_torch.float().transpose(0, 1))
+
+    target = Target("blackhole")
+    kernel = external_k_sharded_dram_core_tiled_gemm_kernel(
+        M=m,
+        N=n,
+        K=k,
+        core_grid_x=11,
+        core_grid_y=10,
+        k_tile=256,
+        k_shards=k_shards,
+    )
+    with target:
+        artifact = lower(kernel, target=target)
+
+    device_main = artifact.device_mod["main_kernel"]
+    executable = _extract_materialized_blackhole_executable(device_main)
+    core_plan = executable["core_plan"]
+    assert int(core_plan["logical_grid_x"]) == 11
+    assert int(core_plan["logical_grid_y"]) == 10
+    assert int(core_plan["logical_grid_z"]) == 4
+    assert len(core_plan["physical_cores"]) == 110
+    assert len(core_plan["work_packets"]) == 110
+    assert len(
+        {
+            (int(core["core_x"]), int(core["core_y"]))
+            for core in core_plan["physical_cores"]
+        }
+    ) == 110
+    assert sum(int(packet["work_count"]) for packet in core_plan["work_packets"]) == 440
+    assert {int(packet["work_count"]) for packet in core_plan["work_packets"]} == {4}
+    output_distribution = next(
+        plan for plan in executable["buffer_distribution_plans"]
+        if str(plan["buffer"]) == "C"
+    )
+    assert str(output_distribution["distribution_kind"]) == "interleaved"
+    assert str(output_distribution["layout"]) == "interleaved"
+    assert str(output_distribution["memory_space"]) == "DRAM"
+    _assert_t10_partial_k_reducer_plan(
+        executable,
+        expected_logical_grid=[11, 10, 4],
+        expected_tile_shape=(32, 32),
+        expected_scratch_layout="interleaved",
+        expected_scratch_memory_space="dram",
+        expected_route_kind="local_same_device_interleaved_tile",
+    )
+
+    reasons = _direct_runtime_unsupported_reasons(artifact)
+    assert reasons == []
+
+    artifact.codegen_mod["main"](a_torch, b_torch, c_output)
+    assert_tensors_close_or_dump(
+        c_output,
+        c_ref,
+        atol=2.5,
+        rtol=2e-1,
+        failure_message=(
+            "Full-core core-tiled large-MNK K-sharded GEMM partial-sum "
+            "direct-call output mismatch"
+        ),
+    )
+
+
 def test_blackhole_t10_partial_k_reducer_plan_required_for_direct_runtime():
     kernel = external_k_sharded_l1_gemm_kernel(M=64, N=64, K=128, k_shards=2)
     target = Target("blackhole")

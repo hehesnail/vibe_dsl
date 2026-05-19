@@ -200,11 +200,13 @@ This slice is verified by:
   `20x20x4` output grids with C resident grid `10x10` /
   `shard_shape=(64,64)` run through direct runtime and match the torch bf16
   reference;
-- large MNK DRAM-output guard proving `M=N=512,K=2048,k_shards=4` runs on a
-  bounded `4x4x4` logical/core grid, assigns `4x4` output tiles to each core,
-  tiles each K shard as two `k_tile=256` chunks, runs through direct runtime
-  with an interleaved DRAM output/scratch reducer, and matches the torch bf16
-  reference;
+- large MNK DRAM-output guards proving `M=N=512,K=2048,k_shards=4` runs on a
+  bounded `4x4x4` logical/core grid and
+  `M=640,N=704,K=2048,k_shards=4` runs on a full-core `11x10x4`
+  logical/core grid using all `110` Blackhole compute cores.  The guards
+  assign multiple output tiles to each core, tile each K shard as two
+  `k_tile=256` chunks, run through direct runtime with an interleaved DRAM
+  output/scratch reducer, and match the torch bf16 reference;
 - compile gate: `cmake --build build -j32`.
 
 ## Completion Criteria
@@ -219,4 +221,5 @@ future resource-planning expansion, but the current single-card direct
 runtime owns correctness for the admitted `13x10x4` temporal-wave subset, the
 larger `20x20x4` logical-grid / capped-resident-grid subset, and larger MNK
 core-tiled full-output tensors through the interleaved DRAM output/scratch
-reducer path.
+reducer path, including the current full-core `11x10x4` / `110` compute-core
+guard.

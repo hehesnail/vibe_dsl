@@ -2325,9 +2325,11 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   residency budget, use the typed interleaved DRAM reducer path instead of
   inflating resident shards.  Large MNK verification should use bounded
   core grids plus core-internal tiling, not a bigger logical output grid:
-  the current guard uses `M=N=512,K=2048,k_shards=4`, a `4x4x4` logical/core
-  grid, `4x4` output tiles per core, and two `k_tile=256` chunks per
-  producer shard.
+  the current guards include `M=N=512,K=2048,k_shards=4` on a `4x4x4`
+  logical/core grid with `4x4` output tiles per core, and
+  `M=640,N=704,K=2048,k_shards=4` on a full-core `11x10x4` logical/core grid
+  using all `110` compute cores with `2x2` output tiles per core.  Both tile
+  each producer shard as two `k_tile=256` chunks.
 - 2026-05-18 core-internal tiled GEMM compute input CB lifetime:
   a repeated serial loop is not evidence that input CB pages are loop
   invariant.  The core-tiled large-MNK reducer case exposed that retaining

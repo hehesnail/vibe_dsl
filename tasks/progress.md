@@ -188,9 +188,11 @@ evidence, not a standalone completion target.
    C resident grid `10x10` and `shard_shape=(64,64)`.
    Larger MNK shapes that cannot keep full C resident in sharded L1 use an
    admitted interleaved DRAM output/scratch reducer while keeping the
-   logical/core grid bounded.  The verified core-tiled large-MNK case covers
-   `M=N=512,K=2048,k_shards=4` on a `4x4x4` logical/core grid; each core
-   owns `4x4` output tiles and each K shard is computed by two internal
+   logical/core grid bounded.  The verified core-tiled large-MNK guards cover
+   `M=N=512,K=2048,k_shards=4` on a `4x4x4` logical/core grid and
+   `M=640,N=704,K=2048,k_shards=4` on a full-core `11x10x4` logical/core
+   grid using all `110` Blackhole compute cores; each full-core worker owns
+   `2x2` output tiles and each K shard is computed by two internal
    `k_tile=256` GEMM chunks before the direct runtime reduces the full
    scratch C buffer into final C.  The compute-side CB lifetime now pops
    input pages per consume instead of retaining them across serial loops, so
@@ -249,12 +251,16 @@ Current baseline:
   cores, and `20x20x4` covers `400` logical output tiles with a C resident
   grid of `10x10` / `64x64` shards.  Both compare the full bf16
   direct-runtime result against torch, so later-wave tiles are no longer
-  allowed to return wrong values.  It also checks a core-tiled large-MNK
-  bf16 case, `M=N=512,K=2048,k_shards=4`, with an admitted interleaved DRAM
-  output/scratch reducer.  The case keeps the logical/core grid at `4x4x4`,
+  allowed to return wrong values.  It also checks core-tiled large-MNK bf16
+  cases with admitted interleaved DRAM output/scratch reducers.  The
+  `M=N=512,K=2048,k_shards=4` case keeps the logical/core grid at `4x4x4`,
   covers `16x16` output tiles by assigning `4x4` tiles to each core, tiles
   each K shard as two `k_tile=256` chunks, and compares the full direct
-  runtime result against torch.
+  runtime result against torch.  The full-core
+  `M=640,N=704,K=2048,k_shards=4` case uses an `11x10x4` logical/core grid,
+  verifies `110` unique physical cores and `110` work packets cover `440`
+  logical producer work items, assigns `2x2` output tiles to each core, and
+  compares the full direct runtime result against torch.
 - Direct-runtime correctness:
   admitted T7/T8/T9 positive paths run through `BlackholeModule` with the
   repository TT-Sim bf16 baseline where tensor values are involved, including
