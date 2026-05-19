@@ -2622,8 +2622,8 @@ def test_blackhole_t10_partial_k_reducer_supports_core_tiled_large_mnk_bf16():
     assert_tensors_close_or_dump(
         c_output,
         c_ref,
-        atol=2.5,
-        rtol=2e-1,
+        atol=3.5e-1,
+        rtol=0.0,
         failure_message=(
             "Core-tiled large-MNK K-sharded GEMM partial-sum direct-call output "
             "mismatch"
@@ -2695,8 +2695,8 @@ def test_blackhole_t10_partial_k_reducer_supports_full_core_core_tiled_large_mnk
     assert_tensors_close_or_dump(
         c_output,
         c_ref,
-        atol=2.5,
-        rtol=2e-1,
+        atol=3.5e-1,
+        rtol=0.0,
         failure_message=(
             "Full-core core-tiled large-MNK K-sharded GEMM partial-sum "
             "direct-call output mismatch"

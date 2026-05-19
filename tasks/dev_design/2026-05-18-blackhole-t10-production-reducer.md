@@ -206,7 +206,8 @@ This slice is verified by:
   logical/core grid using all `110` Blackhole compute cores.  The guards
   assign multiple output tiles to each core, tile each K shard as two
   `k_tile=256` chunks, run through direct runtime with an interleaved DRAM
-  output/scratch reducer, and match the torch bf16 reference;
+  output/scratch reducer, and match the torch bf16 reference under a strict
+  absolute gate of `atol=0.35,rtol=0.0`;
 - compile gate: `cmake --build build -j32`.
 
 ## Completion Criteria

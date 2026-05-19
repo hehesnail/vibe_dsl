@@ -194,7 +194,10 @@ evidence, not a standalone completion target.
    grid using all `110` Blackhole compute cores; each full-core worker owns
    `2x2` output tiles and each K shard is computed by two internal
    `k_tile=256` GEMM chunks before the direct runtime reduces the full
-   scratch C buffer into final C.  The compute-side CB lifetime now pops
+   scratch C buffer into final C.  These core-tiled large-MNK guards use a
+   strict absolute bf16-vs-fp32-reference gate of `atol=0.35,rtol=0.0`;
+   the latest full-core run measured max abs diff `0.339279`, mean abs diff
+   `0.041972`, and p99 abs diff `0.154337`.  The compute-side CB lifetime now pops
    input pages per consume instead of retaining them across serial loops, so
    nested core-internal M/N loops cannot replay stale A/B tiles.
    Status: complete for the current single-card/local direct-runtime protocol
@@ -260,7 +263,9 @@ Current baseline:
   `M=640,N=704,K=2048,k_shards=4` case uses an `11x10x4` logical/core grid,
   verifies `110` unique physical cores and `110` work packets cover `440`
   logical producer work items, assigns `2x2` output tiles to each core, and
-  compares the full direct runtime result against torch.
+  compares the full direct runtime result against torch with the strict
+  absolute gate `atol=0.35,rtol=0.0`; the measured full-core distribution is
+  max abs diff `0.339279`, mean abs diff `0.041972`, p99 abs diff `0.154337`.
 - Direct-runtime correctness:
   admitted T7/T8/T9 positive paths run through `BlackholeModule` with the
   repository TT-Sim bf16 baseline where tensor values are involved, including

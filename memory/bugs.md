@@ -278,7 +278,9 @@
     `11x10x4`，使用 `110` 个 unique Blackhole physical cores 和 `110` 个
     work packets 覆盖 `440` 个 logical producer work items，每个 core 写
     `2x2` output tiles，并通过 TT-Sim direct runtime 与 torch bf16
-    reference 对比。
+    reference 对比。这个 guard 不应继续使用宽 `rtol=0.2`；当前改为纯
+    absolute gate `atol=0.35,rtol=0.0`，最近一次 full-core run 的
+    max/mean/p99 abs diff 是 `0.339279` / `0.041972` / `0.154337`。
 
 ### core-internal tiled GEMM 不能跨 serial loop 盲目 retain input CB pages
 
