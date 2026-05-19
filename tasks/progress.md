@@ -7,7 +7,7 @@
 
 ## Status
 
-- Date: `2026-05-18`
+- Date: `2026-05-19`
 - Active lane: `P2 / T10 complete`
 - Main chain:
   `Normalized Tile TIR -> SpatialPlan -> TTProgram -> ExecutableSpec`
@@ -195,11 +195,19 @@ evidence, not a standalone completion target.
    `2x2` output tiles and each K shard is computed by two internal
    `k_tile=256` GEMM chunks before the direct runtime reduces the full
    scratch C buffer into final C.  These core-tiled large-MNK guards use a
-   strict absolute bf16-vs-fp32-reference gate of `atol=0.35,rtol=0.0`;
-   the latest full-core run measured max abs diff `0.339279`, mean abs diff
-   `0.041972`, and p99 abs diff `0.154337`.  The compute-side CB lifetime now pops
-   input pages per consume instead of retaining them across serial loops, so
-   nested core-internal M/N loops cannot replay stale A/B tiles.
+   strict absolute bf16-vs-fp32-reference gate of `atol=0.1,rtol=0.0`;
+   the latest full-core run measured max abs diff `0.083786`, mean abs diff
+   `0.010080`, p99 abs diff `0.037431`, and p999 abs diff `0.051130`.
+   The compute-side CB lifetime now pops input pages per consume instead of
+   retaining them across serial loops, so nested core-internal M/N loops
+   cannot replay stale A/B tiles.  Core-internal `clear_accum=false` K chunks
+   preserve Float32 accumulator live-form CBs and reload the previous partial
+   into DST for the final continuation path, so partial C is not silently
+   downcast to bf16 before reducer accumulation.  This support surface assumes
+   the large-K producer shard has been lowered into explicit `k_tile=256`
+   chunks; automatic temporal lowering for a single monolithic `T.gemm` whose
+   K extent exceeds the current safe matmul-tile window remains a separate
+   support boundary.
    Status: complete for the current single-card/local direct-runtime protocol
    subset.
 
@@ -264,8 +272,12 @@ Current baseline:
   verifies `110` unique physical cores and `110` work packets cover `440`
   logical producer work items, assigns `2x2` output tiles to each core, and
   compares the full direct runtime result against torch with the strict
-  absolute gate `atol=0.35,rtol=0.0`; the measured full-core distribution is
-  max abs diff `0.339279`, mean abs diff `0.041972`, p99 abs diff `0.154337`.
+  absolute gate `atol=0.1,rtol=0.0`; the measured full-core distribution is
+  max abs diff `0.083786`, mean abs diff `0.010080`, p99 abs diff
+  `0.037431`, and p999 abs diff `0.051130`.  The same selector includes a
+  `clear_accum=false` precision regression guard that runs two `k_tile=256`
+  chunks for `M=N=64,K=512`, asserts both GEMM ops keep Float32 C tensor and
+  CB dtypes, and compares TT-Sim output with the torch bf16/fp32 reference.
 - Direct-runtime correctness:
   admitted T7/T8/T9 positive paths run through `BlackholeModule` with the
   repository TT-Sim bf16 baseline where tensor values are involved, including

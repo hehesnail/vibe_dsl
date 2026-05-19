@@ -2622,11 +2622,63 @@ def test_blackhole_t10_partial_k_reducer_supports_core_tiled_large_mnk_bf16():
     assert_tensors_close_or_dump(
         c_output,
         c_ref,
-        atol=3.5e-1,
+        atol=1e-1,
         rtol=0.0,
         failure_message=(
             "Core-tiled large-MNK K-sharded GEMM partial-sum direct-call output "
             "mismatch"
+        ),
+    )
+
+
+def test_blackhole_gemm_clear_accum_false_preserves_float32_accumulator_bf16():
+    can_run, msg = check_blackhole_direct_execution_requirements()
+    if not can_run:
+        pytest.skip(f"Blackhole requirements not met: {msg}")
+
+    m, n, k = 64, 64, 512
+    torch.manual_seed(404)
+    a_torch = torch.randn(m, k, dtype=torch.bfloat16)
+    b_torch = torch.randn(n, k, dtype=torch.bfloat16)
+    c_output = torch.zeros(m, n, dtype=torch.float32)
+    c_ref = torch.matmul(a_torch.float(), b_torch.float().transpose(0, 1))
+
+    target = Target("blackhole")
+    kernel = external_k_sharded_dram_core_tiled_gemm_kernel(
+        M=m,
+        N=n,
+        K=k,
+        core_grid_x=1,
+        core_grid_y=1,
+        k_tile=256,
+        k_shards=1,
+    )
+    with target:
+        artifact = lower(kernel, target=target)
+
+    device_main = artifact.device_mod["main_kernel"]
+    executable = _extract_materialized_blackhole_executable(device_main)
+    assert int(executable["core_plan"]["logical_grid_z"]) == 1
+    compute_segment = next(
+        segment for segment in executable["segment_plan"]
+        if str(segment["kind"]) == "compute"
+    )
+    gemm_ops = [
+        op for op in compute_segment["compute_ops"]
+        if str(op["kind"]) == "gemm"
+    ]
+    assert len(gemm_ops) == 2
+    assert all(str(op["c_tensor_dtype"]) == "Float32" for op in gemm_ops)
+    assert all(str(op["c_cb_dtype"]) == "Float32" for op in gemm_ops)
+
+    artifact.codegen_mod["main"](a_torch, b_torch, c_output)
+    assert_tensors_close_or_dump(
+        c_output,
+        c_ref,
+        atol=4e-2,
+        rtol=1e-4,
+        failure_message=(
+            "clear_accum=false GEMM must preserve float32 accumulator precision"
         ),
     )
 
@@ -2695,7 +2747,7 @@ def test_blackhole_t10_partial_k_reducer_supports_full_core_core_tiled_large_mnk
     assert_tensors_close_or_dump(
         c_output,
         c_ref,
-        atol=3.5e-1,
+        atol=1e-1,
         rtol=0.0,
         failure_message=(
             "Full-core core-tiled large-MNK K-sharded GEMM partial-sum "

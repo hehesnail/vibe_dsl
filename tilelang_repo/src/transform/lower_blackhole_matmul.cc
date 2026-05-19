@@ -704,7 +704,7 @@ Stmt PlanTTKernelABI::LowerMatmulCallWithFlowAnalysis(
          loop_carried_output || post_merge_cast != nullptr);
     if (compute_only_tiled_cb_output && gemm_c_req_index_ >= 0 &&
         gemm_c_req_index_ < static_cast<int>(cb_requirements_.size())) {
-      const DataType storage_dtype = ExactTiledCBStorageDType(gemm_c_dtype_);
+      const DataType storage_dtype = gemm_c_dtype_;
       if (storage_dtype != gemm_c_cb_dtype_) {
         gemm_c_cb_dtype_ = storage_dtype;
         const int num_c_tiles =
@@ -1843,6 +1843,9 @@ Stmt PlanTTKernelABI::GenerateAccumulatingMatmulSequence(const CallNode* op,
       !(publish_transport_out && live_form_req_index >= 0 &&
         live_form_req_index != gemm_c_req_index_);
   bool direct_zero_preclear_used_separate_live_form = false;
+  const bool can_reload_live_accumulator_directly =
+      use_live_reload && publish_transport_out && !preserve_out_local_state &&
+      materialized_cast_req_index < 0 && !reuse_loop_carried_live_form_cb;
   if (direct_zero_preclear) {
     int direct_out_req_index =
         live_form_req_index >= 0 ? live_form_req_index : gemm_c_req_index_;
@@ -1884,6 +1887,10 @@ Stmt PlanTTKernelABI::GenerateAccumulatingMatmulSequence(const CallNode* op,
     }
     direct_body = AttachExactOutputLiveFormMarker(gemm_c_buffer_, live_value, direct_body);
     stmts.push_back(direct_body);
+  } else if (can_reload_live_accumulator_directly) {
+    stmts.push_back(GenerateMatmulSequenceWithPartialReload(
+        gemm_c_req_index_, live_reload_value.cb_id, retain_in0, retain_in1,
+        /*reserve_out=*/true, /*publish_out=*/true, reacquire_in0, reacquire_in1));
   } else {
     stmts.push_back(
         GenerateMatmulSequenceForOutputRequirement(scratch_req_index, retain_in0, retain_in1,

@@ -63,6 +63,26 @@
     还是 TileLang target contract 回归，再继续分析
   - 当前已确认 `fp16` unpack 只是其中一个显式 gate，不是唯一约束面
 
+### 单个 monolithic `T.gemm` 的超大 K 仍需要自动 temporal K lowering
+
+- **现象**:
+  - 单 tile `T.gemm(32xK @ 32xK)` 在随机 bf16 输入下，`K=128/256/512`
+    与 torch reference 基本对齐；但 `K=1024/2048` 的 monolithic lowering
+    会产生明显错误值。
+  - all-ones 输入仍可对齐，说明这不是简单 tile index 或全局 reducer 的
+    错误。
+- **当前判断**:
+  - 该路径一次 DST acquire/commit 中发出超过当前已验证窗口的
+    `matmul_tiles` 序列。单纯把 input CB window 分段并不能修复，问题更像
+    缺少 generated partial-C + reload continuation，或者需要在更早层把大
+    K 自动拆成合法 temporal chunks。
+- **当前边界**:
+  - T10 large-MNK 已验证路径显式使用 `k_tile=256` 的 core-internal K
+    chunks；这覆盖当前 admitted partial-K reducer correctness。
+  - 后续要 claiming 任意 monolithic large-K GEMM shape-general correctness
+    时，必须新增自动 temporal K lowering / partial reload guard，不能把
+    当前 explicit `k_tile` 路径当成该能力已经完成。
+
 ### loop-carried input exact-CB backedge 在 TT-Sim 上需要 typed `pacr count=1` gate
 
 - **现象**:
@@ -279,8 +299,39 @@
     work packets 覆盖 `440` 个 logical producer work items，每个 core 写
     `2x2` output tiles，并通过 TT-Sim direct runtime 与 torch bf16
     reference 对比。这个 guard 不应继续使用宽 `rtol=0.2`；当前改为纯
-    absolute gate `atol=0.35,rtol=0.0`，最近一次 full-core run 的
-    max/mean/p99 abs diff 是 `0.339279` / `0.041972` / `0.154337`。
+    absolute gate `atol=0.1,rtol=0.0`，最近一次 full-core run 的
+    max/mean/p99/p999 abs diff 是
+    `0.083786` / `0.010080` / `0.037431` / `0.051130`。
+
+### `clear_accum=false` 的 core-internal K chunk 不能把 Float32 accumulator live form 降成 bf16
+
+- **症状**:
+  - `M=N=64,K=512` 被拆成两个 `k_tile=256` GEMM chunk 时，单个
+    `T.gemm(K=512)` 路径 max/mean abs diff 只有约
+    `0.000023` / `0.000003`，但 `clear_accum=false` chunked 路径一度达到
+    max/mean/p99 `0.132195` / `0.019104` / `0.104960`。
+  - executable metadata 里第一个 live-form partial C CB 被投成
+    `Float16_b`，而 scratch partial 是 `Float32`。
+- **根因**:
+  - compute-only tiled-CB output dtype 选择把
+    `ExactTiledCBStorageDType(Float32)` 当成 live-form storage dtype，导致
+    Float32 accumulator partial 在 `clear_accum=false` continuation 之前
+    被写成 bf16。
+  - 后续 continuation 还走“当前 partial + previous partial”的 merge path，
+    而不是把 previous partial reload 进 DST 后继续 `matmul_tiles`。
+- **修法 / 验证**:
+  - Float32 GEMM accumulator live-form CB 保持 Float32 storage。
+  - final transport continuation 在无需保留 local state、无需 cast、无需复用
+    loop-carried live-form CB 的 common path 上，使用 partial reload
+    continuation，避免把 previous partial 当普通 bf16 tile 合并。
+  - `test_blackhole_gemm_clear_accum_false_preserves_float32_accumulator_bf16`
+    断言两个 GEMM op 的 `c_tensor_dtype` 和 `c_cb_dtype` 都是 `Float32`，
+    并通过 TT-Sim direct runtime；修复后该 repro max/mean abs diff 是
+    `0.031204` / `0.004421`。
+  - 同一修复把 full-core `M=640,N=704,K=2048,k_shards=4`
+    partial-K reducer guard 改善到 max/mean/p99 abs diff
+    `0.083786` / `0.010080` / `0.037431`，并把 gate 收紧到
+    `atol=0.1,rtol=0.0`。
 
 ### core-internal tiled GEMM 不能跨 serial loop 盲目 retain input CB pages
 

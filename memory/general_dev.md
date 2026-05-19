@@ -2332,7 +2332,20 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   each producer shard as two `k_tile=256` chunks.  Do not keep the old
   `rtol=0.2` large-MNK guard here; the current core-tiled large-MNK runtime
   correctness gate is the stricter pure absolute comparison
-  `atol=0.35,rtol=0.0` against the torch fp32 reference.
+  `atol=0.1,rtol=0.0` against the torch fp32 reference.  The latest measured
+  full-core distribution is max/mean/p99/p999 abs diff
+  `0.083786` / `0.010080` / `0.037431` / `0.051130`.
+- 2026-05-19 `clear_accum=false` GEMM continuation precision:
+  when a core-internal K shard is split into multiple GEMM chunks, the live
+  partial C between chunks is Float32 accumulator state.  Do not run
+  `ExactTiledCBStorageDType(Float32) -> bf16` for that compute-only live-form
+  CB, and do not merge the final chunk by adding a downcast previous partial
+  to the current partial.  Keep the live-form C CB Float32 and reload the
+  previous partial into DST before continuing `matmul_tiles`; this reduced the
+  `M=N=64,K=512` two-`k_tile=256` repro from max/mean abs diff
+  `0.132195` / `0.019104` to `0.031204` / `0.004421`, and the full-core
+  `640x704x2048` partial-K reducer guard to max/mean/p99
+  `0.083786` / `0.010080` / `0.037431`.
 - 2026-05-18 core-internal tiled GEMM compute input CB lifetime:
   a repeated serial loop is not evidence that input CB pages are loop
   invariant.  The core-tiled large-MNK reducer case exposed that retaining

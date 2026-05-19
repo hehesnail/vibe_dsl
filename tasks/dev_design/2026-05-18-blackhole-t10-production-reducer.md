@@ -180,6 +180,13 @@ CB pages are invariant: retaining A/B pages across a local output-tile loop
 can replay stale tiles.  The admitted path therefore uses the ordinary
 per-consume pop/reacquire protocol for compute input CB pages.
 
+Core-internal K chunking also makes `clear_accum=false` a precision contract:
+the previous partial C is accumulator state, not an ordinary bf16 output
+tile.  Compute-only tiled-CB live forms for Float32 GEMM accumulators must
+therefore keep Float32 CB storage, and the final continuation path should
+reload the previous partial into DST and continue `matmul_tiles` rather than
+downcast the partial and merge through a lower-precision add path.
+
 If a K-sharded GEMM reaches runtime without an admitted matching reducer plan,
 the executable must fail closed with a typed unsupported reason before
 launching.  Runtime must not fall back to the old implicit z-wave inference.
@@ -207,7 +214,10 @@ This slice is verified by:
   assign multiple output tiles to each core, tile each K shard as two
   `k_tile=256` chunks, run through direct runtime with an interleaved DRAM
   output/scratch reducer, and match the torch bf16 reference under a strict
-  absolute gate of `atol=0.35,rtol=0.0`;
+  absolute gate of `atol=0.1,rtol=0.0`;
+- a `clear_accum=false` accumulator precision guard proving two `k_tile=256`
+  chunks for `M=N=64,K=512` preserve Float32 C tensor and CB dtypes and match
+  the torch bf16/fp32 reference through direct runtime;
 - compile gate: `cmake --build build -j32`.
 
 ## Completion Criteria
