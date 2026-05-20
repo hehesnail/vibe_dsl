@@ -124,6 +124,11 @@ This contract stays satisfied only while:
 - deleted recovery surfaces have structure tests, source guards, or validators;
 - stale simulator-fatal admission gates are not retained after an admitted
   bf16 direct-runtime path has positive TT-Sim correctness coverage;
+- admitted runtime tests assert empty `direct_runtime_unsupported_reasons`
+  before execution instead of converting those reasons into pytest skips;
+- positive Blackhole lowering/runtime tests must not catch lowering failures
+  and skip with `not yet` messages; unsupported non-contract inputs should be
+  explicit negative fail-closed tests;
 - admitted T7/T8/T9 direct-runtime correctness remains green under the current
   bf16 TT-Sim baseline;
 - docs, progress, and memory do not preserve a second, contradictory

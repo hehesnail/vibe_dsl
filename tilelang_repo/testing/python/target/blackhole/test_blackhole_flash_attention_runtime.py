@@ -942,18 +942,23 @@ def _direct_runtime_reasons(metadata):
     return [str(reason) for reason in metadata.get("direct_runtime_unsupported_reasons", [])]
 
 
-def _skip_if_direct_runtime_unsupported(metadata):
+def test_blackhole_flash_attention_admitted_runtime_tests_do_not_skip_on_unsupported_reasons():
+    source = Path(__file__).read_text()
+    forbidden_skip_helper = "_skip_if" + "_direct_runtime_unsupported"
+    forbidden_skip_message = "direct runtime is not " + "yet supported"
+
+    assert forbidden_skip_helper not in source
+    assert forbidden_skip_message not in source
+
+
+def _assert_direct_runtime_admitted(metadata):
     reasons = _direct_runtime_reasons(metadata)
-    if reasons:
-        pytest.skip(
-            "Blackhole flash-attention direct runtime is not yet supported for this kernel: "
-            + ", ".join(reasons)
-        )
+    assert reasons == []
 
 
 def _run_blackhole_flash_attention(kernel, *inputs):
     artifact, metadata = _lower_blackhole_flash_attention_metadata(kernel)
-    _skip_if_direct_runtime_unsupported(metadata)
+    _assert_direct_runtime_admitted(metadata)
     artifact.codegen_mod["main"](*inputs)
 
 
@@ -1867,7 +1872,7 @@ def test_blackhole_t7_seq64_mha_bf16_exact_cb_partial_combine_direct_runtime():
         threads=threads,
     )
     artifact, metadata = _lower_blackhole_flash_attention_metadata(kernel)
-    _skip_if_direct_runtime_unsupported(metadata)
+    _assert_direct_runtime_admitted(metadata)
     _assert_t7_seq64_mha_exact_cb_partial_combine_contract(metadata)
     artifact.codegen_mod["main"](q, k, v, out)
 
@@ -2633,7 +2638,7 @@ def test_blackhole_t9_paged_gqa_decode_bf16_direct_runtime():
         dim=dim,
     )
     artifact, metadata = _lower_blackhole_flash_attention_metadata(kernel)
-    _skip_if_direct_runtime_unsupported(metadata)
+    _assert_direct_runtime_admitted(metadata)
 
     artifact.codegen_mod["main"](q, k_cache, v_cache, page_table, cache_seq_lens, out)
 
@@ -2693,7 +2698,7 @@ def test_blackhole_t9_sparse_ragged_gqa_decode_bf16_direct_runtime():
         dim=dim,
     )
     artifact, metadata = _lower_blackhole_flash_attention_metadata(kernel)
-    _skip_if_direct_runtime_unsupported(metadata)
+    _assert_direct_runtime_admitted(metadata)
 
     artifact.codegen_mod["main"](q, k_blocks, v_blocks, block_indices, valid_rows, out)
 
@@ -2854,7 +2859,7 @@ def test_blackhole_t9_paged_mla_decode_bf16_direct_runtime():
         dpe=dpe,
     )
     artifact, metadata = _lower_blackhole_flash_attention_metadata(kernel)
-    _skip_if_direct_runtime_unsupported(metadata)
+    _assert_direct_runtime_admitted(metadata)
 
     artifact.codegen_mod["main"](q_nope, q_pe, kv_latent, k_pe, page_table, cache_seq_lens, out)
 

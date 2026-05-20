@@ -234,6 +234,11 @@
   - 当 admitted bf16 runtime coverage 已经证明路径可执行时，要删除同一
     surface 上残留的 PACR / simulator-fatal admission gate，并用 source
     guard 防止重新引入；否则旧 gate 即使当前没触发，也会和完成口径冲突。
+  - 测试侧也不能保留同类逃生口：admitted runtime 正例必须
+    `assert direct_runtime_unsupported_reasons == []`，不能用 unsupported
+    reason helper skip；positive Blackhole lowering/runtime tests 也不能把
+    lowering exception catch 成 `not yet` pytest skip。确实不在合同内的
+    裸输入要写成 negative fail-closed 测试。
   - 测试里要同时断言 admitted flash executable 没有 unsupported reason，
     并运行 `BlackholeModule` bf16 direct runtime 对 host/torch reference。
 - **验证**:

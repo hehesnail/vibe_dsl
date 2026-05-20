@@ -341,7 +341,10 @@ Current baseline:
   split-block materialization as admitted bf16 flash boundaries; those paths
   are covered by positive TT-Sim runtime checks, and the stale
   `tilize_cast_fragment_slice` PACR admission gate has a source guard against
-  reintroduction.  These paths run along with GEMM
+  reintroduction.  Admitted flash runtime tests assert empty unsupported
+  reasons instead of skipping on them, and positive Blackhole lowering/runtime
+  tests have source guards against `not yet` exception-to-skip fallbacks.
+  These paths run along with GEMM
   `transpose_A`, T3 multi-tile per-work tile compute, TopK repeated
   row-reduction value/index selection, and standalone leaf compute.
 

@@ -909,13 +909,10 @@ def test_blackhole_codegen_only():
     kernel = staged_copy_kernel(tile_rows=2, tile_cols=2)
     target = Target("blackhole")
 
-    try:
-        with target:
-            artifact = lower(kernel, target=target)
-        assert artifact is not None
-        assert hasattr(artifact, "kernel_source") or hasattr(artifact, "code")
-    except Exception as e:
-        pytest.skip(f"Blackhole lowering not yet fully implemented: {e}")
+    with target:
+        artifact = lower(kernel, target=target)
+    assert artifact is not None
+    assert hasattr(artifact, "kernel_source") or hasattr(artifact, "code")
 
 
 def test_blackhole_codegen_does_not_emit_cb_backed_c_arrays():
@@ -3483,7 +3480,7 @@ def test_blackhole_runtime_module_keeps_host_and_device_entries():
     assert artifact.codegen_mod["main_kernel"] is not None
 
 
-def test_blackhole_kernel_compilation():
+def test_blackhole_scalar_elementwise_without_ttprogram_cb_plan_fails_closed():
     @T.prim_func
     def elementwise_add(
         A: T.Buffer((64,), "float16"),
@@ -3495,13 +3492,9 @@ def test_blackhole_kernel_compilation():
                 idx = bx * 32 + i
                 C[idx] = A[idx] + B[idx]
 
-    try:
-        target = Target("blackhole")
-        artifact = lower(elementwise_add, target=target)
-        assert artifact is not None
-        if hasattr(artifact, "kernel_source"):
-            assert len(artifact.kernel_source) > 0
-        elif hasattr(artifact, "code"):
-            assert len(artifact.code) > 0
-    except Exception as e:
-        pytest.skip(f"Blackhole compilation not yet complete: {e}")
+    target = Target("blackhole")
+    with pytest.raises(
+        tvm.error.InternalError,
+        match="PlanTTCBAlloc requires staged TTProgram cb_plans",
+    ):
+        lower(elementwise_add, target=target)

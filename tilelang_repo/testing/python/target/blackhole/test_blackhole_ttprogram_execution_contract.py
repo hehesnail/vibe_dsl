@@ -55,9 +55,32 @@ def test_runtime_does_not_recover_static_buffer_info_from_device_body():
 
 def test_runtime_does_not_keep_stale_tilize_pacr_admission_gate():
     source = _repo_src_path("target", "rt_mod_blackhole.cc").read_text(encoding="utf-8")
+    forbidden_gate = "EnforceTilizeCastFragmentSlice" + "Pacr" + "Simulator" + "Gate"
+    forbidden_pacr_message = "tensix_execute_pacr: intermediate_format=0 " + "late_from_format=5"
 
-    assert "EnforceTilizeCastFragmentSlicePacrSimulatorGate" not in source
-    assert "tensix_execute_pacr: intermediate_format=0 late_from_format=5" not in source
+    assert forbidden_gate not in source
+    assert forbidden_pacr_message not in source
+
+
+def test_blackhole_positive_tests_do_not_skip_on_not_yet_lowering_failures():
+    root = Path(__file__).resolve().parents[4]
+    forbidden_snippets = [
+        "not " + "yet fully implemented",
+        "compilation not " + "yet complete",
+        "_skip_if" + "_direct_runtime_unsupported",
+        "direct runtime is not " + "yet supported",
+    ]
+    test_root = root / "testing" / "python" / "target" / "blackhole"
+    test_paths = [path for path in sorted(test_root.glob("test_*.py")) if path != Path(__file__)]
+
+    offenders = []
+    for path in test_paths:
+        source = path.read_text(encoding="utf-8")
+        for snippet in forbidden_snippets:
+            if snippet in source:
+                offenders.append(f"{path.name}: {snippet}")
+
+    assert offenders == []
 
 
 def test_codegen_does_not_recover_reduction_region_from_final_body():

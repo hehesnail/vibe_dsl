@@ -3430,11 +3430,8 @@ def test_blackhole_gemm_basic():
     target = Target("blackhole")
     kernel = gemm_kernel()
 
-    try:
-        with target:
-            artifact = lower(kernel, target=target)
-    except Exception as e:
-        pytest.skip(f"Blackhole GEMM lowering not yet fully implemented: {e}")
+    with target:
+        artifact = lower(kernel, target=target)
 
     artifact.codegen_mod["main"](a_torch, b_torch, c_output)
     assert_tensors_close_or_dump(

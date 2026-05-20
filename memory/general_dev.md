@@ -53,6 +53,11 @@
   这类宽相对容差掩盖错数值。若路径会命中 simulator fatal 或未证明的
   local-fragment publication 形态，先用 typed
   `direct_runtime_unsupported_reasons` fail closed，再单独排支持任务。
+  一旦某条路径进入 admitted runtime correctness，测试必须断言
+  `direct_runtime_unsupported_reasons == []`，不能再用 helper 把 unsupported
+  reason 转成 `pytest.skip`。同理，positive Blackhole lowering/runtime 测试
+  不能 catch lowering exception 后用 `not yet` skip；不在合同内的输入应写成
+  explicit negative fail-closed test。
 - Blackhole external accessor admission 要同时测结构层和 runtime 层：
   `TTABIPlan` / `ExecutableSpec` 里必须能看到 accessor kind、layout、
   memory space、compile-time offset/count、`args_config_bits`、
