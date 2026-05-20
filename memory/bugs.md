@@ -231,6 +231,9 @@
     `direct_runtime_unsupported_reasons`；修 typed CB lifecycle、source
     queue events、materialization live-form ownership 和 runtime execution
     path，直到它们进入 TT-Sim 数值比较。
+  - 当 admitted bf16 runtime coverage 已经证明路径可执行时，要删除同一
+    surface 上残留的 PACR / simulator-fatal admission gate，并用 source
+    guard 防止重新引入；否则旧 gate 即使当前没触发，也会和完成口径冲突。
   - 测试里要同时断言 admitted flash executable 没有 unsupported reason，
     并运行 `BlackholeModule` bf16 direct runtime 对 host/torch reference。
 - **验证**:

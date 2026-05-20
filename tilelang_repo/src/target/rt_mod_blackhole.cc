@@ -3233,36 +3233,6 @@ static bool SpecHasThreadDistributedCastRepublishPlan(const ExecutableSpec& spec
   return false;
 }
 
-static bool SpecHasTilizeCastFragmentSliceRepublishPlan(const ExecutableSpec& spec) {
-  for (const auto& plan : spec.materialization_plans) {
-    if (plan.materialization_protocol == buffer_materialization::kCBRepublish &&
-        plan.publication_protocol == buffer_materialization::kTilizeCastFragmentSlice) {
-      return true;
-    }
-  }
-  for (const auto& materialization : spec.buffer_materializations) {
-    if (materialization.materialization_protocol == buffer_materialization::kCBRepublish &&
-        materialization.publication_protocol ==
-            buffer_materialization::kTilizeCastFragmentSlice) {
-      return true;
-    }
-  }
-  return false;
-}
-
-static void EnforceTilizeCastFragmentSlicePacrSimulatorGate(
-    ExecutableSpec* spec) {
-  ICHECK(spec != nullptr);
-  if (!SpecHasTilizeCastFragmentSliceRepublishPlan(*spec)) {
-    return;
-  }
-  AppendDirectRuntimeUnsupportedReason(
-      spec,
-      "tilize_cast_fragment_slice CB-republish direct runtime is gated: TT-Sim reports "
-      "tensix_execute_pacr: intermediate_format=0 late_from_format=5 for "
-      "the current fragment publication path");
-}
-
 static void EnforceExactLiveFormMultiPageRepublishGate(ExecutableSpec* spec) {
   ICHECK(spec != nullptr);
   if (!SpecHasThreadDistributedCastRepublishPlan(*spec)) {
@@ -4397,7 +4367,6 @@ ffi::Module BuildTileLangBlackhole(IRModule mod, Target target) {
     EnforceProjectedReshardAdmissionGate(&spec_it->second);
     EnforceExplicitPerWorkAccessDescriptorGate(logical_shape_by_buffer, &spec_it->second);
     EnforceTypedDstCbAccumulationGate(&spec_it->second);
-    EnforceTilizeCastFragmentSlicePacrSimulatorGate(&spec_it->second);
     EnforceExactLiveFormMultiPageRepublishGate(&spec_it->second);
     EnforceExplicitBufferRoleSchemaGate(&spec_it->second);
     EnforcePhysicalCBQueueEventGate(&spec_it->second);
@@ -4487,7 +4456,6 @@ ffi::Module BuildTileLangBlackholeWithoutHost(IRModule mod, Target target) {
     EnforceProjectedReshardAdmissionGate(&spec_it->second);
     EnforceExplicitPerWorkAccessDescriptorGate(logical_shape_by_buffer, &spec_it->second);
     EnforceTypedDstCbAccumulationGate(&spec_it->second);
-    EnforceTilizeCastFragmentSlicePacrSimulatorGate(&spec_it->second);
     EnforceExactLiveFormMultiPageRepublishGate(&spec_it->second);
     EnforceExplicitBufferRoleSchemaGate(&spec_it->second);
     EnforcePhysicalCBQueueEventGate(&spec_it->second);

@@ -53,6 +53,13 @@ def test_runtime_does_not_recover_static_buffer_info_from_device_body():
     assert "CollectStaticBufferInfo" not in source
 
 
+def test_runtime_does_not_keep_stale_tilize_pacr_admission_gate():
+    source = _repo_src_path("target", "rt_mod_blackhole.cc").read_text(encoding="utf-8")
+
+    assert "EnforceTilizeCastFragmentSlicePacrSimulatorGate" not in source
+    assert "tensix_execute_pacr: intermediate_format=0 late_from_format=5" not in source
+
+
 def test_codegen_does_not_recover_reduction_region_from_final_body():
     source = _repo_src_path("target", "codegen_blackhole.cc").read_text(encoding="utf-8")
 

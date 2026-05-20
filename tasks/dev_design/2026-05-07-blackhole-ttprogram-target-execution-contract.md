@@ -122,6 +122,8 @@ This contract stays satisfied only while:
 - covered leaf consumers get target execution facts from `ExecutableSpec`;
 - `ExecutableSpec` fields are projected from typed `TTProgram` owner truth;
 - deleted recovery surfaces have structure tests, source guards, or validators;
+- stale simulator-fatal admission gates are not retained after an admitted
+  bf16 direct-runtime path has positive TT-Sim correctness coverage;
 - admitted T7/T8/T9 direct-runtime correctness remains green under the current
   bf16 TT-Sim baseline;
 - docs, progress, and memory do not preserve a second, contradictory

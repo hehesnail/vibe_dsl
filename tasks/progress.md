@@ -339,7 +339,9 @@ Current baseline:
   fail closed before source or runtime guessing.  Current runtime-correctness
   audit coverage no longer treats `tilize_cast_fragment_slice` PACR or T9.6
   split-block materialization as admitted bf16 flash boundaries; those paths
-  are covered by positive TT-Sim runtime checks, along with GEMM
+  are covered by positive TT-Sim runtime checks, and the stale
+  `tilize_cast_fragment_slice` PACR admission gate has a source guard against
+  reintroduction.  These paths run along with GEMM
   `transpose_A`, T3 multi-tile per-work tile compute, TopK repeated
   row-reduction value/index selection, and standalone leaf compute.
 
