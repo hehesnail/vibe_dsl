@@ -305,7 +305,7 @@ def _make_unique_topk_logits(M, N, torch_dtype):
     return pattern.unsqueeze(0).repeat(M, 1).to(torch_dtype)
 
 
-def _run_direct_topk_case(*, M, N, k, blk_m, tir_dtype, torch_dtype, atol, rtol):
+def _run_direct_topk_case(*, M, N, k, blk_m, tir_dtype, torch_dtype, atol):
     can_run, msg = check_blackhole_direct_execution_requirements()
     if not can_run:
         pytest.skip(f"Blackhole requirements not met: {msg}")
@@ -337,7 +337,7 @@ def _run_direct_topk_case(*, M, N, k, blk_m, tir_dtype, torch_dtype, atol, rtol)
         topk_gates.to(torch.float32),
         expected_gates.to(torch.float32),
         atol=atol,
-        rtol=rtol,
+        rtol=0.0,
         failure_message=f"topk values mismatch M={M} N={N} k={k} dtype={torch_dtype}",
     )
     assert torch.equal(topk_indices, expected_indices)
@@ -352,7 +352,6 @@ def test_blackhole_existing_tir_value_index_selection_direct_runtime_fp32_single
         tir_dtype=T.float32,
         torch_dtype=torch.float32,
         atol=0.0,
-        rtol=0.0,
     )
 
 
@@ -365,7 +364,6 @@ def test_blackhole_existing_tir_value_index_selection_direct_runtime_fp32_multi_
         tir_dtype=T.float32,
         torch_dtype=torch.float32,
         atol=0.0,
-        rtol=0.0,
     )
 
 
@@ -378,5 +376,4 @@ def test_blackhole_existing_tir_value_index_selection_direct_runtime_bf16_values
         tir_dtype="bfloat16",
         torch_dtype=torch.bfloat16,
         atol=0.0,
-        rtol=0.0,
     )

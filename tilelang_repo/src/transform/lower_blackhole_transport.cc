@@ -416,12 +416,12 @@ static std::pair<int64_t, int64_t> ResolveStagedCopySharedShape(
     ICHECK_GT(gemm_n, 0);
     return {gemm_m, gemm_n};
   }
-  if (logical_matrix_shape.first > 0 && logical_matrix_shape.second > 0) {
-    return logical_matrix_shape;
-  }
-  if (shared_buffer->shape.size() < 2U && fallback_shape.size() >= 2U) {
+  if (fallback_shape.size() >= 2U) {
     return {fallback_shape[fallback_shape.size() - 2]->value,
             fallback_shape[fallback_shape.size() - 1]->value};
+  }
+  if (logical_matrix_shape.first > 0 && logical_matrix_shape.second > 0) {
+    return logical_matrix_shape;
   }
   return ResolveStaticShape2DFromBufferOrMetadata(
       shared_buffer, fallback_shape,
@@ -629,8 +629,17 @@ PlanTTKernelABI::InferStagedCopySharedShapeFromTransportCoverage(
   }
 
   const int64_t vector_lanes = std::max<int>(1, op->value.dtype().lanes());
-  const int64_t shared_rows = row_bounds->max_value - row_bounds->min_value + 1;
-  const int64_t shared_cols = col_bounds->max_value - col_bounds->min_value + vector_lanes;
+  const int64_t row_extent = row_bounds->max_value - row_bounds->min_value + 1;
+  const int64_t col_extent = col_bounds->max_value - col_bounds->min_value + 1;
+  int64_t shared_rows = row_extent;
+  int64_t shared_cols = col_extent;
+  if (vector_lanes > 1) {
+    if (col_extent == 1) {
+      shared_rows = vector_lanes;
+    } else {
+      shared_cols += vector_lanes - 1;
+    }
+  }
   if (shared_rows <= 0 || shared_cols <= 0) {
     return std::nullopt;
   }
@@ -646,6 +655,30 @@ Array<Integer> PlanTTKernelABI::GetEncodedCurrentStagedCopySharedShape(
   const CopyDirection direction = GetCopyDirection(op);
   const Buffer& shared_buffer =
       IsDramToDeviceCopyDirection(direction) ? op->buffer : load->buffer;
+  if (direction == CopyDirection::kCBToDram) {
+    auto inferred_shape = InferStagedCopySharedShapeFromTransportCoverage(
+        op, loop_vars_to_zero);
+    if (inferred_shape.has_value()) {
+      const Buffer& global_buffer = op->buffer;
+      const Array<PrimExpr>& global_indices = op->indices;
+      const Array<Integer> global_shape = GetEncodedCurrentBufferShape(global_buffer);
+      const auto [row_axis, col_axis] =
+          SelectStagedCopyTransportAxes(global_indices, loop_vars_to_zero);
+      const auto [global_rows, global_cols] =
+          ResolveStaticShape2DFromBufferAxesOrMetadata(
+              global_buffer, global_shape, row_axis, col_axis,
+              "Blackhole staged copy currently expects static global buffer shape",
+              "Blackhole staged copy requires rank-2 global shape metadata after FlattenBuffer");
+      (void)global_rows;
+      if (global_cols % kBlackholeTileCols != 0 ||
+          inferred_shape.value().second % kBlackholeTileCols != 0) {
+        Array<Integer> shared_shape;
+        shared_shape.push_back(Integer(inferred_shape.value().first));
+        shared_shape.push_back(Integer(inferred_shape.value().second));
+        return shared_shape;
+      }
+    }
+  }
   if (direction == CopyDirection::kCBToDram) {
     ExactTiledCBValue live_value;
     if (TryCreateExactOutputLiveTiledCBValue(load->buffer, &live_value) ||
@@ -2688,16 +2721,23 @@ Stmt PlanTTKernelABI::GenerateStagedCopyLoopSequence(
           maybe_wrap_segment_stmt(SeqStmt::Flatten(stmts)));
     }
     if (use_page_transport) {
-      SetRequirementPageLayout(cb_id, geometry.shared_bytes, 1);
+      const int transport_pages =
+          has_live_output ? std::max(1, live_output.num_tiles) : 1;
+      if (!has_live_output) {
+        SetRequirementPageLayout(cb_id, geometry.shared_bytes, transport_pages);
+      }
+      auto make_l1_byte_offset = [&](int page_row) -> PrimExpr {
+        return IntImm32(page_row * geometry.l1_stick_stride);
+      };
       stmts.push_back(MakeBlackholeCall(
-          blackhole_cb_wait_front(), {IntImm32(cb_id), IntImm32(1)}));
+          blackhole_cb_wait_front(), {IntImm32(cb_id), IntImm32(transport_pages)}));
       for (int page_row = 0; page_row < shared_rows; ++page_row) {
         PrimExpr page_index = make_page_index(page_row);
         stmts.push_back(MakeBlackholeCall(
             blackhole_write_page_from_cb(), {IntImm32(cb_id), op->buffer->data, page_index,
                                              IntImm32(geometry.page_bytes),
                                              IntImm32(accessor_slot),
-                                             IntImm32(page_row * geometry.l1_stick_stride)}));
+                                             make_l1_byte_offset(page_row)}));
         RegisterAccessor(segment_kind, op->buffer,
                          accessor_slot, 2, 0, 0, 2, geometry.page_bytes, host_axis_order,
                          false, "interleaved");
@@ -2705,7 +2745,7 @@ Stmt PlanTTKernelABI::GenerateStagedCopyLoopSequence(
       stmts.push_back(MakeBlackholeCall(
           blackhole_noc_async_write_barrier(), {}));
       stmts.push_back(MakeBlackholeCall(
-          blackhole_cb_pop_front(), {IntImm32(cb_id), IntImm32(1)}));
+          blackhole_cb_pop_front(), {IntImm32(cb_id), IntImm32(transport_pages)}));
       return maybe_prepend_loop_carried_publication(
           maybe_wrap_segment_stmt(SeqStmt::Flatten(stmts)));
     }

@@ -3069,3 +3069,22 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   should assert empty `ExecutableSpec.direct_runtime_unsupported_reasons`,
   inspect key CB dtypes/page sizes where precision depends on them, and report
   measured absolute max/mean/p99 diffs against the host reference.
+- 2026-05-20 queue-event validation boundary:
+  `TTKernel.queue_events` should be validated in `ValidateTTProgram` for
+  typed event shape: admitted kind, non-negative known physical CB id,
+  positive pages, compute reserve capacity, and push-without-reserve errors.
+  Full front-page availability for compute `wait_front` / `pop_front` can
+  depend on external producers, loop-carried state, and executable admission,
+  so TTProgram validation should only reject a single wait/pop event that
+  cannot fit the CB capacity at all.  The executable/direct-runtime queue gate
+  remains responsible for underflow-style admission diagnostics.
+- 2026-05-20 exact-CB verifier fixtures:
+  Negative lifecycle tests must use an artifact that actually carries
+  `TTExactCBVirtualValue` / allocation / release records.  Seq64 MHA no
+  longer has those TTProgram records; seq128+ MHA is the current fixture for
+  data-format mismatch, release-reason, and stale-producer verifier tests.
+- 2026-05-20 transposed-B GEMM tile ids:
+  For a `B` tensor shaped `(N,K)` with `transpose_B=True`, tile ids follow the
+  physical `(N_tiles, K_tiles)` row-major source layout.  A `64x128` B tensor
+  with `32x32` tiles reads row block `bx` as `bx * 4 + k_tile`, not
+  `bx + 2 * k_tile`.

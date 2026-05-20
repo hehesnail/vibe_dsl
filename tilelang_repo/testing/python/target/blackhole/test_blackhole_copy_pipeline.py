@@ -271,10 +271,7 @@ def test_blackhole_indexed_access_region_lookup_fails_closed():
     )
     start = source.index(signature)
     body_start = source.index("{", start)
-    body_end = source.index(
-        "\nstd::optional<PlanTTKernelABI::SpatialLiveValueRef>",
-        body_start,
-    )
+    body_end = source.index("\nnamespace {", body_start)
     body = source[body_start:body_end]
     indexed_branch = body[
         body.index("if (!index_exprs.empty()") : body.index(

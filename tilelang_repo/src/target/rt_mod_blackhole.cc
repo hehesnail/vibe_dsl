@@ -3832,9 +3832,39 @@ static void PopulateBufferMaterializationSpecs(
     live_form_by_name.emplace(live_form.name, &live_form);
   }
 
+  std::unordered_set<uint32_t> non_compute_consumed_cb_ids;
+  for (const KernelSpec& kernel : spec->kernels) {
+    const bool is_compute_kernel = kernel.kind == "compute" && kernel.core_type == "trisc";
+    if (is_compute_kernel) {
+      continue;
+    }
+    for (const CBQueueEventSpec& event : kernel.queue_events) {
+      if (event.kind == "wait_front" || event.kind == "pop_front") {
+        non_compute_consumed_cb_ids.insert(event.cb_id);
+      }
+    }
+  }
+
+  auto requires_host_buffer = [&](const MaterializationPlanSpec& plan) {
+    if (plan.publication_protocol != buffer_materialization::kPackTile) {
+      return false;
+    }
+    for (const int64_t cb_plan_index : plan.required_cb_plan_indices) {
+      if (cb_plan_index < 0 ||
+          cb_plan_index >= static_cast<int64_t>(spec->cb_configs.size())) {
+        continue;
+      }
+      const CBConfig& cb = spec->cb_configs[static_cast<size_t>(cb_plan_index)];
+      if (non_compute_consumed_cb_ids.count(cb.cb_id)) {
+        return true;
+      }
+    }
+    return false;
+  };
+
   for (const auto& plan : spec->materialization_plans) {
     if (plan.host_buffer.empty()) {
-      ICHECK(plan.publication_protocol != buffer_materialization::kPackTile)
+      ICHECK(!requires_host_buffer(plan))
           << "Blackhole buffer materialization plan requires explicit host_buffer for target "
           << plan.target_buffer;
       continue;

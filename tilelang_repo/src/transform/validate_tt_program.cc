@@ -1495,6 +1495,84 @@ void ValidateCBPlan(const TTCBPlan &cb_plan) {
       << "TTCBPlan requires lifetime_end >= lifetime_begin";
 }
 
+struct PhysicalCBQueueState {
+  int64_t visible_front_pages = 0;
+  int64_t reserved_back_pages = 0;
+};
+
+void ValidateKernelQueueEvents(const TTProgram &program) {
+  std::unordered_map<int64_t, const TTCBPlanNode *> cb_by_id;
+  for (const TTCBPlan &cb : program->cb_plans) {
+    cb_by_id.emplace(cb->cb_id, cb.get());
+  }
+
+  for (const TTKernel &kernel : program->kernels) {
+    const bool is_compute_kernel =
+        kernel->kind == "compute" && kernel->core_type == "trisc";
+    std::unordered_map<int64_t, PhysicalCBQueueState> state_by_cb_id;
+    for (const TTKernelQueueEvent &event : kernel->queue_events) {
+      const std::string kind = event->kind;
+      ICHECK(kind == "reserve_back" || kind == "push_back" ||
+             kind == "wait_front" || kind == "pop_front")
+          << "physical CB queue event has invalid kind " << event->kind
+          << " in TTKernel " << kernel->name;
+      ICHECK_GE(event->cb_id, 0)
+          << "physical CB queue event requires non-negative cb_id in TTKernel "
+          << kernel->name;
+      ICHECK_GT(event->pages, 0)
+          << "physical CB queue event requires positive pages in TTKernel "
+          << kernel->name;
+      auto cb_it = cb_by_id.find(event->cb_id);
+      ICHECK(cb_it != cb_by_id.end())
+          << "physical CB queue event references unknown CB " << event->cb_id
+          << " in TTKernel " << kernel->name;
+
+      if (!is_compute_kernel) {
+        continue;
+      }
+
+      const TTCBPlanNode &cb = *cb_it->second;
+      PhysicalCBQueueState &state = state_by_cb_id[event->cb_id];
+      const int64_t pages = event->pages;
+      if (kind == "reserve_back") {
+        ICHECK_LE(state.visible_front_pages + state.reserved_back_pages + pages,
+                  cb.num_pages)
+            << "physical CB queue reserve exceeds capacity in TTKernel "
+            << kernel->name << " for CB " << event->cb_id << ": front="
+            << state.visible_front_pages << " reserved="
+            << state.reserved_back_pages << " reserve=" << pages
+            << " capacity=" << cb.num_pages;
+        state.reserved_back_pages += pages;
+      } else if (kind == "push_back") {
+        ICHECK_GE(state.reserved_back_pages, pages)
+            << "physical CB queue push without matching reserve in TTKernel "
+            << kernel->name << " for CB " << event->cb_id << ": reserved="
+            << state.reserved_back_pages << " push=" << pages;
+        state.reserved_back_pages -= pages;
+        state.visible_front_pages += pages;
+        ICHECK_LE(state.visible_front_pages, cb.num_pages)
+            << "physical CB queue visible front exceeds capacity in TTKernel "
+            << kernel->name << " for CB " << event->cb_id;
+      } else if (kind == "wait_front" || kind == "pop_front") {
+        if (state.visible_front_pages < pages) {
+          ICHECK_LE(pages, cb.num_pages)
+              << "physical CB queue " << kind
+              << " exceeds CB capacity in TTKernel " << kernel->name
+              << " for CB " << event->cb_id << ": pages=" << pages
+              << " capacity=" << cb.num_pages;
+          // Full cross-kernel/loop-carried front-page availability is an
+          // executable admission property.  TTProgram validation only rejects
+          // typed events that cannot fit the physical CB at all.
+          continue;
+        } else if (kind == "pop_front") {
+          state.visible_front_pages =
+              std::max<int64_t>(0, state.visible_front_pages - pages);
+        }
+      }
+    }
+  }
+}
+
 bool IsAllowedExactCBReleaseReason(const ffi::String &reason) {
   const std::string value = str(reason);
   return value == "last_use" || value == "loop_backedge_transfer" ||
@@ -1720,6 +1798,36 @@ void ValidateMaterializationPlans(
     const TTProgram &program,
     const std::unordered_set<std::string> &live_form_names,
     int64_t cb_plan_count) {
+  std::unordered_set<int64_t> non_compute_consumed_cb_ids;
+  for (const TTKernel &kernel : program->kernels) {
+    const bool is_compute_kernel =
+        kernel->kind == "compute" && kernel->core_type == "trisc";
+    if (is_compute_kernel) {
+      continue;
+    }
+    for (const TTKernelQueueEvent &event : kernel->queue_events) {
+      if (event->kind == "wait_front" || event->kind == "pop_front") {
+        non_compute_consumed_cb_ids.insert(event->cb_id);
+      }
+    }
+  }
+
+  auto requires_host_buffer = [&](const TTMaterializationPlan &plan) {
+    if (plan->publication_protocol != buffer_materialization::kPackTile) {
+      return false;
+    }
+    for (const Integer &index : plan->required_cb_plan_indices) {
+      if (index->value < 0 || index->value >= cb_plan_count) {
+        continue;
+      }
+      const TTCBPlan &cb_plan = program->cb_plans[index->value];
+      if (non_compute_consumed_cb_ids.count(cb_plan->cb_id)) {
+        return true;
+      }
+    }
+    return false;
+  };
+
   for (const TTMaterializationPlan &plan : program->materialization_plans) {
     ICHECK(!plan->name.empty()) << "TTMaterializationPlan requires name";
     ICHECK(!plan->source_live_form.empty())
@@ -1757,16 +1865,18 @@ void ValidateMaterializationPlans(
           << "TTMaterializationPlan cb_republish has unsupported "
              "publication_protocol "
           << plan->publication_protocol;
-      if (plan->publication_protocol == buffer_materialization::kPackTile) {
-        ICHECK(!plan->host_buffer.empty())
-            << "TTMaterializationPlan requires host_buffer";
-      }
     }
     for (const Integer &index : plan->required_cb_plan_indices) {
       ICHECK_GE(index->value, 0)
           << "TTMaterializationPlan requires non-negative CB plan index";
       ICHECK_LT(index->value, cb_plan_count)
           << "TTMaterializationPlan required_cb_plan_indices out of bounds";
+    }
+    if (plan->materialization_protocol ==
+            buffer_materialization::kCBRepublish &&
+        requires_host_buffer(plan)) {
+      ICHECK(!plan->host_buffer.empty())
+          << "TTMaterializationPlan requires host_buffer";
     }
   }
 }
@@ -2557,6 +2667,7 @@ void CheckTTProgram(
     ICHECK(cb_ids.insert(cb->cb_id).second)
         << "duplicate TTCBPlan cb_id " << cb->cb_id;
   }
+  ValidateKernelQueueEvents(program);
 
   std::unordered_set<std::string> live_form_names;
   ValidateLiveFormPlans(program, &live_form_names);

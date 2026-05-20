@@ -97,6 +97,80 @@ static std::string DataTypeToDataFormatForBlackhole(DataType dtype) {
   return "Float16_b";
 }
 
+static bool IsBlackholeQueueBuiltinCall(const tir::CallNode* call,
+                                        const tvm::Op& builtin,
+                                        const char* op_name) {
+  if (!call) {
+    return false;
+  }
+  if (call->op.same_as(builtin)) {
+    return true;
+  }
+  if (const auto* op = call->op.as<OpNode>()) {
+    return op->name == op_name;
+  }
+  return false;
+}
+
+static bool TryGetCBQueueEventKindFromCall(const tir::CallNode* call,
+                                           std::string* kind) {
+  if (IsBlackholeQueueBuiltinCall(call, tir::builtin::blackhole_cb_reserve_back(),
+                                  "tl.blackhole.cb_reserve_back")) {
+    *kind = "reserve_back";
+    return true;
+  }
+  if (IsBlackholeQueueBuiltinCall(call, tir::builtin::blackhole_cb_push_back(),
+                                  "tl.blackhole.cb_push_back")) {
+    *kind = "push_back";
+    return true;
+  }
+  if (IsBlackholeQueueBuiltinCall(call, tir::builtin::blackhole_cb_wait_front(),
+                                  "tl.blackhole.cb_wait_front")) {
+    *kind = "wait_front";
+    return true;
+  }
+  if (IsBlackholeQueueBuiltinCall(call, tir::builtin::blackhole_cb_pop_front(),
+                                  "tl.blackhole.cb_pop_front")) {
+    *kind = "pop_front";
+    return true;
+  }
+  return false;
+}
+
+static bool TryReadNonNegativeIntImm(const PrimExpr& expr, int64_t* value) {
+  if (value == nullptr) {
+    return false;
+  }
+  const auto* imm = expr.as<IntImmNode>();
+  if (imm == nullptr || imm->value < 0) {
+    return false;
+  }
+  *value = imm->value;
+  return true;
+}
+
+static Array<TTKernelQueueEvent> CollectCBQueueEventsFromSegmentBody(
+    const Stmt& stmt) {
+  Array<TTKernelQueueEvent> events;
+  tir::PostOrderVisit(stmt, [&](const ObjectRef& node) {
+    const auto* call = node.as<tir::CallNode>();
+    std::string kind;
+    if (!TryGetCBQueueEventKindFromCall(call, &kind)) {
+      return;
+    }
+    ICHECK_GE(call->args.size(), 2U)
+        << "PlanTTKernelABI typed CB queue event record requires cb_id/pages args";
+    int64_t cb_id = -1;
+    int64_t pages = 0;
+    ICHECK(TryReadNonNegativeIntImm(call->args[0], &cb_id))
+        << "PlanTTKernelABI typed CB queue event record requires static cb_id";
+    ICHECK(TryReadNonNegativeIntImm(call->args[1], &pages) && pages > 0)
+        << "PlanTTKernelABI typed CB queue event record requires positive static page count";
+    events.push_back(TTKernelQueueEvent(String(kind), cb_id, pages));
+  });
+  return events;
+}
+
 static int CeilDivToInt(int64_t value, int64_t divisor) {
   ICHECK_GT(divisor, 0);
   if (value <= 0) {
@@ -1256,6 +1330,12 @@ void PlanTTKernelABI::StoreSegmentPlan(PrimFunc &func) {
     kernel.Set("name", String("main"));
     kernel.Set("kind", String("fused_dataflow"));
     kernel.Set("core_type", String("brisc"));
+    kernel.Set(tt_program_segment_key::kBody, func->body);
+    Array<TTKernelQueueEvent> queue_events =
+        CollectCBQueueEventsFromSegmentBody(func->body);
+    if (!queue_events.empty()) {
+      kernel.Set("queue_events", queue_events);
+    }
     if (!indexed_per_work_runtime_args_.empty()) {
       Array<Any> runtime_args;
       append_indexed_per_work_runtime_args(&runtime_args, "fused_dataflow",

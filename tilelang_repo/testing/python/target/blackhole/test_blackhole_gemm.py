@@ -377,6 +377,10 @@ def _direct_runtime_unsupported_reasons(artifact):
     ]
 
 
+def _assert_direct_runtime_admitted(artifact):
+    assert _direct_runtime_unsupported_reasons(artifact) == []
+
+
 def multicore_gemm_kernel(
     M: int = 64, N: int = 64, K: int = 128, tile_m: int = 32, tile_n: int = 32
 ):
@@ -2163,6 +2167,7 @@ def test_blackhole_t5_external_sharded_l1_gemm_direct_runtime_bf16():
     with target:
         artifact = lower(kernel, target=target)
 
+    _assert_direct_runtime_admitted(artifact)
     artifact.codegen_mod["main"](a_torch, b_torch, c_output)
     assert_tensors_close_or_dump(
         c_output,
@@ -2207,6 +2212,7 @@ def test_blackhole_t9_grouped_gemm_direct_runtime_bf16():
     with target:
         artifact = lower(kernel, target=target)
 
+    _assert_direct_runtime_admitted(artifact)
     artifact.codegen_mod["main"](
         a_torch,
         w_torch,
@@ -2248,6 +2254,7 @@ def test_blackhole_t5_multicore_external_sharded_l1_gemm_direct_runtime_bf16():
         expected_accessor_counts={"A": 7, "B": 7, "C": 8},
     )
 
+    _assert_direct_runtime_admitted(artifact)
     artifact.codegen_mod["main"](a_torch, b_torch, c_output)
     assert_tensors_close_or_dump(
         c_output,
@@ -2286,11 +2293,7 @@ def test_blackhole_t5_multicore_external_sharded_l1_gemm_direct_runtime_all_bf16
         expected_grid_y=2,
         expected_accessor_counts={"A": 7, "B": 7, "C": 8},
     )
-    reasons = _direct_runtime_unsupported_reasons(artifact)
-    assert not any(
-        "thread-distributed cb_republish materialization" in reason
-        for reason in reasons
-    )
+    _assert_direct_runtime_admitted(artifact)
 
     executable_spec = _extract_blackhole_executable_spec(artifact)
     materializations = {
@@ -2340,8 +2343,7 @@ def test_blackhole_t5_manycore_external_sharded_l1_gemm_direct_runtime_all_bf16(
         expected_grid_y=10,
         expected_accessor_counts={"A": 11, "B": 12, "C": 61},
     )
-    reasons = _direct_runtime_unsupported_reasons(artifact)
-    assert not any("thread-distributed cb_republish materialization" in reason for reason in reasons)
+    _assert_direct_runtime_admitted(artifact)
 
     artifact.codegen_mod["main"](a_torch, b_torch, c_output)
     assert_tensors_close_or_dump(
@@ -3106,8 +3108,7 @@ def test_blackhole_gemm_post_merge_cast_consumer_uses_pack_tile_materialization(
 
 
 def _assert_gemm_post_merge_cast_consumer_exact_cb_pack_tile_contract(artifact):
-    reasons = _direct_runtime_unsupported_reasons(artifact)
-    assert not any("thread-distributed cb_republish materialization" in reason for reason in reasons)
+    _assert_direct_runtime_admitted(artifact)
 
     executable_spec = _extract_blackhole_executable_spec(artifact)
     materializations = {
@@ -3175,22 +3176,37 @@ def test_blackhole_t7_exact_cb_gemm_post_merge_cast_consumer_direct_runtime():
     )
 
 
-def test_blackhole_gemm_post_merge_cast_consumer_without_zero_preclear_keeps_materialization_gate():
+def test_blackhole_gemm_post_merge_cast_consumer_without_zero_preclear_direct_runtime():
+    torch.manual_seed(0)
+    a_torch = torch.randn(32, 128, dtype=torch.bfloat16)
+    b_torch = torch.randn(32, 128, dtype=torch.bfloat16)
+    d_output = torch.zeros(32, 32, dtype=torch.bfloat16)
+    d_ref = torch.matmul(a_torch.float(), b_torch.float().transpose(0, 1)).to(torch.bfloat16)
+
     kernel = gemm_kernel_with_post_merge_cast_consumer(preclear_output_fragment=False)
     target = Target("blackhole")
 
     with target:
         artifact = lower(kernel, target=target)
 
-    reasons = _direct_runtime_unsupported_reasons(artifact)
-    assert any("thread-distributed cb_republish materialization" in reason for reason in reasons)
-
     executable_spec = _extract_blackhole_executable_spec(artifact)
-    materializations = {
-        str(plan["target_buffer"]): plan
-        for plan in executable_spec["materialization_plans"]
-    }
-    assert str(materializations["D_local"]["publication_protocol"]) != "pack_tile"
+    _assert_no_contract_family(executable_spec)
+    _assert_direct_runtime_admitted(artifact)
+
+    can_run, msg = check_blackhole_direct_execution_requirements()
+    if not can_run:
+        pytest.skip(f"Blackhole requirements not met: {msg}")
+
+    artifact.codegen_mod["main"](a_torch, b_torch, d_output)
+    assert_tensors_close_or_dump(
+        d_output,
+        d_ref,
+        atol=0.0,
+        rtol=0.0,
+        failure_message=(
+            "GEMM post-merge cast-consumer without zero preclear direct-call output mismatch"
+        ),
+    )
 
 
 def test_blackhole_gemm_direct_runtime_preserves_clear_accum_false_fragment_for_cast_consumer():
@@ -3351,10 +3367,13 @@ def test_blackhole_multicore_gemm_lowering_respects_transposed_b_layout():
 
     func_text = mod["main"].script()
     assert func_text.count("tl.blackhole.write_tile_from_cb") == 1
-    assert "T.tl.blackhole.read_tile_to_cb(B.data, bx, 1, 2048, 2)" in func_text
-    assert "T.tl.blackhole.read_tile_to_cb(B.data, bx + 2, 1, 2048, 2)" in func_text
-    assert "T.tl.blackhole.read_tile_to_cb(B.data, bx + 4, 1, 2048, 2)" in func_text
-    assert "T.tl.blackhole.read_tile_to_cb(B.data, bx + 6, 1, 2048, 2)" in func_text
+    compact_text = func_text.replace(" ", "")
+    for k_tile in range(4):
+        suffix = "" if k_tile == 0 else f"+{k_tile}"
+        assert (
+            f"T.tl.blackhole.read_tile_to_cb(B.data,bx*4{suffix},1,2048,2)"
+            in compact_text
+        )
 
 
 def test_blackhole_gemm_richer_accessor_schema_roundtrip():

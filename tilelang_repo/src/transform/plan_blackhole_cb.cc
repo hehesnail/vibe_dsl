@@ -1297,7 +1297,7 @@ tir::Stmt InsertPhysicalPopsBeforeBlockingReserve(
   }
   std::vector<int> capacity_pages(std::max(0, max_cb_id + 1), 0);
   for (const CBConfig& config : configs) {
-    if (config.cb_id >= 0 && config.role != "input") {
+    if (config.cb_id >= 0 && config.role == "intermediate") {
       capacity_pages[config.cb_id] = std::max(capacity_pages[config.cb_id],
                                               std::max(1, config.num_pages));
     }
@@ -1935,7 +1935,7 @@ tir::Stmt RetainLocalCBFrontForFutureWaits(
     }
     if (config.cb_id >= 0 &&
         config.cb_id < static_cast<int>(can_pop_before_reuse.size()) &&
-        config.role == "input") {
+        (config.role == "input" || config.role == "output")) {
       can_pop_before_reuse[config.cb_id] = false;
     }
   }

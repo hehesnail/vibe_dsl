@@ -18,10 +18,18 @@ from .test_blackhole_t3_compute_runtime import (
 
 
 def _seq64_mha_artifact():
+    return _mha_artifact(seq_len=64)
+
+
+def _seq128_mha_artifact():
+    return _mha_artifact(seq_len=128)
+
+
+def _mha_artifact(*, seq_len):
     kernel = blackhole_mha_example.flashattn.jit_impl.get_tir(
         1,
         4,
-        64,
+        seq_len,
         32,
         False,
         block_M=32,
@@ -63,30 +71,47 @@ def _rebuild_tt_cb_plan(plan, *, data_format=None, requirement_indices=None):
     )
 
 
-def _rebuild_exact_cb_allocation(plan, *, release_reason=None):
+def _rebuild_exact_cb_allocation(
+    plan,
+    *,
+    cb_plan=None,
+    cb_plan_index=None,
+    physical_cb_id=None,
+    release_program_point=None,
+    release_reason=None,
+):
     make_allocation = tilelang.tvm.get_global_func("tl.TTExactCBAllocation")
     return make_allocation(
         str(plan.name),
         str(plan.virtual_value),
         int(plan.virtual_value_index),
-        str(plan.cb_plan),
-        int(plan.cb_plan_index),
-        int(plan.physical_cb_id),
+        str(plan.cb_plan) if cb_plan is None else cb_plan,
+        int(plan.cb_plan_index) if cb_plan_index is None else cb_plan_index,
+        int(plan.physical_cb_id) if physical_cb_id is None else physical_cb_id,
         int(plan.page_count),
-        int(plan.release_program_point),
+        int(plan.release_program_point)
+        if release_program_point is None
+        else release_program_point,
         str(plan.release_reason) if release_reason is None else release_reason,
     )
 
 
-def _rebuild_exact_cb_release_event(event, *, reason=None):
+def _rebuild_exact_cb_release_event(
+    event,
+    *,
+    cb_plan=None,
+    cb_plan_index=None,
+    program_point=None,
+    reason=None,
+):
     make_release = tilelang.tvm.get_global_func("tl.TTExactCBReleaseEvent")
     return make_release(
         str(event.name),
         str(event.allocation),
         int(event.allocation_index),
-        str(event.cb_plan),
-        int(event.cb_plan_index),
-        int(event.program_point),
+        str(event.cb_plan) if cb_plan is None else cb_plan,
+        int(event.cb_plan_index) if cb_plan_index is None else cb_plan_index,
+        int(event.program_point) if program_point is None else program_point,
         int(event.page_count),
         str(event.reason) if reason is None else reason,
     )
@@ -159,6 +184,11 @@ def _metadata_from_artifact(artifact):
 @pytest.fixture(scope="module")
 def seq64_artifact():
     return _seq64_mha_artifact()
+
+
+@pytest.fixture(scope="module")
+def seq128_artifact():
+    return _seq128_mha_artifact()
 
 
 def test_kernel_specs_carry_structured_cb_queue_events(seq64_artifact):
@@ -286,7 +316,7 @@ def test_typed_tile_cb_verifier_rejects_duplicate_requirement_owner(seq64_artifa
         _validate_mutated_tt_program(seq64_artifact, duplicate_requirement_owner)
 
 
-def test_typed_tile_cb_verifier_rejects_exact_cb_data_format_mismatch(seq64_artifact):
+def test_typed_tile_cb_verifier_rejects_exact_cb_data_format_mismatch(seq128_artifact):
     def corrupt_data_format(tt_program):
         allocations = list(tt_program.exact_cb_allocations)
         virtual_values = list(tt_program.exact_cb_virtual_values)
@@ -300,10 +330,10 @@ def test_typed_tile_cb_verifier_rejects_exact_cb_data_format_mismatch(seq64_arti
         return rebuild_tt_program(tt_program, cb_plans=cb_plans)
 
     with pytest.raises(tvm.TVMError, match="exact-CB allocation data_format"):
-        _validate_mutated_tt_program(seq64_artifact, corrupt_data_format)
+        _validate_mutated_tt_program(seq128_artifact, corrupt_data_format)
 
 
-def test_typed_tile_cb_verifier_rejects_unknown_exact_cb_release_reason(seq64_artifact):
+def test_typed_tile_cb_verifier_rejects_unknown_exact_cb_release_reason(seq128_artifact):
     def corrupt_release_reason(tt_program):
         allocations = list(tt_program.exact_cb_allocations)
         releases = list(tt_program.exact_cb_release_events)
@@ -323,14 +353,17 @@ def test_typed_tile_cb_verifier_rejects_unknown_exact_cb_release_reason(seq64_ar
         )
 
     with pytest.raises(tvm.TVMError, match="exact-CB release reason"):
-        _validate_mutated_tt_program(seq64_artifact, corrupt_release_reason)
+        _validate_mutated_tt_program(seq128_artifact, corrupt_release_reason)
 
 
-def test_typed_tile_cb_verifier_rejects_stale_exact_cb_producer(seq64_artifact):
+def test_typed_tile_cb_verifier_rejects_stale_exact_cb_producer(seq128_artifact):
     def bind_stale_producer(tt_program):
         virtual_values = list(tt_program.exact_cb_virtual_values)
         uses = list(tt_program.exact_cb_use_events)
         intervals = list(tt_program.exact_cb_live_intervals)
+        allocations = list(tt_program.exact_cb_allocations)
+        releases = list(tt_program.exact_cb_release_events)
+        cb_plans = list(tt_program.cb_plans)
         interval_by_index = {
             int(interval.virtual_value_index): (interval_index, interval)
             for interval_index, interval in enumerate(intervals)
@@ -366,15 +399,54 @@ def test_typed_tile_cb_verifier_rejects_stale_exact_cb_producer(seq64_artifact):
                     int(event.program_point),
                 ),
             )
+            used_exact_cb_indices = {
+                int(allocation.cb_plan_index) for allocation in allocations
+            }
+            replacement_cb_index = next(
+                index
+                for index, cb_plan in enumerate(cb_plans)
+                if index not in used_exact_cb_indices
+                and str(cb_plan.data_format) == str(stale_value.data_format)
+                and int(cb_plan.page_size_bytes) == int(stale_value.page_size_bytes)
+                and int(cb_plan.num_pages) >= int(stale_value.num_pages)
+            )
+            replacement_cb = cb_plans[replacement_cb_index]
+            for allocation_index, allocation in enumerate(allocations):
+                if int(allocation.virtual_value_index) != stale_index:
+                    continue
+                allocations[allocation_index] = _rebuild_exact_cb_allocation(
+                    allocation,
+                    cb_plan=str(replacement_cb.name),
+                    cb_plan_index=replacement_cb_index,
+                    physical_cb_id=int(replacement_cb.cb_id),
+                    release_program_point=max(
+                        int(allocation.release_program_point),
+                        int(event.program_point),
+                    ),
+                )
+                for release_index, release in enumerate(releases):
+                    if int(release.allocation_index) != allocation_index:
+                        continue
+                    releases[release_index] = _rebuild_exact_cb_release_event(
+                        release,
+                        cb_plan=str(replacement_cb.name),
+                        cb_plan_index=replacement_cb_index,
+                        program_point=max(
+                            int(release.program_point),
+                            int(event.program_point),
+                        ),
+                    )
             return rebuild_tt_program(
                 tt_program,
                 exact_cb_use_events=uses,
                 exact_cb_live_intervals=intervals,
+                exact_cb_allocations=allocations,
+                exact_cb_release_events=releases,
             )
         pytest.fail("Expected at least one exact-CB logical value with multiple producers")
 
     with pytest.raises(tvm.TVMError, match="latest exact-CB producer"):
-        _validate_mutated_tt_program(seq64_artifact, bind_stale_producer)
+        _validate_mutated_tt_program(seq128_artifact, bind_stale_producer)
 
 
 @pytest.mark.parametrize("op_name", ["cb_wait_front", "cb_pop_front", "cb_reserve_back"])

@@ -219,6 +219,69 @@
 
 ## 2. 已解决但值得记住的模式
 
+### TTProgram queue-event validator 不能吞掉 executable admission 边界
+
+- **症状**:
+  - 将 compute `wait_front` / `pop_front` 的完整 front-page underflow replay
+    放进 `ValidateTTProgram` 后，多个 flash pipeline/source tests 在
+    `LowerToBlackholeTTProgram` 阶段被提前拒绝，例如
+    `physical CB queue wait_front exceeds visible pages ... front=1 pages=16`。
+  - 这些形态后续 executable/direct-runtime gate 已经能分类处理，提前变成
+    TTProgram structural fatal 会把 admission boundary 和 typed-plan validity
+    混在一起。
+- **根因**:
+  - `TTKernel.queue_events` 的基础形态属于 TTProgram contract，但完整
+    front-page availability 可能依赖外部 producer、loop-carried state 和
+    executable admission context。
+- **修复模式**:
+  - `ValidateTTProgram` 校验 event kind、known physical CB id、positive
+    pages、compute reserve capacity、push-without-reserve，以及单个
+    wait/pop event 是否超过 CB capacity。
+  - 不在 TTProgram validator 中把所有 compute wait/pop visible-front
+    underflow 当 structural fatal；这类 underflow 继续由 executable
+    queue gate / direct-runtime admission 负责 fail closed。
+- **验证**:
+  - `test_blackhole_typed_tile_cb_queue_verifier.py` 全文件通过。
+  - `test_blackhole_flash_attention_pipeline.py` 全文件通过。
+  - `pytest -q testing/python/target/blackhole --tb=short` 报告
+    `393 passed, 4 warnings`。
+
+### Existing-TIR TopK narrow output transport 不能按 tiled full-width C 形态写回
+
+- **症状**:
+  - TopK value/index selection 的 `M=64,N=128,k=6` direct runtime 曾因
+    CB-to-DRAM writeback 的 narrow column shape 被当成 full tile 形态处理而
+    hang 或写错。
+- **根因**:
+  - reducer output 是 `[M,k]` narrow matrix，CBToDram transport 需要从
+    coverage 推出 `[rows,1]` scalar-page shape，并用 contiguous scalar page
+    offsets；旧逻辑在 global/inferred cols 非 32 对齐时仍走 tiled offset。
+- **修复模式**:
+  - 对 CBToDram，当 live output 或 inferred transport coverage 证明 narrow
+    column shape 时，以 coverage/fallback shape 为准。
+  - 输出 page 数按 live output pages 计算；narrow scalar writeback 使用
+    contiguous `page_row * l1_stick_stride`。
+- **验证**:
+  - `test_blackhole_topk_runtime.py` 全文件通过；values 和 indices exact
+    compare。
+
+### Output CB 不是 allocator 可以提前 auto-pop 的 intermediate FIFO
+
+- **症状**:
+  - chunk scan direct runtime 输出出现旧值/零值，根因是 allocator 在 output
+    CB 上为后续 reserve 自动插入 wait/pop，提前移走了 writer 还要消费的
+    front pages。
+- **根因**:
+  - output CB 的 front pages 是 writer-visible ABI 状态，不能按普通
+    intermediate scratch 的 reuse pressure 自动释放。
+- **修复模式**:
+  - `PlanTTCBAlloc` 的 blocking-reserve 前 auto-pop 只对
+    `role == "intermediate"` 生效。
+  - input/output role 的 front pages 对未来 waits 保持可见，除非 typed
+    release/consumer event 明确消费。
+- **验证**:
+  - `test_blackhole_chunk_scan_runtime.py` 和 full target suite 通过。
+
 ### flash-attn admitted runtime 不能长期停在 PACR / materialization gate
 
 - **症状**:

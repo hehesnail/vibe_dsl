@@ -348,6 +348,19 @@ Current baseline:
   explicit negative fail-closed tests.  These paths run along with GEMM
   `transpose_A`, T3 multi-tile per-work tile compute, TopK repeated
   row-reduction value/index selection, and standalone leaf compute.
+- Latest full Blackhole target sweep on `2026-05-20`:
+  `cmake --build build -j32` passed, focused regressions passed
+  (`test_blackhole_typed_tile_cb_queue_verifier.py` plus the copy fragment
+  helper guard: `12 passed`; `test_blackhole_gemm.py`: `77 passed`;
+  `test_blackhole_flash_attention_pipeline.py`: `75 passed`;
+  `test_blackhole_flash_attention_runtime.py`: `45 passed`), and the full
+  target suite
+  `pytest -q testing/python/target/blackhole --tb=short` passed with
+  `393 passed, 4 warnings`.  The gate sweep found no `xfail` / `skipif`, no
+  unsupported-reason-to-skip fallback, and no non-zero relative tolerance in
+  runtime correctness call sites; only the generic tensor-compare helper
+  remains parameterized by `rtol`.  The remaining `pytest.skip` hits are the
+  shared TT-Sim environment prerequisite checks.
 
 Historical checkpoint logs, exact selector counts, and patch notes belong in
 git history and `memory/`, not in this file.
