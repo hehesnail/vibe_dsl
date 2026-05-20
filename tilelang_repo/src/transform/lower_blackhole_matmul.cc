@@ -1079,8 +1079,8 @@ Stmt PlanTTKernelABI::GenerateMatmulSequenceForOutputRequirement(int out_req_ind
   }
 
   // 3-8. Compute and pack one C tile per DST acquire.  This keeps the
-  // fp32-DST -> bf16-CB packer path inside the same shape used by the TTNN
-  // SDPA kernels and avoids a multi-tile PACR sequence that TT-Sim rejects.
+  // fp32-DST -> bf16-CB packer event window explicit and single-tile,
+  // matching the admitted TT-Metal leaf protocol used by SDPA-style kernels.
   for (int mt = 0; mt < num_m_tiles; ++mt) {
     for (int nt = 0; nt < num_n_tiles; ++nt) {
       if (reserve_out && publish_out) {
