@@ -343,8 +343,9 @@ Current baseline:
   `tilize_cast_fragment_slice` PACR admission gate has a source guard against
   reintroduction.  Admitted flash runtime tests assert empty unsupported
   reasons instead of skipping on them, and positive Blackhole lowering/runtime
-  tests have source guards against `not yet` exception-to-skip fallbacks.
-  These paths run along with GEMM
+  tests have source guards against `not yet` exception-to-skip fallbacks and
+  `xfail`/`skipif` masks.  Intentional unsupported inputs are expressed as
+  explicit negative fail-closed tests.  These paths run along with GEMM
   `transpose_A`, T3 multi-tile per-work tile compute, TopK repeated
   row-reduction value/index selection, and standalone leaf compute.
 

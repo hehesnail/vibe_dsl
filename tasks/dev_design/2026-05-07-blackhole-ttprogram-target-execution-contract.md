@@ -129,6 +129,9 @@ This contract stays satisfied only while:
 - positive Blackhole lowering/runtime tests must not catch lowering failures
   and skip with `not yet` messages; unsupported non-contract inputs should be
   explicit negative fail-closed tests;
+- Blackhole target tests must not use `xfail` or `skipif` to mask an expected
+  target failure; expected failures should be asserted directly with the
+  diagnostic that defines the boundary;
 - admitted T7/T8/T9 direct-runtime correctness remains green under the current
   bf16 TT-Sim baseline;
 - docs, progress, and memory do not preserve a second, contradictory

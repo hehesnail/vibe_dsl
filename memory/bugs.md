@@ -238,7 +238,8 @@
     `assert direct_runtime_unsupported_reasons == []`，不能用 unsupported
     reason helper skip；positive Blackhole lowering/runtime tests 也不能把
     lowering exception catch 成 `not yet` pytest skip。确实不在合同内的
-    裸输入要写成 negative fail-closed 测试。
+    裸输入要写成 negative fail-closed 测试。`xfail` / `skipif` 也不要用来
+    表示 target boundary；用 `pytest.raises` 断言边界诊断。
   - 测试里要同时断言 admitted flash executable 没有 unsupported reason，
     并运行 `BlackholeModule` bf16 direct runtime 对 host/torch reference。
 - **验证**:

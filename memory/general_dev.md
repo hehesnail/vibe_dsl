@@ -57,7 +57,8 @@
   `direct_runtime_unsupported_reasons == []`，不能再用 helper 把 unsupported
   reason 转成 `pytest.skip`。同理，positive Blackhole lowering/runtime 测试
   不能 catch lowering exception 后用 `not yet` skip；不在合同内的输入应写成
-  explicit negative fail-closed test。
+  explicit negative fail-closed test。Blackhole target tests 也不要用 `xfail`
+  或 `skipif` 掩盖预期 target failure；用 `pytest.raises` 断言具体诊断。
 - Blackhole external accessor admission 要同时测结构层和 runtime 层：
   `TTABIPlan` / `ExecutableSpec` 里必须能看到 accessor kind、layout、
   memory space、compile-time offset/count、`args_config_bits`、

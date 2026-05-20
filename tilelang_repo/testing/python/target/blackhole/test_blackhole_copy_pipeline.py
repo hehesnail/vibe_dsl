@@ -2933,17 +2933,6 @@ def test_blackhole_copy_build_rejects_remote_descriptor_recovered_from_runtime_a
         )
 
 
-@pytest.mark.xfail(
-    reason=(
-        "StorageRewrite is incompatible with the Blackhole CB model: its "
-        "VectorTypeAccessChecker only recognizes AllocateNode as buffer declarations "
-        "but after FlattenBuffer+VectorizeLoop the shared (CB) buffers are represented "
-        "via DeclBuffer, causing a spurious 'buffer used before declaration' error. "
-        "StorageRewrite provides no benefit for Blackhole circular buffers and is intentionally "
-        "excluded from the Blackhole pipeline."
-    ),
-    strict=True,
-)
 def test_blackhole_storage_rewrite_incompatible_with_cb_model():
     kernel = staged_copy_kernel(tile_rows=2, tile_cols=1)
     mod = tilelang.tvm.IRModule({"main": kernel})
@@ -2952,7 +2941,11 @@ def test_blackhole_storage_rewrite_incompatible_with_cb_model():
         mod = tilelang.engine.phase.LowerAndLegalize(mod, target)
     mod = tilelang.transform.FlattenBuffer()(mod)
     mod = tilelang.transform.VectorizeLoop()(mod)
-    tilelang.transform.StorageRewrite()(mod)
+    with pytest.raises(
+        tvm.error.InternalError,
+        match="occurred before its declaration",
+    ):
+        tilelang.transform.StorageRewrite()(mod)
 
 
 def test_blackhole_stick_copy_pipeline_formalizes_page_transport():

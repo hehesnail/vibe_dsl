@@ -69,6 +69,9 @@ def test_blackhole_positive_tests_do_not_skip_on_not_yet_lowering_failures():
         "compilation not " + "yet complete",
         "_skip_if" + "_direct_runtime_unsupported",
         "direct runtime is not " + "yet supported",
+        "pytest.mark." + "x" + "fail",
+        "pytest." + "x" + "fail",
+        "skip" + "if",
     ]
     test_root = root / "testing" / "python" / "target" / "blackhole"
     test_paths = [path for path in sorted(test_root.glob("test_*.py")) if path != Path(__file__)]
