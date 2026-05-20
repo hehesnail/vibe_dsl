@@ -161,7 +161,6 @@ constexpr const char* kDstCbBinaryPack = "dst_cb_binary_pack";
 constexpr const char* kTiledCBRepublish = "tiled_cb_republish";
 constexpr const char* kCBRepublish = "cb_republish";
 constexpr const char* kMailboxWritePtr = "mailbox_write_ptr";
-constexpr const char* kPackThreadDirectStore = "pack_thread_direct_store";
 constexpr const char* kPackTile = "pack_tile";
 constexpr const char* kTilizeCastFragmentSlice = "tilize_cast_fragment_slice";
 }  // namespace buffer_materialization

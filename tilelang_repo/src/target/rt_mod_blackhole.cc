@@ -3100,15 +3100,13 @@ static void EnforceExplicitPerWorkAccessDescriptorGate(
 }
 
 static bool IsDirectRuntimeAdmittedPublicationProtocol(const std::string& publication_protocol) {
-  return publication_protocol == buffer_materialization::kPackThreadDirectStore ||
-         publication_protocol == buffer_materialization::kPackTile ||
+  return publication_protocol == buffer_materialization::kPackTile ||
          publication_protocol == buffer_materialization::kTilizeCastFragmentSlice;
 }
 
 static bool IsDirectRuntimeAdmittedHostPublicationProtocol(
     const std::string& publication_protocol) {
-  return publication_protocol == buffer_materialization::kPackThreadDirectStore ||
-         publication_protocol == buffer_materialization::kPackTile;
+  return publication_protocol == buffer_materialization::kPackTile;
 }
 
 static void EnforceTypedDstCbAccumulationGate(ExecutableSpec* spec) {
@@ -3414,95 +3412,6 @@ static std::unordered_set<std::string> CollectRuntimeBoundBufferNames(
     }
   }
   return names;
-}
-
-static std::unordered_set<std::string> CollectRuntimeInputBufferNames(
-    const ExecutableSpec& spec) {
-  std::unordered_set<std::string> names;
-  auto record_args = [&](const std::vector<KernelArgSpec>& args) {
-    for (const auto& arg : args) {
-      if (IsInputBufferArgKind(arg.kind) && !arg.buffer.empty()) {
-        names.insert(arg.buffer);
-      }
-    }
-  };
-  record_args(spec.runtime_args);
-  record_args(spec.common_runtime_args);
-  for (const auto& kernel : spec.kernels) {
-    record_args(kernel.runtime_args);
-    record_args(kernel.common_runtime_args);
-  }
-  return names;
-}
-
-static std::unordered_set<std::string> CollectRuntimeOutputBufferNames(
-    const ExecutableSpec& spec) {
-  std::unordered_set<std::string> names;
-  auto record_args = [&](const std::vector<KernelArgSpec>& args) {
-    for (const auto& arg : args) {
-      if (IsOutputBufferArgKind(arg.kind) && !arg.buffer.empty()) {
-        names.insert(arg.buffer);
-      }
-    }
-  };
-  record_args(spec.runtime_args);
-  record_args(spec.common_runtime_args);
-  for (const auto& kernel : spec.kernels) {
-    record_args(kernel.runtime_args);
-    record_args(kernel.common_runtime_args);
-  }
-  return names;
-}
-
-static bool IsComputeOutputBindingRole(const std::string& role) {
-  return role == "output" || role == "out" || role == "dst" ||
-         role == "result";
-}
-
-static bool ProducesRuntimeOutput(const KernelComputeOpSpec& compute_op,
-                                  const std::unordered_set<std::string>& runtime_outputs) {
-  for (const auto& binding : compute_op.operand_bindings) {
-    if (!IsComputeOutputBindingRole(binding.role)) {
-      continue;
-    }
-    if (!binding.host_buffer.empty() &&
-        runtime_outputs.count(binding.host_buffer) != 0U) {
-      return true;
-    }
-    if (!binding.buffer.empty() && runtime_outputs.count(binding.buffer) != 0U) {
-      return true;
-    }
-  }
-  return false;
-}
-
-static void EnforceComputeOnlyTerminalPublishPacrSimulatorGate(
-    ExecutableSpec* spec) {
-  ICHECK(spec != nullptr);
-  if (!CollectRuntimeInputBufferNames(*spec).empty()) {
-    return;
-  }
-  const std::unordered_set<std::string> runtime_outputs =
-      CollectRuntimeOutputBufferNames(*spec);
-  if (runtime_outputs.empty()) {
-    return;
-  }
-  for (const KernelSpec& kernel : spec->kernels) {
-    if (kernel.kind != "compute" || kernel.core_type != "trisc") {
-      continue;
-    }
-    for (const KernelComputeOpSpec& compute_op : kernel.compute_ops) {
-      if (!compute_op.enabled ||
-          !ProducesRuntimeOutput(compute_op, runtime_outputs)) {
-        continue;
-      }
-      AppendDirectRuntimeUnsupportedReason(
-          spec,
-          "compute-only terminal publish direct runtime is gated: TT-Sim reports "
-          "tensix_execute_pacr: count=1 for the current pack publish path");
-      return;
-    }
-  }
 }
 
 struct CBQueueState {
@@ -3955,7 +3864,7 @@ static void PopulateBufferMaterializationSpecs(
 
   for (const auto& plan : spec->materialization_plans) {
     if (plan.host_buffer.empty()) {
-      ICHECK(plan.publication_protocol != buffer_materialization::kPackThreadDirectStore)
+      ICHECK(plan.publication_protocol != buffer_materialization::kPackTile)
           << "Blackhole buffer materialization plan requires explicit host_buffer for target "
           << plan.target_buffer;
       continue;
@@ -4319,8 +4228,84 @@ static void PopulateHostSpecFromLaunchedDevices(
     host_spec.tvm_is_buffer_arg.clear();
   }
   host_spec.kernels.clear();
+  host_spec.buffer_materializations.clear();
   host_spec.direct_runtime_unsupported_reasons.clear();
+  std::unordered_map<std::string, size_t> buffer_materialization_index_by_buffer;
   std::unordered_set<std::string> unsupported_reasons;
+  auto append_child_buffer_materializations = [&](const ExecutableSpec& child_spec) {
+    for (const BufferMaterializationSpec& materialization :
+         child_spec.buffer_materializations) {
+      ICHECK(!materialization.buffer.empty())
+          << "Blackhole launched device executable " << child_spec.entry_name
+          << " has a buffer materialization without buffer identity";
+      auto [it, inserted] = buffer_materialization_index_by_buffer.emplace(
+          materialization.buffer, host_spec.buffer_materializations.size());
+      if (inserted) {
+        host_spec.buffer_materializations.push_back(materialization);
+        continue;
+      }
+      const BufferMaterializationSpec& existing =
+          host_spec.buffer_materializations[it->second];
+      ICHECK_EQ(existing.materialization_kind, materialization.materialization_kind)
+          << "Blackhole host entry " << host_name
+          << " launches device kernels with inconsistent materialization_kind for "
+          << materialization.buffer;
+      ICHECK_EQ(existing.layout, materialization.layout)
+          << "Blackhole host entry " << host_name
+          << " launches device kernels with inconsistent layout for "
+          << materialization.buffer;
+      ICHECK_EQ(existing.memory_space, materialization.memory_space)
+          << "Blackhole host entry " << host_name
+          << " launches device kernels with inconsistent memory_space for "
+          << materialization.buffer;
+      ICHECK_EQ(existing.transport_page_size_bytes,
+                materialization.transport_page_size_bytes)
+          << "Blackhole host entry " << host_name
+          << " launches device kernels with inconsistent transport_page_size for "
+          << materialization.buffer;
+      ICHECK(existing.host_axis_order == materialization.host_axis_order)
+          << "Blackhole host entry " << host_name
+          << " launches device kernels with inconsistent host_axis_order for "
+          << materialization.buffer;
+      ICHECK_EQ(existing.transpose_2d, materialization.transpose_2d)
+          << "Blackhole host entry " << host_name
+          << " launches device kernels with inconsistent transpose_2d for "
+          << materialization.buffer;
+      ICHECK_EQ(existing.live_form_kind, materialization.live_form_kind)
+          << "Blackhole host entry " << host_name
+          << " launches device kernels with inconsistent live_form_kind for "
+          << materialization.buffer;
+      ICHECK_EQ(existing.execution_topology_kind,
+                materialization.execution_topology_kind)
+          << "Blackhole host entry " << host_name
+          << " launches device kernels with inconsistent execution_topology_kind for "
+          << materialization.buffer;
+      ICHECK_EQ(existing.physical_local_extent,
+                materialization.physical_local_extent)
+          << "Blackhole host entry " << host_name
+          << " launches device kernels with inconsistent physical_local_extent for "
+          << materialization.buffer;
+      ICHECK_EQ(existing.logical_element_count,
+                materialization.logical_element_count)
+          << "Blackhole host entry " << host_name
+          << " launches device kernels with inconsistent logical_element_count for "
+          << materialization.buffer;
+      ICHECK_EQ(existing.producer_kernel, materialization.producer_kernel)
+          << "Blackhole host entry " << host_name
+          << " launches device kernels with inconsistent producer_kernel for "
+          << materialization.buffer;
+      ICHECK_EQ(existing.materialization_protocol,
+                materialization.materialization_protocol)
+          << "Blackhole host entry " << host_name
+          << " launches device kernels with inconsistent materialization_protocol for "
+          << materialization.buffer;
+      ICHECK_EQ(existing.publication_protocol,
+                materialization.publication_protocol)
+          << "Blackhole host entry " << host_name
+          << " launches device kernels with inconsistent publication_protocol for "
+          << materialization.buffer;
+    }
+  };
   for (const std::string& device_name : launched_devices) {
     auto device_it = func_info_map->find(device_name);
     ICHECK(device_it != func_info_map->end())
@@ -4332,6 +4317,7 @@ static void PopulateHostSpecFromLaunchedDevices(
     if (!has_host_arg_metadata) {
       append_child_tvm_arg_metadata(device_it->second);
     }
+    append_child_buffer_materializations(device_it->second);
     for (const std::string& reason :
          device_it->second.direct_runtime_unsupported_reasons) {
       if (unsupported_reasons.insert(reason).second) {
@@ -4415,7 +4401,6 @@ ffi::Module BuildTileLangBlackhole(IRModule mod, Target target) {
     EnforceExactLiveFormMultiPageRepublishGate(&spec_it->second);
     EnforceExplicitBufferRoleSchemaGate(&spec_it->second);
     EnforcePhysicalCBQueueEventGate(&spec_it->second);
-    EnforceComputeOnlyTerminalPublishPacrSimulatorGate(&spec_it->second);
   }
   for (const auto& kv : host_to_devices) {
     PopulateHostSpecFromLaunchedDevices(kv.first, kv.second, &func_info_map);
@@ -4506,7 +4491,6 @@ ffi::Module BuildTileLangBlackholeWithoutHost(IRModule mod, Target target) {
     EnforceExactLiveFormMultiPageRepublishGate(&spec_it->second);
     EnforceExplicitBufferRoleSchemaGate(&spec_it->second);
     EnforcePhysicalCBQueueEventGate(&spec_it->second);
-    EnforceComputeOnlyTerminalPublishPacrSimulatorGate(&spec_it->second);
   }
   for (const auto& kv : host_to_devices) {
     PopulateHostSpecFromLaunchedDevices(kv.first, kv.second, &func_info_map);

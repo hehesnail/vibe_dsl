@@ -2344,16 +2344,18 @@
     publication event 的粒度；CB event 粒度错了会表现为 runtime hang，
     不是数值错误。
 
-#### compute-only terminal publish 和 Int32 row-max reduce 的 TT-Sim / LLK 边界要 typed gate
+#### compute-only terminal publish 不能误记为 TT-Sim 边界；Int32 row-max 仍要 typed gate
 
 - **症状**:
   - standalone `reduce_tile` bf16 direct runtime 曾命中
     `UnimplementedFunctionality: tensix_execute_pacr: count=1`；后续确认这是
     Blackhole lowering 初始化 PACK/UNPACK 格式状态不足导致的 emitted-sequence
     bug，不是 bf16 row reduce 整体不支持。
-  - compute-only terminal publish 也会命中同类 TT-Sim pack/publish
-    capability boundary 或输出不可靠；`fill_tile` / `typecast_tile` 是当前
-    已知 witness，不是 gate owner。
+  - compute-only terminal publish 曾被归类成同类 TT-Sim pack/publish
+    capability boundary。2026-05-20 复查确认这是 backend emitted-sequence
+    bug：`pack_fill_fragment_to_tiled_cb` 仍走 direct CB pointer 写 tiled
+    bits，且后续改成 `fill_tile`/`pack_tile` 后缺少 `init_sfpu(cb, cb)`
+    造成 `mop_expander: outer_loop_len=0`。
   - T6 existing-TIR value/index selection 继续执行到 index 侧时，
     `T.reduce_max(expand_max_idx, max_idx, dim=1)` 会以
     `Int32 reduce_tile<MAX, REDUCE_ROW>` 形式进入 TT-Sim，并命中
@@ -2362,6 +2364,11 @@
   - bf16 standalone row-reduce 的根因是 compute-side scaler fill/pack 前未先
     做 `binary_op_init_common`，PACK/UNPACK data-format state 没被设置；修正后
     leaf `reduction_sum` direct runtime 能通过。
+  - compute-only terminal publish 的根因是 materialization owner truth 与
+    codegen 不一致：`TTMaterializationPlan.publication_protocol` 已应该是
+    `pack_tile`，但 generated compute 仍通过
+    `tilelang_cb_write_ptr_bytes_direct` 写 CB；改成 compute pack path 后，
+    packer/SFPU 初始化同样必须显式配置。
   - `Int32` index-side row max 的根因不同：TT-Metal 公开 reduce / topk /
     argmax 形态没有把 row-wise value/index selection 表达成
     `Int32 reduce_tile<MAX, REDUCE_ROW>`。相关支持面是
@@ -2392,10 +2399,22 @@
   - codegen thread emission 用完整 Stmt/Expr visitor 判定 thread var
     使用，segment extraction 在父节点已判定 segment 时继承上下文，保留
     writer final barrier/pop。
+  - 2026-05-20 修正 compute-only terminal publish：materialization lowering
+    将 fill/cast/publish 记录为 `publication_protocol=pack_tile`，
+    direct runtime 不再 admit `pack_thread_direct_store`；bf16/float32
+    pack-fill helper 使用 `init_sfpu(cb_id, cb_id)`、`fill_tile_init()`、
+    `fill_tile` 和 `pack_tile`，不再通过 direct CB write pointer 伪造 tiled
+    输出。`fragment_fill_cast_publish` 和 standalone `typecast_publish`
+    direct runtime 改为要求空 `direct_runtime_unsupported_reasons` 并做
+    TT-Sim 数值比较。
+  - `TTMaterializationPlan` validator / executable materialization projection
+    必须继续要求 `pack_tile` publication 带显式 `host_buffer`；否则把旧
+    `pack_thread_direct_store` 换成 `pack_tile` 会留下缺 host owner truth
+    的协议漏洞。
   - 保留 typed leaf records，并在 `ExecutableSpec` direct-runtime reasons
-    中对 compute-only terminal publish 和 standalone `Int32` row max
-    `reduce_tile` fail closed。不把 bf16 standalone reduce 或 GEMM/flash-attn
-    内已经 admitted 的 compute chain 全局 gate 掉。
+    中对 standalone `Int32` row max `reduce_tile` fail closed。不把 bf16
+    standalone reduce、compute-only terminal publish 或 GEMM/flash-attn 内
+    已经 admitted 的 compute chain 全局 gate 掉。
   - T6 正向修复从现有 TIR 的 value/index dataflow lowering 到 backend
     typed value/index scan；不能通过新增 frontend `topk` op、
     `selection_plans` 或 source-name recovery 绕过。

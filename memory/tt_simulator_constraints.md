@@ -232,6 +232,11 @@
    CB binding、rank-1 scalar page writeback、final writer barrier/pop 都修正后，
    放开 direct-runtime gate 真跑仍在 workload enqueue 后命中
    `UnimplementedFunctionality: tensix_execute_pacr: count=1`。
+   2026-05-20 复查：这个 standalone bf16 row-reduce fatal 以及
+   compute-only terminal publish 的 PACR/mop-expander 表现不能再作为
+   当前 TT-Sim capability boundary 引用；它们分别是 backend 初始化 /
+   emitted-sequence 问题，修正后 leaf reduce、`fragment_fill_cast_publish`
+   和 standalone `typecast_publish` 都应作为 direct-runtime 正例真跑。
    2026-05-05 另确认：bf16 flash-attn seq128/256/512 的 loop-carried
    input exact-CB backedge source/spec admission 后，当前 TT-Sim 也会命中
    同一 `tensix_execute_pacr: count=1` fatal；seq64 accumulator-only

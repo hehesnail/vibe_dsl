@@ -1488,7 +1488,7 @@ def test_blackhole_fragment_fill_cast_publish_projects_leaf_materialization_plan
     d_local = materializations["D_local"]
     assert str(d_local["host_buffer"]) == "D"
     assert str(d_local["materialization_protocol"]) == "cb_republish"
-    assert str(d_local["publication_protocol"]) == "pack_thread_direct_store"
+    assert str(d_local["publication_protocol"]) == "pack_tile"
     assert str(d_local["source_live_form"]) == "live_form_C_local"
     assert str(d_local["produced_live_form"]) == "live_form_D_local"
     assert str(d_local["materialization_boundary"]).startswith("materialization_")
@@ -1511,7 +1511,7 @@ def test_blackhole_fragment_fill_cast_publish_projects_leaf_materialization_plan
     assert int(output_materialization["logical_element_count"]) == 1024
     assert str(output_materialization["producer_kernel"]) == "compute"
     assert str(output_materialization["materialization_protocol"]) == "cb_republish"
-    assert str(output_materialization["publication_protocol"]) == "pack_thread_direct_store"
+    assert str(output_materialization["publication_protocol"]) == "pack_tile"
 
 
 def test_blackhole_executable_projection_has_no_plan_local_payload_records():
@@ -1601,7 +1601,7 @@ def test_blackhole_fragment_fill_cast_publish_admits_non_mailbox_cb_republish():
         artifact = lower(kernel, target=target)
 
     reasons = _direct_runtime_unsupported_reasons(artifact)
-    assert not any("thread-distributed cb_republish materialization" in reason for reason in reasons)
+    assert reasons == []
 
     executable_spec = _extract_blackhole_executable_spec(artifact)
     compute_kernel = _require_blackhole_kernel(
@@ -1610,9 +1610,12 @@ def test_blackhole_fragment_fill_cast_publish_admits_non_mailbox_cb_republish():
     compute_source = str(compute_kernel["source_code"])
     assert "tilelang_get_cb_write_ptr_bytes(17)" not in compute_source
     assert "tilelang_get_cb_write_ptr_bytes(" not in compute_source
+    assert "tilelang_cb_write_ptr_bytes_direct(" not in compute_source
     assert "cb_reserve_back(" in compute_source
-    assert "fill_tile(0, static_cast<float>(3.500000e+00f))" in compute_source
-    assert "pack_tile(0," in compute_source
+    assert "tilelang_pack_fill_bfloat16_tiled_cb(" in compute_source
+    assert "init_sfpu(cb_id, cb_id);" in compute_source
+    assert "fill_tile(0, value);" in compute_source
+    assert "pack_tile(0, cb_id, 0);" in compute_source
     assert "cb_push_back(" in compute_source
 
 
@@ -2812,7 +2815,10 @@ def test_blackhole_gemm_direct_runtime_rejects_accessor_common_runtime_arg_count
     b_torch = torch.randn(32, 128, dtype=torch.bfloat16)
     c_output = torch.zeros(32, 32, dtype=torch.float32)
 
-    with pytest.raises(tvm.error.InternalError, match="common runtime args|interleaved"):
+    with pytest.raises(
+        tvm.error.InternalError,
+        match="common_runtime_arg_count|common runtime args|interleaved",
+    ):
         mutated_mod["main"](a_torch, b_torch, c_output)
 
 
@@ -3125,7 +3131,10 @@ def _assert_gemm_post_merge_cast_consumer_exact_cb_pack_tile_contract(artifact):
         executable_spec["kernels"], kind="compute", core_type="trisc"
     )
     compute_source = str(compute_kernel["source_code"])
-    assert f"pack_tile(0, {d_local_cb_id});" in compute_source
+    assert (
+        f"pack_tile(0, {d_local_cb_id});" in compute_source
+        or f"pack_tile<true>(0, {d_local_cb_id}, 0);" in compute_source
+    )
     assert f"tilelang_get_cb_write_ptr_bytes({d_local_cb_id})" not in compute_source
     assert "reinterpret_cast<uint32_t*>(tilelang_get_cb_write_ptr_bytes(" not in compute_source
     assert "reinterpret_cast<uint16_t*>(tilelang_get_cb_write_ptr_bytes(" not in compute_source
@@ -3229,9 +3238,7 @@ def test_blackhole_fragment_fill_cast_publish_runtime():
         artifact = lower(kernel, target=target)
 
     reasons = _direct_runtime_unsupported_reasons(artifact)
-    assert not any("thread-distributed cb_republish materialization" in reason for reason in reasons)
-    if reasons:
-        pytest.skip("Blackhole fragment fill/cast direct runtime gated: " + ", ".join(reasons))
+    assert reasons == []
     can_run, msg = check_blackhole_direct_execution_requirements()
     if not can_run:
         pytest.skip(f"Blackhole requirements not met: {msg}")
@@ -3400,7 +3407,10 @@ def test_blackhole_gemm_reuses_single_cb_requirement_for_accumulator_output():
 
     compute_source = str(compute_kernel["source_code"])
     writer_source = str(writer_kernel["source_code"])
-    assert f"pack_tile(0, {c_local_cb_id});" in compute_source
+    assert (
+        f"pack_tile(0, {c_local_cb_id});" in compute_source
+        or f"pack_tile<true>(0, {c_local_cb_id}, 0);" in compute_source
+    )
     assert f"cb_push_back({c_local_cb_id}, 1);" in compute_source
     assert f"cb_wait_front({c_local_cb_id}, 1);" in writer_source
     assert f"cb_pop_front({c_local_cb_id}, 1);" in writer_source

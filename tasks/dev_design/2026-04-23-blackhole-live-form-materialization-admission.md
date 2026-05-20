@@ -79,13 +79,17 @@ text:
 
 - direct cast consumer
 - `fragment_fill -> cast -> publish`
-- `pack_thread_direct_store`
 - `pack_tile`
 - exact CB republish when event lifetime, source live form, and consumer
   binding are all proven
 - device tiled partial combine when the producer and consumer CB windows are
   typed as single-event exact-CB pages and the lowered artifact remains
   direct-runtime admitted
+
+`pack_thread_direct_store` is not an admitted runtime protocol class and must
+not be accepted by validators.  Admitted compute-thread publication must lower
+through typed `pack_tile` or another explicitly admitted materialization
+protocol.
 
 Adding a protocol requires:
 
@@ -117,11 +121,12 @@ single-page publish/consume event windows, `acc_s -> acc_s_cast`
 `cb_republish` through `tilize_cast_fragment_slice`, tiled device partial
 combine, and host-reference correctness.
 
-Current standalone row `reduce_tile` is schema/source-complete through the
+Standalone bf16 row `reduce_tile` is schema/source-complete through the
 full-tile reduce CB to rank-1 writer path: the writer consumes the compute
 published CB, writes scalar pages with tiled-row L1 offsets, and owns one
-final barrier/pop. Its direct-runtime reject is therefore only the current
-TT-Sim `tensix_execute_pacr: count=1` simulator capability boundary.
+final barrier/pop.  It is now an admitted direct-runtime positive path; the
+older `tensix_execute_pacr: count=1` failure was a backend initialization
+bug, not a current TT-Sim capability boundary.
 
 ## Forbidden Regression
 

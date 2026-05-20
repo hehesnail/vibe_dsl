@@ -17,10 +17,6 @@ from .test_blackhole_copy_pipeline import _extract_blackhole_executable_spec
 
 M = 32
 N = 32
-COMPUTE_ONLY_TERMINAL_PUBLISH_SIM_REASON = (
-    "compute-only terminal publish direct runtime is gated"
-)
-
 
 def _lower_blackhole(kernel):
     target = Target("blackhole")
@@ -178,10 +174,7 @@ def test_blackhole_standalone_leaf_compute_projects_typed_runtime_contracts(
     assert "compute_contract" not in executable_spec
     assert "multi_compute_contracts" not in executable_spec
     reasons = _direct_runtime_unsupported_reasons(artifact)
-    if case_name == "typecast_publish":
-        assert any(COMPUTE_ONLY_TERMINAL_PUBLISH_SIM_REASON in reason for reason in reasons)
-    else:
-        assert not reasons, case_name
+    assert not reasons, case_name
     assert expected_ops <= set(_compute_operation_names(executable_spec))
 
 
@@ -225,12 +218,13 @@ def test_blackhole_standalone_reduce_packs_before_reduce_uninit():
     out_cb = int(reduce_window.group("out_cb"))
     body = reduce_window.group("body")
     reduce_tile_offset = body.find("reduce_tile<PoolType::SUM, ReduceDim::REDUCE_ROW>")
-    pack_offset = body.find(f"pack_tile(0, {out_cb}, 0);")
+    pack_match = re.search(rf"pack_tile(?:<true>)?\(0, {out_cb}, 0\);", body)
     uninit_offset = body.find("reduce_uninit<false>();")
 
     assert reduce_tile_offset >= 0
-    assert pack_offset > reduce_tile_offset
-    assert uninit_offset > pack_offset
+    assert pack_match is not None
+    assert pack_match.start() > reduce_tile_offset
+    assert uninit_offset > pack_match.start()
 
 
 def test_blackhole_standalone_reduce_writer_consumes_reduce_output_cb():
@@ -355,8 +349,7 @@ def test_blackhole_standalone_leaf_compute_bf16_direct_runtime(
 
     artifact = _lower_blackhole(kernel)
     reasons = _direct_runtime_unsupported_reasons(artifact)
-    if reasons:
-        pytest.skip(f"{case_name} direct runtime gated: {reasons}")
+    assert not reasons, case_name
 
     artifact.codegen_mod["main"](*inputs, output)
     assert_tensors_close_or_dump(

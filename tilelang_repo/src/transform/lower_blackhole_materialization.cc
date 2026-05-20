@@ -723,8 +723,7 @@ Stmt PlanTTKernelABI::GenerateFragmentCastSequence(const FragmentCastMatch& matc
     stmts.push_back(MakeBlackholeCall(blackhole_cb_reserve_back(),
                                       {IntImm32(cb_id), IntImm32(num_pages)}));
     if (pack_thread_direct_fill_value.defined()) {
-      record_tiled_republish_materialization_plan(
-          buffer_materialization::kPackThreadDirectStore);
+      record_tiled_republish_materialization_plan(buffer_materialization::kPackTile);
       stmts.push_back(MakeBlackholeCall(
           blackhole_pack_fill_fragment_to_tiled_cb(),
           {physical_dst->data, IntImm32(cb_id), match.dst_offset, num_elements_expr,

@@ -7,7 +7,7 @@
 
 ## Status
 
-- Date: `2026-05-19`
+- Date: `2026-05-20`
 - Active lane: `P2 / T10 complete`
 - Main chain:
   `Normalized Tile TIR -> SpatialPlan -> TTProgram -> ExecutableSpec`
@@ -103,10 +103,11 @@
   malformed schemas, explicit buffer/access metadata gaps, TT-Sim fp16
   capability gaps, and automatic temporal lowering for a single monolithic
   large-K GEMM whose K extent exceeds the current safe matmul window.  The
-  former `tilize_cast_fragment_slice` and T9.6 split-block flash blockers are
-  no longer current admitted-path boundaries.  Previously audited wrong-value
-  paths for GEMM `transpose_A`, multi-tile per-work tile compute, existing-TIR
-  TopK repeated row-reduction, standalone leaf compute copy/reduce, and
+  former `tilize_cast_fragment_slice`, compute-only terminal publish, and T9.6
+  split-block flash blockers are no longer current admitted-path boundaries.
+  Previously audited wrong-value paths for GEMM `transpose_A`, multi-tile
+  per-work tile compute, existing-TIR TopK repeated row-reduction, standalone
+  leaf compute copy/reduce/typecast-publish, `fragment_fill_cast_publish`, and
   admitted bf16 flash attention now run as positive runtime cases instead of
   publishing unsupported reasons.  Copy/direct transport runtime checks are
   exact-value gates, including page-addressed stick, ragged/segmented/indexed

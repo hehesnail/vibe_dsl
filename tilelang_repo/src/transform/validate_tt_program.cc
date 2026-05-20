@@ -1751,16 +1751,13 @@ void ValidateMaterializationPlans(
              "required_cb_plan_indices";
       ICHECK(plan->publication_protocol ==
                  buffer_materialization::kMailboxWritePtr ||
-             plan->publication_protocol ==
-                 buffer_materialization::kPackThreadDirectStore ||
              plan->publication_protocol == buffer_materialization::kPackTile ||
              plan->publication_protocol ==
                  buffer_materialization::kTilizeCastFragmentSlice)
           << "TTMaterializationPlan cb_republish has unsupported "
              "publication_protocol "
           << plan->publication_protocol;
-      if (plan->publication_protocol ==
-          buffer_materialization::kPackThreadDirectStore) {
+      if (plan->publication_protocol == buffer_materialization::kPackTile) {
         ICHECK(!plan->host_buffer.empty())
             << "TTMaterializationPlan requires host_buffer";
       }

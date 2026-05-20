@@ -1247,28 +1247,32 @@ void CodeGenBlackhole::AddFunction(const tvm::GlobalVar &gvar,
         decl_stream << "ALWI void tilelang_pack_fill_bfloat16_tiled_cb(uint32_t cb_id, uint32_t dst_offset_elements, uint32_t num_elements, uint32_t row_width, float value) {\n";
         decl_stream << "  (void)dst_offset_elements; (void)row_width;\n";
         decl_stream << "  const uint32_t num_tiles = (num_elements + 1023u) / 1024u;\n";
+        decl_stream << "  init_sfpu(cb_id, cb_id);\n";
         decl_stream << "  fill_tile_init();\n";
         decl_stream << "  for (uint32_t tile = 0; tile < num_tiles; ++tile) {\n";
+        decl_stream << "    (void)tile;\n";
         decl_stream << "    tile_regs_acquire();\n";
         decl_stream << "    fill_tile(0, value);\n";
         decl_stream << "    tile_regs_commit();\n";
         decl_stream << "    tile_regs_wait();\n";
         decl_stream << "    pack_reconfig_data_format(cb_id);\n";
-        decl_stream << "    pack_tile<true>(0, cb_id, tile);\n";
+        decl_stream << "    pack_tile(0, cb_id, 0);\n";
         decl_stream << "    tile_regs_release();\n";
         decl_stream << "  }\n";
         decl_stream << "}\n";
         decl_stream << "ALWI void tilelang_pack_fill_float32_tiled_cb(uint32_t cb_id, uint32_t dst_offset_elements, uint32_t num_elements, uint32_t row_width, float value) {\n";
         decl_stream << "  (void)dst_offset_elements; (void)row_width;\n";
         decl_stream << "  const uint32_t num_tiles = (num_elements + 1023u) / 1024u;\n";
+        decl_stream << "  init_sfpu(cb_id, cb_id);\n";
         decl_stream << "  fill_tile_init();\n";
         decl_stream << "  for (uint32_t tile = 0; tile < num_tiles; ++tile) {\n";
+        decl_stream << "    (void)tile;\n";
         decl_stream << "    tile_regs_acquire();\n";
         decl_stream << "    fill_tile(0, value);\n";
         decl_stream << "    tile_regs_commit();\n";
         decl_stream << "    tile_regs_wait();\n";
         decl_stream << "    pack_reconfig_data_format(cb_id);\n";
-        decl_stream << "    pack_tile<true>(0, cb_id, tile);\n";
+        decl_stream << "    pack_tile(0, cb_id, 0);\n";
         decl_stream << "    tile_regs_release();\n";
         decl_stream << "  }\n";
         decl_stream << "}\n";
@@ -5016,32 +5020,20 @@ void CodeGenBlackhole::PrintPackFillFragmentToTiledCB(const tvm::tir::CallNode* 
   PrintExpr(op->args[2], os);
   os << "); (void)(";
   PrintExpr(op->args[4], os);
-  os << "); const uint32_t num_tiles = (static_cast<uint32_t>(";
-  PrintExpr(op->args[3], os);
-  os << ") + 1023u) / 1024u; ";
+  os << "); ";
   if (write_bfloat16) {
-    os << "const uint16_t fill_bits = tilelang_float_to_bfloat_bits(static_cast<float>(";
-    PrintExpr(op->args[5], os);
-    os << ")); volatile tt_l1_ptr uint16_t* dst_bits = "
-          "reinterpret_cast<volatile tt_l1_ptr uint16_t*>("
-          "tilelang_cb_write_ptr_bytes_direct("
-       << cb_id
-       << ")); for (uint32_t tile = 0; tile < num_tiles; ++tile) { "
-          "const uint32_t tile_base = tile * 1024u; "
-          "for (uint32_t i = 0; i < 1024u; ++i) { "
-          "dst_bits[tile_base + i] = fill_bits; } } }";
+    os << "tilelang_pack_fill_bfloat16_tiled_cb(" << cb_id << ", static_cast<uint32_t>(";
   } else {
-    os << "const uint32_t fill_bits = tilelang_bit_cast<uint32_t>(static_cast<float>(";
-    PrintExpr(op->args[5], os);
-    os << ")); volatile tt_l1_ptr uint32_t* dst_bits = "
-          "reinterpret_cast<volatile tt_l1_ptr uint32_t*>("
-          "tilelang_cb_write_ptr_bytes_direct("
-       << cb_id
-       << ")); for (uint32_t tile = 0; tile < num_tiles; ++tile) { "
-          "const uint32_t tile_base = tile * 1024u; "
-          "for (uint32_t i = 0; i < 1024u; ++i) { "
-          "dst_bits[tile_base + i] = fill_bits; } } }";
+    os << "tilelang_pack_fill_float32_tiled_cb(" << cb_id << ", static_cast<uint32_t>(";
   }
+  PrintExpr(op->args[2], os);
+  os << "), static_cast<uint32_t>(";
+  PrintExpr(op->args[3], os);
+  os << "), static_cast<uint32_t>(";
+  PrintExpr(op->args[4], os);
+  os << "), static_cast<float>(";
+  PrintExpr(op->args[5], os);
+  os << ")); }";
 }
 
 void CodeGenBlackhole::PrintGenerateReduceScalerToCB(const tvm::tir::CallNode* op,
